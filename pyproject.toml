@@ -1,0 +1,33 @@
+[project]
+name = "pycalc"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "pytest",
+    "ruff>=0.15.7",
+]
+
+[project.scripts]
+pycalc = "pycalc.tui:main"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "S"]
+ignore = ["S307", "S603", "S605", "S108", "S102", "S110"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = true

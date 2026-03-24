@@ -6,6 +6,8 @@ import math
 import re
 from typing import Any
 
+from .sandbox import FileInfo, LoadPolicy, classify_module, load_modules, validate_formula
+
 MAXIN = 256
 NCOL = 256
 NROW = 1024
@@ -397,6 +399,16 @@ class Grid:
         self.mc = -1
         self.mr = -1
         self._eval_globals = _make_eval_globals()
+        self.requires: list[str] = []
+        self._module_errors: list[str] = []
+
+    def load_requires(self, modules):
+        """Load required modules into the eval namespace."""
+        if not modules:
+            return
+        mods, errors = load_modules(modules)
+        self._eval_globals.update(mods)
+        self._module_errors = errors
 
     def cell(self, c, r):
         if 0 <= c < NCOL and 0 <= r < NROW:
@@ -482,17 +494,22 @@ class Grid:
                     stripped = formula.replace("$", "")
                     evalbuf = _expand_ranges(stripped)
                     oldval = cl.val
-                    try:
-                        result = eval(evalbuf, g)  # noqa: S307
-                        if isinstance(result, Vec):
-                            cl.arr = list(result.data)
-                            cl.val = result.data[0] if result.data else float("nan")
-                        else:
-                            cl.arr = None
-                            cl.val = float(result)
-                    except Exception:
+                    valid, _ = validate_formula(evalbuf)
+                    if not valid:
                         cl.arr = None
                         cl.val = float("nan")
+                    else:
+                        try:
+                            result = eval(evalbuf, g)  # noqa: S307
+                            if isinstance(result, Vec):
+                                cl.arr = list(result.data)
+                                cl.val = result.data[0] if result.data else float("nan")
+                            else:
+                                cl.arr = None
+                                cl.val = float(result)
+                        except Exception:
+                            cl.arr = None
+                            cl.val = float("nan")
                     both_nan = (
                         isinstance(cl.val, float)
                         and math.isnan(cl.val)
@@ -713,14 +730,23 @@ class Grid:
         a = cellname(c1, r1)
         return f"{a}...{col_name(c2)}{r2 + 1}"
 
-    def jsonload(self, filename):
+    def jsonload(self, filename, policy=None):
         try:
             with open(filename) as f:
                 d = json.load(f)
         except (OSError, json.JSONDecodeError):
             return -1
 
-        self.code = d.get("code", "")
+        code = d.get("code", "")
+        if policy is None or policy.load_code:
+            self.code = code
+
+        requires = d.get("requires", [])
+        if isinstance(requires, list):
+            self.requires = requires
+            approved = requires if policy is None else policy.approved_modules
+            if approved:
+                self.load_requires(approved)
 
         names_dict = d.get("names", {})
         self.names = []
@@ -808,6 +834,9 @@ class Grid:
 
         out: dict[str, Any] = {}
 
+        if self.requires:
+            out["requires"] = self.requires
+
         if self.code:
             out["code"] = self.code
 
@@ -860,3 +889,48 @@ class Grid:
         except OSError:
             return -1
         return 0
+
+    @staticmethod
+    def jsoninspect(filename):
+        """Inspect a spreadsheet file without executing anything.
+
+        Returns a FileInfo with metadata about code blocks, required modules,
+        and cell/formula counts, or None if the file cannot be parsed.
+        """
+        try:
+            with open(filename) as f:
+                d = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+
+        info = FileInfo()
+
+        code = d.get("code", "")
+        if code and code.strip():
+            info.has_code = True
+            info.code_lines = len(code.strip().splitlines())
+            info.code_preview = code.strip()
+
+        requires = d.get("requires", [])
+        if isinstance(requires, list):
+            info.requires = list(requires)
+            info.blocked_modules = [m for m in requires if classify_module(m) == "blocked"]
+            info.side_effect_modules = [
+                m for m in requires if classify_module(m) == "side_effect"
+            ]
+
+        rows = d.get("cells", [])
+        for row in rows:
+            if not isinstance(row, list):
+                continue
+            for v in row:
+                cell_val = v
+                if isinstance(v, dict):
+                    cell_val = v.get("v", None)
+                if cell_val is None or (isinstance(cell_val, str) and cell_val == ""):
+                    continue
+                info.cell_count += 1
+                if isinstance(cell_val, str) and cell_val.startswith("="):
+                    info.formula_count += 1
+
+        return info

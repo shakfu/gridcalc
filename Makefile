@@ -1,7 +1,7 @@
 .PHONY: test lint format typecheck run qa
 
 test:
-	@uv run pytest tests/ -v
+	@PYCALC_SANDBOX=1 uv run pytest tests/ -v
 
 lint:
 	@uv run ruff check pycalc/ tests/

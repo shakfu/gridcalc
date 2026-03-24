@@ -1,0 +1,22 @@
+# pycalc configuration
+# Place as ./pycalc.toml (project-local) or ~/.config/pycalc/pycalc.toml (user-level).
+# Project-local config overrides user-level.
+
+# Default editor for :e command (EDITOR env var takes precedence)
+editor = "vim"
+
+# Enable sandbox security checks (AST validation, trust prompt on file load).
+# PYCALC_SANDBOX env var takes precedence over this setting.
+sandbox = false
+
+# Default column width (4-40)
+# width = 8
+
+# Default number format: D=default, I=integer, L=left, G=general, $=dollar, %=percent, *=bar
+# format = "D"
+
+# Pre-approved modules available in formulas.
+# Safe (compute-only): numpy, scipy, sympy, decimal, fractions, statistics, etc.
+# Side-effect (I/O): matplotlib, pandas, csv, openpyxl
+# Blocked (always): os, sys, subprocess, shutil, pathlib, socket, pickle, etc.
+# allowed_modules = ["numpy", "matplotlib"]

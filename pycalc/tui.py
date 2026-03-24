@@ -21,9 +21,13 @@ from .engine import (
     col_name,
     ref,
 )
+from .config import Config, load_config
+from .sandbox import SANDBOX_ENABLED, LoadPolicy, classify_module, configure_sandbox
 
 GW = 4
 UNDO_MAX = 64
+
+_cfg: Config = Config()
 
 
 class UndoEntry:
@@ -536,7 +540,7 @@ def cmd_savequit(stdscr, g, args):
 
 
 def cmd_edit(stdscr, g):
-    editor = os.environ.get("EDITOR", "vi")
+    editor = os.environ.get("EDITOR") or _cfg.editor or "vi"
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
         if g.code:
             f.write(g.code)
@@ -558,18 +562,99 @@ def cmd_edit(stdscr, g):
     return False
 
 
+def trust_prompt(stdscr, filename, info):
+    """Curses-based trust prompt for loading files with code or requires.
+
+    Returns a LoadPolicy, or None if the user cancels.
+    """
+    while True:
+        stdscr.erase()
+        stdscr.attron(curses.A_BOLD)
+        stdscr.addnstr(0, 0, f"Loading: {os.path.basename(filename)}", curses.COLS - 1)
+        stdscr.attroff(curses.A_BOLD)
+
+        y = 2
+        stdscr.addnstr(y, 0, f"  Cells: {info.cell_count} ({info.formula_count} formulas)", curses.COLS - 1)
+        y += 1
+
+        if info.requires:
+            mods = ", ".join(info.requires)
+            stdscr.addnstr(y, 0, f"  Requires: {mods}", curses.COLS - 1)
+            y += 1
+            if info.blocked_modules:
+                stdscr.attron(curses.color_pair(CP_ERROR))
+                stdscr.addnstr(y, 0, f"  Blocked:  {', '.join(info.blocked_modules)}", curses.COLS - 1)
+                stdscr.attroff(curses.color_pair(CP_ERROR))
+                y += 1
+            if info.side_effect_modules:
+                stdscr.attron(curses.color_pair(CP_LOCKED))
+                stdscr.addnstr(y, 0, f"  I/O:      {', '.join(info.side_effect_modules)}", curses.COLS - 1)
+                stdscr.attroff(curses.color_pair(CP_LOCKED))
+                y += 1
+
+        if info.has_code:
+            stdscr.addnstr(y, 0, f"  Code:     {info.code_lines} lines", curses.COLS - 1)
+            y += 1
+
+        y += 1
+        prompt = "[a]pprove  [f]ormulas only"
+        if info.has_code:
+            prompt += "  [v]iew code"
+        prompt += "  [c]ancel"
+        stdscr.addnstr(y, 0, f"  {prompt}", curses.COLS - 1)
+        stdscr.refresh()
+
+        ch = stdscr.getch()
+        if ch == ord("a"):
+            approved = [m for m in info.requires if classify_module(m) != "blocked"]
+            return LoadPolicy(load_code=True, approved_modules=approved)
+        elif ch == ord("f"):
+            return LoadPolicy.formulas_only()
+        elif ch == ord("v") and info.has_code:
+            stdscr.erase()
+            stdscr.attron(curses.A_BOLD)
+            stdscr.addnstr(0, 0, "Code block:", curses.COLS - 1)
+            stdscr.attroff(curses.A_BOLD)
+            lines = info.code_preview.splitlines()
+            for i, line in enumerate(lines):
+                if i + 1 >= curses.LINES - 2:
+                    break
+                stdscr.addnstr(i + 1, 0, f"  {line}", curses.COLS - 1)
+            stdscr.addnstr(min(len(lines) + 2, curses.LINES - 1), 0, "Press any key.", curses.COLS - 1)
+            stdscr.refresh()
+            stdscr.getch()
+            continue
+        elif ch == ord("c") or ch == 27:
+            return None
+
+
 def cmd_open(stdscr, g, args):
     fn = args.strip() if args.strip() else None
     if not fn:
         fn = prompt_filename(stdscr, "Open: ", g.filename)
         if not fn:
             return False
+
+    info = Grid.jsoninspect(fn)
+    if info is None:
+        show_error(stdscr, f"Failed to read: {fn}. Press any key.")
+        return False
+
+    policy = None
+    if info.has_code or info.requires:
+        if SANDBOX_ENABLED:
+            policy = trust_prompt(stdscr, fn, info)
+            if policy is None:
+                return False
+        else:
+            policy = LoadPolicy.trust_all(info.requires)
+
     for r in range(NROW):
         for c in range(NCOL):
             g.cells[c][r].clear()
     g.names = []
     g.code = ""
-    if g.jsonload(fn) == 0:
+    if g.jsonload(fn, policy=policy) == 0:
         g.filename = fn
         g.dirty = 0
     else:
@@ -1139,23 +1224,78 @@ def mainloop(stdscr, g):
             entry(stdscr, g, undo, True, ch)
 
 
+def startup_trust_prompt(filename, info):
+    """Plain-terminal trust prompt for file loading at startup (before curses)."""
+    print(f"\nLoading: {filename}")
+    print(f"  Cells: {info.cell_count} ({info.formula_count} formulas)")
+    if info.requires:
+        for mod in info.requires:
+            cls = classify_module(mod)
+            tag = f" [{cls}]" if cls != "safe" else ""
+            print(f"  Requires: {mod}{tag}")
+    if info.has_code:
+        print(f"  Code: {info.code_lines} lines")
+    print()
+
+    while True:
+        prompt = "  [a]pprove  [f]ormulas only"
+        if info.has_code:
+            prompt += "  [v]iew code"
+        prompt += "  [c]ancel: "
+        resp = input(prompt).strip().lower()
+        if resp == "a":
+            approved = [m for m in info.requires if classify_module(m) != "blocked"]
+            return LoadPolicy(load_code=True, approved_modules=approved)
+        elif resp == "f":
+            return LoadPolicy.formulas_only()
+        elif resp == "v" and info.has_code:
+            print(f"\n{info.code_preview}\n")
+        elif resp == "c":
+            return None
+
+
 def main():
     import sys
+
+    global _cfg
+    _cfg = load_config()
+    configure_sandbox(_cfg.sandbox)
 
     g = Grid()
     g.mc = -1
     g.mr = -1
-    g.cw = CW_DEFAULT
+    g.cw = _cfg.width if _cfg.width else CW_DEFAULT
+    if _cfg.format and _cfg.format.upper() in "LRIGD$%*":
+        g.fmt = ord(_cfg.format.upper())
+    if _cfg.allowed_modules:
+        g.load_requires(_cfg.allowed_modules)
+        g.requires = list(_cfg.allowed_modules)
 
     if len(sys.argv) == 2 and sys.argv[1] in ("-h", "--help"):
         print(f"Usage: {sys.argv[0]} sheet.json", file=sys.stderr)
         sys.exit(1)
 
     if len(sys.argv) > 1:
-        if g.jsonload(sys.argv[1]) < 0:
-            print(f"Failed to load file: {sys.argv[1]}", file=sys.stderr)
+        fn = sys.argv[1]
+        info = Grid.jsoninspect(fn)
+        if info is None:
+            print(f"Failed to load file: {fn}", file=sys.stderr)
             sys.exit(1)
-        g.filename = sys.argv[1]
+
+        policy = None
+        if info.has_code or info.requires:
+            if SANDBOX_ENABLED:
+                policy = startup_trust_prompt(fn, info)
+                if policy is None:
+                    print("Load cancelled.", file=sys.stderr)
+                    sys.exit(0)
+            else:
+                policy = LoadPolicy.trust_all(info.requires)
+
+        if g.jsonload(fn, policy=policy) < 0:
+            print(f"Failed to load file: {fn}", file=sys.stderr)
+            sys.exit(1)
+        g.filename = fn
 
     def _main(stdscr):
         curses.raw()

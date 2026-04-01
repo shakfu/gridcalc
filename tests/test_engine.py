@@ -1,7 +1,6 @@
 import math
 
 from pycalc.engine import (
-    CW_DEFAULT,
     EMPTY,
     FORMULA,
     LABEL,
@@ -15,6 +14,7 @@ from pycalc.engine import (
     col_name,
     ref,
 )
+from pycalc.tui import fmtcell
 
 
 def make_grid():
@@ -858,155 +858,135 @@ class TestReplicate:
 
 class TestFmtcell:
     def test_null_cell(self):
-        g = make_grid()
-        assert g.fmtcell(None, 8) == "        "
-        assert len(g.fmtcell(None, 8)) == 8
+        assert fmtcell(None, 8) == "        "
+        assert len(fmtcell(None, 8)) == 8
 
     def test_empty_cell(self):
-        g = make_grid()
         cl = Cell()
-        assert g.fmtcell(cl, 6) == "      "
+        assert fmtcell(cl, 6) == "      "
 
     def test_label(self):
-        g = make_grid()
         cl = Cell()
         cl.type = LABEL
         cl.text = "hello"
-        assert g.fmtcell(cl, 8) == "hello   "
+        assert fmtcell(cl, 8) == "hello   "
 
     def test_label_quote(self):
-        g = make_grid()
         cl = Cell()
         cl.type = LABEL
         cl.text = '"quoted'
-        assert g.fmtcell(cl, 8) == "quoted  "
+        assert fmtcell(cl, 8) == "quoted  "
 
     def test_label_truncated(self):
-        g = make_grid()
         cl = Cell()
         cl.type = LABEL
         cl.text = "longstring"
-        result = g.fmtcell(cl, 4)
+        result = fmtcell(cl, 4)
         assert len(result) == 4
         assert result[:4] == "long"
 
     def test_error(self):
-        g = make_grid()
         cl = Cell()
         cl.type = FORMULA
         cl.val = float("nan")
-        assert g.fmtcell(cl, 8) == "   ERROR"
+        assert fmtcell(cl, 8) == "   ERROR"
 
     def test_integer(self):
-        g = make_grid()
         cl = Cell()
         cl.type = NUM
         cl.val = 42.0
-        assert g.fmtcell(cl, 8) == "      42"
+        assert fmtcell(cl, 8) == "      42"
 
     def test_float(self):
-        g = make_grid()
         cl = Cell()
         cl.type = NUM
         cl.val = 3.14159
-        result = g.fmtcell(cl, 10)
+        result = fmtcell(cl, 10)
         assert len(result) == 10
         assert "3.14" in result
 
     def test_dollar(self):
-        g = make_grid()
         cl = Cell()
         cl.type = NUM
         cl.val = 99.5
         cl.fmt = "$"
-        result = g.fmtcell(cl, 10)
+        result = fmtcell(cl, 10)
         assert "99.50" in result
 
     def test_percent(self):
-        g = make_grid()
         cl = Cell()
         cl.type = NUM
         cl.val = 0.25
         cl.fmt = "%"
-        result = g.fmtcell(cl, 10)
+        result = fmtcell(cl, 10)
         assert "25.00%" in result
 
     def test_integer_format(self):
-        g = make_grid()
         cl = Cell()
         cl.type = NUM
         cl.val = 3.7
         cl.fmt = "I"
-        result = g.fmtcell(cl, 8)
+        result = fmtcell(cl, 8)
         assert "3" in result
         assert "." not in result
 
     def test_bar(self):
-        g = make_grid()
         cl = Cell()
         cl.type = NUM
         cl.val = 5.0
         cl.fmt = "*"
-        assert g.fmtcell(cl, 8) == "*****   "
+        assert fmtcell(cl, 8) == "*****   "
 
     def test_bar_clamped(self):
-        g = make_grid()
         cl = Cell()
         cl.type = NUM
         cl.val = 100.0
         cl.fmt = "*"
-        assert g.fmtcell(cl, 6) == "******"
+        assert fmtcell(cl, 6) == "******"
 
     def test_array(self):
-        g = make_grid()
         cl = Cell()
         cl.type = NUM
         cl.val = 3.0
         cl.arr = [3.0, 6.0, 9.0]
-        result = g.fmtcell(cl, 10)
+        result = fmtcell(cl, 10)
         assert "3[3]" in result
 
     def test_global_dollar(self):
-        g = make_grid()
-        g.fmt = "$"
         cl = Cell()
         cl.type = NUM
         cl.val = 7.0
-        result = g.fmtcell(cl, 10)
+        result = fmtcell(cl, 10, "$")
         assert "7.00" in result
 
     def test_left_align(self):
-        g = make_grid()
         cl = Cell()
         cl.type = NUM
         cl.val = 42.0
         cl.fmt = "L"
-        result = g.fmtcell(cl, 8)
+        result = fmtcell(cl, 8)
         assert result[:2] == "42"
         assert result[7] == " "
 
     def test_right_align(self):
-        g = make_grid()
         cl = Cell()
         cl.type = NUM
         cl.val = 42.0
         cl.fmt = "R"
-        assert g.fmtcell(cl, 8) == "      42"
+        assert fmtcell(cl, 8) == "      42"
 
     def test_negative(self):
-        g = make_grid()
         cl = Cell()
         cl.type = NUM
         cl.val = -123.0
-        result = g.fmtcell(cl, 8)
+        result = fmtcell(cl, 8)
         assert "-123" in result
 
     def test_zero(self):
-        g = make_grid()
         cl = Cell()
         cl.type = NUM
         cl.val = 0.0
-        result = g.fmtcell(cl, 8)
+        result = fmtcell(cl, 8)
         assert "0" in result
 
 
@@ -1186,58 +1166,51 @@ class TestBoldRoundtrip:
 
 class TestFmtstr:
     def test_comma_thousands(self):
-        g = make_grid()
-        g.cw = CW_DEFAULT
         cl = Cell()
         cl.type = NUM
         cl.val = 1234567.0
         cl.fmtstr = ",.0f"
-        result = g.fmtcell(cl, 12)
+        result = fmtcell(cl, 12)
         assert "1,234,567" in result
 
     def test_comma_shorthand(self):
-        g = make_grid()
         cl = Cell()
         cl.type = NUM
         cl.val = 1234567.0
         cl.fmtstr = ","
-        result = g.fmtcell(cl, 12)
+        result = fmtcell(cl, 12)
         assert "1,234,567" in result
         assert "." not in result
 
     def test_comma_decimal(self):
-        g = make_grid()
         cl = Cell()
         cl.type = NUM
         cl.val = 1234.5
         cl.fmtstr = ",.2f"
-        result = g.fmtcell(cl, 12)
+        result = fmtcell(cl, 12)
         assert "1,234.50" in result
 
     def test_percentage(self):
-        g = make_grid()
         cl = Cell()
         cl.type = NUM
         cl.val = 0.157
         cl.fmtstr = ".1%"
-        result = g.fmtcell(cl, 12)
+        result = fmtcell(cl, 12)
         assert "15.7%" in result
 
     def test_fixed_decimal(self):
-        g = make_grid()
         cl = Cell()
         cl.type = NUM
         cl.val = 3.14159
         cl.fmtstr = ".4f"
-        result = g.fmtcell(cl, 12)
+        result = fmtcell(cl, 12)
         assert "3.1416" in result
 
     def test_no_fmtstr(self):
-        g = make_grid()
         cl = Cell()
         cl.type = NUM
         cl.val = 42.0
-        result = g.fmtcell(cl, 8)
+        result = fmtcell(cl, 8)
         assert "42" in result
 
 

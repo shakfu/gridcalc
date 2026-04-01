@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import json
 import os
 from dataclasses import dataclass, field
 
@@ -255,3 +256,46 @@ class LoadPolicy:
     def formulas_only() -> LoadPolicy:
         """Load cell data and formulas only, skip code and modules."""
         return LoadPolicy(load_code=False, approved_modules=[])
+
+
+def inspect_file(filename: str) -> FileInfo | None:
+    """Inspect a spreadsheet file without executing anything.
+
+    Returns a FileInfo with metadata about code blocks, required modules,
+    and cell/formula counts, or None if the file cannot be parsed.
+    """
+    try:
+        with open(filename) as f:
+            d = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    info = FileInfo()
+
+    code = d.get("code", "")
+    if code and code.strip():
+        info.has_code = True
+        info.code_lines = len(code.strip().splitlines())
+        info.code_preview = code.strip()
+
+    requires = d.get("requires", [])
+    if isinstance(requires, list):
+        info.requires = list(requires)
+        info.blocked_modules = [m for m in requires if classify_module(m) == "blocked"]
+        info.side_effect_modules = [m for m in requires if classify_module(m) == "side_effect"]
+
+    rows = d.get("cells", [])
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        for v in row:
+            cell_val = v
+            if isinstance(v, dict):
+                cell_val = v.get("v", None)
+            if cell_val is None or (isinstance(cell_val, str) and cell_val == ""):
+                continue
+            info.cell_count += 1
+            if isinstance(cell_val, str) and cell_val.startswith("="):
+                info.formula_count += 1
+
+    return info

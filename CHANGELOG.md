@@ -104,6 +104,15 @@
   constant (8192) instead of the magic expression `MAXIN * 32`.
 - **Save deduplication**: `cmd_save` and `cmd_savequit` now share a single
   `_do_save()` helper for filename resolution, writing, and state update.
+- **File inspection moved to sandbox**: `Grid.jsoninspect()` static method
+  moved to `sandbox.inspect_file()`. It had zero Grid state access and only
+  used sandbox types (`FileInfo`, `classify_module`). `engine.py` no longer
+  imports `FileInfo` or `classify_module` -- its only sandbox dependency is
+  `validate_formula` and `load_modules`.
+- **Cell formatting moved to TUI**: `Grid.fmtcell()`, `fmt_float()`, and
+  `_insert_commas()` moved from `engine.py` to `tui.py`. `fmtcell` is now a
+  standalone function `fmtcell(cl, cw, global_fmt="")` -- a presentation
+  concern that belongs alongside the display code, not the data model.
 - `Grid.jsonload()` signature extended with optional `policy` parameter
   (backward compatible -- `None` trusts all, matching prior behavior).
 - `Grid.jsonsave()` writes `requires` field when present.

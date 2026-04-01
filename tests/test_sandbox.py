@@ -5,6 +5,7 @@ from pycalc.engine import Grid, NamedRange
 from pycalc.sandbox import (
     LoadPolicy,
     classify_module,
+    inspect_file,
     load_modules,
     validate_formula,
 )
@@ -385,7 +386,7 @@ class TestJsonInspect:
     def test_simple_file(self, tmp_path):
         f = tmp_path / "simple.json"
         f.write_text('{"cells": [[1, 2, 3]]}')
-        info = Grid.jsoninspect(str(f))
+        info = inspect_file(str(f))
         assert info is not None
         assert not info.has_code
         assert info.requires == []
@@ -395,14 +396,14 @@ class TestJsonInspect:
     def test_with_formulas(self, tmp_path):
         f = tmp_path / "formulas.json"
         f.write_text('{"cells": [[1, "=A1+1", "hello"]]}')
-        info = Grid.jsoninspect(str(f))
+        info = inspect_file(str(f))
         assert info.cell_count == 3
         assert info.formula_count == 1
 
     def test_with_code(self, tmp_path):
         f = tmp_path / "code.json"
         f.write_text('{"code": "def foo():\\n    return 1", "cells": [[1]]}')
-        info = Grid.jsoninspect(str(f))
+        info = inspect_file(str(f))
         assert info.has_code
         assert info.code_lines == 2
         assert "def foo" in info.code_preview
@@ -410,44 +411,44 @@ class TestJsonInspect:
     def test_with_requires(self, tmp_path):
         f = tmp_path / "requires.json"
         f.write_text('{"requires": ["numpy", "os", "matplotlib"], "cells": [[1]]}')
-        info = Grid.jsoninspect(str(f))
+        info = inspect_file(str(f))
         assert info.requires == ["numpy", "os", "matplotlib"]
         assert info.blocked_modules == ["os"]
         assert info.side_effect_modules == ["matplotlib"]
 
     def test_nonexistent_file(self, tmp_path):
-        info = Grid.jsoninspect(str(tmp_path / "nope.json"))
+        info = inspect_file(str(tmp_path / "nope.json"))
         assert info is None
 
     def test_invalid_json(self, tmp_path):
         f = tmp_path / "bad.json"
         f.write_text("not json at all")
-        info = Grid.jsoninspect(str(f))
+        info = inspect_file(str(f))
         assert info is None
 
     def test_empty_code_not_flagged(self, tmp_path):
         f = tmp_path / "empty_code.json"
         f.write_text('{"code": "", "cells": [[1]]}')
-        info = Grid.jsoninspect(str(f))
+        info = inspect_file(str(f))
         assert not info.has_code
 
     def test_whitespace_code_not_flagged(self, tmp_path):
         f = tmp_path / "ws_code.json"
         f.write_text('{"code": "   \\n  ", "cells": [[1]]}')
-        info = Grid.jsoninspect(str(f))
+        info = inspect_file(str(f))
         assert not info.has_code
 
     def test_styled_cell_counted(self, tmp_path):
         f = tmp_path / "styled.json"
         f.write_text('{"cells": [[{"v": 42, "bold": true}, {"v": "=A1"}]]}')
-        info = Grid.jsoninspect(str(f))
+        info = inspect_file(str(f))
         assert info.cell_count == 2
         assert info.formula_count == 1
 
     def test_null_cells_not_counted(self, tmp_path):
         f = tmp_path / "nulls.json"
         f.write_text('{"cells": [[1, null, 3, null]]}')
-        info = Grid.jsoninspect(str(f))
+        info = inspect_file(str(f))
         assert info.cell_count == 2
 
 
@@ -521,7 +522,7 @@ class TestRequiresRoundtrip:
         f = tmp_path / "rt.json"
         assert g.jsonsave(str(f)) == 0
 
-        info = Grid.jsoninspect(str(f))
+        info = inspect_file(str(f))
         assert info is not None
         assert info.requires == ["numpy", "pandas"]
 

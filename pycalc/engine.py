@@ -6,7 +6,7 @@ import math
 import re
 from typing import Any
 
-from .sandbox import FileInfo, classify_module, load_modules, validate_formula
+from .sandbox import load_modules, validate_formula
 
 MAXIN = 256
 NCOL = 256
@@ -295,63 +295,6 @@ def _emitref(rc, rr, ac, ar):
         s += "$"
     s += str(rr + 1)
     return s
-
-
-def _insert_commas(s):
-    neg = s.startswith("-")
-    digits = s[1:] if neg else s
-    result = []
-    for i, ch in enumerate(digits):
-        if i > 0 and (len(digits) - i) % 3 == 0:
-            result.append(",")
-        result.append(ch)
-    return ("-" if neg else "") + "".join(result)
-
-
-def fmt_float(val, spec):
-    """Format a float using a Python-style format spec subset.
-    Returns formatted string or None if spec not recognized."""
-    p = 0
-    commas = False
-    prec = -1
-    ftype = "f"
-
-    if p < len(spec) and spec[p] == ",":
-        commas = True
-        p += 1
-    if p < len(spec) and spec[p] == ".":
-        p += 1
-        prec = 0
-        while p < len(spec) and spec[p].isdigit():
-            prec = prec * 10 + int(spec[p])
-            p += 1
-    if p < len(spec) and spec[p] in "fe%":
-        ftype = spec[p]
-        p += 1
-    if p != len(spec):
-        return None
-
-    v = float(val)
-    if ftype == "%":
-        v *= 100.0
-    if prec < 0:
-        prec = 0 if commas else 6
-
-    raw = f"{v:.{prec}e}" if ftype == "e" else f"{v:.{prec}f}"
-
-    if commas and ftype != "e":
-        dot_pos = raw.find(".")
-        if dot_pos >= 0:
-            intpart = raw[:dot_pos]
-            fracpart = raw[dot_pos:]
-            raw = _insert_commas(intpart) + fracpart
-        else:
-            raw = _insert_commas(raw)
-
-    if ftype == "%":
-        raw += "%"
-
-    return raw
 
 
 def _expand_ranges(expr):
@@ -773,51 +716,6 @@ class Grid:
                 i += 1
         dst.text = "".join(out)
 
-    def fmtcell(self, cl, cw):
-        if cl is None or cl.type == EMPTY:
-            return " " * cw
-
-        if cl.type == LABEL:
-            t = cl.text
-            if t.startswith('"'):
-                t = t[1:]
-            return f"{t:<{cw}}"[:cw]
-
-        if isinstance(cl.val, float) and math.isnan(cl.val):
-            return f"{'ERROR':>{cw}}"
-
-        if cl.arr is not None and len(cl.arr) > 0:
-            v = cl.arr[0]
-            numstr = str(int(v)) if v == int(v) and abs(v) < 1e9 else f"{v:g}"
-            t = f"{numstr}[{len(cl.arr)}]"
-            return f"{t:>{cw}}"[:cw]
-
-        if cl.fmtstr:
-            formatted = fmt_float(cl.val, cl.fmtstr)
-            if formatted is not None:
-                return f"{formatted:>{cw}}"[:cw]
-
-        fc = cl.fmt
-        if not fc or fc == "D":
-            fc = self.fmt
-
-        if fc == "$":
-            t = f"{cl.val:.2f}"
-        elif fc == "%":
-            t = f"{cl.val * 100:.2f}%"
-        elif fc == "*":
-            bar_len = min(cw, max(0, int(cl.val)))
-            t = "*" * bar_len
-            return f"{t:<{cw}}"[:cw]
-        elif fc == "I" or (cl.val == int(cl.val) and abs(cl.val) < 1e9):
-            t = str(int(cl.val))
-        else:
-            t = f"{cl.val:g}"
-
-        if fc == "L":
-            return f"{t:<{cw}}"[:cw]
-        return f"{t:>{cw}}"[:cw]
-
     def fmtrange(self, c1, r1, c2, r2):
         if c1 == c2 and r1 == r2:
             return cellname(c1, r1)
@@ -989,46 +887,3 @@ class Grid:
         except OSError:
             return -1
         return 0
-
-    @staticmethod
-    def jsoninspect(filename):
-        """Inspect a spreadsheet file without executing anything.
-
-        Returns a FileInfo with metadata about code blocks, required modules,
-        and cell/formula counts, or None if the file cannot be parsed.
-        """
-        try:
-            with open(filename) as f:
-                d = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            return None
-
-        info = FileInfo()
-
-        code = d.get("code", "")
-        if code and code.strip():
-            info.has_code = True
-            info.code_lines = len(code.strip().splitlines())
-            info.code_preview = code.strip()
-
-        requires = d.get("requires", [])
-        if isinstance(requires, list):
-            info.requires = list(requires)
-            info.blocked_modules = [m for m in requires if classify_module(m) == "blocked"]
-            info.side_effect_modules = [m for m in requires if classify_module(m) == "side_effect"]
-
-        rows = d.get("cells", [])
-        for row in rows:
-            if not isinstance(row, list):
-                continue
-            for v in row:
-                cell_val = v
-                if isinstance(v, dict):
-                    cell_val = v.get("v", None)
-                if cell_val is None or (isinstance(cell_val, str) and cell_val == ""):
-                    continue
-                info.cell_count += 1
-                if isinstance(cell_val, str) and cell_val.startswith("="):
-                    info.formula_count += 1
-
-        return info

@@ -24,12 +24,125 @@ from .engine import (
     col_name,
     ref,
 )
-from .sandbox import SANDBOX_ENABLED, LoadPolicy, classify_module, configure_sandbox
+from .sandbox import (
+    SANDBOX_ENABLED,
+    LoadPolicy,
+    classify_module,
+    configure_sandbox,
+    inspect_file,
+)
 
 GW = 4
 UNDO_MAX = 64
 
 _cfg: Config = Config()
+
+
+# -- Cell display formatting --
+
+
+def _insert_commas(s):
+    neg = s.startswith("-")
+    digits = s[1:] if neg else s
+    result = []
+    for i, ch in enumerate(digits):
+        if i > 0 and (len(digits) - i) % 3 == 0:
+            result.append(",")
+        result.append(ch)
+    return ("-" if neg else "") + "".join(result)
+
+
+def fmt_float(val, spec):
+    """Format a float using a Python-style format spec subset.
+    Returns formatted string or None if spec not recognized."""
+    p = 0
+    commas = False
+    prec = -1
+    ftype = "f"
+
+    if p < len(spec) and spec[p] == ",":
+        commas = True
+        p += 1
+    if p < len(spec) and spec[p] == ".":
+        p += 1
+        prec = 0
+        while p < len(spec) and spec[p].isdigit():
+            prec = prec * 10 + int(spec[p])
+            p += 1
+    if p < len(spec) and spec[p] in "fe%":
+        ftype = spec[p]
+        p += 1
+    if p != len(spec):
+        return None
+
+    v = float(val)
+    if ftype == "%":
+        v *= 100.0
+    if prec < 0:
+        prec = 0 if commas else 6
+
+    raw = f"{v:.{prec}e}" if ftype == "e" else f"{v:.{prec}f}"
+
+    if commas and ftype != "e":
+        dot_pos = raw.find(".")
+        if dot_pos >= 0:
+            intpart = raw[:dot_pos]
+            fracpart = raw[dot_pos:]
+            raw = _insert_commas(intpart) + fracpart
+        else:
+            raw = _insert_commas(raw)
+
+    if ftype == "%":
+        raw += "%"
+
+    return raw
+
+
+def fmtcell(cl, cw, global_fmt=""):
+    """Format a cell value for display. Returns a string of exactly cw chars."""
+    if cl is None or cl.type == EMPTY:
+        return " " * cw
+
+    if cl.type == LABEL:
+        t = cl.text
+        if t.startswith('"'):
+            t = t[1:]
+        return f"{t:<{cw}}"[:cw]
+
+    if isinstance(cl.val, float) and math.isnan(cl.val):
+        return f"{'ERROR':>{cw}}"
+
+    if cl.arr is not None and len(cl.arr) > 0:
+        v = cl.arr[0]
+        numstr = str(int(v)) if v == int(v) and abs(v) < 1e9 else f"{v:g}"
+        t = f"{numstr}[{len(cl.arr)}]"
+        return f"{t:>{cw}}"[:cw]
+
+    if cl.fmtstr:
+        formatted = fmt_float(cl.val, cl.fmtstr)
+        if formatted is not None:
+            return f"{formatted:>{cw}}"[:cw]
+
+    fc = cl.fmt
+    if not fc or fc == "D":
+        fc = global_fmt
+
+    if fc == "$":
+        t = f"{cl.val:.2f}"
+    elif fc == "%":
+        t = f"{cl.val * 100:.2f}%"
+    elif fc == "*":
+        bar_len = min(cw, max(0, int(cl.val)))
+        t = "*" * bar_len
+        return f"{t:<{cw}}"[:cw]
+    elif fc == "I" or (cl.val == int(cl.val) and abs(cl.val) < 1e9):
+        t = str(int(cl.val))
+    else:
+        t = f"{cl.val:g}"
+
+    if fc == "L":
+        return f"{t:<{cw}}"[:cw]
+    return f"{t:>{cw}}"[:cw]
 
 
 class UndoEntry:
@@ -258,7 +371,7 @@ def draw(stdscr, g, mode, buf, sel=None):
             is_locked_col = ci < lc
 
             cl = g.cell(c, row)
-            fb = g.fmtcell(cl, g.cw)
+            fb = fmtcell(cl, g.cw, g.fmt)
 
             is_cur = c == g.cc and row == g.cr
             is_mark = g.mc >= 0 and c == g.mc and row == g.mr
@@ -640,7 +753,7 @@ def cmd_open(stdscr, g, args):
         if not fn:
             return False
 
-    info = Grid.jsoninspect(fn)
+    info = inspect_file(fn)
     if info is None:
         show_error(stdscr, f"Failed to read: {fn}. Press any key.")
         return False
@@ -1425,7 +1538,7 @@ def main():
 
     if len(sys.argv) > 1:
         fn = sys.argv[1]
-        info = Grid.jsoninspect(fn)
+        info = inspect_file(fn)
         if info is None:
             print(f"Failed to load file: {fn}", file=sys.stderr)
             sys.exit(1)

@@ -6,7 +6,7 @@ import math
 import re
 from typing import Any
 
-from .sandbox import FileInfo, LoadPolicy, classify_module, load_modules, validate_formula
+from .sandbox import FileInfo, classify_module, load_modules, validate_formula
 
 MAXIN = 256
 NCOL = 256
@@ -14,6 +14,7 @@ NROW = 1024
 MAXNAMES = 256
 MAXCODE = 8192
 CW_DEFAULT = 8
+FILE_VERSION = 1
 
 EMPTY = 0
 NUM = 1
@@ -198,7 +199,7 @@ class Cell:
         self.val = 0.0
         self.arr = None
         self.text = ""
-        self.fmt = 0
+        self.fmt = ""
         self.bold = 0
         self.underline = 0
         self.italic = 0
@@ -209,7 +210,7 @@ class Cell:
         self.val = 0.0
         self.arr = None
         self.text = ""
-        self.fmt = 0
+        self.fmt = ""
         self.bold = 0
         self.underline = 0
         self.italic = 0
@@ -334,7 +335,7 @@ def fmt_float(val, spec):
     if ftype == "%":
         v *= 100.0
     if prec < 0:
-        prec = 6
+        prec = 0 if commas else 6
 
     raw = f"{v:.{prec}e}" if ftype == "e" else f"{v:.{prec}f}"
 
@@ -381,16 +382,51 @@ def _expand_ranges(expr):
     return "".join(result)
 
 
+# Shared sentinel for read access to unpopulated cells.
+# Must never be mutated -- all mutation paths go through cells
+# that already exist in the sparse dict (post-setcell).
+_EMPTY_CELL = Cell()
+
+
+class _ColProxy:
+    """Emulates cells[c][r] access against the sparse dict."""
+
+    __slots__ = ("_cells", "_c")
+
+    def __init__(self, cells, c):
+        self._cells = cells
+        self._c = c
+
+    def __getitem__(self, r):
+        return self._cells.get((self._c, r), _EMPTY_CELL)
+
+    def __setitem__(self, r, value):
+        self._cells[(self._c, r)] = value
+
+
+class _CellsProxy:
+    """Emulates the old cells[c][r] 2D-array interface over a sparse dict."""
+
+    __slots__ = ("_cells",)
+
+    def __init__(self, cells):
+        self._cells = cells
+
+    def __getitem__(self, c):
+        return _ColProxy(self._cells, c)
+
+
 class Grid:
     def __init__(self):
-        self.cells = [[Cell() for _ in range(NROW)] for _ in range(NCOL)]
+        self._cells: dict[tuple[int, int], Cell] = {}
+        self.cells = _CellsProxy(self._cells)
         self.cc = 0
         self.cr = 0
         self.vc = 0
         self.vr = 0
         self.tc = 0
         self.tr = 0
-        self.fmt = 0
+        self.fmt = ""
         self.dirty = 0
         self.cw = CW_DEFAULT
         self.filename = None
@@ -401,6 +437,7 @@ class Grid:
         self._eval_globals = _make_eval_globals()
         self.requires: list[str] = []
         self._module_errors: list[str] = []
+        self._circular: set[tuple[int, int]] = set()
 
     def load_requires(self, modules):
         """Load required modules into the eval namespace."""
@@ -412,18 +449,31 @@ class Grid:
 
     def cell(self, c, r):
         if 0 <= c < NCOL and 0 <= r < NROW:
-            return self.cells[c][r]
+            return self._cells.get((c, r))
         return None
 
-    def setcell(self, c, r, text):
-        cl = self.cell(c, r)
+    def _ensure_cell(self, c, r):
+        """Return the cell at (c, r), creating it if it doesn't exist."""
+        key = (c, r)
+        cl = self._cells.get(key)
         if cl is None:
+            cl = Cell()
+            self._cells[key] = cl
+        return cl
+
+    def clear_all(self):
+        """Remove all cells from the grid."""
+        self._cells.clear()
+
+    def setcell(self, c, r, text):
+        if not (0 <= c < NCOL and 0 <= r < NROW):
             return
         if not text:
-            cl.clear()
+            self._cells.pop((c, r), None)
             self.recalc()
             return
 
+        cl = self._ensure_cell(c, r)
         cl.arr = None
         cl.text = text
         self.dirty = 1
@@ -449,209 +499,256 @@ class Grid:
 
     def recalc(self):
         g = self._eval_globals
+        self._circular = set()
 
         if self.code:
             with contextlib.suppress(Exception):
                 exec(self.code, g)
 
+        changed_cells: set[tuple[int, int]] = set()
         for _ in range(100):
-            changed = False
+            changed_cells.clear()
 
-            # Inject cell values
-            for r in range(NROW):
-                for c in range(NCOL):
-                    cl = self.cells[c][r]
-                    if cl.type == EMPTY or cl.type == LABEL:
-                        continue
-                    name = cellname(c, r)
-                    if cl.arr is not None and len(cl.arr) > 0:
-                        g[name] = Vec(cl.arr)
-                    else:
-                        g[name] = cl.val
+            # Inject cell values (only populated cells)
+            for (c, r), cl in self._cells.items():
+                if cl.type == EMPTY or cl.type == LABEL:
+                    continue
+                name = cellname(c, r)
+                if cl.arr is not None and len(cl.arr) > 0:
+                    g[name] = Vec(cl.arr)
+                else:
+                    g[name] = cl.val
 
             # Inject named ranges
             for nr in self.names:
                 data = []
                 for r in range(nr.r1, nr.r2 + 1):
                     for c in range(nr.c1, nr.c2 + 1):
-                        cl = self.cell(c, r)
-                        if cl and cl.type not in (EMPTY, LABEL):
-                            data.append(cl.val)
+                        cl2 = self._cells.get((c, r))
+                        if cl2 and cl2.type not in (EMPTY, LABEL):
+                            data.append(cl2.val)
                         else:
                             data.append(0.0)
                 g[nr.name] = Vec(data)
 
-            # Evaluate formulas
-            for r in range(NROW):
-                for c in range(NCOL):
-                    cl = self.cells[c][r]
-                    if cl.type != FORMULA:
-                        continue
-                    formula = cl.text
-                    if formula.startswith("="):
-                        formula = formula[1:]
-                    # Strip $ signs
-                    stripped = formula.replace("$", "")
-                    evalbuf = _expand_ranges(stripped)
-                    oldval = cl.val
-                    valid, _ = validate_formula(evalbuf)
-                    if not valid:
+            # Evaluate formulas (only formula cells)
+            for (fc, fr), cl in self._cells.items():
+                if cl.type != FORMULA:
+                    continue
+                formula = cl.text
+                if formula.startswith("="):
+                    formula = formula[1:]
+                # Strip $ signs
+                stripped = formula.replace("$", "")
+                evalbuf = _expand_ranges(stripped)
+                oldval = cl.val
+                valid, _ = validate_formula(evalbuf)
+                if not valid:
+                    cl.arr = None
+                    cl.val = float("nan")
+                else:
+                    try:
+                        result = eval(evalbuf, g)  # noqa: S307
+                        if isinstance(result, Vec):
+                            cl.arr = list(result.data)
+                            cl.val = result.data[0] if result.data else float("nan")
+                        else:
+                            cl.arr = None
+                            cl.val = float(result)
+                    except Exception:
                         cl.arr = None
                         cl.val = float("nan")
-                    else:
-                        try:
-                            result = eval(evalbuf, g)  # noqa: S307
-                            if isinstance(result, Vec):
-                                cl.arr = list(result.data)
-                                cl.val = result.data[0] if result.data else float("nan")
-                            else:
-                                cl.arr = None
-                                cl.val = float(result)
-                        except Exception:
-                            cl.arr = None
-                            cl.val = float("nan")
-                    both_nan = (
-                        isinstance(cl.val, float)
-                        and math.isnan(cl.val)
-                        and isinstance(oldval, float)
-                        and math.isnan(oldval)
-                    )
-                    if cl.val != oldval and not both_nan:
-                        changed = True
+                both_nan = (
+                    isinstance(cl.val, float)
+                    and math.isnan(cl.val)
+                    and isinstance(oldval, float)
+                    and math.isnan(oldval)
+                )
+                if cl.val != oldval and not both_nan:
+                    changed_cells.add((fc, fr))
 
-            if not changed:
+            if not changed_cells:
                 break
 
+        # Mark cells that never stabilized as circular references
+        if changed_cells:
+            self._circular = set(changed_cells)
+
+        # Detect stable self-references (cells whose formula references
+        # their own value, directly or via range, but converge at 0)
+        for (c, r), cl in self._cells.items():
+            if cl.type != FORMULA:
+                continue
+            name = cellname(c, r)
+            formula = cl.text[1:] if cl.text.startswith("=") else cl.text
+            expanded = _expand_ranges(formula.replace("$", ""))
+            if re.search(r"\b" + re.escape(name) + r"\b", expanded):
+                self._circular.add((c, r))
+
+        if self._circular:
+            for pos in self._circular:
+                circ = self._cells.get(pos)
+                if circ:
+                    circ.arr = None
+                    circ.val = float("nan")
+
     def _fixrefs(self, axis, a, b):
-        for r in range(NROW):
-            for c in range(NCOL):
-                cl = self.cells[c][r]
-                if cl.type != FORMULA:
-                    continue
-                out = []
-                s = cl.text
-                i = 0
-                changed_flag = False
-                while i < len(s):
-                    result = refabs(s[i:])
-                    if result:
-                        n, rc, rr, ac, ar = result
-                        if axis == "R":
-                            if rr == a:
-                                rr = b
-                                changed_flag = True
-                            elif rr == b:
-                                rr = a
-                                changed_flag = True
-                        else:
-                            if rc == a:
-                                rc = b
-                                changed_flag = True
-                            elif rc == b:
-                                rc = a
-                                changed_flag = True
-                        out.append(_emitref(rc, rr, ac, ar))
-                        i += n
+        for cl in self._cells.values():
+            if cl.type != FORMULA:
+                continue
+            out = []
+            s = cl.text
+            i = 0
+            changed_flag = False
+            while i < len(s):
+                result = refabs(s[i:])
+                if result:
+                    n, rc, rr, ac, ar = result
+                    if axis == "R":
+                        if rr == a:
+                            rr = b
+                            changed_flag = True
+                        elif rr == b:
+                            rr = a
+                            changed_flag = True
                     else:
-                        out.append(s[i])
-                        i += 1
-                if changed_flag:
-                    cl.text = "".join(out)
+                        if rc == a:
+                            rc = b
+                            changed_flag = True
+                        elif rc == b:
+                            rc = a
+                            changed_flag = True
+                    out.append(_emitref(rc, rr, ac, ar))
+                    i += n
+                else:
+                    out.append(s[i])
+                    i += 1
+            if changed_flag:
+                cl.text = "".join(out)
 
     def _shiftrefs(self, axis, pos, direction):
-        for r in range(NROW):
-            for c in range(NCOL):
-                cl = self.cells[c][r]
-                if cl.type != FORMULA:
-                    continue
-                out = []
-                s = cl.text
-                i = 0
-                changed_flag = False
-                while i < len(s):
-                    result = refabs(s[i:])
-                    if result:
-                        n, rc, rr, ac, ar = result
-                        if axis == "R":
-                            if direction > 0 and rr >= pos:
-                                rr += 1
-                                changed_flag = True
-                            elif direction < 0 and rr > pos:
-                                rr -= 1
-                                changed_flag = True
-                        else:
-                            if direction > 0 and rc >= pos:
-                                rc += 1
-                                changed_flag = True
-                            elif direction < 0 and rc > pos:
-                                rc -= 1
-                                changed_flag = True
-                        out.append(_emitref(rc, rr, ac, ar))
-                        i += n
+        for cl in self._cells.values():
+            if cl.type != FORMULA:
+                continue
+            out = []
+            s = cl.text
+            i = 0
+            changed_flag = False
+            while i < len(s):
+                result = refabs(s[i:])
+                if result:
+                    n, rc, rr, ac, ar = result
+                    if axis == "R":
+                        if direction > 0 and rr >= pos:
+                            rr += 1
+                            changed_flag = True
+                        elif direction < 0 and rr > pos:
+                            rr -= 1
+                            changed_flag = True
                     else:
-                        out.append(s[i])
-                        i += 1
-                if changed_flag:
-                    cl.text = "".join(out)
+                        if direction > 0 and rc >= pos:
+                            rc += 1
+                            changed_flag = True
+                        elif direction < 0 and rc > pos:
+                            rc -= 1
+                            changed_flag = True
+                    out.append(_emitref(rc, rr, ac, ar))
+                    i += n
+                else:
+                    out.append(s[i])
+                    i += 1
+            if changed_flag:
+                cl.text = "".join(out)
 
     def insertrow(self, at):
-        for c in range(NCOL):
-            self.cells[c][NROW - 1].clear()
-            for r in range(NROW - 1, at, -1):
-                self.cells[c][r].copy_from(self.cells[c][r - 1])
-            self.cells[c][at].clear()
+        new_cells: dict[tuple[int, int], Cell] = {}
+        for (c, r), cl in self._cells.items():
+            if r >= at:
+                if r + 1 < NROW:
+                    new_cells[(c, r + 1)] = cl
+            else:
+                new_cells[(c, r)] = cl
+        self._cells = new_cells
+        self.cells = _CellsProxy(self._cells)
         self._shiftrefs("R", at, +1)
         self.dirty = 1
 
     def insertcol(self, at):
-        for r in range(NROW):
-            self.cells[NCOL - 1][r].clear()
-            for c in range(NCOL - 1, at, -1):
-                self.cells[c][r].copy_from(self.cells[c - 1][r])
-            self.cells[at][r].clear()
+        new_cells: dict[tuple[int, int], Cell] = {}
+        for (c, r), cl in self._cells.items():
+            if c >= at:
+                if c + 1 < NCOL:
+                    new_cells[(c + 1, r)] = cl
+            else:
+                new_cells[(c, r)] = cl
+        self._cells = new_cells
+        self.cells = _CellsProxy(self._cells)
         self._shiftrefs("C", at, +1)
         self.dirty = 1
 
     def deleterow(self, at):
         self._shiftrefs("R", at, -1)
-        for c in range(NCOL):
-            self.cells[c][at].clear()
-            for r in range(at, NROW - 1):
-                self.cells[c][r].copy_from(self.cells[c][r + 1])
-            self.cells[c][NROW - 1].clear()
+        new_cells: dict[tuple[int, int], Cell] = {}
+        for (c, r), cl in self._cells.items():
+            if r == at:
+                continue
+            elif r > at:
+                new_cells[(c, r - 1)] = cl
+            else:
+                new_cells[(c, r)] = cl
+        self._cells = new_cells
+        self.cells = _CellsProxy(self._cells)
         self.dirty = 1
 
     def deletecol(self, at):
         self._shiftrefs("C", at, -1)
-        for r in range(NROW):
-            self.cells[at][r].clear()
-            for c in range(at, NCOL - 1):
-                self.cells[c][r].copy_from(self.cells[c + 1][r])
-            self.cells[NCOL - 1][r].clear()
+        new_cells: dict[tuple[int, int], Cell] = {}
+        for (c, r), cl in self._cells.items():
+            if c == at:
+                continue
+            elif c > at:
+                new_cells[(c - 1, r)] = cl
+            else:
+                new_cells[(c, r)] = cl
+        self._cells = new_cells
+        self.cells = _CellsProxy(self._cells)
         self.dirty = 1
 
     def swaprow(self, a, b):
-        for c in range(NCOL):
-            ca = self.cells[c][a].snapshot()
-            self.cells[c][a].copy_from(self.cells[c][b])
-            self.cells[c][b].copy_from(ca)
+        new_cells: dict[tuple[int, int], Cell] = {}
+        for (c, r), cl in self._cells.items():
+            if r == a:
+                new_cells[(c, b)] = cl
+            elif r == b:
+                new_cells[(c, a)] = cl
+            else:
+                new_cells[(c, r)] = cl
+        self._cells = new_cells
+        self.cells = _CellsProxy(self._cells)
         self._fixrefs("R", a, b)
 
     def swapcol(self, a, b):
-        for r in range(NROW):
-            ca = self.cells[a][r].snapshot()
-            self.cells[a][r].copy_from(self.cells[b][r])
-            self.cells[b][r].copy_from(ca)
+        new_cells: dict[tuple[int, int], Cell] = {}
+        for (c, r), cl in self._cells.items():
+            if c == a:
+                new_cells[(b, r)] = cl
+            elif c == b:
+                new_cells[(a, r)] = cl
+            else:
+                new_cells[(c, r)] = cl
+        self._cells = new_cells
+        self.cells = _CellsProxy(self._cells)
         self._fixrefs("C", a, b)
 
     def replicatecell(self, sc, sr, dc, dr):
+        if not (0 <= dc < NCOL and 0 <= dr < NROW):
+            return
         src = self.cell(sc, sr)
-        dst = self.cell(dc, dr)
-        if not src or not dst:
+        if not src:
+            # Source is empty -- clear destination
+            self._cells.pop((dc, dr), None)
             return
-        if src.type == EMPTY:
-            dst.clear()
-            return
+        dst = self._ensure_cell(dc, dr)
         dst.copy_from(src)
         if src.type != FORMULA:
             return
@@ -700,27 +797,24 @@ class Grid:
             if formatted is not None:
                 return f"{formatted:>{cw}}"[:cw]
 
-        fmt_code = cl.fmt
-        if not fmt_code or fmt_code == ord("D"):
-            fmt_code = self.fmt
+        fc = cl.fmt
+        if not fc or fc == "D":
+            fc = self.fmt
 
-        if isinstance(fmt_code, str):
-            fmt_code = ord(fmt_code) if fmt_code else 0
-
-        if fmt_code == ord("$"):
+        if fc == "$":
             t = f"{cl.val:.2f}"
-        elif fmt_code == ord("%"):
+        elif fc == "%":
             t = f"{cl.val * 100:.2f}%"
-        elif fmt_code == ord("*"):
+        elif fc == "*":
             bar_len = min(cw, max(0, int(cl.val)))
             t = "*" * bar_len
             return f"{t:<{cw}}"[:cw]
-        elif fmt_code == ord("I") or (cl.val == int(cl.val) and abs(cl.val) < 1e9):
+        elif fc == "I" or (cl.val == int(cl.val) and abs(cl.val) < 1e9):
             t = str(int(cl.val))
         else:
             t = f"{cl.val:g}"
 
-        if fmt_code == ord("L"):
+        if fc == "L":
             return f"{t:<{cw}}"[:cw]
         return f"{t:>{cw}}"[:cw]
 
@@ -735,6 +829,10 @@ class Grid:
             with open(filename) as f:
                 d = json.load(f)
         except (OSError, json.JSONDecodeError):
+            return -1
+
+        version = d.get("version", 1)
+        if not isinstance(version, int) or version > FILE_VERSION:
             return -1
 
         code = d.get("code", "")
@@ -789,7 +887,7 @@ class Grid:
                 cell_bold = 0
                 cell_underline = 0
                 cell_italic = 0
-                cell_fmt = 0
+                cell_fmt = ""
                 cell_fmtstr = ""
                 if isinstance(v, dict):
                     cell_bold = 1 if v.get("bold") else 0
@@ -797,7 +895,7 @@ class Grid:
                     cell_italic = 1 if v.get("italic") else 0
                     fmt_val = v.get("fmt", "")
                     if fmt_val:
-                        cell_fmt = ord(fmt_val[0])
+                        cell_fmt = fmt_val[0]
                     cell_fmtstr = v.get("fmtstr", "")
                     v = v.get("v", None)
                 if v is None or (isinstance(v, str) and v == ""):
@@ -812,7 +910,9 @@ class Grid:
                 else:
                     continue
                 self.setcell(c_idx, r_idx, text)
-                cl = self.cells[c_idx][r_idx]
+                cl = self._cells.get((c_idx, r_idx))
+                if not cl:
+                    continue
                 cl.bold = cell_bold
                 cl.underline = cell_underline
                 cl.italic = cell_italic
@@ -824,15 +924,14 @@ class Grid:
     def jsonsave(self, filename):
         maxr = -1
         maxc = -1
-        for r in range(NROW):
-            for c in range(NCOL):
-                if self.cells[c][r].type != EMPTY:
-                    if r > maxr:
-                        maxr = r
-                    if c > maxc:
-                        maxc = c
+        for (c, r), cl in self._cells.items():
+            if cl.type != EMPTY:
+                if r > maxr:
+                    maxr = r
+                if c > maxc:
+                    maxc = c
 
-        out: dict[str, Any] = {}
+        out: dict[str, Any] = {"version": FILE_VERSION}
 
         if self.requires:
             out["requires"] = self.requires
@@ -853,31 +952,32 @@ class Grid:
         for r in range(maxr + 1):
             row: list[Any] = []
             for c in range(maxc + 1):
-                cl = self.cells[c][r]
-                if cl.type == EMPTY:
+                sc = self._cells.get((c, r))
+                if not sc or sc.type == EMPTY:
                     row.append(None)
-                elif cl.type == NUM:
-                    if cl.val == int(cl.val) and abs(cl.val) < 1e15:
-                        val: Any = int(cl.val)
+                    continue
+                elif sc.type == NUM:
+                    if sc.val == int(sc.val) and abs(sc.val) < 1e15:
+                        val: Any = int(sc.val)
                     else:
-                        val = cl.val
+                        val = sc.val
                     row.append(val)
                 else:
-                    row.append(cl.text)
+                    row.append(sc.text)
 
-                has_style = cl.bold or cl.underline or cl.italic or cl.fmt or cl.fmtstr
-                if cl.type != EMPTY and has_style:
+                has_style = sc.bold or sc.underline or sc.italic or sc.fmt or sc.fmtstr
+                if has_style:
                     styled: dict[str, Any] = {"v": row[-1]}
-                    if cl.bold:
+                    if sc.bold:
                         styled["bold"] = True
-                    if cl.underline:
+                    if sc.underline:
                         styled["underline"] = True
-                    if cl.italic:
+                    if sc.italic:
                         styled["italic"] = True
-                    if cl.fmt:
-                        styled["fmt"] = chr(cl.fmt) if isinstance(cl.fmt, int) else cl.fmt
-                    if cl.fmtstr:
-                        styled["fmtstr"] = cl.fmtstr
+                    if sc.fmt:
+                        styled["fmt"] = sc.fmt
+                    if sc.fmtstr:
+                        styled["fmtstr"] = sc.fmtstr
                     row[-1] = styled
             rows.append(row)
         out["cells"] = rows
@@ -915,9 +1015,7 @@ class Grid:
         if isinstance(requires, list):
             info.requires = list(requires)
             info.blocked_modules = [m for m in requires if classify_module(m) == "blocked"]
-            info.side_effect_modules = [
-                m for m in requires if classify_module(m) == "side_effect"
-            ]
+            info.side_effect_modules = [m for m in requires if classify_module(m) == "side_effect"]
 
         rows = d.get("cells", [])
         for row in rows:

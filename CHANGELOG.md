@@ -41,15 +41,69 @@
   - Formulas can use library APIs directly: `=np.mean(A1:A10)`,
     `=decimal.Decimal('3.14')`, etc.
 
+- **Circular reference detection**: `recalc()` now detects circular references
+  via two strategies: oscillation detection (values that never stabilize across
+  100 iterations) and static self-reference detection (formula text containing
+  its own cell name). Circular cells are marked as NaN/ERROR and tracked in
+  `Grid._circular`. The TUI status bar shows "CIRC" instead of "ERR 0" when
+  the cursor is on a circular cell.
+
+- **Visual select mode**: Press `v` to enter visual selection. Arrow keys
+  extend the selection from the anchor cell; selected cells are highlighted
+  in magenta. Press `:` to enter command mode with the selection active.
+  `:f <fmt>` applies formatting to all non-empty cells in the selection.
+  ESC cancels. Range formatting is undoable.
+
+- **Format picker dialog**: `:f` with no argument now opens a modal picker
+  listing all format options (bold, underline, italic, dollar, percent,
+  integer, comma, bar chart, left/right align, general, use global) with
+  descriptions for each. Navigate with arrow keys + Enter, press a key
+  directly, or type a Python format spec (e.g. `,.2f`).
+
 - **Project review** (`REVIEW.md`).
 
-- 131 new tests (251 total) covering sandbox validation, module classification,
+- **TUI tests** (`tests/test_tui.py`): 47 new tests for `UndoManager`
+  (undo/redo, empty-to-populated transitions, stack limits, style preservation,
+  grid and region undo), `cmdexec` command dispatcher (quit, blank, clear,
+  width, insert/delete row/col, save, format, title commands, unknown commands),
+  and visual-select range formatting (dollar, bold, fmtstr, percent, combined
+  styles, empty-cell skipping, undo, interactive picker) using a mock stdscr.
+
+- 185 new tests (305 total) covering sandbox validation, module classification,
   module loading, load policies, file inspection, config parsing, config lookup
-  order, and integration tests for blocked formulas, policy-aware loading, and
-  requires roundtrips.
+  order, integration tests for blocked formulas, policy-aware loading, requires
+  roundtrips, circular reference detection, undo/redo, command dispatch, and
+  visual select range formatting.
 
 ### Changed
 
+- **Sparse grid storage**: `Grid` now stores cells in a flat
+  `dict[(col, row) -> Cell]` instead of pre-allocating a 256x1024 array of
+  262,144 Cell objects. Only populated cells consume memory. A `_CellsProxy`
+  compatibility layer preserves the `g.cells[c][r]` access pattern.
+- **recalc() performance**: formula evaluation, cell value injection, and
+  reference fixup now iterate only populated cells instead of scanning the
+  full grid. Typical speedup is 100-200x for sparse sheets (test suite: 22s
+  to 0.11s).
+- **Insert/delete/swap row/col**: O(populated cells) via key remapping on the
+  sparse dict, replacing O(NCOL * NROW) element-by-element shifting.
+- **Undo/redo**: `save_grid` snapshots only populated cells. Grid-level undo
+  restores via `clear_all()` + replay instead of full-grid iteration. Cell-level
+  undo now records empty-cell state so undo correctly restores emptiness after
+  edits.
+- **Cell format type**: `Cell.fmt` changed from `int` (ord values like
+  `ord("$")`) to `str` (`"$"`, `"%"`, `"I"`, etc., or `""` for none).
+  Removes all `ord()`/`chr()` conversions in engine, TUI, and tests.
+- **Comma format shorthand**: `:f ,` now formats as comma-thousands with zero
+  decimal places (e.g. `1,234,567`) instead of the previous 6-decimal default.
+  Explicit precision still works (`:f ,.2f` gives `1,234.50`).
+- **File format version**: `jsonsave()` now writes `"version": 1` to output.
+  `jsonload()` rejects files with a version higher than the current
+  `FILE_VERSION`. Missing version is treated as 1 (backward compatible).
+- **MAXCODE constant**: `cmd_edit` code block truncation now uses the `MAXCODE`
+  constant (8192) instead of the magic expression `MAXIN * 32`.
+- **Save deduplication**: `cmd_save` and `cmd_savequit` now share a single
+  `_do_save()` helper for filename resolution, writing, and state update.
 - `Grid.jsonload()` signature extended with optional `policy` parameter
   (backward compatible -- `None` trusts all, matching prior behavior).
 - `Grid.jsonsave()` writes `requires` field when present.

@@ -918,7 +918,7 @@ class TestFmtcell:
         cl = Cell()
         cl.type = NUM
         cl.val = 99.5
-        cl.fmt = ord("$")
+        cl.fmt = "$"
         result = g.fmtcell(cl, 10)
         assert "99.50" in result
 
@@ -927,7 +927,7 @@ class TestFmtcell:
         cl = Cell()
         cl.type = NUM
         cl.val = 0.25
-        cl.fmt = ord("%")
+        cl.fmt = "%"
         result = g.fmtcell(cl, 10)
         assert "25.00%" in result
 
@@ -936,7 +936,7 @@ class TestFmtcell:
         cl = Cell()
         cl.type = NUM
         cl.val = 3.7
-        cl.fmt = ord("I")
+        cl.fmt = "I"
         result = g.fmtcell(cl, 8)
         assert "3" in result
         assert "." not in result
@@ -946,7 +946,7 @@ class TestFmtcell:
         cl = Cell()
         cl.type = NUM
         cl.val = 5.0
-        cl.fmt = ord("*")
+        cl.fmt = "*"
         assert g.fmtcell(cl, 8) == "*****   "
 
     def test_bar_clamped(self):
@@ -954,7 +954,7 @@ class TestFmtcell:
         cl = Cell()
         cl.type = NUM
         cl.val = 100.0
-        cl.fmt = ord("*")
+        cl.fmt = "*"
         assert g.fmtcell(cl, 6) == "******"
 
     def test_array(self):
@@ -968,7 +968,7 @@ class TestFmtcell:
 
     def test_global_dollar(self):
         g = make_grid()
-        g.fmt = ord("$")
+        g.fmt = "$"
         cl = Cell()
         cl.type = NUM
         cl.val = 7.0
@@ -980,7 +980,7 @@ class TestFmtcell:
         cl = Cell()
         cl.type = NUM
         cl.val = 42.0
-        cl.fmt = ord("L")
+        cl.fmt = "L"
         result = g.fmtcell(cl, 8)
         assert result[:2] == "42"
         assert result[7] == " "
@@ -990,7 +990,7 @@ class TestFmtcell:
         cl = Cell()
         cl.type = NUM
         cl.val = 42.0
-        cl.fmt = ord("R")
+        cl.fmt = "R"
         assert g.fmtcell(cl, 8) == "      42"
 
     def test_negative(self):
@@ -1195,6 +1195,16 @@ class TestFmtstr:
         result = g.fmtcell(cl, 12)
         assert "1,234,567" in result
 
+    def test_comma_shorthand(self):
+        g = make_grid()
+        cl = Cell()
+        cl.type = NUM
+        cl.val = 1234567.0
+        cl.fmtstr = ","
+        result = g.fmtcell(cl, 12)
+        assert "1,234,567" in result
+        assert "." not in result
+
     def test_comma_decimal(self):
         g = make_grid()
         cl = Cell()
@@ -1289,14 +1299,14 @@ class TestFmtRoundtrip:
     def test_fmt(self, tmp_path):
         g = make_grid()
         g.setcell(0, 0, "100.5")
-        g.cells[0][0].fmt = ord("$")
+        g.cells[0][0].fmt = "$"
         g.setcell(1, 0, "0.15")
-        g.cells[1][0].fmt = ord("%")
+        g.cells[1][0].fmt = "%"
         g.setcell(2, 0, "3.7")
-        g.cells[2][0].fmt = ord("I")
+        g.cells[2][0].fmt = "I"
         g.setcell(3, 0, "plain")
         g.setcell(0, 1, "42")
-        g.cells[0][1].fmt = ord("$")
+        g.cells[0][1].fmt = "$"
         g.cells[0][1].bold = 1
 
         f = tmp_path / "fmt.json"
@@ -1304,9 +1314,71 @@ class TestFmtRoundtrip:
         g2 = make_grid()
         assert g2.jsonload(str(f)) == 0
 
-        assert g2.cells[0][0].fmt == ord("$")
-        assert g2.cells[1][0].fmt == ord("%")
-        assert g2.cells[2][0].fmt == ord("I")
-        assert g2.cells[3][0].fmt == 0
-        assert g2.cells[0][1].fmt == ord("$")
+        assert g2.cells[0][0].fmt == "$"
+        assert g2.cells[1][0].fmt == "%"
+        assert g2.cells[2][0].fmt == "I"
+        assert g2.cells[3][0].fmt == ""
+        assert g2.cells[0][1].fmt == "$"
         assert g2.cells[0][1].bold == 1
+
+
+class TestCircularReference:
+    def test_direct_self_ref(self):
+        g = make_grid()
+        g.setcell(0, 0, "=A1")
+        assert math.isnan(g.cells[0][0].val)
+        assert (0, 0) in g._circular
+
+    def test_mutual_ref(self):
+        g = make_grid()
+        g.setcell(0, 0, "=B1")
+        g.setcell(1, 0, "=A1")
+        assert math.isnan(g.cells[0][0].val)
+        assert math.isnan(g.cells[1][0].val)
+        assert (0, 0) in g._circular or (1, 0) in g._circular
+
+    def test_chain_cycle(self):
+        g = make_grid()
+        g.setcell(0, 0, "=C1")
+        g.setcell(1, 0, "=A1")
+        g.setcell(2, 0, "=B1")
+        assert math.isnan(g.cells[0][0].val)
+        assert math.isnan(g.cells[1][0].val)
+        assert math.isnan(g.cells[2][0].val)
+        assert len(g._circular) > 0
+
+    def test_no_false_positive(self):
+        g = make_grid()
+        g.setcell(0, 0, "5")
+        g.setcell(0, 1, "=A1+1")
+        g.setcell(0, 2, "=A2+1")
+        assert g.cells[0][1].val == 6.0
+        assert g.cells[0][2].val == 7.0
+        assert len(g._circular) == 0
+
+    def test_cleared_after_fix(self):
+        g = make_grid()
+        g.setcell(0, 0, "=B1")
+        g.setcell(1, 0, "=A1")
+        assert len(g._circular) > 0
+        # Break the cycle
+        g.setcell(0, 0, "10")
+        assert g.cells[1][0].val == 10.0
+        assert len(g._circular) == 0
+
+    def test_self_ref_plus_constant(self):
+        g = make_grid()
+        g.setcell(0, 0, "=A1+1")
+        assert math.isnan(g.cells[0][0].val)
+        assert (0, 0) in g._circular
+
+    def test_partial_cycle(self):
+        """Only cells in the cycle are marked, not innocent bystanders."""
+        g = make_grid()
+        g.setcell(0, 0, "10")
+        g.setcell(0, 1, "=A1")  # not circular
+        g.setcell(1, 0, "=B1")  # self-referential
+        assert g.cells[0][1].val == 10.0
+        assert math.isnan(g.cells[1][0].val)
+        assert (0, 1) not in g._circular
+        assert (1, 0) in g._circular

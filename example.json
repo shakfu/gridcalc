@@ -1,0 +1,332 @@
+{
+  "code": "def tax(amount, rate=0.08):\n  return amount * rate\n\ndef markup(cost, pct):\n  return cost * (1 + pct)\n\ndef add(x,y):\n    return x+1\n\nTAX_RATE = 0.08\n",
+  "names": {
+    "revenue": "B3:B6",
+    "costs": "C3:C6"
+  },
+  "format": {
+    "width": 12
+  },
+  "cells": [
+    [
+      "Product Sales Report",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      "Math Demo",
+      null
+    ],
+    [
+      {
+        "v": "Item",
+        "bold": true
+      },
+      {
+        "v": "Revenue",
+        "bold": true
+      },
+      {
+        "v": "Cost",
+        "bold": true
+      },
+      {
+        "v": "Profit",
+        "bold": true
+      },
+      {
+        "v": "Margin",
+        "bold": true
+      },
+      {
+        "v": "Tax",
+        "bold": true
+      },
+      "Bar",
+      "Function",
+      "Value"
+    ],
+    [
+      {
+        "v": "Widgets",
+        "bold": true
+      },
+      {
+        "v": 12500,
+        "fmtstr": ","
+      },
+      {
+        "v": 7200,
+        "fmtstr": ","
+      },
+      {
+        "v": "=B3-C3",
+        "fmtstr": ","
+      },
+      {
+        "v": "=(B3-C3)/B3",
+        "fmtstr": ".2"
+      },
+      {
+        "v": "=tax(B3)",
+        "fmtstr": ","
+      },
+      "=B3/1000",
+      "=sin(pi/6)",
+      "=0.5"
+    ],
+    [
+      {
+        "v": "Gadgets",
+        "bold": true
+      },
+      {
+        "v": 8300,
+        "fmtstr": ","
+      },
+      {
+        "v": 4100,
+        "fmtstr": ","
+      },
+      {
+        "v": "=B4-C4",
+        "fmtstr": ","
+      },
+      {
+        "v": "=(B4-C4)/B4",
+        "fmtstr": ".2"
+      },
+      {
+        "v": "=tax(B4)",
+        "fmtstr": ","
+      },
+      "=B4/1000",
+      "=cos(pi/3)",
+      "=0.5"
+    ],
+    [
+      {
+        "v": "Gizmos",
+        "bold": true
+      },
+      {
+        "v": 15700,
+        "fmtstr": ","
+      },
+      {
+        "v": 9800,
+        "fmtstr": ","
+      },
+      {
+        "v": "=B5-C5",
+        "fmtstr": ","
+      },
+      {
+        "v": "=(B5-C5)/B5",
+        "fmtstr": ".2"
+      },
+      {
+        "v": "=tax(B5)",
+        "fmtstr": ","
+      },
+      "=B5/1000",
+      "=SQRT(144)",
+      "=12"
+    ],
+    [
+      {
+        "v": "Dongles",
+        "bold": true
+      },
+      {
+        "v": 6200,
+        "fmtstr": ","
+      },
+      {
+        "v": 3900,
+        "fmtstr": ","
+      },
+      {
+        "v": "=B6-C6",
+        "fmtstr": ","
+      },
+      {
+        "v": "=(B6-C6)/B6",
+        "fmtstr": ".2"
+      },
+      {
+        "v": "=tax(B6)",
+        "fmtstr": ","
+      },
+      "=B6/1000",
+      "=log(e)",
+      "=1"
+    ],
+    [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      "=exp(0)",
+      "=1"
+    ],
+    [
+      {
+        "v": "Totals",
+        "bold": true
+      },
+      {
+        "v": "=SUM(revenue)",
+        "fmtstr": ","
+      },
+      {
+        "v": "=SUM(costs)",
+        "fmtstr": ","
+      },
+      {
+        "v": "=B8-C8",
+        "fmtstr": ","
+      },
+      {
+        "v": "=(B8-C8)/B8",
+        "fmtstr": ".2"
+      },
+      {
+        "v": "=SUM(F3:F6)",
+        "fmtstr": ","
+      },
+      null,
+      null,
+      null
+    ],
+    [
+      {
+        "v": "Average",
+        "bold": true
+      },
+      {
+        "v": "=AVG(revenue)",
+        "fmtstr": ","
+      },
+      {
+        "v": "=AVG(costs)",
+        "fmtstr": ","
+      },
+      {
+        "v": "=B9-C9",
+        "fmtstr": ","
+      },
+      {
+        "v": "=(B9-C9)/B9",
+        "fmtstr": ".2"
+      },
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      {
+        "v": "Best",
+        "bold": true
+      },
+      {
+        "v": "=MAX(revenue)",
+        "fmtstr": ","
+      },
+      {
+        "v": "=MIN(costs)",
+        "fmtstr": ","
+      },
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      {
+        "v": "Worst",
+        "bold": true
+      },
+      {
+        "v": "=MIN(revenue)",
+        "fmtstr": ","
+      },
+      {
+        "v": "=MAX(costs)",
+        "fmtstr": ","
+      },
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "Vec Ops",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "Sum rev+cost",
+      {
+        "v": "=SUM(revenue + costs)",
+        "fmtstr": ","
+      },
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "Scaled rev",
+      "=revenue * 1.1",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "Profit vec",
+      "=revenue - costs",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  ]
+}

@@ -1,6 +1,4 @@
-import os
-
-from pycalc.config import Config, _parse_config, find_config, load_config
+from pycalc.config import _parse_config, find_config, load_config
 
 
 class TestParseConfig:

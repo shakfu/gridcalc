@@ -10,11 +10,12 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 try:
     import tomllib  # type: ignore[import-not-found]
 except ModuleNotFoundError:
-    import tomli as tomllib  # type: ignore[no-redef,import-not-found]
+    import tomli as tomllib  # type: ignore[import-not-found]
 
 CONFIG_FILENAME = "pycalc.toml"
 
@@ -50,7 +51,7 @@ def find_config() -> Path | None:
     return None
 
 
-def _parse_config(data: dict) -> Config:
+def _parse_config(data: dict[str, Any]) -> Config:
     """Parse a TOML dict into a Config, ignoring unknown keys."""
     cfg = Config()
 

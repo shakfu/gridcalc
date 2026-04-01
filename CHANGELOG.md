@@ -121,6 +121,9 @@
 - Editor command resolution: `EDITOR` env var > config `editor` > `"vi"`.
 - Makefile `test` target sets `PYCALC_SANDBOX=1` so sandbox tests exercise
   real checks.
+- **Strict mypy**: enabled `strict = true` in mypy config. Added type
+  annotations to all functions, methods, and classes across engine.py,
+  tui.py, config.py, and sandbox.py. Zero mypy errors under strict mode.
 
 ### Dependencies
 

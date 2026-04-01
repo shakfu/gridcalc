@@ -15,7 +15,7 @@ _SANDBOX_ENV = os.environ.get("PYCALC_SANDBOX")
 SANDBOX_ENABLED = _SANDBOX_ENV in ("1", "true", "yes") if _SANDBOX_ENV is not None else False
 
 
-def configure_sandbox(enabled: bool):
+def configure_sandbox(enabled: bool) -> None:
     """Set sandbox state from config. Env var PYCALC_SANDBOX takes precedence."""
     global SANDBOX_ENABLED
     if _SANDBOX_ENV is None:

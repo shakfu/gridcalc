@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import contextlib
 import curses
 import math
@@ -26,6 +28,7 @@ from .engine import (
 )
 from .sandbox import (
     SANDBOX_ENABLED,
+    FileInfo,
     LoadPolicy,
     classify_module,
     configure_sandbox,
@@ -41,7 +44,7 @@ _cfg: Config = Config()
 # -- Cell display formatting --
 
 
-def _insert_commas(s):
+def _insert_commas(s: str) -> str:
     neg = s.startswith("-")
     digits = s[1:] if neg else s
     result = []
@@ -52,7 +55,7 @@ def _insert_commas(s):
     return ("-" if neg else "") + "".join(result)
 
 
-def fmt_float(val, spec):
+def fmt_float(val: float, spec: str) -> str | None:
     """Format a float using a Python-style format spec subset.
     Returns formatted string or None if spec not recognized."""
     p = 0
@@ -98,7 +101,7 @@ def fmt_float(val, spec):
     return raw
 
 
-def fmtcell(cl, cw, global_fmt=""):
+def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
     """Format a cell value for display. Returns a string of exactly cw chars."""
     if cl is None or cl.type == EMPTY:
         return " " * cw
@@ -148,19 +151,19 @@ def fmtcell(cl, cw, global_fmt=""):
 class UndoEntry:
     __slots__ = ("cells", "cc", "cr", "is_grid")
 
-    def __init__(self):
-        self.cells = []  # list of (c, r, Cell_snapshot)
-        self.cc = 0
-        self.cr = 0
-        self.is_grid = False
+    def __init__(self) -> None:
+        self.cells: list[tuple[int, int, Cell]] = []
+        self.cc: int = 0
+        self.cr: int = 0
+        self.is_grid: bool = False
 
 
 class UndoManager:
-    def __init__(self):
-        self.undo_stack = []
-        self.redo_stack = []
+    def __init__(self) -> None:
+        self.undo_stack: list[UndoEntry] = []
+        self.redo_stack: list[UndoEntry] = []
 
-    def save_region(self, g, c1, r1, c2, r2):
+    def save_region(self, g: Grid, c1: int, r1: int, c2: int, r2: int) -> None:
         e = UndoEntry()
         e.cc = g.cc
         e.cr = g.cr
@@ -174,10 +177,10 @@ class UndoManager:
             self.undo_stack.pop(0)
         self.redo_stack.clear()
 
-    def save_cell(self, g, c, r):
+    def save_cell(self, g: Grid, c: int, r: int) -> None:
         self.save_region(g, c, r, c, r)
 
-    def save_grid(self, g):
+    def save_grid(self, g: Grid) -> None:
         e = UndoEntry()
         e.cc = g.cc
         e.cr = g.cr
@@ -190,7 +193,7 @@ class UndoManager:
             self.undo_stack.pop(0)
         self.redo_stack.clear()
 
-    def _apply(self, g, from_stack, to_stack):
+    def _apply(self, g: Grid, from_stack: list[UndoEntry], to_stack: list[UndoEntry]) -> None:
         if not from_stack:
             return
         e = from_stack.pop()
@@ -208,8 +211,8 @@ class UndoManager:
             g.clear_all()
         else:
             for c, r, _ in e.cells:
-                cl = g.cell(c, r)
-                re.cells.append((c, r, cl.snapshot() if cl else Cell()))
+                maybe_cl: Cell | None = g.cell(c, r)
+                re.cells.append((c, r, maybe_cl.snapshot() if maybe_cl else Cell()))
             to_stack.append(re)
 
         for c, r, snap in e.cells:
@@ -223,10 +226,10 @@ class UndoManager:
         g.cr = e.cr
         g.recalc()
 
-    def undo(self, g):
+    def undo(self, g: Grid) -> None:
         self._apply(g, self.undo_stack, self.redo_stack)
 
-    def redo(self, g):
+    def redo(self, g: Grid) -> None:
         self._apply(g, self.redo_stack, self.undo_stack)
 
 
@@ -242,7 +245,7 @@ CP_MODE_CMD = 9
 CP_SELECT = 10
 
 
-def init_colors():
+def init_colors() -> None:
     curses.start_color()
     curses.use_default_colors()
     curses.init_pair(CP_CHROME, curses.COLOR_WHITE, curses.COLOR_BLUE)
@@ -257,7 +260,7 @@ def init_colors():
     curses.init_pair(CP_SELECT, curses.COLOR_WHITE, curses.COLOR_MAGENTA)
 
 
-def mode_color(mode):
+def mode_color(mode: str) -> int:
     if not mode:
         return CP_CHROME
     if mode == "READY":
@@ -267,17 +270,23 @@ def mode_color(mode):
     return CP_MODE_ENTRY
 
 
-def vcols(g):
+def vcols(g: Grid) -> int:
     v = (curses.COLS - GW) // g.cw
     return max(v, 1)
 
 
-def vrows():
+def vrows() -> int:
     v = curses.LINES - 4
     return max(v, 1)
 
 
-def draw(stdscr, g, mode, buf, sel=None):
+def draw(
+    stdscr: curses.window,
+    g: Grid,
+    mode: str,
+    buf: str,
+    sel: tuple[int, int, int, int] | None = None,
+) -> None:
     stdscr.erase()
 
     lc = g.tc
@@ -416,7 +425,7 @@ def draw(stdscr, g, mode, buf, sel=None):
                     stdscr.attroff(attr)
 
 
-def prompt_filename(stdscr, prompt, dflt=None):
+def prompt_filename(stdscr: curses.window, prompt: str, dflt: str | None = None) -> str | None:
     buf = dflt or ""
     plen = len(prompt)
     stdscr.move(curses.LINES - 1, 0)
@@ -435,14 +444,14 @@ def prompt_filename(stdscr, prompt, dflt=None):
             buf += chr(ch)
 
 
-def show_error(stdscr, msg):
+def show_error(stdscr: curses.window, msg: str) -> None:
     stdscr.addnstr(curses.LINES - 1, 0, msg, curses.COLS - 1)
     stdscr.clrtoeol()
     stdscr.refresh()
     stdscr.getch()
 
 
-def movecmd(stdscr, g, undo):
+def movecmd(stdscr: curses.window, g: Grid, undo: UndoManager) -> None:
     origc, origr = g.cc, g.cr
     src = f"{col_name(origc)}{origr + 1}"
     while True:
@@ -501,7 +510,13 @@ def movecmd(stdscr, g, undo):
                 g.cc += 1
 
 
-def selectrange(stdscr, g, prompt, ac, ar):
+def selectrange(
+    stdscr: curses.window,
+    g: Grid,
+    prompt: str,
+    ac: int,
+    ar: int,
+) -> tuple[int, int, int, int] | None:
     buf = ""
     typed = False
     g.cc = ac
@@ -564,7 +579,7 @@ def selectrange(stdscr, g, prompt, ac, ar):
             buf += chr(ch).upper()
 
 
-def replcmd(stdscr, g, undo):
+def replcmd(stdscr: curses.window, g: Grid, undo: UndoManager) -> None:
     origc, origr = g.cc, g.cr
     result = selectrange(stdscr, g, "Source:", origc, origr)
     if not result:
@@ -594,9 +609,9 @@ def replcmd(stdscr, g, undo):
                 _, tc1, tr1 = r
             else:
                 tc1, tr1 = g.cc, g.cr
-            for r in range(sh):
-                for c in range(sw):
-                    g.replicatecell(sc1 + c, sr1 + r, tc1 + c, tr1 + r)
+            for ri in range(sh):
+                for ci in range(sw):
+                    g.replicatecell(sc1 + ci, sr1 + ri, tc1 + ci, tr1 + ri)
             g.recalc()
             g.dirty = 1
             return
@@ -619,7 +634,7 @@ def replcmd(stdscr, g, undo):
             buf += chr(ch).upper()
 
 
-def cmd_quit(stdscr, g):
+def cmd_quit(stdscr: curses.window, g: Grid) -> bool:
     if g.dirty:
         stdscr.addnstr(curses.LINES - 1, 0, "Unsaved changes. Quit anyway? (y/N)", curses.COLS - 1)
         stdscr.clrtoeol()
@@ -629,7 +644,7 @@ def cmd_quit(stdscr, g):
     return True
 
 
-def _do_save(stdscr, g, args):
+def _do_save(stdscr: curses.window, g: Grid, args: str) -> bool:
     """Shared save logic. Returns True on success, False on failure/cancel."""
     fn = args.strip() if args.strip() else g.filename
     if not fn:
@@ -644,16 +659,16 @@ def _do_save(stdscr, g, args):
     return False
 
 
-def cmd_save(stdscr, g, args):
+def cmd_save(stdscr: curses.window, g: Grid, args: str) -> bool:
     _do_save(stdscr, g, args)
     return False
 
 
-def cmd_savequit(stdscr, g, args):
+def cmd_savequit(stdscr: curses.window, g: Grid, args: str) -> bool:
     return _do_save(stdscr, g, args)
 
 
-def cmd_edit(stdscr, g):
+def cmd_edit(stdscr: curses.window, g: Grid) -> bool:
     editor = os.environ.get("EDITOR") or _cfg.editor or "vi"
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
         if g.code:
@@ -676,7 +691,7 @@ def cmd_edit(stdscr, g):
     return False
 
 
-def trust_prompt(stdscr, filename, info):
+def trust_prompt(stdscr: curses.window, filename: str, info: FileInfo) -> LoadPolicy | None:
     """Curses-based trust prompt for loading files with code or requires.
 
     Returns a LoadPolicy, or None if the user cancels.
@@ -746,7 +761,7 @@ def trust_prompt(stdscr, filename, info):
             return None
 
 
-def cmd_open(stdscr, g, args):
+def cmd_open(stdscr: curses.window, g: Grid, args: str) -> bool:
     fn = args.strip() if args.strip() else None
     if not fn:
         fn = prompt_filename(stdscr, "Open: ", g.filename)
@@ -778,14 +793,14 @@ def cmd_open(stdscr, g, args):
     return False
 
 
-def cmd_blank(g, undo):
+def cmd_blank(g: Grid, undo: UndoManager) -> bool:
     undo.save_cell(g, g.cc, g.cr)
     g.setcell(g.cc, g.cr, "")
     g.recalc()
     return False
 
 
-def cmd_clear(stdscr, g, undo):
+def cmd_clear(stdscr: curses.window, g: Grid, undo: UndoManager) -> bool:
     stdscr.addnstr(curses.LINES - 1, 0, "Clear entire sheet? (y/N)", curses.COLS - 1)
     stdscr.clrtoeol()
     stdscr.refresh()
@@ -797,7 +812,15 @@ def cmd_clear(stdscr, g, undo):
     return False
 
 
-def _apply_fmt_to_range(g, undo, c1, r1, c2, r2, fmt_arg):
+def _apply_fmt_to_range(
+    g: Grid,
+    undo: UndoManager,
+    c1: int,
+    r1: int,
+    c2: int,
+    r2: int,
+    fmt_arg: str,
+) -> bool:
     """Apply a format string to all non-empty cells in a range.
 
     fmt_arg is a resolved format: a style string like "bui", a single
@@ -841,7 +864,7 @@ def _apply_fmt_to_range(g, undo, c1, r1, c2, r2, fmt_arg):
             if not cl or cl.type == EMPTY:
                 continue
             cl.fmtstr = fmt_arg[:31]
-            cl.fmt = 0
+            cl.fmt = ""
     return True
 
 
@@ -861,7 +884,7 @@ _FORMAT_OPTIONS = [
 ]
 
 
-def _resolve_fmt(stdscr, args):
+def _resolve_fmt(stdscr: curses.window, args: str) -> str | None:
     """Resolve a format argument, prompting interactively if empty.
 
     Returns the format string, or None if cancelled.
@@ -942,7 +965,13 @@ def _resolve_fmt(stdscr, args):
     return None
 
 
-def cmd_format(stdscr, g, undo, args, sel=None):
+def cmd_format(
+    stdscr: curses.window,
+    g: Grid,
+    undo: UndoManager,
+    args: str,
+    sel: tuple[int, int, int, int] | None = None,
+) -> bool:
     if sel:
         c1, r1, c2, r2 = sel
     else:
@@ -963,7 +992,7 @@ def cmd_format(stdscr, g, undo, args, sel=None):
     return False
 
 
-def cmd_gformat(stdscr, g, args):
+def cmd_gformat(stdscr: curses.window, g: Grid, args: str) -> bool:
     if args:
         ch = args[0].upper()
     else:
@@ -979,7 +1008,7 @@ def cmd_gformat(stdscr, g, args):
     return False
 
 
-def cmd_width(stdscr, g, args):
+def cmd_width(stdscr: curses.window, g: Grid, args: str) -> bool:
     if args:
         try:
             w = int(args)
@@ -1020,7 +1049,7 @@ def cmd_width(stdscr, g, args):
     return False
 
 
-def name_set(g, name, c1, r1, c2, r2):
+def name_set(g: Grid, name: str, c1: int, r1: int, c2: int, r2: int) -> None:
     idx = -1
     for i, nr in enumerate(g.names):
         if nr.name == name:
@@ -1037,7 +1066,7 @@ def name_set(g, name, c1, r1, c2, r2):
     g.recalc()
 
 
-def cmd_name(stdscr, g, args):
+def cmd_name(stdscr: curses.window, g: Grid, args: str) -> bool:
     nbuf = ""
     if args:
         parts = args.split(None, 1)
@@ -1082,7 +1111,7 @@ def cmd_name(stdscr, g, args):
     return False
 
 
-def cmd_names(stdscr, g):
+def cmd_names(stdscr: curses.window, g: Grid) -> bool:
     stdscr.erase()
     stdscr.attron(curses.A_BOLD)
     stdscr.addnstr(0, 0, f"Named Ranges ({len(g.names)})", curses.COLS - 1)
@@ -1096,7 +1125,7 @@ def cmd_names(stdscr, g):
     return False
 
 
-def cmd_unname(stdscr, g, args):
+def cmd_unname(stdscr: curses.window, g: Grid, args: str) -> bool:
     nbuf = args.strip() if args else ""
     if not nbuf:
         stdscr.addnstr(curses.LINES - 1, 0, "Remove name: ", curses.COLS - 1)
@@ -1124,7 +1153,7 @@ def cmd_unname(stdscr, g, args):
     return False
 
 
-def cmd_title(g, args):
+def cmd_title(g: Grid, args: str) -> bool:
     ch = args[0].upper() if args else ""
     if ch == "V":
         g.tc = g.cc + 1
@@ -1145,7 +1174,13 @@ def cmd_title(g, args):
     return False
 
 
-def cmdexec(stdscr, g, undo, text, sel=None):
+def cmdexec(
+    stdscr: curses.window,
+    g: Grid,
+    undo: UndoManager,
+    text: str,
+    sel: tuple[int, int, int, int] | None = None,
+) -> bool:
     text = text.strip()
     if not text:
         return False
@@ -1228,7 +1263,12 @@ def cmdexec(stdscr, g, undo, text, sel=None):
     return False
 
 
-def cmdline(stdscr, g, undo, sel=None):
+def cmdline(
+    stdscr: curses.window,
+    g: Grid,
+    undo: UndoManager,
+    sel: tuple[int, int, int, int] | None = None,
+) -> bool:
     buf = ""
     draw(stdscr, g, "CMD", "", sel=sel)
     while True:
@@ -1248,7 +1288,7 @@ def cmdline(stdscr, g, undo, sel=None):
             buf += chr(ch)
 
 
-def nav(stdscr, g):
+def nav(stdscr: curses.window, g: Grid) -> None:
     buf = ""
     draw(stdscr, g, "GOTO", "")
     while True:
@@ -1274,7 +1314,7 @@ def nav(stdscr, g):
                 buf += chr(ch).upper()
 
 
-def entry(stdscr, g, undo, label, initial_ch):
+def entry(stdscr: curses.window, g: Grid, undo: UndoManager, label: bool, initial_ch: int) -> None:
     buf = ""
     origc, origr = g.cc, g.cr
     picking = False
@@ -1368,7 +1408,7 @@ def entry(stdscr, g, undo, label, initial_ch):
             buf += chr(ch)
 
 
-def visual_mode(stdscr, g, undo):
+def visual_mode(stdscr: curses.window, g: Grid, undo: UndoManager) -> None:
     """Visual selection mode. Arrow keys extend selection, : enters command line."""
     ac, ar = g.cc, g.cr  # anchor
 
@@ -1401,7 +1441,7 @@ def visual_mode(stdscr, g, undo):
             g.cc += 1
 
 
-def mainloop(stdscr, g):
+def mainloop(stdscr: curses.window, g: Grid) -> None:
     undo = UndoManager()
 
     while True:
@@ -1485,7 +1525,7 @@ def mainloop(stdscr, g):
             entry(stdscr, g, undo, True, ch)
 
 
-def startup_trust_prompt(filename, info):
+def startup_trust_prompt(filename: str, info: FileInfo) -> LoadPolicy | None:
     """Plain-terminal trust prompt for file loading at startup (before curses)."""
     print(f"\nLoading: {filename}")
     print(f"  Cells: {info.cell_count} ({info.formula_count} formulas)")
@@ -1515,7 +1555,7 @@ def startup_trust_prompt(filename, info):
             return None
 
 
-def main():
+def main() -> None:
     import sys
 
     global _cfg
@@ -1558,7 +1598,7 @@ def main():
             sys.exit(1)
         g.filename = fn
 
-    def _main(stdscr):
+    def _main(stdscr: curses.window) -> None:
         curses.raw()
         curses.curs_set(0)
         init_colors()

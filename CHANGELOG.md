@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.1.1]
+
 ### Added
 
 - **Security sandbox** (`gridcalc/sandbox.py`):
@@ -91,6 +93,9 @@
   roundtrips, circular reference detection, undo/redo, command dispatch,
   visual select range formatting, and xlsx mode functions.
 
+- Added `tomli >= 1.0` (conditional, Python < 3.11 only) for TOML config
+  parsing. Python 3.11+ uses stdlib `tomllib`.
+
 ### Changed
 
 - **Sparse grid storage**: `Grid` now stores cells in a flat
@@ -144,12 +149,7 @@
   filename (`gridcalc.toml`), config paths (`~/.config/gridcalc/`), env var
   (`GRIDCALC_SANDBOX`), entry point, and all references updated.
 
-### Dependencies
-
-- Added `tomli >= 1.0` (conditional, Python < 3.11 only) for TOML config
-  parsing. Python 3.11+ uses stdlib `tomllib`.
-
-## 0.1.0 - 2026-03-23
+## [0.1.0]
 
 Initial release. Pure Python reimplementation of
 [pktcalc](https://github.com/sa/pktcalc).

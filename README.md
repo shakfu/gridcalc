@@ -1,8 +1,12 @@
 # gridcalc
 
-A minimal spreadsheet for the terminal, based on Serge Zaitsev's Visicalc clone, [kalk](https://github.com/zserge/kalk).
+[![PyPI](https://img.shields.io/pypi/v/gridcalc)](https://pypi.org/project/gridcalc/)
+[![Python](https://img.shields.io/pypi/pyversions/gridcalc)](https://pypi.org/project/gridcalc/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Pure Python reimplementation of [pktcalc](https://github.com/sa/pktcalc) -- uses Python's own `eval()` for formulas instead of an embedded interpreter. Reads and writes JSON as its file format. File-compatible with pktcalc.
+A terminal spreadsheet powered by Python formulas. Based on Serge Zaitsev's [kalk](https://github.com/zserge/kalk), reimplemented in pure Python from [pktcalc](https://github.com/sa/pktcalc).
+
+Uses Python's `eval()` for formula evaluation. Reads and writes JSON. File-compatible with pktcalc.
 
 ```sh
 $ gridcalc budget.json
@@ -10,15 +14,32 @@ $ gridcalc budget.json
 
 ## Install
 
-Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/).
+From PyPI (requires Python 3.10+):
 
-	uv run gridcalc              # run directly
-	uv run gridcalc budget.json  # open a file
+```sh
+pip install gridcalc
+```
 
-Or install as a tool:
+Or with [uv](https://docs.astral.sh/uv/):
 
-	uv tool install .
-	gridcalc budget.json
+```sh
+uv tool install gridcalc
+```
+
+Then run:
+
+```sh
+gridcalc                     # new spreadsheet
+gridcalc budget.json         # open a file
+```
+
+### From source
+
+```sh
+git clone https://github.com/shakfu/gridcalc.git
+cd gridcalc
+uv run gridcalc
+```
 
 ## File format
 
@@ -218,7 +239,21 @@ works.
 
 ## Development
 
-	make test       # run tests (120 pytest tests)
+```sh
+make test       # run tests
+make lint       # ruff check
+make format     # ruff format
+make typecheck  # mypy
+make qa         # lint + typecheck + test + format
+```
+
+### Publishing
+
+```sh
+make check        # build and check dist with twine
+make publish-test # upload to TestPyPI
+make publish      # upload to PyPI
+```
 
 ## License
 

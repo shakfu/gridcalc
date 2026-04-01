@@ -33,6 +33,14 @@
 - [ ] CSV import/export alongside JSON.
 - [ ] Multiple sheets / tabs within a single file.
 - [ ] Mouse support (curses mouse events for cell selection and scrolling).
+- [ ] Plugin interface for extending gridcalc. Allow third-party packages
+  to register custom functions, commands, and cell formats via entry points
+  or a plugin API.
+
+## Documentation
+
+- [ ] Add mkdocs documentation site (mkdocs-material). Publish to GitHub
+  Pages via `gh-pages` branch or GitHub Actions.
 
 ## Code quality
 

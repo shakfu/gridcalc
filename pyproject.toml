@@ -1,7 +1,33 @@
+
+
 [project]
 name = "gridcalc"
-version = "0.1.0"
+version = "0.1.1"
+description = "A terminal spreadsheet powered by Python formulas"
+readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Shakeeb Alireza", email = "shakfu@users.noreply.github.com" }
+]
+keywords = ["spreadsheet", "terminal", "tui", "curses", "calculator", "visicalc"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console :: Curses",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Spreadsheet",
+    "Topic :: Utilities",
+    "Typing :: Typed",
+]
 dependencies = [
     "tomli>=1.0; python_version < '3.11'",
 ]
@@ -11,10 +37,21 @@ dev = [
     "mypy>=1.19.1",
     "pytest",
     "ruff>=0.15.7",
+    "twine>=6.2.0",
+    "build>=1.0",
 ]
 
 [project.scripts]
 gridcalc = "gridcalc.tui:main"
+
+[project.urls]
+Homepage = "https://github.com/shakfu/gridcalc"
+Repository = "https://github.com/shakfu/gridcalc"
+Issues = "https://github.com/shakfu/gridcalc/issues"
+
+[build-system]
+requires = ["uv_build>=0.11.2,<0.12"]
+build-backend = "uv_build"
 
 [tool.ruff]
 target-version = "py310"

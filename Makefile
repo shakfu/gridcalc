@@ -18,12 +18,13 @@ run:
 	@uv run python -m gridcalc
 
 build: clean
-	@uv run python -m build
+	@uv build
+	@uv run twine check dist/*
 
 clean:
 	@rm -rf dist/ build/ *.egg-info
 
-check: build
+check:
 	@uv run twine check dist/*
 
 publish: check

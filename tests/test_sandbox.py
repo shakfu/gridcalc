@@ -1,20 +1,13 @@
 import json
 import math
 
-import pytest
-
-from pycalc.engine import EMPTY, FORMULA, NUM, Grid, NamedRange
+from pycalc.engine import Grid, NamedRange
 from pycalc.sandbox import (
-    BLOCKED_MODULES,
-    SAFE_MODULES,
-    SIDE_EFFECT_MODULES,
-    FileInfo,
     LoadPolicy,
     classify_module,
     load_modules,
     validate_formula,
 )
-
 
 # -- validate_formula tests --
 

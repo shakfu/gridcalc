@@ -12,9 +12,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 try:
-    import tomllib
+    import tomllib  # type: ignore[import-not-found]
 except ModuleNotFoundError:
-    import tomli as tomllib  # type: ignore[no-redef]
+    import tomli as tomllib  # type: ignore[no-redef,import-not-found]
 
 CONFIG_FILENAME = "pycalc.toml"
 

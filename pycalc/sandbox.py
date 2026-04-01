@@ -23,56 +23,62 @@ def configure_sandbox(enabled: bool):
 
 # -- Module classification --
 
-SAFE_MODULES: frozenset[str] = frozenset({
-    "numpy",
-    "scipy",
-    "sympy",
-    "decimal",
-    "fractions",
-    "statistics",
-    "cmath",
-    "itertools",
-    "functools",
-    "operator",
-    "collections",
-})
+SAFE_MODULES: frozenset[str] = frozenset(
+    {
+        "numpy",
+        "scipy",
+        "sympy",
+        "decimal",
+        "fractions",
+        "statistics",
+        "cmath",
+        "itertools",
+        "functools",
+        "operator",
+        "collections",
+    }
+)
 
-SIDE_EFFECT_MODULES: frozenset[str] = frozenset({
-    "matplotlib",
-    "matplotlib.pyplot",
-    "pandas",
-    "csv",
-    "openpyxl",
-    "xlsxwriter",
-})
+SIDE_EFFECT_MODULES: frozenset[str] = frozenset(
+    {
+        "matplotlib",
+        "matplotlib.pyplot",
+        "pandas",
+        "csv",
+        "openpyxl",
+        "xlsxwriter",
+    }
+)
 
-BLOCKED_MODULES: frozenset[str] = frozenset({
-    "os",
-    "sys",
-    "subprocess",
-    "shutil",
-    "pathlib",
-    "socket",
-    "http",
-    "importlib",
-    "ctypes",
-    "code",
-    "pickle",
-    "shelve",
-    "signal",
-    "multiprocessing",
-    "webbrowser",
-    "urllib",
-    "xmlrpc",
-    "ftplib",
-    "smtplib",
-    "poplib",
-    "imaplib",
-    "nntplib",
-    "tempfile",
-    "io",
-    "builtins",
-})
+BLOCKED_MODULES: frozenset[str] = frozenset(
+    {
+        "os",
+        "sys",
+        "subprocess",
+        "shutil",
+        "pathlib",
+        "socket",
+        "http",
+        "importlib",
+        "ctypes",
+        "code",
+        "pickle",
+        "shelve",
+        "signal",
+        "multiprocessing",
+        "webbrowser",
+        "urllib",
+        "xmlrpc",
+        "ftplib",
+        "smtplib",
+        "poplib",
+        "imaplib",
+        "nntplib",
+        "tempfile",
+        "io",
+        "builtins",
+    }
+)
 
 MODULE_ALIASES: dict[str, str] = {
     "numpy": "np",
@@ -113,72 +119,76 @@ def load_modules(names: list[str]) -> tuple[dict[str, object], list[str]]:
 
 # -- AST formula validation --
 
-_BLOCKED_NAMES: frozenset[str] = frozenset({
-    "__import__",
-    "__builtins__",
-    "__loader__",
-    "__spec__",
-    "__build_class__",
-    "__name__",
-    "eval",
-    "exec",
-    "compile",
-    "breakpoint",
-    "exit",
-    "quit",
-    "open",
-    "input",
-    "getattr",
-    "setattr",
-    "delattr",
-    "vars",
-    "dir",
-    "globals",
-    "locals",
-    "type",
-    "super",
-    "object",
-    "classmethod",
-    "staticmethod",
-    "property",
-    "memoryview",
-    "bytearray",
-    "bytes",
-})
+_BLOCKED_NAMES: frozenset[str] = frozenset(
+    {
+        "__import__",
+        "__builtins__",
+        "__loader__",
+        "__spec__",
+        "__build_class__",
+        "__name__",
+        "eval",
+        "exec",
+        "compile",
+        "breakpoint",
+        "exit",
+        "quit",
+        "open",
+        "input",
+        "getattr",
+        "setattr",
+        "delattr",
+        "vars",
+        "dir",
+        "globals",
+        "locals",
+        "type",
+        "super",
+        "object",
+        "classmethod",
+        "staticmethod",
+        "property",
+        "memoryview",
+        "bytearray",
+        "bytes",
+    }
+)
 
-_DANGEROUS_ATTRS: frozenset[str] = frozenset({
-    # Function/method internals
-    "func_globals",
-    "func_code",
-    "func_defaults",
-    # Generator/coroutine internals
-    "gi_frame",
-    "gi_code",
-    "cr_frame",
-    "cr_code",
-    "ag_frame",
-    "ag_code",
-    # Frame internals
-    "f_globals",
-    "f_locals",
-    "f_builtins",
-    "f_code",
-    # Code object internals
-    "co_consts",
-    "co_code",
-    "co_filename",
-    "co_names",
-    "co_varnames",
-    "co_freevars",
-    "co_cellvars",
-    # Traceback internals
-    "tb_frame",
-    "tb_next",
-    "tb_lineno",
-    # Bound method internals
-    "im_func",
-    "im_self",
-})
+_DANGEROUS_ATTRS: frozenset[str] = frozenset(
+    {
+        # Function/method internals
+        "func_globals",
+        "func_code",
+        "func_defaults",
+        # Generator/coroutine internals
+        "gi_frame",
+        "gi_code",
+        "cr_frame",
+        "cr_code",
+        "ag_frame",
+        "ag_code",
+        # Frame internals
+        "f_globals",
+        "f_locals",
+        "f_builtins",
+        "f_code",
+        # Code object internals
+        "co_consts",
+        "co_code",
+        "co_filename",
+        "co_names",
+        "co_varnames",
+        "co_freevars",
+        "co_cellvars",
+        # Traceback internals
+        "tb_frame",
+        "tb_next",
+        "tb_lineno",
+        # Bound method internals
+        "im_func",
+        "im_self",
+    }
+)
 
 
 def validate_formula(source: str) -> tuple[bool, str]:

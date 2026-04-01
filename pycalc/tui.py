@@ -5,23 +5,25 @@ import os
 import subprocess
 import tempfile
 
+from .config import Config, load_config
 from .engine import (
     CW_DEFAULT,
     EMPTY,
     FORMULA,
     LABEL,
+    MAXCODE,
     MAXIN,
     MAXNAMES,
     NCOL,
     NROW,
     NUM,
+    Cell,
     Grid,
     NamedRange,
     cellname,
     col_name,
     ref,
 )
-from .config import Config, load_config
 from .sandbox import SANDBOX_ENABLED, LoadPolicy, classify_module, configure_sandbox
 
 GW = 4
@@ -52,8 +54,8 @@ class UndoManager:
         for r in range(r1, r2 + 1):
             for c in range(c1, c2 + 1):
                 cl = g.cell(c, r)
-                if cl:
-                    e.cells.append((c, r, cl.snapshot()))
+                # Save a snapshot (or empty Cell) so undo can restore the state
+                e.cells.append((c, r, cl.snapshot() if cl else Cell()))
         self.undo_stack.append(e)
         if len(self.undo_stack) > UNDO_MAX:
             self.undo_stack.pop(0)
@@ -67,11 +69,9 @@ class UndoManager:
         e.cc = g.cc
         e.cr = g.cr
         e.is_grid = True
-        for r in range(NROW):
-            for c in range(NCOL):
-                cl = g.cells[c][r]
-                if cl.type != EMPTY:
-                    e.cells.append((c, r, cl.snapshot()))
+        for (c, r), cl in g._cells.items():
+            if cl.type != EMPTY:
+                e.cells.append((c, r, cl.snapshot()))
         self.undo_stack.append(e)
         if len(self.undo_stack) > UNDO_MAX:
             self.undo_stack.pop(0)
@@ -88,25 +88,22 @@ class UndoManager:
         re.cr = g.cr
         re.is_grid = e.is_grid
         if e.is_grid:
-            for r in range(NROW):
-                for c in range(NCOL):
-                    cl = g.cells[c][r]
-                    if cl.type != EMPTY:
-                        re.cells.append((c, r, cl.snapshot()))
+            for (c, r), cl in g._cells.items():
+                if cl.type != EMPTY:
+                    re.cells.append((c, r, cl.snapshot()))
             to_stack.append(re)
-            for r in range(NROW):
-                for c in range(NCOL):
-                    g.cells[c][r].clear()
+            g.clear_all()
         else:
             for c, r, _ in e.cells:
                 cl = g.cell(c, r)
-                if cl:
-                    re.cells.append((c, r, cl.snapshot()))
+                re.cells.append((c, r, cl.snapshot() if cl else Cell()))
             to_stack.append(re)
 
         for c, r, snap in e.cells:
-            cl = g.cell(c, r)
-            if cl:
+            if snap.type == EMPTY:
+                g._cells.pop((c, r), None)
+            else:
+                cl = g._ensure_cell(c, r)
                 cl.copy_from(snap)
 
         g.cc = e.cc
@@ -129,6 +126,7 @@ CP_ERROR = 6
 CP_MODE_READY = 7
 CP_MODE_ENTRY = 8
 CP_MODE_CMD = 9
+CP_SELECT = 10
 
 
 def init_colors():
@@ -143,6 +141,7 @@ def init_colors():
     curses.init_pair(CP_MODE_READY, curses.COLOR_GREEN, curses.COLOR_BLACK)
     curses.init_pair(CP_MODE_ENTRY, curses.COLOR_YELLOW, curses.COLOR_BLACK)
     curses.init_pair(CP_MODE_CMD, curses.COLOR_RED, curses.COLOR_BLACK)
+    curses.init_pair(CP_SELECT, curses.COLOR_WHITE, curses.COLOR_MAGENTA)
 
 
 def mode_color(mode):
@@ -150,7 +149,7 @@ def mode_color(mode):
         return CP_CHROME
     if mode == "READY":
         return CP_MODE_READY
-    if mode == "CMD":
+    if mode in ("CMD", "VISUAL"):
         return CP_MODE_CMD
     return CP_MODE_ENTRY
 
@@ -165,7 +164,7 @@ def vrows():
     return max(v, 1)
 
 
-def draw(stdscr, g, mode, buf):
+def draw(stdscr, g, mode, buf, sel=None):
     stdscr.erase()
 
     lc = g.tc
@@ -196,7 +195,10 @@ def draw(stdscr, g, mode, buf):
             status += f"[{items}{extra}] ({len(cur.arr)})"
         else:
             if isinstance(cur.val, float) and math.isnan(cur.val):
-                status += "ERR 0"
+                if (g.cc, g.cr) in g._circular:
+                    status += "CIRC"
+                else:
+                    status += "ERR 0"
             else:
                 status += f"{cur.val:.10g}"
     elif cur and cur.type == LABEL:
@@ -260,6 +262,7 @@ def draw(stdscr, g, mode, buf):
 
             is_cur = c == g.cc and row == g.cr
             is_mark = g.mc >= 0 and c == g.mc and row == g.mr
+            is_sel = sel is not None and sel[0] <= c <= sel[2] and sel[1] <= row <= sel[3]
             is_locked = is_locked_row or is_locked_col
             is_error = (
                 cl
@@ -278,6 +281,8 @@ def draw(stdscr, g, mode, buf):
 
             if is_cur:
                 attr = curses.color_pair(CP_CURSOR) | curses.A_BOLD
+            elif is_sel:
+                attr = curses.color_pair(CP_SELECT)
             elif is_mark:
                 attr = curses.color_pair(CP_MARK) | curses.A_UNDERLINE
             elif is_locked:
@@ -511,21 +516,8 @@ def cmd_quit(stdscr, g):
     return True
 
 
-def cmd_save(stdscr, g, args):
-    fn = args.strip() if args.strip() else g.filename
-    if not fn:
-        fn = prompt_filename(stdscr, "Save as: ")
-        if not fn:
-            return False
-    if g.jsonsave(fn) == 0:
-        g.filename = fn
-        g.dirty = 0
-    else:
-        show_error(stdscr, f"Failed to save: {fn}. Press any key.")
-    return False
-
-
-def cmd_savequit(stdscr, g, args):
+def _do_save(stdscr, g, args):
+    """Shared save logic. Returns True on success, False on failure/cancel."""
     fn = args.strip() if args.strip() else g.filename
     if not fn:
         fn = prompt_filename(stdscr, "Save as: ")
@@ -537,6 +529,15 @@ def cmd_savequit(stdscr, g, args):
         return True
     show_error(stdscr, f"Failed to save: {fn}. Press any key.")
     return False
+
+
+def cmd_save(stdscr, g, args):
+    _do_save(stdscr, g, args)
+    return False
+
+
+def cmd_savequit(stdscr, g, args):
+    return _do_save(stdscr, g, args)
 
 
 def cmd_edit(stdscr, g):
@@ -553,7 +554,7 @@ def cmd_edit(stdscr, g):
         stdscr.refresh()
         with open(tmppath) as f:
             content = f.read()
-        g.code = content[: MAXIN * 32]
+        g.code = content[:MAXCODE]
         g.dirty = 1
         g.recalc()
     finally:
@@ -574,7 +575,8 @@ def trust_prompt(stdscr, filename, info):
         stdscr.attroff(curses.A_BOLD)
 
         y = 2
-        stdscr.addnstr(y, 0, f"  Cells: {info.cell_count} ({info.formula_count} formulas)", curses.COLS - 1)
+        cells_str = f"  Cells: {info.cell_count} ({info.formula_count} formulas)"
+        stdscr.addnstr(y, 0, cells_str, curses.COLS - 1)
         y += 1
 
         if info.requires:
@@ -583,12 +585,14 @@ def trust_prompt(stdscr, filename, info):
             y += 1
             if info.blocked_modules:
                 stdscr.attron(curses.color_pair(CP_ERROR))
-                stdscr.addnstr(y, 0, f"  Blocked:  {', '.join(info.blocked_modules)}", curses.COLS - 1)
+                blocked = f"  Blocked:  {', '.join(info.blocked_modules)}"
+                stdscr.addnstr(y, 0, blocked, curses.COLS - 1)
                 stdscr.attroff(curses.color_pair(CP_ERROR))
                 y += 1
             if info.side_effect_modules:
                 stdscr.attron(curses.color_pair(CP_LOCKED))
-                stdscr.addnstr(y, 0, f"  I/O:      {', '.join(info.side_effect_modules)}", curses.COLS - 1)
+                io_mods = f"  I/O:      {', '.join(info.side_effect_modules)}"
+                stdscr.addnstr(y, 0, io_mods, curses.COLS - 1)
                 stdscr.attroff(curses.color_pair(CP_LOCKED))
                 y += 1
 
@@ -620,7 +624,8 @@ def trust_prompt(stdscr, filename, info):
                 if i + 1 >= curses.LINES - 2:
                     break
                 stdscr.addnstr(i + 1, 0, f"  {line}", curses.COLS - 1)
-            stdscr.addnstr(min(len(lines) + 2, curses.LINES - 1), 0, "Press any key.", curses.COLS - 1)
+            footer_y = min(len(lines) + 2, curses.LINES - 1)
+            stdscr.addnstr(footer_y, 0, "Press any key.", curses.COLS - 1)
             stdscr.refresh()
             stdscr.getch()
             continue
@@ -649,9 +654,7 @@ def cmd_open(stdscr, g, args):
         else:
             policy = LoadPolicy.trust_all(info.requires)
 
-    for r in range(NROW):
-        for c in range(NCOL):
-            g.cells[c][r].clear()
+    g.clear_all()
     g.names = []
     g.code = ""
     if g.jsonload(fn, policy=policy) == 0:
@@ -676,64 +679,174 @@ def cmd_clear(stdscr, g, undo):
     ch = stdscr.getch()
     if ch in (ord("y"), ord("Y")):
         undo.save_grid(g)
-        for r in range(NROW):
-            for c in range(NCOL):
-                g.cells[c][r].clear()
+        g.clear_all()
         g.dirty = 1
     return False
 
 
-def cmd_format(stdscr, g, undo, args):
-    cl = g.cell(g.cc, g.cr)
-    if not cl or cl.type == EMPTY:
+def _apply_fmt_to_range(g, undo, c1, r1, c2, r2, fmt_arg):
+    """Apply a format string to all non-empty cells in a range.
+
+    fmt_arg is a resolved format: a style string like "bui", a single
+    format char like "$", or a Python format spec like ",.2f".
+    Returns True if applied, False if invalid.
+    """
+    all_style = all(ch in "bui" for ch in fmt_arg)
+    if all_style:
+        undo.save_region(g, c1, r1, c2, r2)
+        for r in range(r1, r2 + 1):
+            for c in range(c1, c2 + 1):
+                cl = g.cell(c, r)
+                if not cl or cl.type == EMPTY:
+                    continue
+                for ch in fmt_arg:
+                    if ch == "b":
+                        cl.bold = 1 - cl.bold
+                    elif ch == "u":
+                        cl.underline = 1 - cl.underline
+                    elif ch == "i":
+                        cl.italic = 1 - cl.italic
+        return True
+
+    if len(fmt_arg) == 1 and fmt_arg.upper() in "LRIGD$%*":
+        undo.save_region(g, c1, r1, c2, r2)
+        fmt_ch = fmt_arg.upper()
+        for r in range(r1, r2 + 1):
+            for c in range(c1, c2 + 1):
+                cl = g.cell(c, r)
+                if not cl or cl.type == EMPTY:
+                    continue
+                cl.fmt = fmt_ch
+                cl.fmtstr = ""
+        return True
+
+    # Python format spec
+    undo.save_region(g, c1, r1, c2, r2)
+    for r in range(r1, r2 + 1):
+        for c in range(c1, c2 + 1):
+            cl = g.cell(c, r)
+            if not cl or cl.type == EMPTY:
+                continue
+            cl.fmtstr = fmt_arg[:31]
+            cl.fmt = 0
+    return True
+
+
+_FORMAT_OPTIONS = [
+    ("b", "Bold", "Toggle bold text"),
+    ("u", "Underline", "Toggle underline text"),
+    ("i", "Italic", "Toggle italic text"),
+    ("$", "Dollar", "Dollar sign, 2 decimal places (99.50)"),
+    ("%", "Percent", "Percentage, 2 decimal places (25.00%)"),
+    ("I", "Integer", "Truncate to whole number (1234)"),
+    (",", "Comma", "Comma thousands, no decimals (1,234,567)"),
+    ("*", "Bar chart", "Asterisks proportional to value"),
+    ("L", "Left align", "Left-align cell content"),
+    ("R", "Right align", "Right-align cell content"),
+    ("G", "General", "Default number format"),
+    ("D", "Use global", "Use the global default format"),
+]
+
+
+def _resolve_fmt(stdscr, args):
+    """Resolve a format argument, prompting interactively if empty.
+
+    Returns the format string, or None if cancelled.
+    """
+    if args:
+        return args
+
+    sel_idx = 0
+    while True:
+        stdscr.erase()
+        stdscr.attron(curses.A_BOLD)
+        stdscr.addnstr(0, 0, " Format", curses.COLS - 1)
+        stdscr.attroff(curses.A_BOLD)
+
+        for idx, (key, name, desc) in enumerate(_FORMAT_OPTIONS):
+            y = idx + 2
+            if y >= curses.LINES - 2:
+                break
+            if idx == sel_idx:
+                stdscr.attron(curses.color_pair(CP_CURSOR) | curses.A_BOLD)
+            label = f"  {key:>2}  {name:<14} {desc}"
+            stdscr.addnstr(y, 0, label, curses.COLS - 1)
+            if idx == sel_idx:
+                stdscr.attroff(curses.color_pair(CP_CURSOR) | curses.A_BOLD)
+
+        footer_y = min(len(_FORMAT_OPTIONS) + 3, curses.LINES - 1)
+        stdscr.addnstr(
+            footer_y,
+            0,
+            "  Enter: apply  Esc: cancel  or type a Python spec (e.g. ,.2f)",
+            curses.COLS - 1,
+        )
+        stdscr.refresh()
+
+        ch = stdscr.getch()
+        if ch == 27:
+            return None
+        elif ch == curses.KEY_UP and sel_idx > 0:
+            sel_idx -= 1
+        elif ch == curses.KEY_DOWN and sel_idx < len(_FORMAT_OPTIONS) - 1:
+            sel_idx += 1
+        elif ch in (10, 13, curses.KEY_ENTER):
+            return _FORMAT_OPTIONS[sel_idx][0]
+        elif 32 <= ch < 127:
+            # Direct key press -- check if it matches a format option
+            pressed = chr(ch)
+            for key, _, _ in _FORMAT_OPTIONS:
+                if pressed == key or pressed == key.lower():
+                    return key
+            # Otherwise treat as start of a Python format spec
+            buf = pressed
+            stdscr.addnstr(
+                curses.LINES - 1,
+                0,
+                f"  Format spec: {buf}_",
+                curses.COLS - 1,
+            )
+            stdscr.clrtoeol()
+            stdscr.refresh()
+            while True:
+                k = stdscr.getch()
+                if k == 27:
+                    return None
+                if k in (10, 13, curses.KEY_ENTER):
+                    return buf if buf else None
+                elif k in (curses.KEY_BACKSPACE, 127, 8):
+                    buf = buf[:-1]
+                elif 32 <= k < 127 and len(buf) < 31:
+                    buf += chr(k)
+                stdscr.addnstr(
+                    curses.LINES - 1,
+                    0,
+                    f"  Format spec: {buf}_   ",
+                    curses.COLS - 1,
+                )
+                stdscr.clrtoeol()
+                stdscr.refresh()
+    return None
+
+
+def cmd_format(stdscr, g, undo, args, sel=None):
+    if sel:
+        c1, r1, c2, r2 = sel
+    else:
+        cl = g.cell(g.cc, g.cr)
+        if not cl or cl.type == EMPTY:
+            return False
+        c1, r1, c2, r2 = g.cc, g.cr, g.cc, g.cr
+
+    fmt = _resolve_fmt(stdscr, args)
+    if fmt is None:
         return False
 
-    ch = ""
-    if args:
-        all_style = all(c in "bui" for c in args)
-        if all_style:
-            undo.save_cell(g, g.cc, g.cr)
-            for c in args:
-                if c == "b":
-                    cl.bold = 1 - cl.bold
-                elif c == "u":
-                    cl.underline = 1 - cl.underline
-                elif c == "i":
-                    cl.italic = 1 - cl.italic
-            return False
-        if len(args) == 1 and args.upper() in "LRIGD$%*":
-            ch = args[0]
-        else:
-            undo.save_cell(g, g.cc, g.cr)
-            cl.fmtstr = args[:31]
-            cl.fmt = 0
-            return False
-
-    if not ch:
-        stdscr.addnstr(
-            curses.LINES - 1, 0, "Format: b u i L R I G D $ % * (or Python spec)", curses.COLS - 1
+    if not _apply_fmt_to_range(g, undo, c1, r1, c2, r2, fmt):
+        show_error(
+            stdscr,
+            "Invalid format. Use: b u i L R I G D $ % * or Python spec",
         )
-        stdscr.clrtoeol()
-        stdscr.refresh()
-        k = stdscr.getch()
-        ch_c = chr(k) if 32 <= k < 127 else ""
-        if ch_c in "bui":
-            undo.save_cell(g, g.cc, g.cr)
-            if ch_c == "b":
-                cl.bold = 1 - cl.bold
-            elif ch_c == "u":
-                cl.underline = 1 - cl.underline
-            elif ch_c == "i":
-                cl.italic = 1 - cl.italic
-            return False
-        ch = ch_c
-
-    if isinstance(ch, str) and ch.upper() in "LRIGD$%*":
-        undo.save_cell(g, g.cc, g.cr)
-        cl.fmt = ord(ch.upper())
-        cl.fmtstr = ""
-    else:
-        show_error(stdscr, "Invalid format. Use: b u i L R I G D $ % * or Python spec")
     return False
 
 
@@ -747,7 +860,7 @@ def cmd_gformat(stdscr, g, args):
         k = stdscr.getch()
         ch = chr(k).upper() if 32 <= k < 127 else ""
     if ch in "LRIGD$%*":
-        g.fmt = ord(ch)
+        g.fmt = ch
     else:
         show_error(stdscr, "Invalid format. Use: L R I G D $ % *")
     return False
@@ -919,7 +1032,7 @@ def cmd_title(g, args):
     return False
 
 
-def cmdexec(stdscr, g, undo, text):
+def cmdexec(stdscr, g, undo, text, sel=None):
     text = text.strip()
     if not text:
         return False
@@ -945,7 +1058,7 @@ def cmdexec(stdscr, g, undo, text):
     if cmd == "clear":
         return cmd_clear(stdscr, g, undo)
     if cmd in ("f", "format"):
-        return cmd_format(stdscr, g, undo, args)
+        return cmd_format(stdscr, g, undo, args, sel=sel)
     if cmd in ("gf", "gformat"):
         return cmd_gformat(stdscr, g, args)
     if cmd == "width":
@@ -1002,9 +1115,9 @@ def cmdexec(stdscr, g, undo, text):
     return False
 
 
-def cmdline(stdscr, g, undo):
+def cmdline(stdscr, g, undo, sel=None):
     buf = ""
-    draw(stdscr, g, "CMD", "")
+    draw(stdscr, g, "CMD", "", sel=sel)
     while True:
         stdscr.addnstr(curses.LINES - 1, 0, f":{buf}_", curses.COLS - 1)
         stdscr.clrtoeol()
@@ -1014,7 +1127,7 @@ def cmdline(stdscr, g, undo):
             return False
         if ch in (10, 13, curses.KEY_ENTER):
             if buf:
-                return cmdexec(stdscr, g, undo, buf)
+                return cmdexec(stdscr, g, undo, buf, sel=sel)
             return False
         elif ch in (curses.KEY_BACKSPACE, 127, 8):
             buf = buf[:-1]
@@ -1142,6 +1255,39 @@ def entry(stdscr, g, undo, label, initial_ch):
             buf += chr(ch)
 
 
+def visual_mode(stdscr, g, undo):
+    """Visual selection mode. Arrow keys extend selection, : enters command line."""
+    ac, ar = g.cc, g.cr  # anchor
+
+    while True:
+        c1 = min(ac, g.cc)
+        r1 = min(ar, g.cr)
+        c2 = max(ac, g.cc)
+        r2 = max(ar, g.cr)
+        sel = (c1, r1, c2, r2)
+        rng = g.fmtrange(c1, r1, c2, r2)
+
+        draw(stdscr, g, "VISUAL", "", sel=sel)
+        stdscr.addnstr(1, 0, f"  {rng}", curses.COLS - 1)
+        stdscr.clrtoeol()
+        stdscr.refresh()
+
+        ch = stdscr.getch()
+        if ch == 27:
+            break
+        elif ch == ord(":"):
+            cmdline(stdscr, g, undo, sel=sel)
+            break
+        elif ch == curses.KEY_UP and g.cr > 0:
+            g.cr -= 1
+        elif ch == curses.KEY_DOWN and g.cr < NROW - 1:
+            g.cr += 1
+        elif ch == curses.KEY_LEFT and g.cc > 0:
+            g.cc -= 1
+        elif ch == curses.KEY_RIGHT and g.cc < NCOL - 1:
+            g.cc += 1
+
+
 def mainloop(stdscr, g):
     undo = UndoManager()
 
@@ -1207,7 +1353,7 @@ def mainloop(stdscr, g):
             cl = g.cell(g.cc, g.cr)
             if cl and cl.type != EMPTY:
                 undo.save_cell(g, g.cc, g.cr)
-                cl.clear()
+                g._cells.pop((g.cc, g.cr), None)
             g.recalc()
         elif ch == ord("!"):
             g.recalc()
@@ -1216,6 +1362,8 @@ def mainloop(stdscr, g):
                 break
         elif ch == ord(">"):
             nav(stdscr, g)
+        elif ch == ord("v"):
+            visual_mode(stdscr, g, undo)
         elif ch == ord('"'):
             entry(stdscr, g, undo, True, 0)
         elif ch == ord("=") or ch == ord(".") or (48 <= ch <= 57):
@@ -1266,7 +1414,7 @@ def main():
     g.mr = -1
     g.cw = _cfg.width if _cfg.width else CW_DEFAULT
     if _cfg.format and _cfg.format.upper() in "LRIGD$%*":
-        g.fmt = ord(_cfg.format.upper())
+        g.fmt = _cfg.format.upper()
     if _cfg.allowed_modules:
         g.load_requires(_cfg.allowed_modules)
         g.requires = list(_cfg.allowed_modules)

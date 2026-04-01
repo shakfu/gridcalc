@@ -1,12 +1,12 @@
-# pycalc Security Plan
+# gridcalc Security Plan
 
 ## Problem Statement
 
-pycalc evaluates user-provided formulas with Python's `eval()` and executes code
+gridcalc evaluates user-provided formulas with Python's `eval()` and executes code
 blocks with `exec()`. This is the source of its power -- users get the full
 expressiveness of Python expressions, including list comprehensions, math
 functions, and (with this plan) third-party libraries like numpy. But `eval()`
-and `exec()` are also the primary attack surface if pycalc ever loads untrusted
+and `exec()` are also the primary attack surface if gridcalc ever loads untrusted
 content.
 
 Python was never designed to be sandboxed. Every few years someone discovers a
@@ -37,7 +37,7 @@ sitting at the keyboard is the trust boundary.
 ### Layer 1: Module Registry
 
 Users declare which third-party libraries are available, either per-spreadsheet
-(via a `"requires"` field in the JSON file) or globally. pycalc imports approved
+(via a `"requires"` field in the JSON file) or globally. gridcalc imports approved
 modules and injects them into the formula eval namespace.
 
 Modules are classified into three categories:
@@ -168,9 +168,9 @@ Files without `requires` are fully backward compatible.
 
 ## Implementation
 
-- `pycalc/sandbox.py` -- module classification, AST validation, FileInfo,
+- `gridcalc/sandbox.py` -- module classification, AST validation, FileInfo,
   LoadPolicy
-- `pycalc/engine.py` -- integration (validate_formula in recalc, requires in
+- `gridcalc/engine.py` -- integration (validate_formula in recalc, requires in
   Grid, jsoninspect, policy-aware jsonload)
-- `pycalc/tui.py` -- trust gate prompts (curses and terminal)
+- `gridcalc/tui.py` -- trust gate prompts (curses and terminal)
 - `tests/test_sandbox.py` -- comprehensive tests

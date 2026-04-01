@@ -1,12 +1,12 @@
-# pycalc configuration
-# Place as ./pycalc.toml (project-local) or ~/.config/pycalc/pycalc.toml (user-level).
+# gridcalc configuration
+# Place as ./gridcalc.toml (project-local) or ~/.config/gridcalc/gridcalc.toml (user-level).
 # Project-local config overrides user-level.
 
 # Default editor for :e command (EDITOR env var takes precedence)
 editor = "vim"
 
 # Enable sandbox security checks (AST validation, trust prompt on file load).
-# PYCALC_SANDBOX env var takes precedence over this setting.
+# GRIDCALC_SANDBOX env var takes precedence over this setting.
 sandbox = false
 
 # Default column width (4-40)

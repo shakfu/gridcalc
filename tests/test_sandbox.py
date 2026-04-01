@@ -1,8 +1,8 @@
 import json
 import math
 
-from pycalc.engine import Grid, NamedRange
-from pycalc.sandbox import (
+from gridcalc.engine import Grid, NamedRange
+from gridcalc.sandbox import (
     LoadPolicy,
     classify_module,
     inspect_file,

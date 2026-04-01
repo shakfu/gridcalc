@@ -5,9 +5,9 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from pycalc.engine import Grid, Vec
-from pycalc.libs import get_lib_builtins
-from pycalc.libs.xlsx import (
+from gridcalc.engine import Grid, Vec
+from gridcalc.libs import get_lib_builtins
+from gridcalc.libs.xlsx import (
     AND,
     AVERAGE,
     AVERAGEIF,

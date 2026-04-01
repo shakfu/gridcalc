@@ -1,8 +1,8 @@
-"""Configuration file loading for pycalc.
+"""Configuration file loading for gridcalc.
 
 Lookup order (first found wins, CWD overrides user config):
-  1. ./pycalc.toml
-  2. $XDG_CONFIG_HOME/pycalc/pycalc.toml  (default: ~/.config/pycalc/pycalc.toml)
+  1. ./gridcalc.toml
+  2. $XDG_CONFIG_HOME/gridcalc/gridcalc.toml  (default: ~/.config/gridcalc/gridcalc.toml)
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ try:
 except ModuleNotFoundError:
     import tomli as tomllib  # type: ignore[import-not-found]
 
-CONFIG_FILENAME = "pycalc.toml"
+CONFIG_FILENAME = "gridcalc.toml"
 
 
 @dataclass
@@ -32,15 +32,15 @@ class Config:
 
 
 def user_config_dir() -> Path:
-    """Return the user-level config directory (XDG_CONFIG_HOME/pycalc)."""
+    """Return the user-level config directory (XDG_CONFIG_HOME/gridcalc)."""
     xdg = os.environ.get("XDG_CONFIG_HOME")
     if xdg:
-        return Path(xdg) / "pycalc"
-    return Path.home() / ".config" / "pycalc"
+        return Path(xdg) / "gridcalc"
+    return Path.home() / ".config" / "gridcalc"
 
 
 def find_config() -> Path | None:
-    """Find the first pycalc.toml in the lookup order."""
+    """Find the first gridcalc.toml in the lookup order."""
     cwd_config = Path.cwd() / CONFIG_FILENAME
     if cwd_config.is_file():
         return cwd_config

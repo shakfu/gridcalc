@@ -1,6 +1,6 @@
 import math
 
-from pycalc.engine import (
+from gridcalc.engine import (
     EMPTY,
     FORMULA,
     LABEL,
@@ -14,7 +14,7 @@ from pycalc.engine import (
     col_name,
     ref,
 )
-from pycalc.tui import fmtcell
+from gridcalc.tui import fmtcell
 
 
 def make_grid():

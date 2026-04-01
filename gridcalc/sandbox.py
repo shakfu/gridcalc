@@ -9,14 +9,14 @@ import os
 from dataclasses import dataclass, field
 
 # Global kill switch. During development, sandbox is off by default.
-# Set PYCALC_SANDBOX=1 to enable all sandbox checks (AST validation, trust prompt).
-# Can also be enabled via sandbox = true in pycalc.toml.
-_SANDBOX_ENV = os.environ.get("PYCALC_SANDBOX")
+# Set GRIDCALC_SANDBOX=1 to enable all sandbox checks (AST validation, trust prompt).
+# Can also be enabled via sandbox = true in gridcalc.toml.
+_SANDBOX_ENV = os.environ.get("GRIDCALC_SANDBOX")
 SANDBOX_ENABLED = _SANDBOX_ENV in ("1", "true", "yes") if _SANDBOX_ENV is not None else False
 
 
 def configure_sandbox(enabled: bool) -> None:
-    """Set sandbox state from config. Env var PYCALC_SANDBOX takes precedence."""
+    """Set sandbox state from config. Env var GRIDCALC_SANDBOX takes precedence."""
     global SANDBOX_ENABLED
     if _SANDBOX_ENV is None:
         SANDBOX_ENABLED = enabled

@@ -1,4 +1,4 @@
-from pycalc.config import _parse_config, find_config, load_config
+from gridcalc.config import _parse_config, find_config, load_config
 
 
 class TestParseConfig:
@@ -71,7 +71,7 @@ class TestParseConfig:
 
 class TestLoadConfig:
     def test_from_path(self, tmp_path):
-        f = tmp_path / "pycalc.toml"
+        f = tmp_path / "gridcalc.toml"
         f.write_text('editor = "nano"\nsandbox = true\nwidth = 10\n')
         cfg = load_config(f)
         assert cfg.editor == "nano"
@@ -85,20 +85,20 @@ class TestLoadConfig:
         assert cfg.config_path == ""
 
     def test_invalid_toml(self, tmp_path):
-        f = tmp_path / "pycalc.toml"
+        f = tmp_path / "gridcalc.toml"
         f.write_text("not valid toml [[[")
         cfg = load_config(f)
         assert cfg.editor == ""
 
     def test_empty_file(self, tmp_path):
-        f = tmp_path / "pycalc.toml"
+        f = tmp_path / "gridcalc.toml"
         f.write_text("")
         cfg = load_config(f)
         assert cfg.editor == ""
         assert cfg.width == 0
 
     def test_full_config(self, tmp_path):
-        f = tmp_path / "pycalc.toml"
+        f = tmp_path / "gridcalc.toml"
         f.write_text(
             'editor = "emacs"\n'
             "sandbox = true\n"
@@ -116,13 +116,13 @@ class TestLoadConfig:
 
 class TestFindConfig:
     def test_cwd_takes_precedence(self, tmp_path, monkeypatch):
-        user_dir = tmp_path / "user" / "pycalc"
+        user_dir = tmp_path / "user" / "gridcalc"
         user_dir.mkdir(parents=True)
-        (user_dir / "pycalc.toml").write_text('editor = "user"')
+        (user_dir / "gridcalc.toml").write_text('editor = "user"')
 
         cwd = tmp_path / "project"
         cwd.mkdir()
-        (cwd / "pycalc.toml").write_text('editor = "project"')
+        (cwd / "gridcalc.toml").write_text('editor = "project"')
 
         monkeypatch.chdir(cwd)
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user"))
@@ -133,9 +133,9 @@ class TestFindConfig:
         assert cfg.editor == "project"
 
     def test_falls_back_to_user_dir(self, tmp_path, monkeypatch):
-        user_dir = tmp_path / "config" / "pycalc"
+        user_dir = tmp_path / "config" / "gridcalc"
         user_dir.mkdir(parents=True)
-        (user_dir / "pycalc.toml").write_text('editor = "user"')
+        (user_dir / "gridcalc.toml").write_text('editor = "user"')
 
         cwd = tmp_path / "empty_project"
         cwd.mkdir()
@@ -158,9 +158,9 @@ class TestFindConfig:
         assert path is None
 
     def test_xdg_config_home_respected(self, tmp_path, monkeypatch):
-        custom_xdg = tmp_path / "custom_xdg" / "pycalc"
+        custom_xdg = tmp_path / "custom_xdg" / "gridcalc"
         custom_xdg.mkdir(parents=True)
-        (custom_xdg / "pycalc.toml").write_text('editor = "custom"')
+        (custom_xdg / "gridcalc.toml").write_text('editor = "custom"')
 
         cwd = tmp_path / "empty2"
         cwd.mkdir()

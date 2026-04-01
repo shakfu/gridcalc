@@ -2,8 +2,8 @@
 
 import curses
 
-from pycalc.engine import Grid
-from pycalc.tui import UndoManager
+from gridcalc.engine import Grid
+from gridcalc.tui import UndoManager
 
 
 class TestUndoManagerSaveCell:
@@ -218,20 +218,20 @@ class TestCmdexec:
         self.undo = UndoManager()
 
     def test_quit_clean(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         result = cmdexec(self.stdscr, self.g, self.undo, "q")
         assert result is True
 
     def test_force_quit(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.dirty = 1
         result = cmdexec(self.stdscr, self.g, self.undo, "q!")
         assert result is True
 
     def test_quit_dirty_denied(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.dirty = 1
         # getch returns 'n' to deny quit
@@ -240,7 +240,7 @@ class TestCmdexec:
         assert result is not True
 
     def test_quit_dirty_confirmed(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.dirty = 1
         self.stdscr.queue_getch(ord("y"))
@@ -248,7 +248,7 @@ class TestCmdexec:
         assert result is True
 
     def test_blank_clears_cell(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "42")
         self.g.cc = 0
@@ -257,7 +257,7 @@ class TestCmdexec:
         assert self.g.cell(0, 0) is None
 
     def test_blank_alias(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "42")
         self.g.cc = 0
@@ -266,13 +266,13 @@ class TestCmdexec:
         assert self.g.cell(0, 0) is None
 
     def test_width_valid(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         cmdexec(self.stdscr, self.g, self.undo, "width 12")
         assert self.g.cw == 12
 
     def test_width_out_of_range(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         old_cw = self.g.cw
         self.stdscr.queue_getch(27)  # dismiss error
@@ -280,7 +280,7 @@ class TestCmdexec:
         assert self.g.cw == old_cw
 
     def test_delete_row(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "10")
         self.g.setcell(0, 1, "20")
@@ -291,7 +291,7 @@ class TestCmdexec:
         assert self.g.cells[0][1].val == 30.0
 
     def test_delete_row_alias(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "10")
         self.g.setcell(0, 1, "20")
@@ -300,7 +300,7 @@ class TestCmdexec:
         assert self.g.cells[0][0].val == 20.0
 
     def test_insert_row(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "10")
         self.g.setcell(0, 1, "20")
@@ -311,7 +311,7 @@ class TestCmdexec:
         assert self.g.cells[0][2].val == 20.0
 
     def test_insert_col(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "10")
         self.g.setcell(1, 0, "20")
@@ -322,7 +322,7 @@ class TestCmdexec:
         assert self.g.cells[2][0].val == 20.0
 
     def test_delete_col(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "10")
         self.g.setcell(1, 0, "20")
@@ -333,7 +333,7 @@ class TestCmdexec:
         assert self.g.cells[1][0].val == 30.0
 
     def test_unknown_command(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.stdscr.queue_getch(27)  # dismiss error
         result = cmdexec(self.stdscr, self.g, self.undo, "nosuchcmd")
@@ -341,13 +341,13 @@ class TestCmdexec:
         assert "Unknown command" in self.stdscr._last_addnstr
 
     def test_empty_command(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         result = cmdexec(self.stdscr, self.g, self.undo, "")
         assert result is False
 
     def test_save_roundtrip(self, tmp_path):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "42")
         self.g.dirty = 1
@@ -361,7 +361,7 @@ class TestCmdexec:
         assert g2.cells[0][0].val == 42.0
 
     def test_savequit(self, tmp_path):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "99")
         self.g.dirty = 1
@@ -371,7 +371,7 @@ class TestCmdexec:
         assert self.g.dirty == 0
 
     def test_clear_confirmed(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "10")
         self.g.setcell(1, 0, "20")
@@ -381,7 +381,7 @@ class TestCmdexec:
         assert self.g.cell(1, 0) is None
 
     def test_clear_denied(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "10")
         self.stdscr.queue_getch(ord("n"))
@@ -389,7 +389,7 @@ class TestCmdexec:
         assert self.g.cells[0][0].val == 10.0
 
     def test_format_dollar(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "100")
         self.g.cc = 0
@@ -398,7 +398,7 @@ class TestCmdexec:
         assert self.g.cell(0, 0).fmt == "$"
 
     def test_format_bold(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "hello")
         self.g.cc = 0
@@ -407,7 +407,7 @@ class TestCmdexec:
         assert self.g.cell(0, 0).bold == 1
 
     def test_format_fmtstr(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "1234")
         self.g.cc = 0
@@ -416,13 +416,13 @@ class TestCmdexec:
         assert self.g.cell(0, 0).fmtstr == ",.0f"
 
     def test_global_format(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         cmdexec(self.stdscr, self.g, self.undo, "gf $")
         assert self.g.fmt == "$"
 
     def test_title_commands(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.cc = 2
         self.g.cr = 3
@@ -434,7 +434,7 @@ class TestCmdexec:
 
     def test_dr_undo(self):
         """Delete row via cmdexec is undoable."""
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "10")
         self.g.setcell(0, 1, "20")
@@ -456,7 +456,7 @@ class TestVisualSelectFormat:
         self.undo = UndoManager()
 
     def test_format_range_dollar(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "100")
         self.g.setcell(1, 0, "200")
@@ -468,7 +468,7 @@ class TestVisualSelectFormat:
         assert self.g.cell(0, 1).fmt == "$"
 
     def test_format_range_bold(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "10")
         self.g.setcell(1, 0, "20")
@@ -480,7 +480,7 @@ class TestVisualSelectFormat:
         assert self.g.cell(2, 0).bold == 1
 
     def test_format_range_fmtstr(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "1000")
         self.g.setcell(0, 1, "2000")
@@ -490,7 +490,7 @@ class TestVisualSelectFormat:
         assert self.g.cell(0, 1).fmtstr == ",.0f"
 
     def test_format_range_skips_empty(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "10")
         # (1, 0) is empty
@@ -502,7 +502,7 @@ class TestVisualSelectFormat:
         assert self.g.cell(2, 0).fmt == "$"
 
     def test_format_range_undo(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "10")
         self.g.setcell(1, 0, "20")
@@ -515,7 +515,7 @@ class TestVisualSelectFormat:
         assert self.g.cell(1, 0).fmt == ""
 
     def test_format_range_percent(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "0.5")
         self.g.setcell(0, 1, "0.75")
@@ -526,7 +526,7 @@ class TestVisualSelectFormat:
 
     def test_format_range_interactive(self):
         """When no format arg given, prompt interactively."""
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "10")
         self.g.setcell(1, 0, "20")
@@ -537,7 +537,7 @@ class TestVisualSelectFormat:
         assert self.g.cell(1, 0).fmt == "$"
 
     def test_format_range_combined_styles(self):
-        from pycalc.tui import cmdexec
+        from gridcalc.tui import cmdexec
 
         self.g.setcell(0, 0, "hello")
         self.g.setcell(1, 0, "world")

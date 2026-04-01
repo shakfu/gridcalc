@@ -4,7 +4,7 @@
 
 ### Added
 
-- **Security sandbox** (`pycalc/sandbox.py`):
+- **Security sandbox** (`gridcalc/sandbox.py`):
   - AST validation blocks dunder attribute access (`__class__`, `__subclasses__`,
     `__globals__`, etc.), dangerous names (`eval`, `exec`, `getattr`, `open`,
     `type`, etc.), and known internal attributes used in sandbox escape chains.
@@ -15,7 +15,7 @@
   - Trust gate on file load: files containing code blocks or `requires` prompt
     the user before executing. Options: approve, formulas only, view code,
     cancel. Works in both curses (`:o` command) and plain terminal (startup).
-  - `PYCALC_SANDBOX=1` env var or `sandbox = true` in config to enable checks.
+  - `GRIDCALC_SANDBOX=1` env var or `sandbox = true` in config to enable checks.
     Off by default during development; tests run with sandbox enabled.
   - `Grid.jsoninspect()` extracts file metadata (cell/formula counts, code
     block preview, required modules, blocked module warnings) without executing.
@@ -23,16 +23,16 @@
     blocks and modules are loaded.
   - See `docs/security-plan.md` for full threat model and architecture.
 
-- **Configuration file** (`pycalc/config.py`):
-  - TOML-based config via `pycalc.toml`.
-  - Lookup order: `./pycalc.toml` (CWD, project-local) then
-    `$XDG_CONFIG_HOME/pycalc/pycalc.toml` (user-level, defaults to
-    `~/.config/pycalc/pycalc.toml`). CWD overrides user config.
+- **Configuration file** (`gridcalc/config.py`):
+  - TOML-based config via `gridcalc.toml`.
+  - Lookup order: `./gridcalc.toml` (CWD, project-local) then
+    `$XDG_CONFIG_HOME/gridcalc/gridcalc.toml` (user-level, defaults to
+    `~/.config/gridcalc/gridcalc.toml`). CWD overrides user config.
   - Settings: `editor` (default editor for `:e`, overridden by `EDITOR` env
     var), `sandbox` (enable security checks), `width` (default column width),
     `format` (default number format), `allowed_modules` (pre-approved modules
     for formulas).
-  - See `pycalc.toml.example` for all options.
+  - See `gridcalc.toml.example` for all options.
 
 - **Third-party module support**:
   - JSON file format extended with `"requires": ["numpy", ...]` field.
@@ -60,12 +60,13 @@
   descriptions for each. Navigate with arrow keys + Enter, press a key
   directly, or type a Python format spec (e.g. `,.2f`).
 
-- **Formula modes** (`pycalc/modes/`): pluggable mode system for injecting
-  extra builtins into the formula eval namespace. Modes are registered in
-  `modes/__init__.py` and loaded via `Grid.load_mode()`. Configurable via
-  `mode = "xlsx"` in `pycalc.toml` or `"mode": "xlsx"` in the JSON file.
+- **Formula libs** (`gridcalc/libs/`): pluggable function libraries for the
+  formula eval namespace. Libs are composable (multiple can be active at
+  once), registered in `libs/__init__.py`, and loaded via `Grid.load_lib()`.
+  Configurable via `libs = ["xlsx"]` in `gridcalc.toml` or `"libs": ["xlsx"]`
+  in the JSON file.
 
-- **xlsx mode** (`pycalc/modes/xlsx.py`): Excel-compatible functions:
+- **xlsx lib** (`gridcalc/libs/xlsx.py`): Excel-compatible functions:
   - Logical: IF, AND, OR, NOT, IFERROR
   - Math: ROUND, ROUNDUP, ROUNDDOWN, MOD, POWER, SIGN
   - Aggregates: AVERAGE, MEDIAN, SUMPRODUCT, LARGE, SMALL
@@ -134,11 +135,14 @@
 - Formula evaluation in `recalc()` runs AST validation before `eval()` when
   sandbox is enabled.
 - Editor command resolution: `EDITOR` env var > config `editor` > `"vi"`.
-- Makefile `test` target sets `PYCALC_SANDBOX=1` so sandbox tests exercise
+- Makefile `test` target sets `GRIDCALC_SANDBOX=1` so sandbox tests exercise
   real checks.
 - **Strict mypy**: enabled `strict = true` in mypy config. Added type
   annotations to all functions, methods, and classes across engine.py,
   tui.py, config.py, and sandbox.py. Zero mypy errors under strict mode.
+- **Renamed project**: pycalc -> gridcalc. Package directory, imports, config
+  filename (`gridcalc.toml`), config paths (`~/.config/gridcalc/`), env var
+  (`GRIDCALC_SANDBOX`), entry point, and all references updated.
 
 ### Dependencies
 
@@ -163,7 +167,7 @@ Initial release. Pure Python reimplementation of
 
 - Full feature parity with pktcalc:
   - Curses TUI with identical keybindings and vim-style command line.
-  - JSON file format (files are interchangeable between pktcalc and pycalc).
+  - JSON file format (files are interchangeable between pktcalc and gridcalc).
   - Python formulas with cell references (`A1`, `$A$1`), range syntax
     (`A1:A10`), named ranges, and custom code blocks.
   - Vec type for element-wise array arithmetic.

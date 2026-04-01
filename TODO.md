@@ -4,7 +4,7 @@
 
 - [ ] Default sandbox to enabled before any public release. Currently off by
   default -- untrusted `.json` files execute arbitrary Python (code blocks,
-  `eval()` formulas) without a trust prompt unless `PYCALC_SANDBOX=1` or
+  `eval()` formulas) without a trust prompt unless `GRIDCALC_SANDBOX=1` or
   `sandbox = true` in config.
 - [ ] Validate code blocks with AST checks when sandbox is on. Currently
   `exec(self.code, g)` runs the code block with no AST validation -- only

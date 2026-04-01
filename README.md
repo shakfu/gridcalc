@@ -1,24 +1,24 @@
-# pycalc
+# gridcalc
 
 A minimal spreadsheet for the terminal, based on Serge Zaitsev's Visicalc clone, [kalk](https://github.com/zserge/kalk).
 
 Pure Python reimplementation of [pktcalc](https://github.com/sa/pktcalc) -- uses Python's own `eval()` for formulas instead of an embedded interpreter. Reads and writes JSON as its file format. File-compatible with pktcalc.
 
 ```sh
-$ pycalc budget.json
+$ gridcalc budget.json
 ```
 
 ## Install
 
 Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/).
 
-	uv run pycalc              # run directly
-	uv run pycalc budget.json  # open a file
+	uv run gridcalc              # run directly
+	uv run gridcalc budget.json  # open a file
 
 Or install as a tool:
 
 	uv tool install .
-	pycalc budget.json
+	gridcalc budget.json
 
 ## File format
 

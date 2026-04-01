@@ -26,6 +26,7 @@ class Config:
     sandbox: bool = False
     width: int = 0
     format: str = ""
+    libs: list[str] = field(default_factory=list)
     allowed_modules: list[str] = field(default_factory=list)
     config_path: str = ""
 
@@ -71,6 +72,9 @@ def _parse_config(data: dict[str, Any]) -> Config:
 
     if "format" in data and isinstance(data["format"], str) and len(data["format"]) == 1:
         cfg.format = data["format"]
+
+    if "libs" in data and isinstance(data["libs"], list):
+        cfg.libs = [str(lib) for lib in data["libs"]]
 
     if "allowed_modules" in data and isinstance(data["allowed_modules"], list):
         cfg.allowed_modules = [str(m) for m in data["allowed_modules"]]

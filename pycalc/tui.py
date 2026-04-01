@@ -1568,6 +1568,8 @@ def main() -> None:
     g.cw = _cfg.width if _cfg.width else CW_DEFAULT
     if _cfg.format and _cfg.format.upper() in "LRIGD$%*":
         g.fmt = _cfg.format.upper()
+    for lib in _cfg.libs:
+        g.load_lib(lib)
     if _cfg.allowed_modules:
         g.load_requires(_cfg.allowed_modules)
         g.requires = list(_cfg.allowed_modules)

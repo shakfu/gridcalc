@@ -60,6 +60,21 @@
   descriptions for each. Navigate with arrow keys + Enter, press a key
   directly, or type a Python format spec (e.g. `,.2f`).
 
+- **Formula modes** (`pycalc/modes/`): pluggable mode system for injecting
+  extra builtins into the formula eval namespace. Modes are registered in
+  `modes/__init__.py` and loaded via `Grid.load_mode()`. Configurable via
+  `mode = "xlsx"` in `pycalc.toml` or `"mode": "xlsx"` in the JSON file.
+
+- **xlsx mode** (`pycalc/modes/xlsx.py`): Excel-compatible functions:
+  - Logical: IF, AND, OR, NOT, IFERROR
+  - Math: ROUND, ROUNDUP, ROUNDDOWN, MOD, POWER, SIGN
+  - Aggregates: AVERAGE, MEDIAN, SUMPRODUCT, LARGE, SMALL
+  - Conditional: SUMIF, COUNTIF, AVERAGEIF (with criteria strings like
+    `">5"`, `"<=10"`, `"<>0"`, wildcard `"*"`)
+  - Lookup: VLOOKUP, HLOOKUP, INDEX, MATCH
+  - Text: CONCATENATE, CONCAT, LEFT, RIGHT, MID, LEN, TRIM, UPPER,
+    LOWER, PROPER, SUBSTITUTE, REPT, EXACT
+
 - **Project review** (`REVIEW.md`).
 
 - **TUI tests** (`tests/test_tui.py`): 47 new tests for `UndoManager`
@@ -69,11 +84,11 @@
   and visual-select range formatting (dollar, bold, fmtstr, percent, combined
   styles, empty-cell skipping, undo, interactive picker) using a mock stdscr.
 
-- 185 new tests (305 total) covering sandbox validation, module classification,
+- 256 new tests (376 total) covering sandbox validation, module classification,
   module loading, load policies, file inspection, config parsing, config lookup
   order, integration tests for blocked formulas, policy-aware loading, requires
-  roundtrips, circular reference detection, undo/redo, command dispatch, and
-  visual select range formatting.
+  roundtrips, circular reference detection, undo/redo, command dispatch,
+  visual select range formatting, and xlsx mode functions.
 
 ### Changed
 

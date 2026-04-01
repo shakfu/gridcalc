@@ -380,8 +380,17 @@ class Grid:
         self.mr: int = -1
         self._eval_globals: dict[str, Any] = _make_eval_globals()
         self.requires: list[str] = []
+        self.libs: list[str] = []
         self._module_errors: list[str] = []
         self._circular: set[tuple[int, int]] = set()
+
+    def load_lib(self, name: str) -> None:
+        """Load a formula lib's builtins into the eval namespace."""
+        if not name:
+            return
+        from .libs import get_lib_builtins
+
+        self._eval_globals.update(get_lib_builtins(name))
 
     def load_requires(self, modules: list[str]) -> None:
         """Load required modules into the eval namespace."""
@@ -738,6 +747,12 @@ class Grid:
         if policy is None or policy.load_code:
             self.code = code
 
+        libs = d.get("libs", [])
+        if isinstance(libs, list):
+            self.libs = [str(lib) for lib in libs]
+            for lib in self.libs:
+                self.load_lib(lib)
+
         requires = d.get("requires", [])
         if isinstance(requires, list):
             self.requires = requires
@@ -831,6 +846,9 @@ class Grid:
                     maxc = c
 
         out: dict[str, Any] = {"version": FILE_VERSION}
+
+        if self.libs:
+            out["libs"] = self.libs
 
         if self.requires:
             out["requires"] = self.requires

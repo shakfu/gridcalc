@@ -1525,9 +1525,19 @@ def mainloop(stdscr: curses.window, g: Grid) -> None:
             entry(stdscr, g, undo, True, ch)
 
 
+def _highlight_code(code: str) -> str:
+    """Syntax-highlight Python code for terminal output using Pygments."""
+    from pygments import highlight
+    from pygments.formatters import TerminalFormatter
+    from pygments.lexers import PythonLexer
+
+    return highlight(code, PythonLexer(), TerminalFormatter())
+
+
 def startup_trust_prompt(filename: str, info: FileInfo) -> LoadPolicy | None:
     """Plain-terminal trust prompt for file loading at startup (before curses)."""
-    print(f"\nLoading: {filename}")
+    print("\033[2J\033[H", end="")  # clear screen, cursor to top
+    print(f"Loading: {filename}")
     print(f"  Cells: {info.cell_count} ({info.formula_count} formulas)")
     if info.requires:
         for mod in info.requires:
@@ -1535,23 +1545,20 @@ def startup_trust_prompt(filename: str, info: FileInfo) -> LoadPolicy | None:
             tag = f" [{cls}]" if cls != "safe" else ""
             print(f"  Requires: {mod}{tag}")
     if info.has_code:
-        print(f"  Code: {info.code_lines} lines")
+        print(f"\n--- Code ({info.code_lines} lines) ---\n")
+        print(_highlight_code(info.code_preview))
+        print("--- End ---")
     print()
 
     while True:
-        prompt = "  [a]pprove  [f]ormulas only"
-        if info.has_code:
-            prompt += "  [v]iew code"
-        prompt += "  [c]ancel: "
+        prompt = "  [l]oad code  [s]kip code  [q]uit: "
         resp = input(prompt).strip().lower()
-        if resp == "a":
+        if resp == "l":
             approved = [m for m in info.requires if classify_module(m) != "blocked"]
             return LoadPolicy(load_code=True, approved_modules=approved)
-        elif resp == "f":
+        elif resp == "s":
             return LoadPolicy.formulas_only()
-        elif resp == "v" and info.has_code:
-            print(f"\n{info.code_preview}\n")
-        elif resp == "c":
+        elif resp == "q":
             return None
 
 

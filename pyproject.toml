@@ -30,6 +30,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    "pygments>=2.15",
     "tomli>=1.0; python_version < '3.11'",
 ]
 

@@ -4,13 +4,27 @@
 [![Python](https://img.shields.io/pypi/pyversions/gridcalc)](https://pypi.org/project/gridcalc/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A terminal spreadsheet powered by Python formulas. Based on Serge Zaitsev's [kalk](https://github.com/zserge/kalk), reimplemented in pure Python from [pktcalc](https://github.com/sa/pktcalc).
-
-Uses Python's `eval()` for formula evaluation. Reads and writes JSON. File-compatible with pktcalc.
+A terminal spreadsheet powered by Python formulas, inspired by Serge Zaitsev's [kalk](https://github.com/zserge/kalk).
 
 ```sh
 $ gridcalc budget.json
 ```
+
+## Features
+
+- **Python formulas**: cell formulas are Python expressions evaluated with `eval()`
+- **Curses-based TUI**: runs in any terminal, vim-style command mode
+- **JSON file format**: spreadsheets stored as plain JSON, easy to version control or script
+- **256 columns x 1024 rows**: column-major grid with four cell types (empty, number, label, formula)
+- **Range arithmetic**: `A1:A10` expands to a `Vec` array supporting element-wise math
+- **Named ranges**: assign names to cell ranges and use them directly in formulas
+- **Custom functions**: edit a Python code block (`:e`) to define functions, import modules, set constants
+- **Built-in spreadsheet functions**: SUM, AVG, MIN, MAX, COUNT, ABS, SQRT, INT, plus Python's math module
+- **Cell formatting**: bold, underline, italic, dollar/percent/integer/bar-chart formats, Python format specs
+- **Absolute references**: `$A$1` syntax for references that stay fixed on replicate/insert/delete
+- **Undo/redo**: full undo history with Ctrl-Z / Ctrl-Y
+- **Sandbox**: AST-based validation blocks dangerous code in formulas and code blocks
+- **Configurable**: TOML config file (`gridcalc.toml`) with XDG lookup
 
 ## Install
 

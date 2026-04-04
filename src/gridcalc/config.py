@@ -23,7 +23,7 @@ CONFIG_FILENAME = "gridcalc.toml"
 @dataclass
 class Config:
     editor: str = ""
-    sandbox: bool = False
+    sandbox: bool = True
     width: int = 0
     format: str = ""
     libs: list[str] = field(default_factory=list)

@@ -7,6 +7,7 @@ from gridcalc.sandbox import (
     classify_module,
     inspect_file,
     load_modules,
+    validate_code,
     validate_formula,
 )
 
@@ -197,6 +198,171 @@ class TestValidateFormulaBlocked:
     def test_dir_name(self):
         ok, _ = validate_formula("dir(x)")
         assert not ok
+
+
+# -- validate_code tests --
+
+
+class TestValidateCodeAllowed:
+    """Code block patterns that MUST be allowed."""
+
+    def test_empty(self):
+        assert validate_code("")[0]
+
+    def test_whitespace_only(self):
+        assert validate_code("   \n  ")[0]
+
+    def test_function_def(self):
+        assert validate_code("def double(x):\n    return x * 2")[0]
+
+    def test_safe_import(self):
+        assert validate_code("import statistics")[0]
+
+    def test_safe_from_import(self):
+        assert validate_code("from decimal import Decimal")[0]
+
+    def test_assignment(self):
+        assert validate_code("TAX_RATE = 0.21")[0]
+
+    def test_class_def(self):
+        assert validate_code("class Helper:\n    pass")[0]
+
+    def test_safe_module_attribute(self):
+        assert validate_code("import statistics\nx = statistics.mean([1,2,3])")[0]
+
+    def test_multiple_functions(self):
+        code = "def add(a, b):\n    return a + b\n\ndef sub(a, b):\n    return a - b\n"
+        assert validate_code(code)[0]
+
+
+class TestValidateCodeBlocked:
+    """Code block patterns that MUST be blocked for security."""
+
+    def test_import_os(self):
+        ok, msg = validate_code("import os")
+        assert not ok
+        assert "os" in msg
+
+    def test_import_subprocess(self):
+        ok, _ = validate_code("import subprocess")
+        assert not ok
+
+    def test_import_sys(self):
+        ok, _ = validate_code("import sys")
+        assert not ok
+
+    def test_from_os_import(self):
+        ok, msg = validate_code("from os import system")
+        assert not ok
+        assert "os" in msg
+
+    def test_from_subprocess_import(self):
+        ok, _ = validate_code("from subprocess import run")
+        assert not ok
+
+    def test_import_socket(self):
+        ok, _ = validate_code("import socket")
+        assert not ok
+
+    def test_import_pickle(self):
+        ok, _ = validate_code("import pickle")
+        assert not ok
+
+    def test_import_shutil(self):
+        ok, _ = validate_code("import shutil")
+        assert not ok
+
+    def test_import_os_path(self):
+        ok, _ = validate_code("import os.path")
+        assert not ok
+
+    def test_dunder_in_code(self):
+        ok, _ = validate_code("x = ().__class__.__subclasses__()")
+        assert not ok
+
+    def test_eval_in_code(self):
+        ok, _ = validate_code("x = eval('1+1')")
+        assert not ok
+
+    def test_exec_in_code(self):
+        ok, _ = validate_code("exec('import os')")
+        assert not ok
+
+    def test_open_in_code(self):
+        ok, _ = validate_code("f = open('/etc/passwd')")
+        assert not ok
+
+    def test_getattr_in_code(self):
+        ok, _ = validate_code("x = getattr(obj, 'secret')")
+        assert not ok
+
+    def test_dangerous_attr_in_code(self):
+        ok, _ = validate_code("x = f.func_globals")
+        assert not ok
+
+    def test_syntax_error(self):
+        ok, msg = validate_code("def (broken")
+        assert not ok
+        assert "syntax" in msg.lower()
+
+    def test_import_builtins(self):
+        ok, _ = validate_code("import builtins")
+        assert not ok
+
+    def test_import_ctypes(self):
+        ok, _ = validate_code("import ctypes")
+        assert not ok
+
+
+class TestCodeBlockIntegration:
+    """Integration tests: code blocks with sandbox validation in Grid.recalc."""
+
+    def test_safe_code_block_executes(self):
+        g = Grid()
+        g.code = "def double(x): return x * 2"
+        g.setcell(0, 0, "5")
+        g.setcell(1, 0, "=double(A1)")
+        assert g.cells[1][0].val == 10.0
+
+    def test_blocked_import_code_block_skipped(self):
+        g = Grid()
+        g.code = "import os\ndef pwned(): return os.getcwd()"
+        g.setcell(0, 0, "=pwned()")
+        assert math.isnan(g.cells[0][0].val)
+
+    def test_blocked_eval_code_block_skipped(self):
+        g = Grid()
+        g.code = "result = eval('1+1')"
+        g.setcell(0, 0, "=result")
+        assert math.isnan(g.cells[0][0].val)
+
+    def test_blocked_open_code_block_skipped(self):
+        g = Grid()
+        g.code = "f = open('/etc/passwd')"
+        g.setcell(0, 0, "1")
+        g.recalc()
+        # Code didn't execute, formula still works
+        assert g.cells[0][0].val == 1.0
+
+    def test_blocked_dunder_code_block_skipped(self):
+        g = Grid()
+        g.code = "x = ().__class__.__subclasses__()"
+        g.setcell(0, 0, "1")
+        g.recalc()
+        assert g.cells[0][0].val == 1.0
+
+    def test_safe_code_with_constants(self):
+        g = Grid()
+        g.code = "avg = (10 + 20 + 30) / 3"
+        g.setcell(0, 0, "=avg")
+        assert g.cells[0][0].val == 20.0
+
+    def test_mixed_safe_code_with_formula(self):
+        g = Grid()
+        g.code = "RATE = 0.05\ndef compound(p, n): return p * (1 + RATE) ** n"
+        g.setcell(0, 0, "1000")
+        g.setcell(1, 0, "=compound(A1, 10)")
+        assert abs(g.cells[1][0].val - 1000 * 1.05**10) < 0.01
 
 
 # -- classify_module tests --

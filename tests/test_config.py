@@ -5,7 +5,7 @@ class TestParseConfig:
     def test_empty(self):
         cfg = _parse_config({})
         assert cfg.editor == ""
-        assert cfg.sandbox is False
+        assert cfg.sandbox is True
         assert cfg.width == 0
         assert cfg.format == ""
         assert cfg.allowed_modules == []
@@ -66,7 +66,7 @@ class TestParseConfig:
 
     def test_wrong_type_sandbox(self):
         cfg = _parse_config({"sandbox": "yes"})
-        assert cfg.sandbox is False
+        assert cfg.sandbox is True
 
 
 class TestLoadConfig:

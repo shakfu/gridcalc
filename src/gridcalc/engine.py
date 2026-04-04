@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
-from .sandbox import load_modules, validate_formula
+from .sandbox import load_modules, validate_code, validate_formula
 
 MAXIN = 256
 NCOL = 256
@@ -455,8 +455,10 @@ class Grid:
         self._circular = set()
 
         if self.code:
-            with contextlib.suppress(Exception):
-                exec(self.code, g)
+            valid, _ = validate_code(self.code)
+            if valid:
+                with contextlib.suppress(Exception):
+                    exec(self.code, g)  # noqa: S102
 
         changed_cells: set[tuple[int, int]] = set()
         for _ in range(100):

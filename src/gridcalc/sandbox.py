@@ -8,11 +8,10 @@ import json
 import os
 from dataclasses import dataclass, field
 
-# Global kill switch. During development, sandbox is off by default.
-# Set GRIDCALC_SANDBOX=1 to enable all sandbox checks (AST validation, trust prompt).
-# Can also be enabled via sandbox = true in gridcalc.toml.
+# Sandbox is on by default. Set GRIDCALC_SANDBOX=0 to disable.
+# Can also be controlled via sandbox = true/false in gridcalc.toml.
 _SANDBOX_ENV = os.environ.get("GRIDCALC_SANDBOX")
-SANDBOX_ENABLED = _SANDBOX_ENV in ("1", "true", "yes") if _SANDBOX_ENV is not None else False
+SANDBOX_ENABLED = _SANDBOX_ENV not in ("0", "false", "no") if _SANDBOX_ENV is not None else True
 
 
 def configure_sandbox(enabled: bool) -> None:
@@ -213,6 +212,54 @@ def validate_formula(source: str) -> tuple[bool, str]:
                 return False, f"dunder attribute '{attr}' is not allowed"
             if attr in _DANGEROUS_ATTRS:
                 return False, f"attribute '{attr}' is not allowed"
+        elif isinstance(node, ast.Name):
+            name = node.id
+            if name in _BLOCKED_NAMES:
+                return False, f"name '{name}' is not allowed"
+            if name.startswith("__") and name.endswith("__"):
+                return False, f"dunder name '{name}' is not allowed"
+
+    return True, ""
+
+
+def validate_code(source: str) -> tuple[bool, str]:
+    """Validate a code block (statements) against security rules.
+
+    Applies the same AST checks as validate_formula (dunder access,
+    dangerous names/attrs) plus blocks import of blocked modules and
+    dangerous builtins used as statements (eval/exec/open calls).
+    """
+    if not SANDBOX_ENABLED:
+        return True, ""
+
+    if not source or not source.strip():
+        return True, ""
+
+    try:
+        tree = ast.parse(source, mode="exec")
+    except SyntaxError as e:
+        return False, f"syntax error: {e}"
+
+    for node in ast.walk(tree):
+        # Block imports of blocked modules
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                base = alias.name.split(".")[0]
+                if alias.name in BLOCKED_MODULES or base in BLOCKED_MODULES:
+                    return False, f"import of '{alias.name}' is blocked"
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                base = node.module.split(".")[0]
+                if node.module in BLOCKED_MODULES or base in BLOCKED_MODULES:
+                    return False, f"import from '{node.module}' is blocked"
+        # Same attribute checks as formulas
+        elif isinstance(node, ast.Attribute):
+            attr = node.attr
+            if attr.startswith("__") and attr.endswith("__"):
+                return False, f"dunder attribute '{attr}' is not allowed"
+            if attr in _DANGEROUS_ATTRS:
+                return False, f"attribute '{attr}' is not allowed"
+        # Same name checks as formulas
         elif isinstance(node, ast.Name):
             name = node.id
             if name in _BLOCKED_NAMES:

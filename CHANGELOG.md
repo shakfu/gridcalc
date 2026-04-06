@@ -2,7 +2,53 @@
 
 ## Unreleased
 
+## [0.1.2]
+
 ### Added
+
+- **Pandas DataFrame support in formulas**: Formulas that return pandas
+  DataFrames or Series are stored on `Cell.matrix`. DataFrames display as
+  `df[3x2]` in the grid, with column names shown in the status bar. Series
+  results are automatically converted to DataFrames via `.to_frame()`.
+  DataFrame equality uses `.equals()` for recalc convergence. Cells holding
+  DataFrames with non-numeric first elements no longer display as ERROR.
+
+- **`:view` command**: View the DataFrame or ndarray in the current cell as
+  a scrollable table with column headers, row numbers, and keyboard
+  navigation (arrows, PgUp/PgDn, Home/End). Works for both DataFrames and
+  NumPy matrices.
+
+- **`:pd load`/`:pd save` commands**: Import and export grid data using
+  pandas. Auto-detects file format from extension: CSV, TSV, Excel
+  (.xlsx/.xls), JSON, and Parquet. `:pd load` places column headers in
+  row 1 and data below. `:pd save` uses row 1 as column headers. Full
+  undo support on load.
+
+- **CSV import/export** (`:csv save [file]`, `:csv load [file]`): Plain
+  CSV export writes evaluated cell values (not formulas). Import parses
+  numbers as NUM cells and text as LABELs. Full undo support on load.
+
+- **Search** (`/`, `n`, `N`): Press `/` to enter a search pattern
+  (case-insensitive substring match against cell text and evaluated numeric
+  values). `n` jumps to the next match, `N` to the previous, both wrapping
+  around. The status bar shows a `[3/12]` position indicator when the
+  cursor is on a match.
+
+- **Cell copy/paste** (`y`/`p`): `y` yanks the current cell (or visual
+  selection) to an internal clipboard. `p` pastes at the cursor. Paste
+  copies cell text verbatim (no reference adjustment, unlike `:r`),
+  preserving styles (bold, underline, format). Full undo support.
+
+- **`:sort` command**: Sort rows by a column. `:sort B` sorts all data
+  rows by column B ascending. `:sort B desc` for descending. Numbers sort
+  before labels; labels sort alphabetically; empties sort last. In visual
+  mode, only the selected rows are sorted (useful for preserving headers).
+  Full undo support.
+
+- **Extended visual selection operations**: `:b` blanks all cells in the
+  selection. `:dr` deletes all selected rows. `:dc` deletes all selected
+  columns. `y` yanks the selection, `p` pastes at the selection origin.
+  All operations support undo.
 
 - **NumPy ndarray support in formulas**: Formulas that return numpy arrays
   (1-D or N-D) are stored in a new `Cell.matrix` field. Built-in spreadsheet
@@ -26,6 +72,18 @@
   asking the user to approve. The prompt options were simplified to
   `[l]oad code`, `[s]kip code`, `[q]uit`.
 
+- 77 new tests: DataFrame formula evaluation (creation, column access,
+  describe, filtering, groupby, Series conversion, recalc stability),
+  pandas load/save (CSV, TSV, JSON, round-trip, no-header mode, error
+  handling), DataFrame display formatting, CSV import/export (basic,
+  empty grid, NaN, labels/numbers, round-trip, error paths), search
+  (labels, numbers, formula values, case-insensitive, next/prev/wrap),
+  search indicator, clipboard (yank/paste single/range, style preservation,
+  formula verbatim copy, undo, empty noop), sort (by column, descending,
+  labels, mixed types, visual selection, undo, invalid column), visual
+  selection blank/delete (range blank, partial, row/col delete, undo),
+  `:pd` and `:csv` command dispatch. 504 tests total.
+
 - 17 new numpy/matrix tests in `test_engine.py` covering basic ndarray
   formulas, identity matrices, cell references, matmul, linalg operations,
   0-D scalar collapse, 1-D arrays, built-in function dispatch, cell display
@@ -39,6 +97,9 @@
 
 - **Sandbox enabled by default**: `GRIDCALC_SANDBOX` now defaults to enabled.
   Set `GRIDCALC_SANDBOX=0` to disable (previously required `=1` to enable).
+
+- Added `numpy >= 1.24` and `pandas >= 2.0` as project dependencies.
+  Added `types-Pygments` and `pandas-stubs` as dev dependencies for mypy.
 
 ## [0.1.1]
 

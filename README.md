@@ -18,6 +18,11 @@ $ gridcalc budget.json
 - **256 columns x 1024 rows**: column-major grid with four cell types (empty, number, label, formula)
 - **Range arithmetic**: `A1:A10` expands to a `Vec` array supporting element-wise math
 - **NumPy support**: use `np.array`, `np.linalg`, matrix multiply (`@`), and other numpy operations in formulas
+- **Pandas support**: create and manipulate DataFrames in formulas, view as scrollable tables
+- **CSV/pandas import/export**: `:csv` for plain CSV, `:pd` for pandas-powered multi-format I/O (CSV, TSV, Excel, JSON, Parquet)
+- **Search**: `/` to search, `n`/`N` to cycle matches with position indicator
+- **Copy/paste**: `y` to yank, `p` to paste (single cell or visual selection)
+- **Sort**: `:sort [col] [desc]` to sort rows by column
 - **Named ranges**: assign names to cell ranges and use them directly in formulas
 - **Custom functions**: edit a Python code block (`:e`) to define functions, import modules, set constants
 - **Built-in spreadsheet functions**: SUM, AVG, MIN, MAX, COUNT, ABS, SQRT, INT, plus Python's math module
@@ -98,18 +103,24 @@ Press `:` for the command line (vim-style):
 	:wq [file]      Save and quit
 	:e              Edit code block in $EDITOR
 	:o [file]       Open file
-	:b              Blank current cell
+	:b              Blank current cell (or selection in visual mode)
 	:clear          Clear entire sheet
 	:f <fmt>        Format/style cell (b u i L R I G D $ % * or Python spec)
 	:gf <fmt>       Set global format
 	:width <n>      Set column width (4-40)
-	:dr             Delete row
-	:dc             Delete column
+	:dr             Delete row (or selected rows in visual mode)
+	:dc             Delete column (or selected columns in visual mode)
 	:ir             Insert row
 	:ic             Insert column
 	:m              Move row/column (arrow keys to drag)
 	:r              Replicate (copy with relative refs)
-	:name <n> [range]  Define named range
+	:sort [col] [desc]  Sort rows by column (visual mode: sort selection)
+	:view           View DataFrame/matrix as scrollable table
+	:csv save [file]    Export evaluated values to CSV
+	:csv load [file]    Import cells from CSV
+	:pd save [file]     Export via pandas (CSV, TSV, Excel, JSON, Parquet)
+	:pd load [file]     Import via pandas (auto-detects format)
+	:name <n> [range]   Define named range
 	:names          List named ranges
 	:unname <n>     Remove named range
 	:tv/:th/:tb/:tn Lock/unlock title rows/columns
@@ -117,6 +128,12 @@ Press `:` for the command line (vim-style):
 Other keys:
 
 	>           Go to cell (type reference)
+	/           Search (type pattern, Enter to find)
+	n           Next search match
+	N           Previous search match
+	y           Yank (copy) current cell
+	p           Paste yanked cell(s) at cursor
+	v           Enter visual selection mode
 	!           Force recalculation
 	"           Enter label
 	Backspace   Clear cell
@@ -128,6 +145,20 @@ Other keys:
 	Ctrl-Z      Undo
 	Ctrl-Y      Redo
 	Ctrl-C      Quit
+
+### Visual selection mode
+
+Press `v` to enter visual mode. Arrow keys extend the selection from the
+anchor cell. Selected cells are highlighted in magenta.
+
+	y           Yank (copy) selection
+	p           Paste at selection origin
+	:           Enter command line (commands apply to selection)
+	Esc         Cancel
+
+Commands that support visual selection: `:b` (blank range), `:f` (format
+range), `:dr` (delete selected rows), `:dc` (delete selected columns),
+`:sort` (sort selected rows).
 
 ## Formulas
 
@@ -217,9 +248,44 @@ Formulas can create and manipulate NumPy arrays:
 	=A1.T
 	=A1 @ A2
 
-Matrix cells display the top-left element and the shape, e.g. `1.0[2x2]`.
-The full matrix is shown in the status bar. Built-in functions like SUM
-and SQRT work element-wise on NumPy arrays.
+Matrix cells display the shape, e.g. `[2x2]`. The full matrix is shown
+in the status bar. Use `:view` to see the contents as a scrollable table.
+Built-in functions like SUM and SQRT work element-wise on NumPy arrays.
+
+### DataFrame operations
+
+When `pandas` is listed in `requires`, it is available as `pd` in formulas.
+Formulas can create and manipulate DataFrames:
+
+	=pd.DataFrame({'name': ['A','B','C'], 'val': [10,20,30]})
+	=A1['val'].sum()
+	=A1['val'].mean()
+	=A1.describe()
+	=A1.groupby('cat')['val'].sum()
+	=A1[A1['val'] > 10]
+
+DataFrame cells display `df[3x2]` (rows x columns). The status bar shows
+column names. Use `:view` to see the full DataFrame as a scrollable table.
+
+Series results are automatically converted to DataFrames.
+
+### Import/export
+
+`:csv` provides plain CSV import/export. `:pd` uses pandas for richer
+format support:
+
+	:csv save data.csv      Export evaluated values to CSV
+	:csv load data.csv      Import cells from CSV
+	:pd load data.csv       Import via pandas (CSV, auto-typed)
+	:pd load data.xlsx      Import from Excel
+	:pd load data.parquet   Import from Parquet
+	:pd load data.tsv       Import from TSV
+	:pd load data.json      Import from JSON
+	:pd save results.xlsx   Export to Excel
+	:pd save results.json   Export to JSON (records format)
+
+`:pd load` places column headers in row 1 and data below. `:pd save`
+uses row 1 as column headers.
 
 ### Cell references
 

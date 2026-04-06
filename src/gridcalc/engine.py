@@ -23,6 +23,11 @@ LABEL = 2
 FORMULA = 3
 
 
+def _is_ndarray(obj: object) -> bool:
+    """Check if obj is a numpy ndarray without importing numpy."""
+    return type(obj).__module__ == "numpy" and type(obj).__name__ == "ndarray"
+
+
 class Vec:
     def __init__(self, data: Iterable[float]) -> None:
         self.data: list[float] = list(data)
@@ -84,51 +89,68 @@ class Vec:
         return Vec([abs(a) for a in self.data])
 
 
-def SUM(x: Vec | float) -> float:
+def SUM(x: Any) -> float:
     if isinstance(x, Vec):
         return sum(x.data)
+    if _is_ndarray(x):
+        return float(x.sum())
     return float(x)
 
 
-def AVG(x: Vec | float) -> float:
+def AVG(x: Any) -> float:
     if isinstance(x, Vec):
         return sum(x.data) / len(x.data) if x.data else 0.0
+    if _is_ndarray(x):
+        return float(x.mean()) if x.size > 0 else 0.0
     return float(x)
 
 
-def MIN(x: Vec | float) -> float:
+def MIN(x: Any) -> float:
     if isinstance(x, Vec):
         return min(x.data)
+    if _is_ndarray(x):
+        return float(x.min())
     return float(x)
 
 
-def MAX(x: Vec | float) -> float:
+def MAX(x: Any) -> float:
     if isinstance(x, Vec):
         return max(x.data)
+    if _is_ndarray(x):
+        return float(x.max())
     return float(x)
 
 
-def COUNT(x: Vec | float) -> int | float:
+def COUNT(x: Any) -> int | float:
     if isinstance(x, Vec):
         return len(x.data)
+    if _is_ndarray(x):
+        return int(x.size)
     return 1
 
 
-def ABS(x: Vec | float) -> Vec | float:
+def ABS(x: Any) -> Any:
     if isinstance(x, Vec):
         return Vec([abs(a) for a in x.data])
+    if _is_ndarray(x):
+        return abs(x)
     return abs(x)
 
 
-def SQRT(x: Vec | float) -> Vec | float:
+def SQRT(x: Any) -> Any:
     if isinstance(x, Vec):
         return Vec([math.sqrt(a) for a in x.data])
+    if _is_ndarray(x):
+        import numpy as _np  # noqa: I001
+        return _np.sqrt(x)
     return math.sqrt(x)
 
 
-def INT(x: Vec | float) -> Vec | int:
+def INT(x: Any) -> Any:
     if isinstance(x, Vec):
         return Vec([int(a) for a in x.data])
+    if _is_ndarray(x):
+        return x.astype(int)
     return int(x)
 
 
@@ -193,12 +215,16 @@ def _make_eval_globals() -> dict[str, Any]:
 
 
 class Cell:
-    __slots__ = ("type", "val", "arr", "text", "fmt", "bold", "underline", "italic", "fmtstr")
+    __slots__ = (
+        "type", "val", "arr", "matrix", "text", "fmt",
+        "bold", "underline", "italic", "fmtstr",
+    )
 
     def __init__(self) -> None:
         self.type: int = EMPTY
         self.val: float = 0.0
         self.arr: list[float] | None = None
+        self.matrix: Any = None
         self.text: str = ""
         self.fmt: str = ""
         self.bold: int = 0
@@ -210,6 +236,7 @@ class Cell:
         self.type = EMPTY
         self.val = 0.0
         self.arr = None
+        self.matrix = None
         self.text = ""
         self.fmt = ""
         self.bold = 0
@@ -221,6 +248,7 @@ class Cell:
         self.type = src.type
         self.val = src.val
         self.arr = list(src.arr) if src.arr is not None else None
+        self.matrix = src.matrix.copy() if src.matrix is not None else None
         self.text = src.text
         self.fmt = src.fmt
         self.bold = src.bold
@@ -428,6 +456,7 @@ class Grid:
 
         cl = self._ensure_cell(c, r)
         cl.arr = None
+        cl.matrix = None
         cl.text = text
         self.dirty = 1
 
@@ -469,7 +498,9 @@ class Grid:
                 if cl.type == EMPTY or cl.type == LABEL:
                     continue
                 name = cellname(c, r)
-                if cl.arr is not None and len(cl.arr) > 0:
+                if cl.matrix is not None:
+                    g[name] = cl.matrix
+                elif cl.arr is not None and len(cl.arr) > 0:
                     g[name] = Vec(cl.arr)
                 else:
                     g[name] = cl.val
@@ -497,21 +528,38 @@ class Grid:
                 stripped = formula.replace("$", "")
                 evalbuf = _expand_ranges(stripped)
                 oldval = cl.val
+                old_matrix = cl.matrix
                 valid, _ = validate_formula(evalbuf)
                 if not valid:
                     cl.arr = None
+                    cl.matrix = None
                     cl.val = float("nan")
                 else:
                     try:
                         result = eval(evalbuf, g)  # noqa: S307
-                        if isinstance(result, Vec):
+                        if _is_ndarray(result):
+                            if result.ndim == 0:
+                                cl.matrix = None
+                                cl.arr = None
+                                cl.val = float(result)
+                            else:
+                                cl.matrix = result
+                                cl.arr = None
+                                try:
+                                    cl.val = float(result.flat[0])
+                                except (TypeError, ValueError):
+                                    cl.val = float("nan")
+                        elif isinstance(result, Vec):
+                            cl.matrix = None
                             cl.arr = list(result.data)
                             cl.val = result.data[0] if result.data else float("nan")
                         else:
+                            cl.matrix = None
                             cl.arr = None
                             cl.val = float(result)
                     except Exception:
                         cl.arr = None
+                        cl.matrix = None
                         cl.val = float("nan")
                 both_nan = (
                     isinstance(cl.val, float)
@@ -519,7 +567,17 @@ class Grid:
                     and isinstance(oldval, float)
                     and math.isnan(oldval)
                 )
-                if cl.val != oldval and not both_nan:
+                matrix_changed = False
+                if cl.matrix is not None or old_matrix is not None:
+                    if cl.matrix is None or old_matrix is None:
+                        matrix_changed = True
+                    else:
+                        try:
+                            import numpy as _np  # noqa: I001
+                            matrix_changed = not _np.array_equal(cl.matrix, old_matrix)
+                        except ImportError:
+                            matrix_changed = cl.matrix is not old_matrix
+                if (cl.val != oldval and not both_nan) or matrix_changed:
                     changed_cells.add((fc, fr))
 
             if not changed_cells:
@@ -545,6 +603,7 @@ class Grid:
                 circ = self._cells.get(pos)
                 if circ:
                     circ.arr = None
+                    circ.matrix = None
                     circ.val = float("nan")
 
     def _fixrefs(self, axis: str, a: int, b: int) -> None:

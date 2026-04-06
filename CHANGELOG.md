@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### Added
+
+- **NumPy ndarray support in formulas**: Formulas that return numpy arrays
+  (1-D or N-D) are stored in a new `Cell.matrix` field. Built-in spreadsheet
+  functions (SUM, AVG, MIN, MAX, COUNT, ABS, SQRT, INT) now accept ndarrays
+  in addition to `Vec` and scalar inputs. Matrix cells display a shape summary
+  (e.g. `[3x3]`, `[5]`) in the grid and show element previews in the status
+  bar. Matrix multiplication (`@`), `np.linalg.inv`, `np.linalg.det`, and
+  other numpy operations work across cell references. 0-D arrays are
+  transparently collapsed to scalars. Deep copy on `Cell.copy_from()` and
+  proper cleanup on `setcell()` / `clear()` prevent stale matrix state.
+  Convergence detection in `recalc()` correctly compares ndarrays to avoid
+  false circular-reference marks.
+
+- **Code block validation** (`sandbox.validate_code()`): AST-based security
+  validation for code blocks (multi-statement `exec` mode), applying the same
+  checks as formula validation (dunder access, dangerous names/attributes)
+  plus import blocking for disallowed modules.
+
+- **Syntax-highlighted code preview on load**: The startup trust prompt now
+  displays the file's code block with Pygments syntax highlighting before
+  asking the user to approve. The prompt options were simplified to
+  `[l]oad code`, `[s]kip code`, `[q]uit`.
+
+- 17 new numpy/matrix tests in `test_engine.py` covering basic ndarray
+  formulas, identity matrices, cell references, matmul, linalg operations,
+  0-D scalar collapse, 1-D arrays, built-in function dispatch, cell display
+  formatting, deep copy isolation, convergence stability, stale matrix
+  cleanup, and circular matrix detection.
+
+- 34 new sandbox tests in `test_sandbox.py` covering `validate_code()` for
+  blocked imports, dunder access, dangerous names, and valid code acceptance.
+
+### Changed
+
+- **Sandbox enabled by default**: `GRIDCALC_SANDBOX` now defaults to enabled.
+  Set `GRIDCALC_SANDBOX=0` to disable (previously required `=1` to enable).
+
 ## [0.1.1]
 
 ### Added

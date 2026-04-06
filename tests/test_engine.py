@@ -1,5 +1,7 @@
 import math
 
+import pytest
+
 from gridcalc.engine import (
     EMPTY,
     FORMULA,
@@ -1355,3 +1357,153 @@ class TestCircularReference:
         assert math.isnan(g.cells[1][0].val)
         assert (0, 1) not in g._circular
         assert (1, 0) in g._circular
+
+
+np = pytest.importorskip("numpy")
+
+
+def make_np_grid():
+    """Create a grid with numpy loaded into eval globals."""
+    g = Grid()
+    g.load_requires(["numpy"])
+    return g
+
+
+class TestNumpyMatrix:
+    def test_basic_ndarray_formula(self):
+        g = make_np_grid()
+        g.setcell(0, 0, "=np.array([[1,2],[3,4]])")
+        cl = g.cells[0][0]
+        assert cl.matrix is not None
+        assert cl.matrix.shape == (2, 2)
+        assert cl.val == 1.0
+        assert cl.arr is None
+        assert np.array_equal(cl.matrix, np.array([[1, 2], [3, 4]]))
+
+    def test_identity_matrix(self):
+        g = make_np_grid()
+        g.setcell(0, 0, "=np.eye(3)")
+        cl = g.cells[0][0]
+        assert cl.matrix is not None
+        assert cl.matrix.shape == (3, 3)
+        assert cl.val == 1.0
+        assert np.array_equal(cl.matrix, np.eye(3))
+
+    def test_matrix_reference(self):
+        g = make_np_grid()
+        g.setcell(0, 0, "=np.eye(3)")
+        g.setcell(1, 0, "=A1")
+        cl = g.cells[1][0]
+        assert cl.matrix is not None
+        assert cl.matrix.shape == (3, 3)
+        assert np.array_equal(cl.matrix, np.eye(3))
+
+    def test_matmul(self):
+        g = make_np_grid()
+        g.setcell(0, 0, "=np.array([[1,2],[3,4]])")
+        g.setcell(1, 0, "=A1 @ A1")
+        cl = g.cells[1][0]
+        assert cl.matrix is not None
+        expected = np.array([[7, 10], [15, 22]])
+        assert np.array_equal(cl.matrix, expected)
+
+    def test_linalg_inv(self):
+        g = make_np_grid()
+        g.setcell(0, 0, "=np.array([[1,2],[3,4]])")
+        g.setcell(1, 0, "=np.linalg.inv(A1)")
+        cl = g.cells[1][0]
+        assert cl.matrix is not None
+        assert cl.matrix.shape == (2, 2)
+        expected = np.linalg.inv(np.array([[1, 2], [3, 4]]))
+        assert np.allclose(cl.matrix, expected)
+
+    def test_0d_array_treated_as_scalar(self):
+        g = make_np_grid()
+        g.setcell(0, 0, "=np.eye(3)")
+        g.setcell(1, 0, "=np.linalg.det(A1)")
+        cl = g.cells[1][0]
+        assert cl.matrix is None
+        assert cl.arr is None
+        assert abs(cl.val - 1.0) < 1e-10
+
+    def test_1d_ndarray(self):
+        g = make_np_grid()
+        g.setcell(0, 0, "=np.array([10, 20, 30])")
+        cl = g.cells[0][0]
+        assert cl.matrix is not None
+        assert cl.matrix.shape == (3,)
+        assert cl.val == 10.0
+
+    def test_sum_on_matrix(self):
+        g = make_np_grid()
+        g.setcell(0, 0, "=np.array([[1,2],[3,4]])")
+        g.setcell(1, 0, "=SUM(A1)")
+        assert g.cells[1][0].val == 10.0
+        assert g.cells[1][0].matrix is None
+
+    def test_avg_on_matrix(self):
+        g = make_np_grid()
+        g.setcell(0, 0, "=np.array([[1,2],[3,4]])")
+        g.setcell(1, 0, "=AVG(A1)")
+        assert g.cells[1][0].val == 2.5
+
+    def test_min_max_on_matrix(self):
+        g = make_np_grid()
+        g.setcell(0, 0, "=np.array([[1,2],[3,4]])")
+        g.setcell(1, 0, "=MIN(A1)")
+        g.setcell(2, 0, "=MAX(A1)")
+        assert g.cells[1][0].val == 1.0
+        assert g.cells[2][0].val == 4.0
+
+    def test_count_on_matrix(self):
+        g = make_np_grid()
+        g.setcell(0, 0, "=np.array([[1,2],[3,4]])")
+        g.setcell(1, 0, "=COUNT(A1)")
+        assert g.cells[1][0].val == 4.0
+
+    def test_fmtcell_matrix_2d(self):
+        g = make_np_grid()
+        g.setcell(0, 0, "=np.eye(3)")
+        cl = g.cells[0][0]
+        s = fmtcell(cl, 8)
+        assert "[3x3]" in s
+        assert len(s) == 8
+
+    def test_fmtcell_matrix_1d(self):
+        g = make_np_grid()
+        g.setcell(0, 0, "=np.array([1,2,3,4,5])")
+        cl = g.cells[0][0]
+        s = fmtcell(cl, 8)
+        assert "[5]" in s
+
+    def test_copy_from_deep_copies_matrix(self):
+        g = make_np_grid()
+        g.setcell(0, 0, "=np.array([[1,2],[3,4]])")
+        a = g.cells[0][0]
+        b = a.snapshot()
+        assert b.matrix is not None
+        assert b.matrix is not a.matrix
+        assert np.array_equal(a.matrix, b.matrix)
+        b.matrix[0, 0] = 99
+        assert a.matrix[0, 0] == 1
+
+    def test_convergence_no_false_changes(self):
+        """A constant matrix formula should stabilize in one iteration."""
+        g = make_np_grid()
+        g.setcell(0, 0, "=np.eye(3)")
+        assert (0, 0) not in g._circular
+
+    def test_setcell_clears_stale_matrix(self):
+        g = make_np_grid()
+        g.setcell(0, 0, "=np.eye(3)")
+        assert g.cells[0][0].matrix is not None
+        g.setcell(0, 0, "42")
+        assert g.cells[0][0].matrix is None
+        assert g.cells[0][0].val == 42.0
+
+    def test_circular_matrix_formula(self):
+        g = make_np_grid()
+        g.setcell(0, 0, "=A1 + np.eye(2)")
+        assert math.isnan(g.cells[0][0].val)
+        assert g.cells[0][0].matrix is None
+        assert (0, 0) in g._circular

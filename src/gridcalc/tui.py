@@ -115,6 +115,16 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
     if isinstance(cl.val, float) and math.isnan(cl.val):
         return f"{'ERROR':>{cw}}"
 
+    if cl.matrix is not None:
+        shape = cl.matrix.shape
+        if len(shape) == 2:
+            t = f"[{shape[0]}x{shape[1]}]"
+        elif len(shape) == 1:
+            t = f"[{shape[0]}]"
+        else:
+            t = "[" + "x".join(str(s) for s in shape) + "]"
+        return f"{t:>{cw}}"[:cw]
+
     if cl.arr is not None and len(cl.arr) > 0:
         v = cl.arr[0]
         numstr = str(int(v)) if v == int(v) and abs(v) < 1e9 else f"{v:g}"
@@ -301,7 +311,14 @@ def draw(
     cur = g.cell(g.cc, g.cr)
     status = f" {col_name(g.cc)}{g.cr + 1}"
     if cur and cur.type == NUM:
-        if cur.arr and len(cur.arr) > 0:
+        if cur.matrix is not None:
+            shape = cur.matrix.shape
+            flat = cur.matrix.flat
+            show = [float(flat[i]) for i in range(min(6, cur.matrix.size))]
+            items = ", ".join(f"{v:.10g}" for v in show)
+            extra = ", ..." if cur.matrix.size > 6 else ""
+            status += f"  ndarray{shape} [{items}{extra}]"
+        elif cur.arr and len(cur.arr) > 0:
             show = cur.arr[:10]
             items = ", ".join(f"{v:.10g}" for v in show)
             extra = ", ..." if len(cur.arr) > 10 else ""
@@ -310,7 +327,14 @@ def draw(
             status += f"  {cur.val:.10g}"
     elif cur and cur.type == FORMULA:
         status += f"  {cur.text} = "
-        if cur.arr and len(cur.arr) > 0:
+        if cur.matrix is not None:
+            shape = cur.matrix.shape
+            flat = cur.matrix.flat
+            show = [float(flat[i]) for i in range(min(6, cur.matrix.size))]
+            items = ", ".join(f"{v:.10g}" for v in show)
+            extra = ", ..." if cur.matrix.size > 6 else ""
+            status += f"ndarray{shape} [{items}{extra}]"
+        elif cur.arr and len(cur.arr) > 0:
             show = cur.arr[:10]
             items = ", ".join(f"{v:.10g}" for v in show)
             extra = ", ..." if len(cur.arr) > 10 else ""

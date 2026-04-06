@@ -1143,3 +1143,90 @@ class TestDataFrameDisplay:
         cl = self.g.cell(0, 0)
         result = fmtcell(cl, 14)
         assert "df[1x10]" in result
+
+
+class TestFmtVal:
+    def test_integer(self):
+        from gridcalc.tui import _fmt_val
+
+        assert _fmt_val("3.0") == "3"
+        assert _fmt_val("42") == "42"
+
+    def test_float(self):
+        from gridcalc.tui import _fmt_val
+
+        assert _fmt_val("3.14") == "3.14"
+
+    def test_string(self):
+        from gridcalc.tui import _fmt_val
+
+        assert _fmt_val("hello") == "'hello'"
+
+
+class TestBuildFormula:
+    def test_vec(self):
+        from gridcalc.tui import _build_formula
+
+        data = [["1"], ["2"], ["3"]]
+        result = _build_formula("vec", data, None)
+        assert result == "=Vec([1, 2, 3])"
+
+    def test_ndarray_1d(self):
+        from gridcalc.tui import _build_formula
+
+        data = [["1.5"], ["2.0"], ["3.0"]]
+        result = _build_formula("ndarray", data, None)
+        assert result == "=np.array([1.5, 2, 3])"
+
+    def test_ndarray_2d(self):
+        from gridcalc.tui import _build_formula
+
+        data = [["1", "2"], ["3", "4"]]
+        result = _build_formula("ndarray", data, None)
+        assert result == "=np.array([[1, 2], [3, 4]])"
+
+    def test_dataframe(self):
+        from gridcalc.tui import _build_formula
+
+        data = [["1", "3"], ["2", "4"]]
+        headers = ["a", "b"]
+        result = _build_formula("dataframe", data, headers)
+        assert result == "=pd.DataFrame({'a': [1, 2], 'b': [3, 4]})"
+
+    def test_vec_roundtrip(self):
+        """Build formula, set it on grid, verify result matches."""
+        from gridcalc.tui import _build_formula
+
+        data = [["10"], ["20"], ["30"]]
+        formula = _build_formula("vec", data, None)
+        g = Grid()
+        g.setcell(0, 0, formula)
+        cl = g.cell(0, 0)
+        assert cl.arr == [10.0, 20.0, 30.0]
+
+    def test_ndarray_2d_roundtrip(self):
+        from gridcalc.tui import _build_formula
+
+        data = [["1", "2"], ["3", "4"]]
+        formula = _build_formula("ndarray", data, None)
+        g = Grid()
+        g.load_requires(["numpy"])
+        g.setcell(0, 0, formula)
+        cl = g.cell(0, 0)
+        assert cl.matrix is not None
+        assert cl.matrix.tolist() == [[1, 2], [3, 4]]
+
+    def test_dataframe_roundtrip(self):
+        from gridcalc.tui import _build_formula
+
+        data = [["1", "3"], ["2", "4"]]
+        headers = ["a", "b"]
+        formula = _build_formula("dataframe", data, headers)
+        g = Grid()
+        g.load_requires(["pandas"])
+        g.setcell(0, 0, formula)
+        cl = g.cell(0, 0)
+        assert cl.matrix is not None
+        assert list(cl.matrix.columns) == ["a", "b"]
+        assert cl.matrix["a"].tolist() == [1, 2]
+        assert cl.matrix["b"].tolist() == [3, 4]

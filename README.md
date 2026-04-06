@@ -17,6 +17,7 @@ $ gridcalc budget.json
 - **JSON file format**: spreadsheets stored as plain JSON, easy to version control or script
 - **256 columns x 1024 rows**: column-major grid with four cell types (empty, number, label, formula)
 - **Range arithmetic**: `A1:A10` expands to a `Vec` array supporting element-wise math
+- **NumPy support**: use `np.array`, `np.linalg`, matrix multiply (`@`), and other numpy operations in formulas
 - **Named ranges**: assign names to cell ranges and use them directly in formulas
 - **Custom functions**: edit a Python code block (`:e`) to define functions, import modules, set constants
 - **Built-in spreadsheet functions**: SUM, AVG, MIN, MAX, COUNT, ABS, SQRT, INT, plus Python's math module
@@ -62,6 +63,7 @@ Spreadsheets are stored as JSON:
 ```json
 {
   "code": "def margin(rev, cost):\n    return (rev - cost) / rev * 100\n",
+  "requires": ["numpy"],
   "names": {
     "revenue": "A1:A12",
     "costs": "B1:B12"
@@ -79,6 +81,7 @@ Spreadsheets are stored as JSON:
 
 - **cells**: 2D array of cell values (numbers, strings, formulas, or null)
 - **code** (optional): Python code executed before formulas (functions, imports, constants)
+- **requires** (optional): list of modules to load into the formula namespace (e.g. `["numpy"]`)
 - **names** (optional): named ranges mapping names to cell ranges
 - **format** (optional): display settings (currently only `width`)
 
@@ -201,6 +204,22 @@ Element-wise arithmetic works between arrays and scalars:
 
 	=revenue * 1.1
 	=revenue + costs
+
+### Matrix operations
+
+When `numpy` is listed in `requires`, it is available as `np` in formulas.
+Formulas can create and manipulate NumPy arrays:
+
+	=np.array([[1,2],[3,4]])
+	=np.eye(3)
+	=np.linalg.det(A1)
+	=np.linalg.inv(A1)
+	=A1.T
+	=A1 @ A2
+
+Matrix cells display the top-left element and the shape, e.g. `1.0[2x2]`.
+The full matrix is shown in the status bar. Built-in functions like SUM
+and SQRT work element-wise on NumPy arrays.
 
 ### Cell references
 

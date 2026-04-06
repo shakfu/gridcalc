@@ -30,6 +30,8 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
     "pygments>=2.15",
     "tomli>=1.0; python_version < '3.11'",
 ]
@@ -37,10 +39,12 @@ dependencies = [
 [dependency-groups]
 dev = [
     "mypy>=1.19.1",
+    "pandas-stubs>=2.0",
     "pytest",
     "ruff>=0.15.7",
     "twine>=6.2.0",
     "build>=1.0",
+    "types-Pygments>=2.15",
 ]
 
 [project.scripts]

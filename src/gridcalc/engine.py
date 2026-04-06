@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import contextlib
+import csv
 import json
 import math
 import re
 from collections.abc import Callable, Iterable, Iterator
+from io import StringIO
 from typing import Any
 
 from .sandbox import load_modules, validate_code, validate_formula
@@ -26,6 +28,20 @@ FORMULA = 3
 def _is_ndarray(obj: object) -> bool:
     """Check if obj is a numpy ndarray without importing numpy."""
     return type(obj).__module__ == "numpy" and type(obj).__name__ == "ndarray"
+
+
+def _is_dataframe(obj: object) -> bool:
+    """Check if obj is a pandas DataFrame without importing pandas."""
+    mod = type(obj).__module__
+    name = type(obj).__name__
+    return mod.startswith("pandas") and name == "DataFrame"
+
+
+def _is_series(obj: object) -> bool:
+    """Check if obj is a pandas Series without importing pandas."""
+    mod = type(obj).__module__
+    name = type(obj).__name__
+    return mod.startswith("pandas") and name == "Series"
 
 
 class Vec:
@@ -142,6 +158,7 @@ def SQRT(x: Any) -> Any:
         return Vec([math.sqrt(a) for a in x.data])
     if _is_ndarray(x):
         import numpy as _np  # noqa: I001
+
         return _np.sqrt(x)
     return math.sqrt(x)
 
@@ -216,8 +233,16 @@ def _make_eval_globals() -> dict[str, Any]:
 
 class Cell:
     __slots__ = (
-        "type", "val", "arr", "matrix", "text", "fmt",
-        "bold", "underline", "italic", "fmtstr",
+        "type",
+        "val",
+        "arr",
+        "matrix",
+        "text",
+        "fmt",
+        "bold",
+        "underline",
+        "italic",
+        "fmtstr",
     )
 
     def __init__(self) -> None:
@@ -537,7 +562,21 @@ class Grid:
                 else:
                     try:
                         result = eval(evalbuf, g)  # noqa: S307
-                        if _is_ndarray(result):
+                        if _is_dataframe(result):
+                            cl.matrix = result
+                            cl.arr = None
+                            try:
+                                cl.val = float(result.iloc[0, 0])
+                            except (TypeError, ValueError, IndexError):
+                                cl.val = float("nan")
+                        elif _is_series(result):
+                            cl.matrix = result.to_frame()
+                            cl.arr = None
+                            try:
+                                cl.val = float(result.iloc[0])
+                            except (TypeError, ValueError, IndexError):
+                                cl.val = float("nan")
+                        elif _is_ndarray(result):
                             if result.ndim == 0:
                                 cl.matrix = None
                                 cl.arr = None
@@ -571,9 +610,15 @@ class Grid:
                 if cl.matrix is not None or old_matrix is not None:
                     if cl.matrix is None or old_matrix is None:
                         matrix_changed = True
+                    elif _is_dataframe(cl.matrix) and _is_dataframe(old_matrix):
+                        try:
+                            matrix_changed = not cl.matrix.equals(old_matrix)
+                        except Exception:
+                            matrix_changed = cl.matrix is not old_matrix
                     else:
                         try:
                             import numpy as _np  # noqa: I001
+
                             matrix_changed = not _np.array_equal(cl.matrix, old_matrix)
                         except ImportError:
                             matrix_changed = cl.matrix is not old_matrix
@@ -965,5 +1010,191 @@ class Grid:
                 json.dump(out, f, indent=2)
                 f.write("\n")
         except OSError:
+            return -1
+        return 0
+
+    def csvsave(self, filename: str) -> int:
+        """Export evaluated cell values to CSV."""
+        maxr = -1
+        maxc = -1
+        for (c, r), sc in self._cells.items():
+            if sc.type != EMPTY:
+                if r > maxr:
+                    maxr = r
+                if c > maxc:
+                    maxc = c
+
+        if maxr < 0:
+            try:
+                with open(filename, "w", newline="") as f:
+                    f.write("")
+            except OSError:
+                return -1
+            return 0
+
+        try:
+            with open(filename, "w", newline="") as f:
+                writer = csv.writer(f)
+                for r in range(maxr + 1):
+                    row: list[str] = []
+                    for c in range(maxc + 1):
+                        cl = self._cells.get((c, r))
+                        if not cl or cl.type == EMPTY:
+                            row.append("")
+                        elif cl.type == LABEL:
+                            row.append(cl.text)
+                        elif cl.type in (NUM, FORMULA):
+                            if isinstance(cl.val, float) and math.isnan(cl.val):
+                                row.append("")
+                            elif cl.val == int(cl.val) and abs(cl.val) < 1e15:
+                                row.append(str(int(cl.val)))
+                            else:
+                                row.append(f"{cl.val:g}")
+                        else:
+                            row.append("")
+                    writer.writerow(row)
+        except OSError:
+            return -1
+        return 0
+
+    def csvload(self, filename: str) -> int:
+        """Import cells from a CSV file. Numbers become NUM cells, rest become LABELs."""
+        try:
+            with open(filename, newline="") as f:
+                content = f.read()
+        except OSError:
+            return -1
+
+        reader = csv.reader(StringIO(content))
+        for r_idx, row in enumerate(reader):
+            if r_idx >= NROW:
+                break
+            for c_idx, val in enumerate(row):
+                if c_idx >= NCOL:
+                    break
+                val = val.strip()
+                if not val:
+                    continue
+                self.setcell(c_idx, r_idx, val)
+        return 0
+
+    def pdload(self, filename: str, header: bool = True) -> int:
+        """Load a file into grid cells using pandas for type inference.
+
+        Supports CSV, TSV, Excel (.xlsx/.xls), JSON, and Parquet.
+        Column headers become labels in row 0 when header=True.
+        """
+        import pandas as pd  # noqa: I001
+
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        pd_header: int | None = 0 if header else None
+        try:
+            if ext in ("xlsx", "xls"):
+                df = pd.read_excel(filename, header=pd_header)
+            elif ext == "parquet":
+                df = pd.read_parquet(filename)
+            elif ext == "json":
+                df = pd.read_json(filename)
+            elif ext in ("tsv", "tab"):
+                df = pd.read_csv(filename, sep="\t", header=pd_header)
+            else:
+                df = pd.read_csv(filename, header=pd_header)
+        except Exception:
+            return -1
+
+        if df.shape[0] >= NROW or df.shape[1] >= NCOL:
+            # Truncate to grid limits
+            df = df.iloc[: NROW - (1 if header else 0), :NCOL]
+
+        r_offset = 0
+        if header:
+            for c_idx, col_name_str in enumerate(df.columns):
+                if c_idx >= NCOL:
+                    break
+                self.setcell(c_idx, 0, str(col_name_str))
+            r_offset = 1
+
+        for r_idx in range(len(df)):
+            if r_idx + r_offset >= NROW:
+                break
+            for c_idx in range(len(df.columns)):
+                if c_idx >= NCOL:
+                    break
+                val = df.iloc[r_idx, c_idx]
+                if pd.isna(val):
+                    continue
+                if isinstance(val, (int, float)):
+                    if isinstance(val, int) or (
+                        isinstance(val, float) and val == int(val) and abs(val) < 1e15
+                    ):
+                        self.setcell(c_idx, r_idx + r_offset, str(int(val)))
+                    else:
+                        self.setcell(c_idx, r_idx + r_offset, f"{val:g}")
+                else:
+                    self.setcell(c_idx, r_idx + r_offset, str(val))
+        return 0
+
+    def pdsave(self, filename: str) -> int:
+        """Export grid cells to a file using pandas.
+
+        Supports CSV, TSV, Excel (.xlsx), JSON, and Parquet.
+        Row 0 is used as column headers.
+        """
+        import pandas as pd  # noqa: I001
+
+        maxr = -1
+        maxc = -1
+        for (c, r), sc in self._cells.items():
+            if sc.type != EMPTY:
+                if r > maxr:
+                    maxr = r
+                if c > maxc:
+                    maxc = c
+
+        if maxr < 0:
+            return -1
+
+        # Build column headers from row 0
+        columns: list[str] = []
+        for c in range(maxc + 1):
+            cl = self._cells.get((c, 0))
+            if cl and cl.type != EMPTY:
+                columns.append(cl.text if cl.type == LABEL else str(cl.val))
+            else:
+                columns.append(col_name(c))
+
+        # Build data from row 1 onward
+        data: list[list[Any]] = []
+        for r in range(1, maxr + 1):
+            row: list[Any] = []
+            for c in range(maxc + 1):
+                cl = self._cells.get((c, r))
+                if not cl or cl.type == EMPTY:
+                    row.append(None)
+                elif cl.type == LABEL:
+                    row.append(cl.text)
+                elif cl.type in (NUM, FORMULA):
+                    if isinstance(cl.val, float) and math.isnan(cl.val):
+                        row.append(None)
+                    else:
+                        row.append(cl.val)
+                else:
+                    row.append(None)
+            data.append(row)
+
+        df = pd.DataFrame(data, columns=columns)
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        try:
+            if ext in ("xlsx", "xls"):
+                df.to_excel(filename, index=False)
+            elif ext == "parquet":
+                df.to_parquet(filename, index=False)
+            elif ext == "json":
+                df.to_json(filename, orient="records", indent=2)
+            elif ext in ("tsv", "tab"):
+                df.to_csv(filename, sep="\t", index=False)
+            else:
+                df.to_csv(filename, index=False)
+        except Exception:
             return -1
         return 0

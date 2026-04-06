@@ -22,6 +22,7 @@ from .engine import (
     Cell,
     Grid,
     NamedRange,
+    _is_dataframe,
     cellname,
     col_name,
     ref,
@@ -112,17 +113,18 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
             t = t[1:]
         return f"{t:<{cw}}"[:cw]
 
-    if isinstance(cl.val, float) and math.isnan(cl.val):
-        return f"{'ERROR':>{cw}}"
-
     if cl.matrix is not None:
-        shape = cl.matrix.shape
-        if len(shape) == 2:
-            t = f"[{shape[0]}x{shape[1]}]"
-        elif len(shape) == 1:
-            t = f"[{shape[0]}]"
+        if _is_dataframe(cl.matrix):
+            nrows, ncols = cl.matrix.shape
+            t = f"df[{nrows}x{ncols}]"
         else:
-            t = "[" + "x".join(str(s) for s in shape) + "]"
+            shape = cl.matrix.shape
+            if len(shape) == 2:
+                t = f"[{shape[0]}x{shape[1]}]"
+            elif len(shape) == 1:
+                t = f"[{shape[0]}]"
+            else:
+                t = "[" + "x".join(str(s) for s in shape) + "]"
         return f"{t:>{cw}}"[:cw]
 
     if cl.arr is not None and len(cl.arr) > 0:
@@ -130,6 +132,9 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
         numstr = str(int(v)) if v == int(v) and abs(v) < 1e9 else f"{v:g}"
         t = f"{numstr}[{len(cl.arr)}]"
         return f"{t:>{cw}}"[:cw]
+
+    if isinstance(cl.val, float) and math.isnan(cl.val):
+        return f"{'ERROR':>{cw}}"
 
     if cl.fmtstr:
         formatted = fmt_float(cl.val, cl.fmtstr)
@@ -156,6 +161,51 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
     if fc == "L":
         return f"{t:<{cw}}"[:cw]
     return f"{t:>{cw}}"[:cw]
+
+
+class Clipboard:
+    """Internal clipboard for cell copy/paste."""
+
+    def __init__(self) -> None:
+        self.cells: list[tuple[int, int, Cell]] = []  # (dc, dr, snapshot) offsets from origin
+        self.width: int = 0
+        self.height: int = 0
+
+    def yank(self, g: Grid, c1: int, r1: int, c2: int, r2: int) -> int:
+        """Copy a rectangular region of cells. Returns count of non-empty cells copied."""
+        self.cells = []
+        self.width = c2 - c1 + 1
+        self.height = r2 - r1 + 1
+        count = 0
+        for r in range(r1, r2 + 1):
+            for c in range(c1, c2 + 1):
+                cl = g.cell(c, r)
+                if cl and cl.type != EMPTY:
+                    self.cells.append((c - c1, r - r1, cl.snapshot()))
+                    count += 1
+        return count
+
+    def paste(self, g: Grid, undo: UndoManager, dc: int, dr: int) -> None:
+        """Paste clipboard contents at (dc, dr). Text is copied verbatim."""
+        if not self.cells:
+            return
+        undo.save_region(g, dc, dr, dc + self.width - 1, dr + self.height - 1)
+        for oc, orr, snap in self.cells:
+            tc, tr = dc + oc, dr + orr
+            if 0 <= tc < NCOL and 0 <= tr < NROW:
+                g.setcell(tc, tr, snap.text)
+                cl = g.cell(tc, tr)
+                if cl:
+                    cl.bold = snap.bold
+                    cl.underline = snap.underline
+                    cl.italic = snap.italic
+                    cl.fmt = snap.fmt
+                    cl.fmtstr = snap.fmtstr
+        g.recalc()
+
+    @property
+    def empty(self) -> bool:
+        return len(self.cells) == 0
 
 
 class UndoEntry:
@@ -296,6 +346,7 @@ def draw(
     mode: str,
     buf: str,
     sel: tuple[int, int, int, int] | None = None,
+    search_info: str = "",
 ) -> None:
     stdscr.erase()
 
@@ -311,7 +362,12 @@ def draw(
     cur = g.cell(g.cc, g.cr)
     status = f" {col_name(g.cc)}{g.cr + 1}"
     if cur and cur.type == NUM:
-        if cur.matrix is not None:
+        if cur.matrix is not None and _is_dataframe(cur.matrix):
+            df = cur.matrix
+            cols = ", ".join(str(c) for c in df.columns[:6])
+            extra = ", ..." if len(df.columns) > 6 else ""
+            status += f"  DataFrame({df.shape[0]}x{df.shape[1]}) [{cols}{extra}]"
+        elif cur and cur.matrix is not None:
             shape = cur.matrix.shape
             flat = cur.matrix.flat
             show = [float(flat[i]) for i in range(min(6, cur.matrix.size))]
@@ -327,7 +383,12 @@ def draw(
             status += f"  {cur.val:.10g}"
     elif cur and cur.type == FORMULA:
         status += f"  {cur.text} = "
-        if cur.matrix is not None:
+        if cur.matrix is not None and _is_dataframe(cur.matrix):
+            df = cur.matrix
+            cols = ", ".join(str(c) for c in df.columns[:6])
+            extra = ", ..." if len(df.columns) > 6 else ""
+            status += f"DataFrame({df.shape[0]}x{df.shape[1]}) [{cols}{extra}]"
+        elif cur.matrix is not None:
             shape = cur.matrix.shape
             flat = cur.matrix.flat
             show = [float(flat[i]) for i in range(min(6, cur.matrix.size))]
@@ -352,10 +413,13 @@ def draw(
     stdscr.addnstr(0, 0, status, curses.COLS - 1)
     stdscr.attroff(curses.color_pair(CP_CHROME) | curses.A_BOLD)
 
+    right_label = mode
+    if search_info:
+        right_label = f"{search_info}  {mode}"
     stdscr.attron(curses.color_pair(mode_color(mode)) | curses.A_BOLD)
-    mode_x = curses.COLS - len(mode) - 1
+    mode_x = curses.COLS - len(right_label) - 1
     if mode_x > 0:
-        stdscr.addnstr(0, mode_x, mode, len(mode))
+        stdscr.addnstr(0, mode_x, right_label, len(right_label))
     stdscr.attroff(curses.color_pair(mode_color(mode)) | curses.A_BOLD)
 
     # Input line
@@ -415,6 +479,7 @@ def draw(
                 and cl.type in (NUM, FORMULA)
                 and isinstance(cl.val, float)
                 and math.isnan(cl.val)
+                and cl.matrix is None
             )
             style = 0
             if cl:
@@ -817,9 +882,20 @@ def cmd_open(stdscr: curses.window, g: Grid, args: str) -> bool:
     return False
 
 
-def cmd_blank(g: Grid, undo: UndoManager) -> bool:
-    undo.save_cell(g, g.cc, g.cr)
-    g.setcell(g.cc, g.cr, "")
+def cmd_blank(
+    g: Grid,
+    undo: UndoManager,
+    sel: tuple[int, int, int, int] | None = None,
+) -> bool:
+    if sel:
+        c1, r1, c2, r2 = sel
+        undo.save_region(g, c1, r1, c2, r2)
+        for r in range(r1, r2 + 1):
+            for c in range(c1, c2 + 1):
+                g.setcell(c, r, "")
+    else:
+        undo.save_cell(g, g.cc, g.cr)
+        g.setcell(g.cc, g.cr, "")
     g.recalc()
     return False
 
@@ -1177,6 +1253,166 @@ def cmd_unname(stdscr: curses.window, g: Grid, args: str) -> bool:
     return False
 
 
+def cmd_view(stdscr: curses.window, g: Grid) -> bool:
+    """View the DataFrame or matrix in the current cell as a scrollable table."""
+    cl = g.cell(g.cc, g.cr)
+    if not cl or cl.matrix is None:
+        show_error(stdscr, "No DataFrame/matrix in current cell")
+        return False
+
+    matrix = cl.matrix
+    is_df = _is_dataframe(matrix)
+
+    if is_df:
+        columns = [str(c) for c in matrix.columns]
+        nrows, ncols = matrix.shape
+        rows: list[list[str]] = []
+        for r in range(nrows):
+            row: list[str] = []
+            for c in range(ncols):
+                val = matrix.iloc[r, c]
+                try:
+                    import pandas as pd  # noqa: I001
+
+                    if pd.isna(val):
+                        row.append("")
+                        continue
+                except (TypeError, ValueError):
+                    pass
+                if isinstance(val, float):
+                    if val == int(val) and abs(val) < 1e15:
+                        row.append(str(int(val)))
+                    else:
+                        row.append(f"{val:g}")
+                else:
+                    row.append(str(val))
+            rows.append(row)
+    else:
+        # ndarray
+        import numpy as _np  # noqa: I001
+
+        if matrix.ndim == 1:
+            columns = ["[0]"]
+            nrows = matrix.shape[0]
+            rows = []
+            for r in range(nrows):
+                v = matrix[r]
+                rows.append([f"{v:g}" if isinstance(v, (int, float)) else str(v)])
+        elif matrix.ndim == 2:
+            nrows, ncols = matrix.shape
+            columns = [f"[{c}]" for c in range(ncols)]
+            rows = []
+            numtypes = (int, float, _np.integer, _np.floating)
+            for r in range(nrows):
+                cells: list[str] = []
+                for c in range(ncols):
+                    v = matrix[r, c]
+                    cells.append(f"{v:g}" if isinstance(v, numtypes) else str(v))
+                rows.append(cells)
+        else:
+            show_error(stdscr, f"Cannot display {matrix.ndim}D array as table")
+            return False
+
+    # Compute column widths
+    col_widths = [len(c) for c in columns]
+    for row in rows:
+        for i, val in enumerate(row):
+            if i < len(col_widths):
+                col_widths[i] = max(col_widths[i], len(val))
+
+    # Cap column widths
+    col_widths = [min(w, 20) for w in col_widths]
+    row_num_width = len(str(len(rows)))
+
+    # Scrollable view
+    scroll_r = 0
+    scroll_c = 0
+
+    while True:
+        stdscr.erase()
+
+        # Title
+        label = "DataFrame" if is_df else "ndarray"
+        title = f" {label} ({len(rows)}x{len(columns)})"
+        if cl.type == FORMULA:
+            title += f"  {cl.text}"
+        stdscr.attron(curses.A_BOLD)
+        stdscr.addnstr(0, 0, title, curses.COLS - 1)
+        stdscr.attroff(curses.A_BOLD)
+
+        # Determine visible columns
+        vis_cols: list[int] = []
+        x = row_num_width + 2
+        for ci in range(scroll_c, len(columns)):
+            w = col_widths[ci] + 2
+            if x + w > curses.COLS:
+                break
+            vis_cols.append(ci)
+            x += w
+
+        # Column headers
+        stdscr.attron(curses.color_pair(CP_CHROME) | curses.A_BOLD)
+        hdr = " " * (row_num_width + 2)
+        for ci in vis_cols:
+            hdr += f"{columns[ci]:>{col_widths[ci]}}  "
+        stdscr.addnstr(2, 0, hdr, curses.COLS - 1)
+        stdscr.attroff(curses.color_pair(CP_CHROME) | curses.A_BOLD)
+
+        # Data rows
+        max_vis_rows = curses.LINES - 5
+        for ri in range(max_vis_rows):
+            data_r = scroll_r + ri
+            if data_r >= len(rows):
+                break
+            y = 3 + ri
+            # Row number
+            stdscr.attron(curses.color_pair(CP_GUTTER))
+            stdscr.addnstr(y, 0, f"{data_r:>{row_num_width}}  ", row_num_width + 2)
+            stdscr.attroff(curses.color_pair(CP_GUTTER))
+            # Cell values
+            line = ""
+            for ci in vis_cols:
+                val = rows[data_r][ci] if ci < len(rows[data_r]) else ""
+                line += f"{val:>{col_widths[ci]}}  "
+            stdscr.addnstr(y, row_num_width + 2, line, curses.COLS - row_num_width - 2)
+
+        # Footer
+        footer_y = curses.LINES - 1
+        pos = f"rows {scroll_r + 1}-{min(scroll_r + max_vis_rows, len(rows))}/{len(rows)}"
+        footer = f" {pos}  Arrows: scroll  q/Esc: close"
+        stdscr.attron(curses.color_pair(CP_CHROME))
+        stdscr.addnstr(footer_y, 0, footer, curses.COLS - 1)
+        stdscr.clrtoeol()
+        stdscr.attroff(curses.color_pair(CP_CHROME))
+
+        stdscr.refresh()
+        ch = stdscr.getch()
+
+        if ch in (27, ord("q")):
+            break
+        elif ch == curses.KEY_DOWN:
+            if scroll_r + max_vis_rows < len(rows):
+                scroll_r += 1
+        elif ch == curses.KEY_UP and scroll_r > 0:
+            scroll_r -= 1
+        elif ch == curses.KEY_RIGHT:
+            if scroll_c + 1 < len(columns):
+                scroll_c += 1
+        elif ch == curses.KEY_LEFT and scroll_c > 0:
+            scroll_c -= 1
+        elif ch == curses.KEY_NPAGE:
+            scroll_r = min(scroll_r + max_vis_rows, max(0, len(rows) - max_vis_rows))
+        elif ch == curses.KEY_PPAGE:
+            scroll_r = max(0, scroll_r - max_vis_rows)
+        elif ch == curses.KEY_HOME:
+            scroll_r = 0
+            scroll_c = 0
+        elif ch == curses.KEY_END:
+            scroll_r = max(0, len(rows) - max_vis_rows)
+
+    return False
+
+
 def cmd_title(g: Grid, args: str) -> bool:
     ch = args[0].upper() if args else ""
     if ch == "V":
@@ -1195,6 +1431,187 @@ def cmd_title(g: Grid, args: str) -> bool:
     elif ch == "N":
         g.tc = g.tr = 0
         g.vc = g.vr = 0
+    return False
+
+
+def cmd_sort(
+    stdscr: curses.window,
+    g: Grid,
+    undo: UndoManager,
+    args: str,
+    sel: tuple[int, int, int, int] | None = None,
+) -> bool:
+    """Sort rows by a column. Usage: :sort [col] [desc]"""
+    parts = args.strip().split()
+
+    if sel:
+        c1, r1, c2, r2 = sel
+    else:
+        # Find data extent
+        maxr = -1
+        maxc = -1
+        for (c, r), cl in g._cells.items():
+            if cl.type != EMPTY:
+                if r > maxr:
+                    maxr = r
+                if c > maxc:
+                    maxc = c
+        if maxr < 0:
+            return False
+        c1, r1, c2, r2 = 0, 0, maxc, maxr
+
+    # Determine sort column
+    if parts:
+        col_str = parts[0].upper()
+        r_parsed = ref(col_str + "1")
+        if r_parsed:
+            sort_col = r_parsed[1]
+        else:
+            show_error(stdscr, f"Invalid column: {parts[0]}")
+            return False
+    else:
+        sort_col = sel[0] if sel else g.cc
+
+    descending = len(parts) > 1 and parts[1].lower() in ("desc", "d", "reverse", "r")
+
+    if sort_col < c1 or sort_col > c2:
+        show_error(stdscr, f"Column {col_name(sort_col)} is outside the range")
+        return False
+
+    undo.save_grid(g)
+
+    # Collect rows as lists of cell snapshots
+    row_data: list[tuple[float, str, int, list[tuple[int, Cell | None]]]] = []
+    for r in range(r1, r2 + 1):
+        sort_cl = g.cell(sort_col, r)
+        if sort_cl and sort_cl.type in (NUM, FORMULA):
+            sort_val = sort_cl.val if not math.isnan(sort_cl.val) else float("inf")
+        else:
+            sort_val = float("inf")
+        sort_text = sort_cl.text if sort_cl and sort_cl.type != EMPTY else ""
+        cells_in_row: list[tuple[int, Cell | None]] = []
+        for c in range(c1, c2 + 1):
+            maybe = g.cell(c, r)
+            cells_in_row.append((c, maybe.snapshot() if maybe else None))
+        row_data.append((sort_val, sort_text, r, cells_in_row))
+
+    # Sort: numbers first (by value), then labels (alphabetically), then empties
+    def sort_key(
+        item: tuple[float, str, int, list[tuple[int, Cell | None]]],
+    ) -> tuple[int, float, str]:
+        val, text, _, _ = item
+        if val < float("inf"):
+            return (0, val, "")
+        if text:
+            return (1, 0.0, text.lower())
+        return (2, 0.0, "")
+
+    row_data.sort(key=sort_key, reverse=descending)
+
+    # Write sorted rows back
+    for new_r_offset, (_, _, _, cells_in_row) in enumerate(row_data):
+        target_r = r1 + new_r_offset
+        for c, snap in cells_in_row:
+            if snap is None:
+                g._cells.pop((c, target_r), None)
+            else:
+                dst = g._ensure_cell(c, target_r)
+                dst.copy_from(snap)
+    g.recalc()
+    g.dirty = 1
+    return False
+
+
+def cmd_pd(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bool:
+    """Pandas import/export. Usage: :pd load [file] | :pd save [file]"""
+    parts = args.strip().split(None, 1)
+    if not parts:
+        show_error(stdscr, "Usage: pd load [file] | pd save [file]")
+        return False
+    sub = parts[0].lower()
+    farg = parts[1] if len(parts) > 1 else ""
+
+    if sub in ("load", "import", "r"):
+        fn = farg.strip() if farg.strip() else None
+        if not fn:
+            fn = prompt_filename(stdscr, "pd load: ")
+            if not fn:
+                return False
+        undo.save_grid(g)
+        g.clear_all()
+        if g.pdload(fn) == 0:
+            g.recalc()
+            g.dirty = 1
+        else:
+            show_error(stdscr, f"Failed to load: {fn}. Press any key.")
+        return False
+
+    if sub in ("save", "export", "w"):
+        fn = farg.strip() if farg.strip() else None
+        if not fn:
+            dflt = None
+            if g.filename:
+                dflt = g.filename.rsplit(".", 1)[0] + ".csv"
+            fn = prompt_filename(stdscr, "pd save as: ", dflt)
+            if not fn:
+                return False
+        if g.pdsave(fn) == 0:
+            stdscr.addnstr(
+                curses.LINES - 1,
+                0,
+                f"Exported to {fn}",
+                curses.COLS - 1,
+            )
+            stdscr.clrtoeol()
+            stdscr.refresh()
+            stdscr.getch()
+        else:
+            show_error(stdscr, f"Failed to export: {fn}. Press any key.")
+        return False
+
+    show_error(stdscr, "Usage: pd load [file] | pd save [file]")
+    return False
+
+
+def cmd_csv(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bool:
+    parts = args.strip().split(None, 1)
+    if not parts:
+        show_error(stdscr, "Usage: csv save [file] | csv load [file]")
+        return False
+    sub = parts[0].lower()
+    farg = parts[1] if len(parts) > 1 else ""
+
+    if sub in ("save", "export", "w"):
+        fn = farg.strip() if farg.strip() else None
+        if not fn:
+            dflt = g.filename.rsplit(".", 1)[0] + ".csv" if g.filename else None
+            fn = prompt_filename(stdscr, "CSV save as: ", dflt)
+            if not fn:
+                return False
+        if g.csvsave(fn) == 0:
+            stdscr.addnstr(curses.LINES - 1, 0, f"Exported to {fn}", curses.COLS - 1)
+            stdscr.clrtoeol()
+            stdscr.refresh()
+            stdscr.getch()
+        else:
+            show_error(stdscr, f"Failed to export: {fn}. Press any key.")
+        return False
+
+    if sub in ("load", "import", "r"):
+        fn = farg.strip() if farg.strip() else None
+        if not fn:
+            fn = prompt_filename(stdscr, "CSV load: ")
+            if not fn:
+                return False
+        undo.save_grid(g)
+        g.clear_all()
+        if g.csvload(fn) == 0:
+            g.recalc()
+        else:
+            show_error(stdscr, f"Failed to load: {fn}. Press any key.")
+        return False
+
+    show_error(stdscr, "Usage: csv save [file] | csv load [file]")
     return False
 
 
@@ -1226,7 +1643,7 @@ def cmdexec(
     if cmd in ("o", "open"):
         return cmd_open(stdscr, g, args)
     if cmd in ("b", "blank"):
-        return cmd_blank(g, undo)
+        return cmd_blank(g, undo, sel=sel)
     if cmd == "clear":
         return cmd_clear(stdscr, g, undo)
     if cmd in ("f", "format"):
@@ -1235,14 +1652,30 @@ def cmdexec(
         return cmd_gformat(stdscr, g, args)
     if cmd == "width":
         return cmd_width(stdscr, g, args)
+    if cmd in ("view", "v"):
+        return cmd_view(stdscr, g)
+    if cmd == "csv":
+        return cmd_csv(stdscr, g, undo, args)
+    if cmd == "pd":
+        return cmd_pd(stdscr, g, undo, args)
+    if cmd == "sort":
+        return cmd_sort(stdscr, g, undo, args, sel=sel)
     if cmd in ("dr", "delrow"):
         undo.save_grid(g)
-        g.deleterow(g.cr)
+        if sel:
+            for r in range(sel[3], sel[1] - 1, -1):
+                g.deleterow(r)
+        else:
+            g.deleterow(g.cr)
         g.recalc()
         return False
     if cmd in ("dc", "delcol"):
         undo.save_grid(g)
-        g.deletecol(g.cc)
+        if sel:
+            for c in range(sel[2], sel[0] - 1, -1):
+                g.deletecol(c)
+        else:
+            g.deletecol(g.cc)
         g.recalc()
         return False
     if cmd in ("ir", "insrow"):
@@ -1336,6 +1769,91 @@ def nav(stdscr: curses.window, g: Grid) -> None:
             r = ref(test2)
             if r and r[1] < NCOL and r[2] < NROW:
                 buf += chr(ch).upper()
+
+
+def _search_grid(g: Grid, pattern: str) -> list[tuple[int, int]]:
+    """Find all cells whose text or display value matches pattern (case-insensitive)."""
+    pat = pattern.lower()
+    matches: list[tuple[int, int]] = []
+    for (c, r), cl in sorted(g._cells.items(), key=lambda x: (x[0][1], x[0][0])):
+        if cl.type == EMPTY:
+            continue
+        text = cl.text.lower()
+        if pat in text:
+            matches.append((c, r))
+            continue
+        if cl.type in (NUM, FORMULA) and not math.isnan(cl.val):
+            if cl.val == int(cl.val) and abs(cl.val) < 1e15:
+                valstr = str(int(cl.val))
+            else:
+                valstr = f"{cl.val:g}"
+            if pat in valstr:
+                matches.append((c, r))
+    return matches
+
+
+def search_prompt(stdscr: curses.window, g: Grid) -> tuple[str, list[tuple[int, int]]]:
+    """Prompt for a search pattern and return (pattern, matches)."""
+    buf = ""
+    draw(stdscr, g, "SEARCH", "")
+    while True:
+        stdscr.addnstr(curses.LINES - 1, 0, f"/{buf}_", curses.COLS - 1)
+        stdscr.clrtoeol()
+        stdscr.refresh()
+        ch = stdscr.getch()
+        if ch == 27:
+            return ("", [])
+        if ch in (10, 13, curses.KEY_ENTER):
+            if buf:
+                matches = _search_grid(g, buf)
+                if matches:
+                    g.cc, g.cr = matches[0]
+                else:
+                    stdscr.addnstr(
+                        curses.LINES - 1,
+                        0,
+                        f"No matches for: {buf}",
+                        curses.COLS - 1,
+                    )
+                    stdscr.clrtoeol()
+                    stdscr.refresh()
+                    stdscr.getch()
+                return (buf, matches)
+            return ("", [])
+        elif ch in (curses.KEY_BACKSPACE, 127, 8):
+            buf = buf[:-1]
+        elif len(buf) < 255 and 32 <= ch < 127:
+            buf += chr(ch)
+
+
+def search_indicator(g: Grid, matches: list[tuple[int, int]]) -> str:
+    """Return a string like '[3/12]' showing current match position, or '' if no matches."""
+    if not matches:
+        return ""
+    cur = (g.cc, g.cr)
+    if cur in matches:
+        idx = matches.index(cur) + 1
+        return f"[{idx}/{len(matches)}]"
+    return f"[?/{len(matches)}]"
+
+
+def search_next(g: Grid, matches: list[tuple[int, int]], forward: bool = True) -> None:
+    """Jump to the next (or previous) search match."""
+    if not matches:
+        return
+    cur = (g.cc, g.cr)
+    if forward:
+        for c, r in matches:
+            if (r, c) > (cur[1], cur[0]):
+                g.cc, g.cr = c, r
+                return
+        g.cc, g.cr = matches[0]
+    else:
+        for c, r in reversed(matches):
+            if (r, c) < (cur[1], cur[0]):
+                g.cc, g.cr = c, r
+                return
+        g.cc, g.cr = matches[-1]
 
 
 def entry(stdscr: curses.window, g: Grid, undo: UndoManager, label: bool, initial_ch: int) -> None:
@@ -1432,7 +1950,7 @@ def entry(stdscr: curses.window, g: Grid, undo: UndoManager, label: bool, initia
             buf += chr(ch)
 
 
-def visual_mode(stdscr: curses.window, g: Grid, undo: UndoManager) -> None:
+def visual_mode(stdscr: curses.window, g: Grid, undo: UndoManager, clipboard: Clipboard) -> None:
     """Visual selection mode. Arrow keys extend selection, : enters command line."""
     ac, ar = g.cc, g.cr  # anchor
 
@@ -1452,6 +1970,21 @@ def visual_mode(stdscr: curses.window, g: Grid, undo: UndoManager) -> None:
         ch = stdscr.getch()
         if ch == 27:
             break
+        elif ch == ord("y"):
+            count = clipboard.yank(g, c1, r1, c2, r2)
+            stdscr.addnstr(
+                curses.LINES - 1,
+                0,
+                f"{count} cell(s) yanked",
+                curses.COLS - 1,
+            )
+            stdscr.clrtoeol()
+            stdscr.refresh()
+            break
+        elif ch == ord("p"):
+            if not clipboard.empty:
+                clipboard.paste(g, undo, c1, r1)
+            break
         elif ch == ord(":"):
             cmdline(stdscr, g, undo, sel=sel)
             break
@@ -1467,6 +2000,8 @@ def visual_mode(stdscr: curses.window, g: Grid, undo: UndoManager) -> None:
 
 def mainloop(stdscr: curses.window, g: Grid) -> None:
     undo = UndoManager()
+    clipboard = Clipboard()
+    search_matches: list[tuple[int, int]] = []
 
     while True:
         lc = g.tc
@@ -1493,7 +2028,8 @@ def mainloop(stdscr: curses.window, g: Grid) -> None:
             if g.cr >= g.vr + fr:
                 g.vr = g.cr - fr + 1
 
-        draw(stdscr, g, "READY", "")
+        si = search_indicator(g, search_matches)
+        draw(stdscr, g, "READY", "", search_info=si)
         ch = stdscr.getch()
 
         if ch == 0x1F & ord("c"):
@@ -1539,8 +2075,19 @@ def mainloop(stdscr: curses.window, g: Grid) -> None:
                 break
         elif ch == ord(">"):
             nav(stdscr, g)
+        elif ch == ord("/"):
+            _, search_matches = search_prompt(stdscr, g)
+        elif ch == ord("n"):
+            search_next(g, search_matches, forward=True)
+        elif ch == ord("N"):
+            search_next(g, search_matches, forward=False)
+        elif ch == ord("y"):
+            clipboard.yank(g, g.cc, g.cr, g.cc, g.cr)
+        elif ch == ord("p"):
+            if not clipboard.empty:
+                clipboard.paste(g, undo, g.cc, g.cr)
         elif ch == ord("v"):
-            visual_mode(stdscr, g, undo)
+            visual_mode(stdscr, g, undo, clipboard)
         elif ch == ord('"'):
             entry(stdscr, g, undo, True, 0)
         elif ch == ord("=") or ch == ord(".") or (48 <= ch <= 57):

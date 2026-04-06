@@ -1,5 +1,6 @@
 {
   "code": "def tax(amount, rate=0.08):\n  return amount * rate\n\ndef markup(cost, pct):\n  return cost * (1 + pct)\n\ndef add(x,y):\n    return x+1\n\nTAX_RATE = 0.08\n",
+  "requires": ["numpy", "pandas"],
   "names": {
     "revenue": "B3:B6",
     "costs": "C3:C6"
@@ -320,6 +321,160 @@
     [
       "Profit vec",
       "=revenue - costs",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "Matrix Demo",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "2x2 matrix",
+      "=np.array([[1,2],[3,4]])",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "Identity",
+      "=np.eye(3)",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "Determinant",
+      "=np.linalg.det(B19)",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "Transpose",
+      "=B19.T",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "Mat multiply",
+      "=B19 @ B22",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "Pandas Demo",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "DataFrame",
+      "=pd.DataFrame({'product': ['Widgets','Gadgets','Gizmos'], 'qty': [120,85,200], 'price': [9.99,24.50,5.75]})",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "Total qty",
+      "=B26['qty'].sum()",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "Avg price",
+      "=B26['price'].mean()",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "Describe",
+      "=B26.describe()",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "Revenue col",
+      "=B26['qty'] * B26['price']",
       null,
       null,
       null,

@@ -13,6 +13,7 @@ from gridcalc.engine import (
     Cell,
     Grid,
     NamedRange,
+    _is_dataframe,
     col_name,
     ref,
 )
@@ -1507,3 +1508,321 @@ class TestNumpyMatrix:
         assert math.isnan(g.cells[0][0].val)
         assert g.cells[0][0].matrix is None
         assert (0, 0) in g._circular
+
+
+class TestCsvExport:
+    def test_csvsave_basic(self, tmp_path):
+        g = make_grid()
+        g.setcell(0, 0, "Hello")
+        g.setcell(1, 0, "42")
+        g.setcell(0, 1, "=21*2")
+        path = str(tmp_path / "out.csv")
+        assert g.csvsave(path) == 0
+        with open(path) as f:
+            content = f.read()
+        lines = content.strip().split("\n")
+        assert len(lines) == 2
+        assert "Hello" in lines[0]
+        assert "42" in lines[0]
+        assert "42" in lines[1]  # formula evaluates to 42
+
+    def test_csvsave_empty_grid(self, tmp_path):
+        g = make_grid()
+        path = str(tmp_path / "empty.csv")
+        assert g.csvsave(path) == 0
+        with open(path) as f:
+            assert f.read() == ""
+
+    def test_csvsave_nan_as_empty(self, tmp_path):
+        g = make_grid()
+        g.setcell(0, 0, "=1/0")  # produces NaN via exception
+        path = str(tmp_path / "nan.csv")
+        g.csvsave(path)
+        with open(path) as f:
+            content = f.read().strip()
+        # NaN cells should be exported as empty
+        assert content == '""' or content == ""
+
+    def test_csvsave_labels_and_numbers(self, tmp_path):
+        g = make_grid()
+        g.setcell(0, 0, "Name")
+        g.setcell(1, 0, "Score")
+        g.setcell(0, 1, "Alice")
+        g.setcell(1, 1, "95")
+        g.setcell(0, 2, "Bob")
+        g.setcell(1, 2, "87.5")
+        path = str(tmp_path / "data.csv")
+        assert g.csvsave(path) == 0
+        with open(path) as f:
+            lines = f.read().strip().split("\n")
+        assert len(lines) == 3
+        assert "Name" in lines[0]
+        assert "Score" in lines[0]
+        assert "Alice" in lines[1]
+        assert "95" in lines[1]
+        assert "Bob" in lines[2]
+
+    def test_csvsave_bad_path(self):
+        g = make_grid()
+        g.setcell(0, 0, "test")
+        assert g.csvsave("/nonexistent/dir/out.csv") == -1
+
+
+class TestCsvImport:
+    def test_csvload_basic(self, tmp_path):
+        path = str(tmp_path / "in.csv")
+        with open(path, "w") as f:
+            f.write("Name,Score\nAlice,95\nBob,87.5\n")
+        g = make_grid()
+        assert g.csvload(path) == 0
+        assert g.cells[0][0].type == LABEL
+        assert g.cells[0][0].text == "Name"
+        assert g.cells[1][0].type == LABEL
+        assert g.cells[1][0].text == "Score"
+        assert g.cells[0][1].type == LABEL
+        assert g.cells[0][1].text == "Alice"
+        assert g.cells[1][1].val == 95.0
+        assert g.cells[0][2].type == LABEL
+        assert g.cells[1][2].val == 87.5
+
+    def test_csvload_numbers(self, tmp_path):
+        path = str(tmp_path / "nums.csv")
+        with open(path, "w") as f:
+            f.write("1,2,3\n4,5,6\n")
+        g = make_grid()
+        g.csvload(path)
+        assert g.cells[0][0].val == 1.0
+        assert g.cells[2][0].val == 3.0
+        assert g.cells[0][1].val == 4.0
+        assert g.cells[2][1].val == 6.0
+
+    def test_csvload_empty_cells(self, tmp_path):
+        path = str(tmp_path / "sparse.csv")
+        with open(path, "w") as f:
+            f.write("a,,b\n,,\nc,,d\n")
+        g = make_grid()
+        g.csvload(path)
+        assert g.cells[0][0].text == "a"
+        assert g.cell(1, 0) is None
+        assert g.cells[2][0].text == "b"
+        assert g.cell(0, 1) is None
+        assert g.cells[0][2].text == "c"
+
+    def test_csvload_bad_path(self):
+        g = make_grid()
+        assert g.csvload("/nonexistent/file.csv") == -1
+
+    def test_csv_roundtrip(self, tmp_path):
+        g1 = make_grid()
+        g1.setcell(0, 0, "Product")
+        g1.setcell(1, 0, "100")
+        g1.setcell(2, 0, "=B1*2")
+        path = str(tmp_path / "rt.csv")
+        g1.csvsave(path)
+        g2 = make_grid()
+        g2.csvload(path)
+        assert g2.cells[0][0].text == "Product"
+        assert g2.cells[1][0].val == 100.0
+        # Exported formula result (200), imported as number
+        assert g2.cells[2][0].val == 200.0
+
+
+def make_pd_grid():
+    """Create a grid with pandas loaded in the eval namespace."""
+    g = Grid()
+    g.load_requires(["numpy", "pandas"])
+    return g
+
+
+class TestDataFrameFormula:
+    def test_dataframe_creation(self):
+        g = make_pd_grid()
+        g.setcell(0, 0, "=pd.DataFrame({'a': [1,2,3], 'b': [4,5,6]})")
+        cl = g.cells[0][0]
+        assert cl.matrix is not None
+        from gridcalc.engine import _is_dataframe
+
+        assert _is_dataframe(cl.matrix)
+        assert cl.matrix.shape == (3, 2)
+        assert cl.val == 1.0
+
+    def test_dataframe_column_access(self):
+        g = make_pd_grid()
+        g.setcell(0, 0, "=pd.DataFrame({'x': [10,20,30], 'y': [4,5,6]})")
+        g.setcell(1, 0, "=A1['x'].sum()")
+        assert g.cells[1][0].val == 60.0
+
+    def test_dataframe_describe(self):
+        g = make_pd_grid()
+        g.setcell(0, 0, "=pd.DataFrame({'a': [1,2,3,4,5]})")
+        g.setcell(1, 0, "=A1.describe()")
+        cl = g.cells[1][0]
+        assert cl.matrix is not None
+        assert _is_dataframe(cl.matrix)
+
+    def test_dataframe_operations(self):
+        g = make_pd_grid()
+        g.setcell(0, 0, "=pd.DataFrame({'a': [1,2,3]})")
+        g.setcell(1, 0, "=A1['a'].mean()")
+        assert g.cells[1][0].val == 2.0
+
+    def test_dataframe_shape(self):
+        g = make_pd_grid()
+        g.setcell(0, 0, "=pd.DataFrame({'a': [1,2], 'b': [3,4], 'c': [5,6]})")
+        cl = g.cells[0][0]
+        assert cl.matrix.shape == (2, 3)
+
+    def test_series_becomes_dataframe(self):
+        g = make_pd_grid()
+        g.setcell(0, 0, "=pd.Series([10, 20, 30])")
+        cl = g.cells[0][0]
+        assert cl.matrix is not None
+        assert _is_dataframe(cl.matrix)
+        assert cl.val == 10.0
+
+    def test_dataframe_filter(self):
+        g = make_pd_grid()
+        g.setcell(0, 0, "=pd.DataFrame({'a': [1,2,3,4,5]})")
+        g.setcell(1, 0, "=len(A1[A1['a'] > 3])")
+        assert g.cells[1][0].val == 2.0
+
+    def test_dataframe_groupby(self):
+        g = make_pd_grid()
+        g.setcell(0, 0, "=pd.DataFrame({'cat': ['a','b','a','b'], 'val': [1,2,3,4]})")
+        g.setcell(1, 0, "=A1.groupby('cat')['val'].sum()")
+        cl = g.cells[1][0]
+        # groupby().sum() returns a Series, which becomes a DataFrame
+        assert cl.matrix is not None
+
+    def test_dataframe_recalc_stability(self):
+        g = make_pd_grid()
+        g.setcell(0, 0, "=pd.DataFrame({'a': [1,2,3]})")
+        g.recalc()
+        g.recalc()
+        # Should not be marked as circular
+        assert (0, 0) not in g._circular
+        assert g.cells[0][0].matrix is not None
+
+
+class TestPdLoad:
+    def test_pdload_csv(self, tmp_path):
+        path = str(tmp_path / "data.csv")
+        with open(path, "w") as f:
+            f.write("Name,Score\nAlice,95\nBob,87\n")
+        g = make_pd_grid()
+        assert g.pdload(path) == 0
+        # Row 0 should have headers
+        assert g.cells[0][0].text == "Name"
+        assert g.cells[1][0].text == "Score"
+        # Row 1 should have data
+        assert g.cells[0][1].text == "Alice"
+        assert g.cells[1][1].val == 95.0
+        # Row 2
+        assert g.cells[0][2].text == "Bob"
+        assert g.cells[1][2].val == 87.0
+
+    def test_pdload_tsv(self, tmp_path):
+        path = str(tmp_path / "data.tsv")
+        with open(path, "w") as f:
+            f.write("A\tB\n1\t2\n3\t4\n")
+        g = make_pd_grid()
+        assert g.pdload(path) == 0
+        assert g.cells[0][0].text == "A"
+        assert g.cells[1][0].text == "B"
+        assert g.cells[0][1].val == 1.0
+        assert g.cells[1][2].val == 4.0
+
+    def test_pdload_json(self, tmp_path):
+        import json
+
+        path = str(tmp_path / "data.json")
+        data = [{"x": 1, "y": 2}, {"x": 3, "y": 4}]
+        with open(path, "w") as f:
+            json.dump(data, f)
+        g = make_pd_grid()
+        assert g.pdload(path) == 0
+        assert g.cells[0][0].text == "x"
+        assert g.cells[1][0].text == "y"
+        assert g.cells[0][1].val == 1.0
+        assert g.cells[1][2].val == 4.0
+
+    def test_pdload_bad_path(self):
+        g = make_pd_grid()
+        assert g.pdload("/nonexistent/file.csv") == -1
+
+    def test_pdload_no_header(self, tmp_path):
+        path = str(tmp_path / "data.csv")
+        with open(path, "w") as f:
+            f.write("10,20\n30,40\n")
+        g = make_pd_grid()
+        g.pdload(path, header=False)
+        # Without header flag, no header row is written -- data starts at row 0
+        assert g.cells[0][0].val == 10.0
+        assert g.cells[1][0].val == 20.0
+        assert g.cells[0][1].val == 30.0
+
+
+class TestPdSave:
+    def test_pdsave_csv(self, tmp_path):
+        g = make_pd_grid()
+        g.setcell(0, 0, "Name")
+        g.setcell(1, 0, "Score")
+        g.setcell(0, 1, "Alice")
+        g.setcell(1, 1, "95")
+        g.setcell(0, 2, "Bob")
+        g.setcell(1, 2, "87")
+        path = str(tmp_path / "out.csv")
+        assert g.pdsave(path) == 0
+        with open(path) as f:
+            content = f.read()
+        assert "Name" in content
+        assert "Alice" in content
+        assert "95" in content
+
+    def test_pdsave_tsv(self, tmp_path):
+        g = make_pd_grid()
+        g.setcell(0, 0, "A")
+        g.setcell(1, 0, "B")
+        g.setcell(0, 1, "1")
+        g.setcell(1, 1, "2")
+        path = str(tmp_path / "out.tsv")
+        assert g.pdsave(path) == 0
+        with open(path) as f:
+            content = f.read()
+        assert "\t" in content
+
+    def test_pdsave_json(self, tmp_path):
+        import json
+
+        g = make_pd_grid()
+        g.setcell(0, 0, "x")
+        g.setcell(1, 0, "y")
+        g.setcell(0, 1, "1")
+        g.setcell(1, 1, "2")
+        path = str(tmp_path / "out.json")
+        assert g.pdsave(path) == 0
+        with open(path) as f:
+            data = json.load(f)
+        assert isinstance(data, list)
+        assert data[0]["x"] == 1.0
+
+    def test_pdsave_empty_grid(self):
+        g = make_pd_grid()
+        assert g.pdsave("/tmp/empty.csv") == -1
+
+    def test_pd_roundtrip(self, tmp_path):
+        g1 = make_pd_grid()
+        g1.setcell(0, 0, "City")
+        g1.setcell(1, 0, "Pop")
+        g1.setcell(0, 1, "NYC")
+        g1.setcell(1, 1, "8000000")
+        g1.setcell(0, 2, "LA")
+        g1.setcell(1, 2, "4000000")
+        path = str(tmp_path / "rt.csv")
+        g1.pdsave(path)
+        g2 = make_pd_grid()
+        g2.pdload(path)
+        assert g2.cells[0][0].text == "City"
+        assert g2.cells[1][0].text == "Pop"
+        assert g2.cells[0][1].text == "NYC"
+        assert g2.cells[1][1].val == 8000000.0

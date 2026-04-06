@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Added
+
+- **Visual mode delete** (`d` / `Backspace`): In visual selection mode,
+  press `d` or `Backspace` to clear all cells in the selection. Each cell
+  is saved to undo before clearing. A count message is shown in the
+  status bar.
+
+- **Cell edit mode** (`e` / `F2`): Press `e` or `F2` on a non-empty cell
+  to enter edit mode with the existing cell content pre-loaded in the
+  input buffer. Modify the text and press Enter to save, or Escape to
+  cancel. Previously, entering data always started from scratch.
+
+- **Object editor** (`E`): Press `E` on a cell containing a Vec, NumPy
+  array, or DataFrame to open an interactive sub-grid editor. Navigate
+  with arrow keys, edit individual elements with Enter, add/remove
+  rows and columns, and edit DataFrame column headers. `w` saves and
+  exits, `Esc` discards changes. Writes back a literal formula
+  (`=Vec([...])`, `=np.array([...])`, or `=pd.DataFrame({...})`).
+  Supports viewport scrolling for large objects.
+
+- 10 new tests for `_fmt_val` and `_build_formula` covering Vec, ndarray,
+  and DataFrame formula generation with roundtrip verification.
+
 ## [0.1.2]
 
 ### Added

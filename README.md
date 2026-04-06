@@ -135,6 +135,8 @@ Other keys:
 	p           Paste yanked cell(s) at cursor
 	v           Enter visual selection mode
 	!           Force recalculation
+	e / F2      Edit current cell (pre-fills existing content)
+	E           Open object editor for Vec/ndarray/DataFrame cells
 	"           Enter label
 	Backspace   Clear cell
 	Tab         Next column
@@ -152,13 +154,34 @@ Press `v` to enter visual mode. Arrow keys extend the selection from the
 anchor cell. Selected cells are highlighted in magenta.
 
 	y           Yank (copy) selection
+	d           Delete (clear) all cells in selection
 	p           Paste at selection origin
+	Backspace   Delete (clear) all cells in selection
 	:           Enter command line (commands apply to selection)
 	Esc         Cancel
 
 Commands that support visual selection: `:b` (blank range), `:f` (format
 range), `:dr` (delete selected rows), `:dc` (delete selected columns),
 `:sort` (sort selected rows).
+
+### Object editor
+
+Press `E` on a cell containing a Vec, NumPy array, or DataFrame to open
+an interactive sub-grid editor. This lets you edit individual elements
+without rewriting the entire formula.
+
+	Arrow keys  Navigate cells
+	Enter / e   Edit value under cursor
+	H           Jump to column header row (DataFrame only)
+	o / O       Insert row after / before current
+	a / A       Insert column after / before current (ndarray/DataFrame)
+	x           Delete current row
+	X           Delete current column (ndarray/DataFrame)
+	w           Save and exit
+	Esc         Cancel (discard changes)
+
+On save, the editor writes back a literal formula (`=Vec([...])`,
+`=np.array([...])`, or `=pd.DataFrame({...})`).
 
 ## Formulas
 

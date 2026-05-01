@@ -6,10 +6,34 @@ import json
 import math
 import re
 from collections.abc import Callable, Iterable, Iterator
+from enum import IntEnum
 from io import StringIO
 from typing import Any
 
 from .sandbox import load_modules, validate_code, validate_formula
+
+
+class Mode(IntEnum):
+    EXCEL = 1
+    HYBRID = 2
+    LEGACY = 3
+
+    @classmethod
+    def parse(cls, value: object) -> Mode | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int) and value in (1, 2, 3):
+            return cls(value)
+        if isinstance(value, str):
+            s = value.strip().lower()
+            if s in ("1", "excel"):
+                return cls.EXCEL
+            if s in ("2", "hybrid"):
+                return cls.HYBRID
+            if s in ("3", "legacy"):
+                return cls.LEGACY
+        return None
+
 
 MAXIN = 256
 NCOL = 256
@@ -243,6 +267,8 @@ class Cell:
         "underline",
         "italic",
         "fmtstr",
+        "ast",
+        "ast_text",
     )
 
     def __init__(self) -> None:
@@ -256,6 +282,8 @@ class Cell:
         self.underline: int = 0
         self.italic: int = 0
         self.fmtstr: str = ""
+        self.ast: Any = None
+        self.ast_text: str = ""
 
     def clear(self) -> None:
         self.type = EMPTY
@@ -268,6 +296,8 @@ class Cell:
         self.underline = 0
         self.italic = 0
         self.fmtstr = ""
+        self.ast = None
+        self.ast_text = ""
 
     def copy_from(self, src: Cell) -> None:
         self.type = src.type
@@ -280,6 +310,8 @@ class Cell:
         self.underline = src.underline
         self.italic = src.italic
         self.fmtstr = src.fmtstr
+        self.ast = None
+        self.ast_text = ""
 
     def snapshot(self) -> Cell:
         c = Cell()
@@ -379,6 +411,72 @@ def _expand_ranges(expr: str) -> str:
     return "".join(result)
 
 
+def _xlsx_cell_to_text(cell: Any) -> str:
+    v = cell.value
+    if v is None:
+        return ""
+    dt = getattr(cell, "data_type", None)
+    if dt == "f" or (isinstance(v, str) and v.startswith("=")):
+        return v if isinstance(v, str) else str(v)
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        if math.isnan(v) or math.isinf(v):
+            return ""
+        if v == int(v) and abs(v) < 1e15:
+            return str(int(v))
+        return f"{v:g}"
+    return str(v)
+
+
+def _ast_has_pycall(node: Any) -> bool:
+    from .formula.ast_nodes import (
+        BinOp,
+        Call,
+        Percent,
+        PyCall,
+        UnaryOp,
+    )
+
+    if isinstance(node, PyCall):
+        return True
+    if isinstance(node, Call):
+        return any(_ast_has_pycall(a) for a in node.args)
+    if isinstance(node, BinOp):
+        return _ast_has_pycall(node.left) or _ast_has_pycall(node.right)
+    if isinstance(node, (UnaryOp, Percent)):
+        return _ast_has_pycall(node.operand)
+    return False
+
+
+def _ast_uses_cell(node: Any, c: int, r: int) -> bool:
+    from .formula.ast_nodes import (
+        BinOp,
+        Call,
+        CellRef,
+        Percent,
+        PyCall,
+        RangeRef,
+        UnaryOp,
+    )
+
+    if isinstance(node, CellRef):
+        return node.col == c and node.row == r
+    if isinstance(node, RangeRef):
+        c1, c2 = sorted([node.start.col, node.end.col])
+        r1, r2 = sorted([node.start.row, node.end.row])
+        return c1 <= c <= c2 and r1 <= r <= r2
+    if isinstance(node, (Call, PyCall)):
+        return any(_ast_uses_cell(a, c, r) for a in node.args)
+    if isinstance(node, BinOp):
+        return _ast_uses_cell(node.left, c, r) or _ast_uses_cell(node.right, c, r)
+    if isinstance(node, (UnaryOp, Percent)):
+        return _ast_uses_cell(node.operand, c, r)
+    return False
+
+
 # Shared sentinel for read access to unpopulated cells.
 # Must never be mutated -- all mutation paths go through cells
 # that already exist in the sparse dict (post-setcell).
@@ -436,6 +534,7 @@ class Grid:
         self.libs: list[str] = []
         self._module_errors: list[str] = []
         self._circular: set[tuple[int, int]] = set()
+        self.mode: Mode = Mode.LEGACY
 
     def load_lib(self, name: str) -> None:
         """Load a formula lib's builtins into the eval namespace."""
@@ -444,6 +543,33 @@ class Grid:
         from .libs import get_lib_builtins
 
         self._eval_globals.update(get_lib_builtins(name))
+
+    def _apply_mode_libs(self) -> None:
+        if self.mode in (Mode.EXCEL, Mode.HYBRID) and "xlsx" not in self.libs:
+            self.libs.append("xlsx")
+            self.load_lib("xlsx")
+
+    def validate_for_mode(self, target: Mode) -> list[str]:
+        if target == Mode.LEGACY:
+            return []
+        from .formula import parse
+        from .formula.errors import FormulaError
+
+        errors: list[str] = []
+        if target == Mode.EXCEL and self.code:
+            errors.append("EXCEL mode forbids code blocks; clear the code first")
+        for (c, r), cl in self._cells.items():
+            if cl.type != FORMULA:
+                continue
+            text = cl.text[1:] if cl.text.startswith("=") else cl.text
+            try:
+                ast = parse(text)
+            except FormulaError as e:
+                errors.append(f"{cellname(c, r)}: {e}")
+                continue
+            if target == Mode.EXCEL and _ast_has_pycall(ast):
+                errors.append(f"{cellname(c, r)}: py.* calls not allowed in EXCEL")
+        return errors
 
     def load_requires(self, modules: list[str]) -> None:
         """Load required modules into the eval namespace."""
@@ -505,6 +631,12 @@ class Grid:
         self.recalc()
 
     def recalc(self) -> None:
+        if self.mode != Mode.LEGACY:
+            self._recalc_formula()
+            return
+        self._recalc_legacy()
+
+    def _recalc_legacy(self) -> None:
         g = self._eval_globals
         self._circular = set()
 
@@ -641,6 +773,187 @@ class Grid:
             formula = cl.text[1:] if cl.text.startswith("=") else cl.text
             expanded = _expand_ranges(formula.replace("$", ""))
             if re.search(r"\b" + re.escape(name) + r"\b", expanded):
+                self._circular.add((c, r))
+
+        if self._circular:
+            for pos in self._circular:
+                circ = self._cells.get(pos)
+                if circ:
+                    circ.arr = None
+                    circ.matrix = None
+                    circ.val = float("nan")
+
+    def _build_py_registry(self) -> dict[str, Any]:
+        if self.mode != Mode.HYBRID or not self.code:
+            return {}
+        valid, _ = validate_code(self.code)
+        if not valid:
+            return {}
+        ns: dict[str, Any] = dict(self._eval_globals)
+        with contextlib.suppress(Exception):
+            exec(self.code, ns)  # noqa: S102
+        base_keys = set(self._eval_globals.keys())
+        registry: dict[str, Any] = {}
+        for k, v in ns.items():
+            if k.startswith("_") or k in base_keys:
+                continue
+            if callable(v):
+                registry[k] = v
+        return registry
+
+    def _build_named_ranges(self) -> dict[str, Any]:
+        from .formula.ast_nodes import CellRef as F_CellRef
+        from .formula.ast_nodes import RangeRef as F_RangeRef
+
+        named: dict[str, Any] = {}
+        for nr in self.names:
+            start = F_CellRef(nr.c1, nr.r1, False, False)
+            if nr.c1 == nr.c2 and nr.r1 == nr.r2:
+                named[nr.name] = start
+            else:
+                end = F_CellRef(nr.c2, nr.r2, False, False)
+                named[nr.name] = F_RangeRef(start, end)
+        return named
+
+    def _cell_lookup_value(self, c: int, r: int) -> object:
+        cl = self._cells.get((c, r))
+        if cl is None or cl.type == EMPTY:
+            return None
+        if cl.type == LABEL:
+            return cl.text
+        if cl.matrix is not None:
+            return cl.matrix
+        if cl.arr is not None and cl.arr:
+            return Vec(cl.arr)
+        return cl.val
+
+    def _store_formula_result(self, cl: Cell, result: Any) -> None:
+        from .formula.errors import ExcelError
+
+        if isinstance(result, ExcelError):
+            cl.arr = None
+            cl.matrix = None
+            cl.val = float("nan")
+            return
+        if _is_dataframe(result):
+            cl.matrix = result
+            cl.arr = None
+            try:
+                cl.val = float(result.iloc[0, 0])
+            except (TypeError, ValueError, IndexError):
+                cl.val = float("nan")
+            return
+        if _is_series(result):
+            cl.matrix = result.to_frame()
+            cl.arr = None
+            try:
+                cl.val = float(result.iloc[0])
+            except (TypeError, ValueError, IndexError):
+                cl.val = float("nan")
+            return
+        if _is_ndarray(result):
+            if result.ndim == 0:
+                cl.matrix = None
+                cl.arr = None
+                try:
+                    cl.val = float(result)
+                except (TypeError, ValueError):
+                    cl.val = float("nan")
+            else:
+                cl.matrix = result
+                cl.arr = None
+                try:
+                    cl.val = float(result.flat[0])
+                except (TypeError, ValueError):
+                    cl.val = float("nan")
+            return
+        if isinstance(result, Vec):
+            cl.matrix = None
+            cl.arr = list(result.data)
+            cl.val = result.data[0] if result.data else float("nan")
+            return
+        cl.matrix = None
+        cl.arr = None
+        try:
+            cl.val = float(result)
+        except (TypeError, ValueError):
+            cl.val = float("nan")
+
+    def _recalc_formula(self) -> None:
+        from .formula import Env, evaluate, parse
+        from .formula.errors import FormulaError
+
+        self._circular = set()
+        py_registry = self._build_py_registry()
+        named = self._build_named_ranges()
+        env = Env(
+            cell_value=self._cell_lookup_value,
+            builtins=self._eval_globals,
+            named_ranges=named,
+            py_registry=py_registry,
+        )
+
+        changed_cells: set[tuple[int, int]] = set()
+        for _ in range(100):
+            changed_cells = set()
+            for (fc, fr), cl in self._cells.items():
+                if cl.type != FORMULA:
+                    continue
+                text = cl.text
+                if text.startswith("="):
+                    text = text[1:]
+                if cl.ast is None or cl.ast_text != text:
+                    cl.ast_text = text
+                    try:
+                        cl.ast = parse(text)
+                    except FormulaError:
+                        cl.ast = None
+                oldval = cl.val
+                old_matrix = cl.matrix
+                if cl.ast is None:
+                    cl.arr = None
+                    cl.matrix = None
+                    cl.val = float("nan")
+                else:
+                    try:
+                        result = evaluate(cl.ast, env)
+                    except Exception:
+                        result = float("nan")
+                    self._store_formula_result(cl, result)
+                both_nan = (
+                    isinstance(cl.val, float)
+                    and math.isnan(cl.val)
+                    and isinstance(oldval, float)
+                    and math.isnan(oldval)
+                )
+                matrix_changed = False
+                if cl.matrix is not None or old_matrix is not None:
+                    if cl.matrix is None or old_matrix is None:
+                        matrix_changed = True
+                    elif _is_dataframe(cl.matrix) and _is_dataframe(old_matrix):
+                        try:
+                            matrix_changed = not cl.matrix.equals(old_matrix)
+                        except Exception:
+                            matrix_changed = cl.matrix is not old_matrix
+                    else:
+                        try:
+                            import numpy as _np  # noqa: I001
+
+                            matrix_changed = not _np.array_equal(cl.matrix, old_matrix)
+                        except ImportError:
+                            matrix_changed = cl.matrix is not old_matrix
+                if (cl.val != oldval and not both_nan) or matrix_changed:
+                    changed_cells.add((fc, fr))
+            if not changed_cells:
+                break
+
+        if changed_cells:
+            self._circular = set(changed_cells)
+
+        for (c, r), cl in self._cells.items():
+            if cl.type != FORMULA or cl.ast is None:
+                continue
+            if _ast_uses_cell(cl.ast, c, r):
                 self._circular.add((c, r))
 
         if self._circular:
@@ -849,6 +1162,12 @@ class Grid:
         if not isinstance(version, int) or version > FILE_VERSION:
             return -1
 
+        if "mode" in d:
+            parsed = Mode.parse(d.get("mode"))
+            self.mode = parsed if parsed is not None else Mode.LEGACY
+        else:
+            self.mode = Mode.LEGACY
+
         code = d.get("code", "")
         if policy is None or policy.load_code:
             self.code = code
@@ -858,6 +1177,7 @@ class Grid:
             self.libs = [str(lib) for lib in libs]
             for lib in self.libs:
                 self.load_lib(lib)
+        self._apply_mode_libs()
 
         requires = d.get("requires", [])
         if isinstance(requires, list):
@@ -951,7 +1271,7 @@ class Grid:
                 if c > maxc:
                     maxc = c
 
-        out: dict[str, Any] = {"version": FILE_VERSION}
+        out: dict[str, Any] = {"version": FILE_VERSION, "mode": self.mode.name}
 
         if self.libs:
             out["libs"] = self.libs
@@ -1010,6 +1330,75 @@ class Grid:
                 json.dump(out, f, indent=2)
                 f.write("\n")
         except OSError:
+            return -1
+        return 0
+
+    def xlsxload(self, filename: str) -> int:
+        try:
+            from openpyxl import load_workbook  # type: ignore[import-untyped]
+        except ImportError:
+            return -1
+        try:
+            wb = load_workbook(filename, data_only=False)
+        except Exception:
+            return -1
+        ws = wb.active
+        if ws is None:
+            return -1
+        self.clear_all()
+        self.mode = Mode.EXCEL
+        self._apply_mode_libs()
+        for row in ws.iter_rows():
+            for cell in row:
+                v = cell.value
+                if v is None:
+                    continue
+                c = cell.column - 1
+                r = cell.row - 1
+                if not (0 <= c < NCOL and 0 <= r < NROW):
+                    continue
+                text = _xlsx_cell_to_text(cell)
+                if text == "":
+                    continue
+                self.setcell(c, r, text)
+        self.dirty = 0
+        self.filename = filename
+        return 0
+
+    def xlsxsave(self, filename: str) -> int:
+        try:
+            from openpyxl import Workbook
+        except ImportError:
+            return -1
+        maxr = -1
+        maxc = -1
+        for (c, r), sc in self._cells.items():
+            if sc.type != EMPTY:
+                if r > maxr:
+                    maxr = r
+                if c > maxc:
+                    maxc = c
+        if maxr < 0:
+            return -1
+        wb = Workbook()
+        ws = wb.active
+        if ws is None:
+            return -1
+        for (c, r), cl in self._cells.items():
+            if cl.type == EMPTY:
+                continue
+            if cl.type == LABEL:
+                ws.cell(row=r + 1, column=c + 1, value=cl.text)
+            elif cl.type == NUM:
+                ws.cell(row=r + 1, column=c + 1, value=cl.val)
+            elif cl.type == FORMULA:
+                if isinstance(cl.val, float) and math.isnan(cl.val):
+                    ws.cell(row=r + 1, column=c + 1, value=None)
+                else:
+                    ws.cell(row=r + 1, column=c + 1, value=cl.val)
+        try:
+            wb.save(filename)
+        except Exception:
             return -1
         return 0
 

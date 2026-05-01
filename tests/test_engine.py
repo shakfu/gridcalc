@@ -12,6 +12,7 @@ from gridcalc.engine import (
     NUM,
     Cell,
     Grid,
+    Mode,
     NamedRange,
     _is_dataframe,
     col_name,
@@ -1826,3 +1827,59 @@ class TestPdSave:
         assert g2.cells[1][0].text == "Pop"
         assert g2.cells[0][1].text == "NYC"
         assert g2.cells[1][1].val == 8000000.0
+
+
+class TestMode:
+    def test_default_is_legacy(self):
+        g = make_grid()
+        assert g.mode == Mode.LEGACY
+
+    def test_save_emits_mode(self, tmp_path):
+        g = make_grid()
+        g.setcell(0, 0, "1")
+        f = tmp_path / "m.json"
+        assert g.jsonsave(str(f)) == 0
+        import json
+
+        d = json.loads(f.read_text())
+        assert d["mode"] == "LEGACY"
+
+    def test_load_without_mode_is_legacy(self, tmp_path):
+        g = make_grid()
+        f = tmp_path / "legacy.json"
+        f.write_text('{"cells": [[1]]}')
+        assert g.jsonload(str(f)) == 0
+        assert g.mode == Mode.LEGACY
+
+    def test_load_with_mode_excel(self, tmp_path):
+        g = make_grid()
+        f = tmp_path / "x.json"
+        f.write_text('{"mode": 1, "cells": [[1]]}')
+        assert g.jsonload(str(f)) == 0
+        assert g.mode == Mode.EXCEL
+
+    def test_load_invalid_mode_falls_back_to_legacy(self, tmp_path):
+        g = make_grid()
+        f = tmp_path / "bad.json"
+        f.write_text('{"mode": "garbage", "cells": [[1]]}')
+        assert g.jsonload(str(f)) == 0
+        assert g.mode == Mode.LEGACY
+
+    def test_roundtrip_preserves_mode(self, tmp_path):
+        g1 = make_grid()
+        g1.mode = Mode.EXCEL
+        g1.setcell(0, 0, "1")
+        f = tmp_path / "rt.json"
+        assert g1.jsonsave(str(f)) == 0
+        g2 = make_grid()
+        assert g2.jsonload(str(f)) == 0
+        assert g2.mode == Mode.EXCEL
+
+    def test_parse_strings(self):
+        assert Mode.parse("excel") == Mode.EXCEL
+        assert Mode.parse("HYBRID") == Mode.HYBRID
+        assert Mode.parse("3") == Mode.LEGACY
+        assert Mode.parse(2) == Mode.HYBRID
+        assert Mode.parse("nonsense") is None
+        assert Mode.parse(True) is None
+        assert Mode.parse(99) is None

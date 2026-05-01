@@ -12,24 +12,36 @@ $ gridcalc budget.json
 
 ## Features
 
-- **Python formulas**: cell formulas are Python expressions evaluated with `eval()`
+- **Three formula modes** (per file): `EXCEL` (strict Excel grammar, no Python),
+  `HYBRID` (Excel grammar plus a `py.*` gateway to user-defined Python),
+  `LEGACY` (Python `eval()`, full numpy/pandas/list-comprehensions). New TUI
+  files default to HYBRID; existing files without an explicit mode load as
+  LEGACY for back-compat.
+- **xlsx interop**: `:xlsx load` reads formulas and values from `.xlsx`
+  files via openpyxl and evaluates them with the EXCEL evaluator;
+  `:xlsx save` writes computed values back.
 - **Curses-based TUI**: runs in any terminal, vim-style command mode
 - **JSON file format**: spreadsheets stored as plain JSON, easy to version control or script
 - **256 columns x 1024 rows**: column-major grid with four cell types (empty, number, label, formula)
-- **Range arithmetic**: `A1:A10` expands to a `Vec` array supporting element-wise math
-- **NumPy support**: use `np.array`, `np.linalg`, matrix multiply (`@`), and other numpy operations in formulas
-- **Pandas support**: create and manipulate DataFrames in formulas, view as scrollable tables
-- **CSV/pandas import/export**: `:csv` for plain CSV, `:pd` for pandas-powered multi-format I/O (CSV, TSV, Excel, JSON, Parquet)
+- **Range arithmetic**: `A1:A10` expands to an array supporting element-wise math
+- **NumPy / pandas support** (LEGACY mode): `np.array`, `np.linalg`, matrix
+  multiply (`@`), DataFrames, `:view` for scrollable tables
+- **Multi-format import/export**: `:csv`, `:xlsx`, `:pd` (CSV, TSV, Excel, JSON, Parquet)
 - **Search**: `/` to search, `n`/`N` to cycle matches with position indicator
 - **Copy/paste**: `y` to yank, `p` to paste (single cell or visual selection)
 - **Sort**: `:sort [col] [desc]` to sort rows by column
 - **Named ranges**: assign names to cell ranges and use them directly in formulas
-- **Custom functions**: edit a Python code block (`:e`) to define functions, import modules, set constants
+- **Custom functions** (HYBRID/LEGACY): edit a Python code block (`:e`) to
+  define functions, import modules, set constants
+- **Excel-compatible function library**: IF, IFERROR, AND, OR, NOT, ROUND,
+  AVERAGE, MEDIAN, SUMIF, COUNTIF, AVERAGEIF, VLOOKUP, HLOOKUP, INDEX, MATCH,
+  CONCATENATE, LEFT, RIGHT, MID, LEN, TRIM, UPPER, LOWER, SUBSTITUTE, and
+  many more (auto-loaded in EXCEL/HYBRID modes)
 - **Built-in spreadsheet functions**: SUM, AVG, MIN, MAX, COUNT, ABS, SQRT, INT, plus Python's math module
 - **Cell formatting**: bold, underline, italic, dollar/percent/integer/bar-chart formats, Python format specs
 - **Absolute references**: `$A$1` syntax for references that stay fixed on replicate/insert/delete
 - **Undo/redo**: full undo history with Ctrl-Z / Ctrl-Y
-- **Sandbox**: AST-based validation blocks dangerous code in formulas and code blocks
+- **Sandbox**: AST-based validation blocks dangerous code in formulas and code blocks (LEGACY); EXCEL/HYBRID formulas don't use `eval()` at all
 - **Configurable**: TOML config file (`gridcalc.toml`) with XDG lookup
 
 ## Install
@@ -61,22 +73,33 @@ cd gridcalc
 uv run gridcalc
 ```
 
+### Examples
+
+Three example files ship with the repo:
+
+```sh
+gridcalc example_excel.json    # EXCEL mode: sales report, named ranges, IF/IFERROR/MATCH
+gridcalc example_hybrid.json   # HYBRID mode: progressive tax via py.* + Excel aggregations
+gridcalc example.json          # LEGACY mode: numpy/pandas/list-comprehension formulas
+```
+
 ## File format
 
 Spreadsheets are stored as JSON:
 
 ```json
 {
+  "version": 1,
+  "mode": "HYBRID",
   "code": "def margin(rev, cost):\n    return (rev - cost) / rev * 100\n",
-  "requires": ["numpy"],
   "names": {
     "revenue": "A1:A12",
     "costs": "B1:B12"
   },
   "cells": [
     ["Revenue", "Cost", "Margin"],
-    [1000, 600, "=margin(A1, B1)"],
-    [1200, 700, "=margin(A2, B2)"]
+    [1000, 600, "=py.margin(A1, B1)"],
+    [1200, 700, "=py.margin(A2, B2)"]
   ],
   "format": {
     "width": 10
@@ -84,11 +107,20 @@ Spreadsheets are stored as JSON:
 }
 ```
 
+- **mode** (optional): `"EXCEL"`, `"HYBRID"`, or `"LEGACY"`. Absent means
+  `LEGACY` (back-compat with files saved before the modes feature). New
+  files saved by the TUI default to `HYBRID`.
 - **cells**: 2D array of cell values (numbers, strings, formulas, or null)
-- **code** (optional): Python code executed before formulas (functions, imports, constants)
-- **requires** (optional): list of modules to load into the formula namespace (e.g. `["numpy"]`)
+- **code** (optional): Python code executed before formulas. In `HYBRID`
+  mode, callables defined here are reachable from formulas as `py.<name>(...)`.
+  In `LEGACY` mode, they are reachable as bare names.
+- **requires** (optional, LEGACY): list of modules to load into the
+  formula namespace (e.g. `["numpy"]`)
 - **names** (optional): named ranges mapping names to cell ranges
 - **format** (optional): display settings (currently only `width`)
+
+xlsx files (`.xlsx`) can also be loaded directly with `:xlsx load` --
+they're treated as `EXCEL` mode automatically.
 
 ## Usage
 
@@ -118,8 +150,11 @@ Press `:` for the command line (vim-style):
 	:view           View DataFrame/matrix as scrollable table
 	:csv save [file]    Export evaluated values to CSV
 	:csv load [file]    Import cells from CSV
+	:xlsx save [file]   Export to .xlsx (values)
+	:xlsx load [file]   Import from .xlsx (formulas + values, sets mode=EXCEL)
 	:pd save [file]     Export via pandas (CSV, TSV, Excel, JSON, Parquet)
 	:pd load [file]     Import via pandas (auto-detects format)
+	:mode [excel|hybrid|legacy]   Show or set the formula evaluator mode
 	:name <n> [range]   Define named range
 	:names          List named ranges
 	:unname <n>     Remove named range
@@ -183,15 +218,56 @@ without rewriting the entire formula.
 On save, the editor writes back a literal formula (`=Vec([...])`,
 `=np.array([...])`, or `=pd.DataFrame({...})`).
 
+## Modes
+
+Each spreadsheet has one of three modes, controlling how formulas are
+evaluated:
+
+| Mode | Grammar | Python escape hatch | Sandbox needed | Use case |
+|------|---------|---------------------|----------------|----------|
+| `EXCEL` | strict Excel | none | no (no `eval`) | xlsx interop, untrusted files |
+| `HYBRID` | Excel + `py.*` | code-block functions reachable as `py.foo(...)` | code blocks only | most new sheets |
+| `LEGACY` | Python `eval()` | full Python expressions | full AST sandbox | numpy/pandas-heavy sheets, files predating modes |
+
+Switch mode with `:mode <name>`. The TUI validates before switching:
+if any formula doesn't parse in the target mode (e.g. switching from
+LEGACY to EXCEL with a list comprehension still in a cell), the change
+is refused with a one-line error pointing at the first offender.
+
+The current mode is shown in the top-right of the status bar
+(`[EXCEL]`, `[HYBRID]`, `[LEGACY]`).
+
+Loading an `.xlsx` via `:xlsx load` automatically sets mode to `EXCEL`.
+
+### Limitations
+
+- **String-returning formulas display as `nan`**. `Cell.val` is a float, so
+  formulas like `=IF(A1>0, "yes", "no")` cannot show their result yet.
+  Affects all modes equally. Workaround: return numeric codes (`1`/`0`,
+  bracket rates, etc.) and put text labels in adjacent cells.
+- **`INDEX` / `MATCH` / `VLOOKUP` against text columns** in `EXCEL`/`HYBRID`
+  modes: ranges currently coerce non-numeric cell values to `0`, so lookups
+  by string key won't match. Numeric lookups work normally.
+- **Multi-sheet xlsx**: only the active sheet is read.
+- **Sheet-qualified refs** (`Sheet1!A1`) and **`INDIRECT`** are not
+  supported (the latter deliberately, to keep recalc ordering tractable).
+
 ## Formulas
 
-Formulas are Python expressions prefixed with `=`. Cell references like
-`A1`, `B3`, `AA10` are available as variables.
+Formulas are prefixed with `=`. Cell references like `A1`, `B3`, `AA10`
+are available everywhere. Operators, precedence, and error values follow
+Excel.
 
 	=A1 + B1 * 2
 	=(A1 + A2) / 2
-	=A1 ** 2
+	=2^10                  # exponent (right-associative)
+	=50%                   # percent postfix; equals 0.5
+	="hello " & A1         # string concatenation
+	=IF(A1 > 0, A1, -A1)
 	=SQRT(A3 + A2)
+
+In `LEGACY` mode, `**` is supported instead of `^` and the full
+Python expression language is available.
 
 ### Range syntax
 
@@ -220,20 +296,25 @@ until the file is closed (e.g., `vim`, `nano`, or `subl -w` for Sublime
 Text). Define Python functions, import modules, set constants:
 
 ```python
-import statistics
-
 def margin(rev, cost):
     return (rev - cost) / rev * 100
 
 def compound(principal, rate, years):
     return principal * (1 + rate) ** years
-
-TAX_RATE = 0.21
 ```
 
-Then use them in formulas: `=margin(A1, B1)`, `=compound(1000, 0.05, 10)`.
+In `HYBRID` mode, call them through the `py.*` namespace:
+`=py.margin(A1, B1)`, `=py.compound(1000, 0.05, 10)`. This keeps the
+Python boundary visible in every formula that crosses it.
+
+In `LEGACY` mode, the same functions are reachable as bare names:
+`=margin(A1, B1)`, `=compound(1000, 0.05, 10)`.
+
+`EXCEL` mode forbids code blocks entirely.
 
 ### Built-in functions
+
+Always available:
 
 	SUM(x)    Sum of array or scalar
 	AVG(x)    Average
@@ -245,10 +326,20 @@ Then use them in formulas: `=margin(A1, B1)`, `=compound(1000, 0.05, 10)`.
 	INT(x)    Truncate to integer (element-wise for arrays)
 
 Math functions are preloaded: `sin`, `cos`, `tan`, `exp`, `log`,
-`log2`, `log10`, `floor`, `ceil`, `pi`, `e`, `inf`. The `math` module
-is also available for anything else (`=math.factorial(10)`).
+`log2`, `log10`, `floor`, `ceil`, `pi`, `e`, `inf`.
 
-Python builtins like `sum`, `min`, `max`, `abs`, `len` also work.
+Auto-loaded in `EXCEL`/`HYBRID` modes (Excel-compatible library):
+
+	IF, IFERROR, AND, OR, NOT
+	ROUND, ROUNDUP, ROUNDDOWN, MOD, POWER, SIGN
+	AVERAGE, MEDIAN, SUMPRODUCT, LARGE, SMALL
+	SUMIF, COUNTIF, AVERAGEIF
+	VLOOKUP, HLOOKUP, INDEX, MATCH
+	CONCATENATE, CONCAT, LEFT, RIGHT, MID, LEN
+	TRIM, UPPER, LOWER, PROPER, SUBSTITUTE, REPT, EXACT
+
+In `LEGACY` mode, the `math` module is available (`=math.factorial(10)`)
+and Python builtins like `sum`, `min`, `max`, `abs`, `len` also work.
 
 ### Arrays
 
@@ -259,7 +350,7 @@ Element-wise arithmetic works between arrays and scalars:
 	=revenue * 1.1
 	=revenue + costs
 
-### Matrix operations
+### Matrix operations (LEGACY mode)
 
 When `numpy` is listed in `requires`, it is available as `np` in formulas.
 Formulas can create and manipulate NumPy arrays:
@@ -275,7 +366,7 @@ Matrix cells display the shape, e.g. `[2x2]`. The full matrix is shown
 in the status bar. Use `:view` to see the contents as a scrollable table.
 Built-in functions like SUM and SQRT work element-wise on NumPy arrays.
 
-### DataFrame operations
+### DataFrame operations (LEGACY mode)
 
 When `pandas` is listed in `requires`, it is available as `pd` in formulas.
 Formulas can create and manipulate DataFrames:
@@ -294,21 +385,24 @@ Series results are automatically converted to DataFrames.
 
 ### Import/export
 
-`:csv` provides plain CSV import/export. `:pd` uses pandas for richer
-format support:
+Three import paths:
 
-	:csv save data.csv      Export evaluated values to CSV
-	:csv load data.csv      Import cells from CSV
-	:pd load data.csv       Import via pandas (CSV, auto-typed)
-	:pd load data.xlsx      Import from Excel
-	:pd load data.parquet   Import from Parquet
-	:pd load data.tsv       Import from TSV
-	:pd load data.json      Import from JSON
-	:pd save results.xlsx   Export to Excel
-	:pd save results.json   Export to JSON (records format)
+| Command | Reads | Writes | Notes |
+|---------|-------|--------|-------|
+| `:csv` | CSV | CSV | Plain text, fast |
+| `:xlsx` | `.xlsx` formulas + values | `.xlsx` values | Sets mode to `EXCEL` on load; uses openpyxl |
+| `:pd` | CSV/TSV/Excel/JSON/Parquet | same | Uses pandas; row 1 as headers |
 
-`:pd load` places column headers in row 1 and data below. `:pd save`
-uses row 1 as column headers.
+	:csv save data.csv         Export evaluated values to CSV
+	:csv load data.csv         Import cells from CSV
+	:xlsx save results.xlsx    Export evaluated values to Excel
+	:xlsx load model.xlsx      Import formulas + values from Excel
+	:pd load data.parquet      Import via pandas (Parquet)
+	:pd save results.json      Export via pandas (JSON records)
+
+`:xlsx load` translates Excel formulas into the gridcalc EXCEL grammar.
+Functions outside the auto-loaded library produce `#NAME?`; sheet-qualified
+references (`Sheet1!A1`) and `INDIRECT` are not supported.
 
 ### Cell references
 

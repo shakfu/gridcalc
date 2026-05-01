@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "mode": "EXCEL",
+  "names": {
+    "sales": "B2:B5",
+    "targets": "C2:C5"
+  },
+  "format": {
+    "width": 12
+  },
+  "cells": [
+    [
+      {"v": "Quarter", "bold": true},
+      {"v": "Sales", "bold": true},
+      {"v": "Target", "bold": true},
+      {"v": "Met (1/0)", "bold": true},
+      {"v": "Commission", "bold": true},
+      {"v": "% of target", "bold": true}
+    ],
+    [
+      "Q1", 12500, 10000,
+      "=IF(B2>=C2, 1, 0)",
+      "=IF(B2>=C2, B2*0.05, 0)",
+      "=B2/C2"
+    ],
+    [
+      "Q2", 8300, 11000,
+      "=IF(B3>=C3, 1, 0)",
+      "=IF(B3>=C3, B3*0.05, 0)",
+      "=B3/C3"
+    ],
+    [
+      "Q3", 15700, 12000,
+      "=IF(B4>=C4, 1, 0)",
+      "=IF(B4>=C4, B4*0.05, 0)",
+      "=B4/C4"
+    ],
+    [
+      "Q4", 9200, 13000,
+      "=IF(B5>=C5, 1, 0)",
+      "=IF(B5>=C5, B5*0.05, 0)",
+      "=B5/C5"
+    ],
+    [],
+    [
+      {"v": "Totals", "bold": true},
+      "=SUM(sales)",
+      "=SUM(targets)",
+      null,
+      "=SUM(E2:E5)",
+      "=SUM(sales)/SUM(targets)"
+    ],
+    [
+      {"v": "Average", "bold": true},
+      "=AVERAGE(sales)",
+      "=AVERAGE(targets)",
+      null,
+      "=AVERAGE(E2:E5)"
+    ],
+    [
+      {"v": "Best", "bold": true},
+      "=MAX(sales)",
+      null,
+      {"v": "row #", "bold": true},
+      "=MATCH(MAX(sales), sales, 0)"
+    ],
+    [
+      {"v": "Worst", "bold": true},
+      "=MIN(sales)",
+      null,
+      {"v": "row #", "bold": true},
+      "=MATCH(MIN(sales), sales, 0)"
+    ],
+    [
+      {"v": "Met count", "bold": true},
+      "=SUM(D2:D5)"
+    ],
+    [],
+    [
+      {"v": "Error handling", "bold": true}
+    ],
+    [
+      "1/0 (raw):",
+      "=IFERROR(1/0, -1)",
+      null,
+      "Math safe:",
+      "=IFERROR(SQRT(-1), 0)"
+    ],
+    [],
+    [
+      {"v": "Range arithmetic", "bold": true}
+    ],
+    [
+      "Sales - Targets:",
+      "=sales - targets"
+    ],
+    [
+      "Discounted (95%):",
+      "=sales * 0.95"
+    ],
+    [
+      "Total uplift:",
+      "=SUM(sales * 1.1) - SUM(sales)"
+    ]
+  ]
+}

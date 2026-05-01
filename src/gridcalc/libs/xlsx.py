@@ -80,6 +80,8 @@ def IFERROR(value: Any, fallback: Any) -> Any:
     """=IFERROR(A1/B1, 0)"""
     if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
         return fallback
+    if type(value).__name__ == "ExcelError":
+        return fallback
     return value
 
 

@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "mode": "HYBRID",
+  "code": "def progressive_tax(income):\n    brackets = [(11000, 0.10), (44725, 0.12), (95375, 0.22), (182100, 0.24), (231250, 0.32), (578125, 0.35)]\n    tax = 0.0\n    last = 0\n    for limit, rate in brackets:\n        if income <= limit:\n            tax += (income - last) * rate\n            return tax\n        tax += (limit - last) * rate\n        last = limit\n    tax += (income - last) * 0.37\n    return tax\n\ndef effective_rate(income):\n    if income <= 0:\n        return 0.0\n    return progressive_tax(income) / income\n\ndef compound(principal, rate, years):\n    return principal * (1 + rate) ** years\n\ndef monthly_payment(principal, annual_rate, years):\n    r = annual_rate / 12.0\n    n = years * 12\n    if r == 0:\n        return principal / n\n    return principal * r * (1 + r) ** n / ((1 + r) ** n - 1)\n",
+  "names": {
+    "incomes": "B2:B6"
+  },
+  "format": {
+    "width": 14
+  },
+  "cells": [
+    [
+      {"v": "Filer", "bold": true},
+      {"v": "Income", "bold": true},
+      {"v": "Tax", "bold": true},
+      {"v": "Effective", "bold": true},
+      {"v": "Take-home", "bold": true},
+      {"v": "Top rate", "bold": true}
+    ],
+    [
+      "Alice", 38000,
+      "=py.progressive_tax(B2)",
+      "=py.effective_rate(B2)",
+      "=B2 - C2",
+      "=IF(B2 < 44725, 0.12, IF(B2 < 95375, 0.22, 0.24))"
+    ],
+    [
+      "Bob", 72000,
+      "=py.progressive_tax(B3)",
+      "=py.effective_rate(B3)",
+      "=B3 - C3",
+      "=IF(B3 < 44725, 0.12, IF(B3 < 95375, 0.22, 0.24))"
+    ],
+    [
+      "Carol", 145000,
+      "=py.progressive_tax(B4)",
+      "=py.effective_rate(B4)",
+      "=B4 - C4",
+      "=IF(B4 < 44725, 0.12, IF(B4 < 95375, 0.22, 0.24))"
+    ],
+    [
+      "Dave", 210000,
+      "=py.progressive_tax(B5)",
+      "=py.effective_rate(B5)",
+      "=B5 - C5",
+      "=IF(B5 < 44725, 0.12, IF(B5 < 95375, 0.22, 0.24))"
+    ],
+    [
+      "Eve", 320000,
+      "=py.progressive_tax(B6)",
+      "=py.effective_rate(B6)",
+      "=B6 - C6",
+      "=IF(B6 < 44725, 0.12, IF(B6 < 95375, 0.22, 0.24))"
+    ],
+    [],
+    [
+      {"v": "Totals", "bold": true},
+      "=SUM(incomes)",
+      "=SUM(C2:C6)",
+      "=SUM(C2:C6)/SUM(incomes)",
+      "=SUM(E2:E6)",
+      "=COUNT(incomes)"
+    ],
+    [
+      {"v": "Average", "bold": true},
+      "=AVERAGE(incomes)",
+      "=AVERAGE(C2:C6)",
+      "=AVERAGE(D2:D6)",
+      "=AVERAGE(E2:E6)"
+    ],
+    [],
+    [
+      {"v": "Investment growth", "bold": true}
+    ],
+    [
+      "Principal", 10000
+    ],
+    [
+      "Annual rate", 0.07
+    ],
+    [
+      "Years", 20
+    ],
+    [
+      "Future value:",
+      "=py.compound(B12, B13, B14)"
+    ],
+    [
+      "Doubled at:",
+      "=py.compound(B12, B13, B14) >= 2 * B12"
+    ],
+    [],
+    [
+      {"v": "Loan repayment", "bold": true}
+    ],
+    [
+      "Loan", 250000
+    ],
+    [
+      "Rate", 0.06
+    ],
+    [
+      "Years", 30
+    ],
+    [
+      "Monthly payment:",
+      "=py.monthly_payment(B19, B20, B21)"
+    ],
+    [
+      "Total paid:",
+      "=py.monthly_payment(B19, B20, B21) * B21 * 12"
+    ],
+    [
+      "Total interest:",
+      "=py.monthly_payment(B19, B20, B21) * B21 * 12 - B19"
+    ]
+  ]
+}

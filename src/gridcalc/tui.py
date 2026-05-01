@@ -21,6 +21,7 @@ from .engine import (
     NUM,
     Cell,
     Grid,
+    Mode,
     NamedRange,
     _is_dataframe,
     cellname,
@@ -413,9 +414,10 @@ def draw(
     stdscr.addnstr(0, 0, status, curses.COLS - 1)
     stdscr.attroff(curses.color_pair(CP_CHROME) | curses.A_BOLD)
 
-    right_label = mode
+    grid_mode_tag = f"[{g.mode.name}]"
+    right_label = f"{mode}  {grid_mode_tag}" if mode else grid_mode_tag
     if search_info:
-        right_label = f"{search_info}  {mode}"
+        right_label = f"{search_info}  {right_label}"
     stdscr.attron(curses.color_pair(mode_color(mode)) | curses.A_BOLD)
     mode_x = curses.COLS - len(right_label) - 1
     if mode_x > 0:
@@ -1413,6 +1415,31 @@ def cmd_view(stdscr: curses.window, g: Grid) -> bool:
     return False
 
 
+def cmd_mode(stdscr: curses.window, g: Grid, args: str) -> bool:
+    arg = args.strip()
+    if not arg:
+        show_error(stdscr, f"mode: {g.mode.name.lower()} ({int(g.mode)})")
+        return False
+    parsed = Mode.parse(arg)
+    if parsed is None:
+        show_error(stdscr, "Invalid mode. Use: 1|excel, 2|hybrid, 3|legacy")
+        return False
+    if parsed == g.mode:
+        return False
+    errors = g.validate_for_mode(parsed)
+    if errors:
+        show_error(
+            stdscr,
+            f"Cannot switch to {parsed.name}: {len(errors)} issue(s). First: {errors[0]}",
+        )
+        return False
+    g.mode = parsed
+    g._apply_mode_libs()
+    g.recalc()
+    g.dirty = 1
+    return False
+
+
 def cmd_title(g: Grid, args: str) -> bool:
     ch = args[0].upper() if args else ""
     if ch == "V":
@@ -1573,6 +1600,47 @@ def cmd_pd(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bool
     return False
 
 
+def cmd_xlsx(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bool:
+    parts = args.strip().split(None, 1)
+    if not parts:
+        show_error(stdscr, "Usage: xlsx save [file] | xlsx load [file]")
+        return False
+    sub = parts[0].lower()
+    farg = parts[1] if len(parts) > 1 else ""
+
+    if sub in ("save", "export", "w"):
+        fn = farg.strip() if farg.strip() else None
+        if not fn:
+            dflt = g.filename.rsplit(".", 1)[0] + ".xlsx" if g.filename else None
+            fn = prompt_filename(stdscr, "xlsx save as: ", dflt)
+            if not fn:
+                return False
+        if g.xlsxsave(fn) == 0:
+            stdscr.addnstr(curses.LINES - 1, 0, f"Exported to {fn}", curses.COLS - 1)
+            stdscr.clrtoeol()
+            stdscr.refresh()
+            stdscr.getch()
+        else:
+            show_error(stdscr, f"Failed to export: {fn}. Press any key.")
+        return False
+
+    if sub in ("load", "import", "r"):
+        fn = farg.strip() if farg.strip() else None
+        if not fn:
+            fn = prompt_filename(stdscr, "xlsx load: ")
+            if not fn:
+                return False
+        undo.save_grid(g)
+        if g.xlsxload(fn) == 0:
+            g.recalc()
+        else:
+            show_error(stdscr, f"Failed to load: {fn}. Press any key.")
+        return False
+
+    show_error(stdscr, "Usage: xlsx save [file] | xlsx load [file]")
+    return False
+
+
 def cmd_csv(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bool:
     parts = args.strip().split(None, 1)
     if not parts:
@@ -1656,6 +1724,8 @@ def cmdexec(
         return cmd_view(stdscr, g)
     if cmd == "csv":
         return cmd_csv(stdscr, g, undo, args)
+    if cmd == "xlsx":
+        return cmd_xlsx(stdscr, g, undo, args)
     if cmd == "pd":
         return cmd_pd(stdscr, g, undo, args)
     if cmd == "sort":
@@ -1712,6 +1782,8 @@ def cmdexec(
         return cmd_title(g, "n")
     if cmd == "title":
         return cmd_title(g, args)
+    if cmd == "mode":
+        return cmd_mode(stdscr, g, args)
 
     stdscr.addnstr(curses.LINES - 1, 0, f"Unknown command: {cmd} (press any key)", curses.COLS - 1)
     stdscr.clrtoeol()
@@ -1867,9 +1939,7 @@ def _fmt_val(s: str) -> str:
         return repr(s)
 
 
-def _build_formula(
-    mode: str, data: list[list[str]], headers: list[str] | None
-) -> str:
+def _build_formula(mode: str, data: list[list[str]], headers: list[str] | None) -> str:
     """Build a formula string from edited object data."""
     if mode == "vec":
         vals = [_fmt_val(row[0]) for row in data]
@@ -1886,7 +1956,8 @@ def _build_formula(
                 rows.append(f"[{', '.join(vals)}]")
             return f"=np.array([{', '.join(rows)}])"
     else:
-        assert headers is not None
+        if headers is None:
+            return ""
         parts = []
         for ci, h in enumerate(headers):
             vals = [_fmt_val(data[ri][ci]) for ri in range(len(data))]
@@ -2031,9 +2102,7 @@ def obj_editor(stdscr: curses.window, g: Grid, undo: UndoManager) -> None:
         if mode != "vec" and ncols > 1:
             parts.insert(-2, "[X]del-col")
         status = " ".join(parts)
-        stdscr.addnstr(
-            curses.LINES - 1, 0, status, curses.COLS - 1, curses.A_DIM
-        )
+        stdscr.addnstr(curses.LINES - 1, 0, status, curses.COLS - 1, curses.A_DIM)
         stdscr.refresh()
 
         ch = stdscr.getch()
@@ -2430,6 +2499,8 @@ def main() -> None:
     configure_sandbox(_cfg.sandbox)
 
     g = Grid()
+    g.mode = Mode.HYBRID
+    g._apply_mode_libs()
     g.mc = -1
     g.mr = -1
     g.cw = _cfg.width if _cfg.width else CW_DEFAULT

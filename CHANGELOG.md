@@ -4,6 +4,66 @@
 
 ### Added
 
+- **Three formula modes** (`EXCEL`, `HYBRID`, `LEGACY`): Each spreadsheet now
+  carries an explicit mode controlling how formulas are evaluated. `EXCEL`
+  uses a strict Excel-compatible grammar (no `eval()`, no Python). `HYBRID`
+  layers a `py.<name>(...)` gateway on top of the Excel grammar so functions
+  defined in the code block remain reachable while keeping the Python
+  boundary visible in every formula that crosses it. `LEGACY` preserves the
+  original Python-eval path with full numpy/pandas/list-comprehension
+  support. Mode is persisted in the JSON file as `"mode": "EXCEL"|"HYBRID"|
+  "LEGACY"`; files without the field load as `LEGACY` for back-compat.
+
+- **Excel formula evaluator** (`gridcalc.formula` package): New lexer,
+  recursive-descent parser, and tree-walking evaluator implementing
+  Excel-style grammar -- operators (`^` right-assoc, `&` concat, `<>`,
+  `<=`, `>=`, `%` postfix), error literals (`#DIV/0!`, `#N/A`, `#NAME?`,
+  `#REF!`, `#VALUE!`, `#NUM!`, `#NULL!`), error propagation through
+  arithmetic, range broadcasting, named ranges, and the `py.*` gateway in
+  `HYBRID`. Replaces `eval()` for `EXCEL` and `HYBRID` cells; `LEGACY`
+  cells still use `eval()`.
+
+- **AST cache on `Cell`**: Parsed-formula ASTs are cached per cell and
+  invalidated on text change, eliminating per-iteration re-parsing in the
+  recalc loop.
+
+- **xlsx interop** (`:xlsx save [file]`, `:xlsx load [file]`): Read and
+  write `.xlsx` files via openpyxl. `:xlsx load` translates Excel formulas
+  into the gridcalc EXCEL grammar, switches the grid to `EXCEL` mode, and
+  auto-loads the Excel function library. `:xlsx save` writes computed
+  values to a single worksheet. Sheet-qualified refs (`Sheet1!A1`),
+  `INDIRECT`, and multi-sheet workbooks are not supported.
+
+- **`:mode [excel|hybrid|legacy]`**: Show or set the current mode.
+  Switching validates every formula with the target evaluator first and
+  refuses the change with a one-line error pointing at the first offender
+  if anything fails. `EXCEL` also rejects switches that would leave a
+  code block in place.
+
+- **Auto-loaded Excel function library**: When mode is `EXCEL` or `HYBRID`,
+  the `xlsx` library (`IF`, `IFERROR`, `AND`, `OR`, `NOT`, `ROUND`,
+  `AVERAGE`, `MEDIAN`, `SUMIF`, `COUNTIF`, `AVERAGEIF`, `VLOOKUP`,
+  `HLOOKUP`, `INDEX`, `MATCH`, `LEFT`, `RIGHT`, `MID`, `LEN`, `TRIM`,
+  `UPPER`, `LOWER`, `SUBSTITUTE`, etc.) is loaded automatically. Previously
+  the library required a manual `g.load_lib("xlsx")`.
+
+- **Mode tag in TUI status bar**: The current mode is shown in the
+  top-right region (`[EXCEL]`, `[HYBRID]`, `[LEGACY]`) using the
+  mode-color attribute.
+
+- **New TUI files default to `HYBRID`**: A fresh TUI session (no file
+  argument) creates a grid in `HYBRID` mode with the xlsx library
+  pre-loaded. Loaded files keep whatever mode their JSON specifies.
+  The library default `Grid()` constructor stays `LEGACY` for back-compat
+  with programmatic users.
+
+- **Example files**: `example_excel.json` (quarterly sales report
+  demonstrating `IF`, `SUM`/`AVG`/`MAX`/`MIN`, `MATCH`, `IFERROR`, named
+  ranges, and range arithmetic) and `example_hybrid.json` (progressive
+  tax calculator using a Python `py.progressive_tax()` alongside Excel
+  formulas for aggregation, plus compound-interest and loan-payment
+  demos).
+
 - **Visual mode delete** (`d` / `Backspace`): In visual selection mode,
   press `d` or `Backspace` to clear all cells in the selection. Each cell
   is saved to undo before clearing. A count message is shown in the
@@ -24,6 +84,35 @@
 
 - 10 new tests for `_fmt_val` and `_build_formula` covering Vec, ndarray,
   and DataFrame formula generation with roundtrip verification.
+
+- 162 new tests covering the formula package (lexer, parser, evaluator),
+  mode persistence and dispatch, AST cache, `py.*` gateway, validate-on-
+  mode-change, auto-loaded library, and xlsx round-trip I/O. Total test
+  count: 676 (was 514).
+
+### Changed
+
+- **`openpyxl>=3.1`** added as a runtime dependency for the new xlsx I/O.
+
+- **`Cell.__slots__`** gained `ast` and `ast_text` for the per-cell parsed-
+  formula cache.
+
+- **`Grid.recalc()`** now dispatches by mode: `EXCEL`/`HYBRID` cells go
+  through the new tree-walking evaluator; `LEGACY` cells continue to use
+  `eval()`. Self-reference detection in the new path is structural (AST
+  walk) rather than regex.
+
+- **`IFERROR`** now recognizes the new `ExcelError` enum in addition to
+  `NaN`/`inf`. Previously, errors short-circuited before reaching the
+  function so the fallback was never taken; the evaluator now exempts
+  error-aware functions (`IFERROR`, `IFNA`, `ISERROR`, `ISERR`, `ISNA`)
+  from automatic error propagation on their arguments.
+
+### Fixed
+
+- **`tui.py:1906`** pre-existing `assert headers is not None` replaced
+  with an explicit None guard. Resolves the lone `S101` lint finding the
+  repo had been carrying.
 
 ## [0.1.2]
 

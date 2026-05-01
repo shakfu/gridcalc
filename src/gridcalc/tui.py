@@ -134,6 +134,12 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
         t = f"{numstr}[{len(cl.arr)}]"
         return f"{t:>{cw}}"[:cw]
 
+    if cl.type == FORMULA and cl.sval is not None:
+        fc = cl.fmt or global_fmt
+        if fc == "L":
+            return f"{cl.sval:<{cw}}"[:cw]
+        return f"{cl.sval:>{cw}}"[:cw]
+
     if isinstance(cl.val, float) and math.isnan(cl.val):
         return f"{'ERROR':>{cw}}"
 
@@ -401,6 +407,8 @@ def draw(
             items = ", ".join(f"{v:.10g}" for v in show)
             extra = ", ..." if len(cur.arr) > 10 else ""
             status += f"[{items}{extra}] ({len(cur.arr)})"
+        elif cur.sval is not None:
+            status += repr(cur.sval)
         else:
             if isinstance(cur.val, float) and math.isnan(cur.val):
                 if (g.cc, g.cr) in g._circular:

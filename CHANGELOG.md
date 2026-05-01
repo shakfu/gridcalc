@@ -110,9 +110,32 @@
 
 ### Fixed
 
+- **String-returning formulas no longer display as `nan`.** Added
+  `Cell.sval: str | None` slot, populated by `_store_formula_result`
+  when a formula returns a string or bool. The TUI render path
+  (`fmtcell`, status bar) prefers `sval` over `val` for FORMULA cells.
+  Bool results also write `val=1/0` so aggregate functions still see a
+  number. `IF(A1>0, "yes", "no")`, `="x" & "y"`, and `=1=1` all render
+  correctly now.
+
 - **`tui.py:1906`** pre-existing `assert headers is not None` replaced
   with an explicit None guard. Resolves the lone `S101` lint finding the
   repo had been carrying.
+
+### Verified (no fix needed)
+
+- **`_fixrefs` row/column swap semantics.** REVIEW.md flagged a suspected
+  double-correction; tests in `test_swap_refs.py` confirm the unconditional
+  rewrite is exactly how value-preservation works through `swaprow`/
+  `swapcol`. Every formula computes the same value before and after a
+  swap, including outside-swap formulas and absolute references.
+- **Search direction coordinate ordering.** REVIEW.md flagged a suspected
+  `(r, c)` vs `(col, row)` mismatch; tests in `test_search_direction.py`
+  show both sides of the comparison are `(row, col)` and forward/backward
+  search across same-row and cross-row matches behaves correctly.
+- **Backwards-range auto-swap (`B1:A1` -> `A1:B1`).** Matches Excel.
+  Comments added at both swap sites (`_expand_ranges` for LEGACY,
+  `_eval_range` for EXCEL/HYBRID) marking the normalisation as intentional.
 
 ## [0.1.2]
 

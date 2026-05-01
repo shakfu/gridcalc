@@ -332,6 +332,7 @@ def _eval(node: Node, env: Env) -> Value:
 
 
 def _eval_range(node: RangeRef, env: Env) -> Any:
+    # Normalise B3:A1 -> A1:B3. Matches Excel's range semantics.
     c1, c2 = sorted([node.start.col, node.end.col])
     r1, r2 = sorted([node.start.row, node.end.row])
     data: list[Any] = []

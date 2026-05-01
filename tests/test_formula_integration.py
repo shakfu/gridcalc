@@ -253,3 +253,70 @@ class TestValidateForMode:
         g.setcell(0, 0, "=[x for x in range(3)]")
         errs = g.validate_for_mode(Mode.HYBRID)
         assert len(errs) == 1
+
+
+class TestStringResults:
+    def test_if_returns_string_excel(self):
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, '=IF(1=1, "yes", "no")')
+        cl = g.cells[0][0]
+        assert cl.sval == "yes"
+        assert cl.val == 0.0
+
+    def test_if_returns_string_false_branch(self):
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, '=IF(1=2, "yes", "no")')
+        assert g.cells[0][0].sval == "no"
+
+    def test_concatenate(self):
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, '="foo" & "bar"')
+        assert g.cells[0][0].sval == "foobar"
+
+    def test_bool_compare_stores_truefalse(self):
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g.setcell(0, 0, "=1=1")
+        cl = g.cells[0][0]
+        assert cl.sval == "TRUE"
+        assert cl.val == 1.0
+
+    def test_sval_cleared_on_text_change(self):
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, '=IF(1=1, "yes", "no")')
+        assert g.cells[0][0].sval == "yes"
+        g.setcell(0, 0, "=1+2")
+        cl = g.cells[0][0]
+        assert cl.sval is None
+        assert cl.val == 3.0
+
+    def test_sval_cleared_when_result_becomes_numeric(self):
+        # IF where condition cell changes such that branch swaps from str to int
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, "1")
+        g.setcell(1, 0, '=IF(A1=1, "yes", 99)')
+        assert g.cells[1][0].sval == "yes"
+        g.setcell(0, 0, "2")
+        cl = g.cells[1][0]
+        assert cl.sval is None
+        assert cl.val == 99.0
+
+    def test_fmtcell_renders_sval(self):
+        from gridcalc.tui import fmtcell
+
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, '="hi"')
+        rendered = fmtcell(g.cells[0][0], 8)
+        assert "hi" in rendered

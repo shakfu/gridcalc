@@ -259,6 +259,7 @@ class Cell:
     __slots__ = (
         "type",
         "val",
+        "sval",
         "arr",
         "matrix",
         "text",
@@ -274,6 +275,7 @@ class Cell:
     def __init__(self) -> None:
         self.type: int = EMPTY
         self.val: float = 0.0
+        self.sval: str | None = None
         self.arr: list[float] | None = None
         self.matrix: Any = None
         self.text: str = ""
@@ -288,6 +290,7 @@ class Cell:
     def clear(self) -> None:
         self.type = EMPTY
         self.val = 0.0
+        self.sval = None
         self.arr = None
         self.matrix = None
         self.text = ""
@@ -302,6 +305,7 @@ class Cell:
     def copy_from(self, src: Cell) -> None:
         self.type = src.type
         self.val = src.val
+        self.sval = src.sval
         self.arr = list(src.arr) if src.arr is not None else None
         self.matrix = src.matrix.copy() if src.matrix is not None else None
         self.text = src.text
@@ -395,6 +399,8 @@ def _expand_ranges(expr: str) -> str:
                 r2 = ref(expr[i + n1 + 1 :])
                 if r2:
                     n2, c2, row2 = r2
+                    # Normalise B1:A1 -> A1:B1. Matches Excel, which treats
+                    # A1:B3 and B3:A1 as identical ranges.
                     if c1 > c2:
                         c1, c2 = c2, c1
                     if row1 > row2:
@@ -608,6 +614,7 @@ class Grid:
         cl = self._ensure_cell(c, r)
         cl.arr = None
         cl.matrix = None
+        cl.sval = None
         cl.text = text
         self.dirty = 1
 
@@ -830,10 +837,23 @@ class Grid:
     def _store_formula_result(self, cl: Cell, result: Any) -> None:
         from .formula.errors import ExcelError
 
+        cl.sval = None
         if isinstance(result, ExcelError):
             cl.arr = None
             cl.matrix = None
             cl.val = float("nan")
+            return
+        if isinstance(result, str):
+            cl.matrix = None
+            cl.arr = None
+            cl.sval = result
+            cl.val = 0.0
+            return
+        if isinstance(result, bool):
+            cl.matrix = None
+            cl.arr = None
+            cl.sval = "TRUE" if result else "FALSE"
+            cl.val = 1.0 if result else 0.0
             return
         if _is_dataframe(result):
             cl.matrix = result

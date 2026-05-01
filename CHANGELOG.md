@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.1.3]
+
 ### Added
 
 - **Three formula modes** (`EXCEL`, `HYBRID`, `LEGACY`): Each spreadsheet now

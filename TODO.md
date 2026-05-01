@@ -54,6 +54,19 @@ CHANGELOG.md.
   cross back into Python only at the `py.*` gateway. Months of work;
   defer until the grammar and function library have soaked in real
   use.
+- [ ] **Wrap OpenXLSX (C++) via nanobind for xlsx I/O.**
+  [OpenXLSX](https://github.com/troldal/OpenXLSX) is a fast, header-
+  capable C++ Excel reader/writer that doesn't depend on a Python xlsx
+  stack. Replacing openpyxl with a nanobind-wrapped OpenXLSX would cut
+  load/save time on large workbooks substantially and drop a heavy
+  pure-Python dependency. Scope: thin nanobind module exposing
+  `Workbook`, `Worksheet`, `Cell`-level read/write of value, formula,
+  type, and the iter-rows path; gridcalc's `xlsxload`/`xlsxsave` swap
+  to call it; openpyxl moves to an optional fallback or drops out.
+  Couple to phase 3 -- if the EXCEL evaluator is going native, the
+  xlsx codec might as well too. Risks: build matrix complexity (must
+  ship wheels per platform), licensing audit (OpenXLSX is BSD-3),
+  date/time and styled-cell coverage gaps vs. openpyxl.
 
 ## Refactoring & code quality
 

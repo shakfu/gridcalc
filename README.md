@@ -241,16 +241,16 @@ Loading an `.xlsx` via `:xlsx load` automatically sets mode to `EXCEL`.
 
 ### Limitations
 
-- **String-returning formulas display as `nan`**. `Cell.val` is a float, so
-  formulas like `=IF(A1>0, "yes", "no")` cannot show their result yet.
-  Affects all modes equally. Workaround: return numeric codes (`1`/`0`,
-  bracket rates, etc.) and put text labels in adjacent cells.
-- **`INDEX` / `MATCH` / `VLOOKUP` against text columns** in `EXCEL`/`HYBRID`
-  modes: ranges currently coerce non-numeric cell values to `0`, so lookups
-  by string key won't match. Numeric lookups work normally.
+- **Lookups by text key** (`INDEX`, `MATCH`, `VLOOKUP` against text
+  columns) in `EXCEL`/`HYBRID`: ranges currently coerce non-numeric
+  cell values to `0`, so a `MATCH("Q3", A1:A4, 0)` won't match. Numeric
+  lookups work normally.
 - **Multi-sheet xlsx**: only the active sheet is read.
 - **Sheet-qualified refs** (`Sheet1!A1`) and **`INDIRECT`** are not
   supported (the latter deliberately, to keep recalc ordering tractable).
+- **xlsx export writes values, not formulas.** Round-tripping formulas
+  through `.xlsx` (level-c interop) is on the roadmap but not yet
+  implemented.
 
 ## Formulas
 
@@ -260,11 +260,18 @@ Excel.
 
 	=A1 + B1 * 2
 	=(A1 + A2) / 2
-	=2^10                  # exponent (right-associative)
-	=50%                   # percent postfix; equals 0.5
-	="hello " & A1         # string concatenation
-	=IF(A1 > 0, A1, -A1)
+	=2^10                       # exponent (right-associative)
+	=50%                        # percent postfix; equals 0.5
+	="hello " & A1              # string concatenation
+	=IF(A1 > 0, "pos", "neg")   # string-returning formulas display as text
+	=IF(A1 >= C1, A1*0.05, 0)
+	=IFERROR(B1/C1, 0)          # catch #DIV/0!, #VALUE!, #N/A, etc.
 	=SQRT(A3 + A2)
+
+Formulas can return numbers, strings, booleans, ranges (1D arrays), or
+Excel error values (`#DIV/0!`, `#N/A`, `#NAME?`, `#REF!`, `#VALUE!`,
+`#NUM!`, `#NULL!`). Errors propagate through arithmetic and are
+catchable with `IFERROR`/`IFNA`.
 
 In `LEGACY` mode, `**` is supported instead of `^` and the full
 Python expression language is available.

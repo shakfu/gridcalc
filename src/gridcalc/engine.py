@@ -417,24 +417,32 @@ def _expand_ranges(expr: str) -> str:
     return "".join(result)
 
 
-def _xlsx_cell_to_text(cell: Any) -> str:
-    v = cell.value
-    if v is None:
-        return ""
-    dt = getattr(cell, "data_type", None)
-    if dt == "f" or (isinstance(v, str) and v.startswith("=")):
-        return v if isinstance(v, str) else str(v)
-    if isinstance(v, bool):
-        return "TRUE" if v else "FALSE"
-    if isinstance(v, int):
-        return str(v)
-    if isinstance(v, float):
-        if math.isnan(v) or math.isinf(v):
-            return ""
-        if v == int(v) and abs(v) < 1e15:
-            return str(int(v))
-        return f"{v:g}"
-    return str(v)
+def _xlsx_read_cells(filename: str) -> list[tuple[int, int, str]] | None:
+    """Read xlsx via the OpenXLSX-backed `_core.xlsx_read`.
+
+    Returns the list of (col0, row0, text) tuples, or None if the file cannot
+    be opened.
+    """
+    from gridcalc import _core
+
+    try:
+        return list(_core.xlsx_read(filename))
+    except Exception:
+        return None
+
+
+def _xlsx_write_cells(filename: str, cells: list[tuple[int, int, str, object]]) -> int:
+    """Write (col0, row0, kind, value) tuples; kind in {'s','n'}.
+
+    Returns 0 on success, -1 on failure.
+    """
+    from gridcalc import _core
+
+    try:
+        _core.xlsx_write(filename, cells)
+        return 0
+    except Exception:
+        return -1
 
 
 def _ast_has_pycall(node: Any) -> bool:
@@ -603,13 +611,15 @@ class Grid:
         """Remove all cells from the grid."""
         self._cells.clear()
 
-    def setcell(self, c: int, r: int, text: str) -> None:
+    def _setcell_no_recalc(self, c: int, r: int, text: str) -> bool:
+        """Set a single cell without triggering recalc. Returns True if grid changed."""
         if not (0 <= c < NCOL and 0 <= r < NROW):
-            return
+            return False
         if not text:
-            self._cells.pop((c, r), None)
-            self.recalc()
-            return
+            if self._cells.pop((c, r), None) is None:
+                return False
+            self.dirty = 1
+            return True
 
         cl = self._ensure_cell(c, r)
         cl.arr = None
@@ -634,8 +644,25 @@ class Grid:
         else:
             cl.type = LABEL
             cl.val = 0
+        return True
 
-        self.recalc()
+    def setcell(self, c: int, r: int, text: str) -> None:
+        if self._setcell_no_recalc(c, r, text) or not text:
+            self.recalc()
+
+    def setcells_bulk(self, cells: Iterable[tuple[int, int, str]]) -> None:
+        """Set many cells, deferring recalc until all are written.
+
+        Each tuple is (col, row, text). Out-of-bounds entries are ignored.
+        Roughly N x faster than calling setcell() N times because recalc()
+        runs once instead of after every cell.
+        """
+        changed = False
+        for c, r, text in cells:
+            if self._setcell_no_recalc(c, r, text):
+                changed = True
+        if changed:
+            self.recalc()
 
     def recalc(self) -> None:
         if self.mode != Mode.LEGACY:
@@ -1354,73 +1381,37 @@ class Grid:
         return 0
 
     def xlsxload(self, filename: str) -> int:
-        try:
-            from openpyxl import load_workbook  # type: ignore[import-untyped]
-        except ImportError:
-            return -1
-        try:
-            wb = load_workbook(filename, data_only=False)
-        except Exception:
-            return -1
-        ws = wb.active
-        if ws is None:
+        cells = _xlsx_read_cells(filename)
+        if cells is None:
             return -1
         self.clear_all()
         self.mode = Mode.EXCEL
         self._apply_mode_libs()
-        for row in ws.iter_rows():
-            for cell in row:
-                v = cell.value
-                if v is None:
-                    continue
-                c = cell.column - 1
-                r = cell.row - 1
-                if not (0 <= c < NCOL and 0 <= r < NROW):
-                    continue
-                text = _xlsx_cell_to_text(cell)
-                if text == "":
-                    continue
-                self.setcell(c, r, text)
+        self.setcells_bulk(cells)
         self.dirty = 0
         self.filename = filename
         return 0
 
     def xlsxsave(self, filename: str) -> int:
-        try:
-            from openpyxl import Workbook
-        except ImportError:
-            return -1
         maxr = -1
-        maxc = -1
-        for (c, r), sc in self._cells.items():
-            if sc.type != EMPTY:
-                if r > maxr:
-                    maxr = r
-                if c > maxc:
-                    maxc = c
+        for (_c, r), sc in self._cells.items():
+            if sc.type != EMPTY and r > maxr:
+                maxr = r
         if maxr < 0:
             return -1
-        wb = Workbook()
-        ws = wb.active
-        if ws is None:
-            return -1
+        payload: list[tuple[int, int, str, object]] = []
         for (c, r), cl in self._cells.items():
             if cl.type == EMPTY:
                 continue
             if cl.type == LABEL:
-                ws.cell(row=r + 1, column=c + 1, value=cl.text)
+                payload.append((c, r, "s", cl.text))
             elif cl.type == NUM:
-                ws.cell(row=r + 1, column=c + 1, value=cl.val)
+                payload.append((c, r, "n", float(cl.val)))
             elif cl.type == FORMULA:
                 if isinstance(cl.val, float) and math.isnan(cl.val):
-                    ws.cell(row=r + 1, column=c + 1, value=None)
-                else:
-                    ws.cell(row=r + 1, column=c + 1, value=cl.val)
-        try:
-            wb.save(filename)
-        except Exception:
-            return -1
-        return 0
+                    continue
+                payload.append((c, r, "n", float(cl.val)))
+        return _xlsx_write_cells(filename, payload)
 
     def csvsave(self, filename: str) -> int:
         """Export evaluated cell values to CSV."""

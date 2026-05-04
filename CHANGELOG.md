@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+### Added
+
+- **Native xlsx I/O via OpenXLSX** (nanobind `_core` extension): xlsx read
+  and write now go through a C++ binding around vendored
+  [OpenXLSX](https://github.com/troldal/OpenXLSX). On a 5000-cell grid,
+  `_core.xlsx_read` parses in ~4 ms vs. ~80 ms for the prior Python loop.
+  `xlsx_read` iterates `wks.rows() -> row.cells()`, skipping cells that
+  are both empty and formula-free.
+
+- **Build system migration to scikit-build-core + nanobind**: `pyproject.toml`
+  uses `scikit-build-core` as the build backend; CMake builds the `_core`
+  extension and links the OpenXLSX subdirectory under
+  `thirdparty/OpenXLSX/`. `CMAKE_POLICY_VERSION_MINIMUM=3.5` is set so
+  the fetched `miniz` dependency configures under CMake 4.
+
+- **`Grid.setcells_bulk(cells)`**: bulk-set API that defers `recalc()`
+  until all cells are written. Loading 5000 cells via `setcells_bulk` is
+  ~810x faster (5 ms vs 4070 ms) than calling `setcell` N times.
+  `xlsxload` now uses it; combined with the C++ read path, end-to-end
+  load is ~72x faster (12 ms vs 839 ms for 5000 cells).
+
+- **`src/gridcalc/_core.pyi`**: type stubs for the nanobind extension so
+  mypy resolves `_core.xlsx_read` / `_core.xlsx_write`.
+
+### Changed
+
+- **`openpyxl` is now a dev-only dependency**: moved from
+  `[project.dependencies]` to `[dependency-groups].dev`. Runtime xlsx I/O
+  goes through the OpenXLSX-backed `_core`; failures surface as return
+  code -1 (no silent fallback). `openpyxl` is retained in tests as an
+  independent oracle for fixture construction.
+
+- **`engine.setcell` refactored**: per-cell parsing/typing extracted to
+  `_setcell_no_recalc`; `setcell` composes that helper with `recalc()`.
+
+### Removed
+
+- **`openpyxl` from sandbox allowlist** (`SIDE_EFFECT_MODULES`): now that
+  it is no longer a runtime dependency, user formulas can no longer
+  `import openpyxl`.
+
+- **Internal `_xlsx_cell_to_text` helper**: no longer needed once the
+  openpyxl read path was removed.
+
 ## [0.1.3]
 
 ### Added

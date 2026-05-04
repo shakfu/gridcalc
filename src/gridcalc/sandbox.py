@@ -45,7 +45,6 @@ SIDE_EFFECT_MODULES: frozenset[str] = frozenset(
         "matplotlib.pyplot",
         "pandas",
         "csv",
-        "openpyxl",
         "xlsxwriter",
     }
 )

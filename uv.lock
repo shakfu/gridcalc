@@ -280,7 +280,6 @@ source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "openpyxl" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pygments" },
@@ -291,6 +290,7 @@ dependencies = [
 dev = [
     { name = "build" },
     { name = "mypy" },
+    { name = "openpyxl" },
     { name = "pandas-stubs", version = "2.3.3.260113", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas-stubs", version = "3.0.0.260204", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pytest" },
@@ -302,7 +302,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=1.24" },
-    { name = "openpyxl", specifier = ">=3.1" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pygments", specifier = ">=2.15" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=1.0" },
@@ -312,6 +311,7 @@ requires-dist = [
 dev = [
     { name = "build", specifier = ">=1.0" },
     { name = "mypy", specifier = ">=1.19.1" },
+    { name = "openpyxl", specifier = ">=3.1" },
     { name = "pandas-stubs", specifier = ">=2.0" },
     { name = "pytest" },
     { name = "ruff", specifier = ">=0.15.7" },

@@ -482,7 +482,13 @@ def _ast_uses_cell(node: Any, c: int, r: int) -> bool:
         c1, c2 = sorted([node.start.col, node.end.col])
         r1, r2 = sorted([node.start.row, node.end.row])
         return c1 <= c <= c2 and r1 <= r <= r2
-    if isinstance(node, (Call, PyCall)):
+    if isinstance(node, Call):
+        from .formula.deps import ADDRESS_ONLY_FUNCS
+
+        if node.name.upper() in ADDRESS_ONLY_FUNCS:
+            return False  # ROW/COLUMN/ROWS/COLUMNS use addresses, not values
+        return any(_ast_uses_cell(a, c, r) for a in node.args)
+    if isinstance(node, PyCall):
         return any(_ast_uses_cell(a, c, r) for a in node.args)
     if isinstance(node, BinOp):
         return _ast_uses_cell(node.left, c, r) or _ast_uses_cell(node.right, c, r)
@@ -549,6 +555,13 @@ class Grid:
         self._module_errors: list[str] = []
         self._circular: set[tuple[int, int]] = set()
         self.mode: Mode = Mode.LEGACY
+        # Topological recalc bookkeeping. Off by default; opt-in via
+        # `_use_topo_recalc = True`. Maintained alongside the fixed-point
+        # path so flipping the flag is safe at any point.
+        self._dep_of: dict[tuple[int, int], set[tuple[int, int]]] = {}
+        self._subscribers: dict[tuple[int, int], set[tuple[int, int]]] = {}
+        self._volatile: set[tuple[int, int]] = set()
+        self._use_topo_recalc: bool = True
 
     def load_lib(self, name: str) -> None:
         """Load a formula lib's builtins into the eval namespace."""
@@ -610,6 +623,79 @@ class Grid:
     def clear_all(self) -> None:
         """Remove all cells from the grid."""
         self._cells.clear()
+        self._dep_of.clear()
+        self._subscribers.clear()
+        self._volatile.clear()
+
+    def _clear_deps(self, key: tuple[int, int]) -> None:
+        """Drop `key` from forward + reverse indexes and the volatile set."""
+        old = self._dep_of.pop(key, None)
+        if old is not None:
+            for d in old:
+                subs = self._subscribers.get(d)
+                if subs is not None:
+                    subs.discard(key)
+                    if not subs:
+                        del self._subscribers[d]
+        self._volatile.discard(key)
+
+    def _register_deps(
+        self, key: tuple[int, int], deps: set[tuple[int, int]], volatile: bool
+    ) -> None:
+        """Install forward + reverse edges for `key` from `deps`."""
+        if deps:
+            self._dep_of[key] = deps
+            for d in deps:
+                self._subscribers.setdefault(d, set()).add(key)
+        if volatile:
+            self._volatile.add(key)
+
+    def _rebuild_dep_graph(self) -> None:
+        """Discard `_dep_of`/`_subscribers`/`_volatile` and rebuild from scratch.
+
+        Used when bulk operations move cells around in the grid (insert/
+        delete row or column, swap, replicate) or when entering a mode
+        whose recalc consumes the graph (EXCEL/HYBRID from LEGACY).
+        Cost is O(formulas) -- a single AST walk per formula cell.
+        """
+        self._dep_of.clear()
+        self._subscribers.clear()
+        self._volatile.clear()
+        for (c, r), cl in self._cells.items():
+            if cl.type == FORMULA:
+                self._refresh_deps(c, r, cl)
+
+    def _refresh_deps(self, c: int, r: int, cl: Cell) -> None:
+        """Recompute the dep graph for one cell. Call after writing the cell.
+
+        Parses the formula text if the AST cache is stale, extracts the
+        static read set, and updates `_dep_of` / `_subscribers` / `_volatile`.
+        Non-formula cells get their entries cleared. LEGACY mode skips
+        graph maintenance entirely -- it uses fixed-point recalc, not topo.
+        """
+        if self.mode == Mode.LEGACY:
+            return
+        from .formula import parse
+        from .formula.deps import extract_refs, has_dynamic_refs
+        from .formula.errors import FormulaError
+
+        key = (c, r)
+        self._clear_deps(key)
+        if cl.type != FORMULA:
+            return
+        text = cl.text[1:] if cl.text.startswith("=") else cl.text
+        if cl.ast is None or cl.ast_text != text:
+            cl.ast_text = text
+            try:
+                cl.ast = parse(text)
+            except FormulaError:
+                cl.ast = None
+        if cl.ast is None:
+            return
+        named = self._build_named_ranges()
+        deps = extract_refs(cl.ast, named)
+        volatile = has_dynamic_refs(cl.ast)
+        self._register_deps(key, deps, volatile)
 
     def _setcell_no_recalc(self, c: int, r: int, text: str) -> bool:
         """Set a single cell without triggering recalc. Returns True if grid changed."""
@@ -618,6 +704,7 @@ class Grid:
         if not text:
             if self._cells.pop((c, r), None) is None:
                 return False
+            self._clear_deps((c, r))
             self.dirty = 1
             return True
 
@@ -644,11 +731,12 @@ class Grid:
         else:
             cl.type = LABEL
             cl.val = 0
+        self._refresh_deps(c, r, cl)
         return True
 
     def setcell(self, c: int, r: int, text: str) -> None:
         if self._setcell_no_recalc(c, r, text) or not text:
-            self.recalc()
+            self.recalc({(c, r)})
 
     def setcells_bulk(self, cells: Iterable[tuple[int, int, str]]) -> None:
         """Set many cells, deferring recalc until all are written.
@@ -657,15 +745,18 @@ class Grid:
         Roughly N x faster than calling setcell() N times because recalc()
         runs once instead of after every cell.
         """
-        changed = False
+        changed: set[tuple[int, int]] = set()
         for c, r, text in cells:
             if self._setcell_no_recalc(c, r, text):
-                changed = True
+                changed.add((c, r))
         if changed:
-            self.recalc()
+            self.recalc(changed)
 
-    def recalc(self) -> None:
+    def recalc(self, dirty: set[tuple[int, int]] | None = None) -> None:
         if self.mode != Mode.LEGACY:
+            if self._use_topo_recalc:
+                self._recalc_topo(dirty)
+                return
             self._recalc_formula()
             return
         self._recalc_legacy()
@@ -799,13 +890,18 @@ class Grid:
             self._circular = set(changed_cells)
 
         # Detect stable self-references (cells whose formula references
-        # their own value, directly or via range, but converge at 0)
+        # their own value, directly or via range, but converge at 0).
+        # Strip address-only function calls first -- ROW(A6)/ROWS(A1:B10)
+        # use the address, not the value, so a self-reference inside their
+        # arg is not a real cycle.
+        _addr_only_re = re.compile(r"(?i)\b(ROW|COLUMN|ROWS|COLUMNS)\s*\([^()]*\)")
         for (c, r), cl in self._cells.items():
             if cl.type != FORMULA:
                 continue
             name = cellname(c, r)
             formula = cl.text[1:] if cl.text.startswith("=") else cl.text
-            expanded = _expand_ranges(formula.replace("$", ""))
+            stripped = _addr_only_re.sub("", formula.replace("$", ""))
+            expanded = _expand_ranges(stripped)
             if re.search(r"\b" + re.escape(name) + r"\b", expanded):
                 self._circular.add((c, r))
 
@@ -962,6 +1058,7 @@ class Grid:
                     cl.matrix = None
                     cl.val = float("nan")
                 else:
+                    env.current_cell = (fc, fr)
                     try:
                         result = evaluate(cl.ast, env)
                     except Exception:
@@ -1010,6 +1107,116 @@ class Grid:
                     circ.arr = None
                     circ.matrix = None
                     circ.val = float("nan")
+
+    def _recalc_topo(self, dirty: set[tuple[int, int]] | None) -> None:
+        """Topological recalc: evaluate only the closure of dirty cells.
+
+        If `dirty` is None, recompute every formula cell (initial load).
+        Otherwise BFS the reverse-dep index from `dirty` to find affected
+        formulas, then evaluate them in topological order. Volatile cells
+        (PyCall, INDIRECT/OFFSET/INDEX) are unconditionally added to the
+        closure. Cells that remain after the topo sort form structural
+        cycles; they are flagged via `_circular` and set to NaN.
+        """
+        from .formula import Env, evaluate, parse
+        from .formula.errors import FormulaError
+
+        # `_circular` is updated incrementally below: cells outside the
+        # closure aren't re-examined this recalc, so their flag stays.
+        py_registry = self._build_py_registry()
+        named = self._build_named_ranges()
+        env = Env(
+            cell_value=self._cell_lookup_value,
+            builtins=self._eval_globals,
+            named_ranges=named,
+            py_registry=py_registry,
+        )
+
+        # Build the closure: BFS over `_subscribers` from the dirty set,
+        # plus all volatile cells. If dirty is None, the closure is every
+        # formula cell. The graph may be stale after structural edits or
+        # a mode switch from LEGACY -- rebuild it on full-recalc paths.
+        if dirty is None:
+            self._rebuild_dep_graph()
+            closure: set[tuple[int, int]] = {
+                k for k, cl in self._cells.items() if cl.type == FORMULA
+            }
+        else:
+            # Dirty cells that are themselves formulas need evaluation.
+            closure = {
+                k for k in dirty if (cl := self._cells.get(k)) is not None and cl.type == FORMULA
+            }
+            stack = list(dirty)
+            while stack:
+                k = stack.pop()
+                for sub in self._subscribers.get(k, ()):
+                    if sub not in closure:
+                        closure.add(sub)
+                        stack.append(sub)
+            closure |= self._volatile
+
+        # Topological order via Kahn's algorithm. In-edges restricted to
+        # cells inside the closure -- deps outside the closure are already
+        # up to date and don't gate evaluation order.
+        in_count: dict[tuple[int, int], int] = {}
+        children: dict[tuple[int, int], list[tuple[int, int]]] = {}
+        for k in closure:
+            deps = self._dep_of.get(k, set())
+            in_closure = deps & closure
+            in_count[k] = len(in_closure)
+            for d in in_closure:
+                children.setdefault(d, []).append(k)
+
+        ready = [k for k, n in in_count.items() if n == 0]
+        order: list[tuple[int, int]] = []
+        while ready:
+            k = ready.pop()
+            order.append(k)
+            for child in children.get(k, ()):
+                in_count[child] -= 1
+                if in_count[child] == 0:
+                    ready.append(child)
+
+        # Evaluate in dependency order.
+        for c, r in order:
+            cl = self._cells.get((c, r))
+            if cl is None or cl.type != FORMULA:
+                continue
+            text = cl.text[1:] if cl.text.startswith("=") else cl.text
+            if cl.ast is None or cl.ast_text != text:
+                cl.ast_text = text
+                try:
+                    cl.ast = parse(text)
+                except FormulaError:
+                    cl.ast = None
+            if cl.ast is None:
+                cl.arr = None
+                cl.matrix = None
+                cl.val = float("nan")
+                continue
+            env.current_cell = (c, r)
+            try:
+                result = evaluate(cl.ast, env)
+            except Exception:
+                result = float("nan")
+            self._store_formula_result(cl, result)
+
+        # Anything left in the closure but not in `order` is in a cycle.
+        # Cells that were in the closure get their `_circular` membership
+        # rewritten from scratch; cells outside the closure are left alone.
+        # The dirty set is also cleared -- a freshly written non-formula
+        # cell can't be in a cycle even though it's not in the closure.
+        unresolved = closure - set(order)
+        self._circular -= closure
+        if dirty is not None:
+            self._circular -= dirty
+        self._circular |= unresolved
+        for pos in unresolved:
+            cl = self._cells.get(pos)
+            if cl is not None:
+                cl.arr = None
+                cl.matrix = None
+                cl.val = float("nan")
 
     def _fixrefs(self, axis: str, a: int, b: int) -> None:
         for cl in self._cells.values():
@@ -1090,6 +1297,7 @@ class Grid:
         self._cells = new_cells
         self.cells = _CellsProxy(self._cells)
         self._shiftrefs("R", at, +1)
+        self._rebuild_dep_graph()
         self.dirty = 1
 
     def insertcol(self, at: int) -> None:
@@ -1103,6 +1311,7 @@ class Grid:
         self._cells = new_cells
         self.cells = _CellsProxy(self._cells)
         self._shiftrefs("C", at, +1)
+        self._rebuild_dep_graph()
         self.dirty = 1
 
     def deleterow(self, at: int) -> None:
@@ -1117,6 +1326,7 @@ class Grid:
                 new_cells[(c, r)] = cl
         self._cells = new_cells
         self.cells = _CellsProxy(self._cells)
+        self._rebuild_dep_graph()
         self.dirty = 1
 
     def deletecol(self, at: int) -> None:
@@ -1131,6 +1341,7 @@ class Grid:
                 new_cells[(c, r)] = cl
         self._cells = new_cells
         self.cells = _CellsProxy(self._cells)
+        self._rebuild_dep_graph()
         self.dirty = 1
 
     def swaprow(self, a: int, b: int) -> None:
@@ -1145,6 +1356,7 @@ class Grid:
         self._cells = new_cells
         self.cells = _CellsProxy(self._cells)
         self._fixrefs("R", a, b)
+        self._rebuild_dep_graph()
 
     def swapcol(self, a: int, b: int) -> None:
         new_cells: dict[tuple[int, int], Cell] = {}
@@ -1158,20 +1370,32 @@ class Grid:
         self._cells = new_cells
         self.cells = _CellsProxy(self._cells)
         self._fixrefs("C", a, b)
+        self._rebuild_dep_graph()
 
     def replicatecell(self, sc: int, sr: int, dc: int, dr: int) -> None:
         if not (0 <= dc < NCOL and 0 <= dr < NROW):
             return
         src = self.cell(sc, sr)
         if not src:
-            # Source is empty -- clear destination
-            self._cells.pop((dc, dr), None)
+            # Source is empty -- clear destination, including its deps.
+            if (dc, dr) in self._cells:
+                self._cells.pop((dc, dr), None)
+                self._clear_deps((dc, dr))
             return
-        dst = self._ensure_cell(dc, dr)
-        dst.copy_from(src)
         if src.type != FORMULA:
+            # Non-formula: copy text and styling, route through bulk-set
+            # path so dep graph entries are cleared.
+            self._setcell_no_recalc(dc, dr, src.text)
+            dst = self._cells.get((dc, dr))
+            if dst is not None:
+                dst.fmt = src.fmt
+                dst.bold = src.bold
+                dst.underline = src.underline
+                dst.italic = src.italic
+                dst.fmtstr = src.fmtstr
             return
 
+        # Formula: rewrite refs by replicate offset.
         dcol = dc - sc
         drow = dr - sr
         out = []
@@ -1190,7 +1414,14 @@ class Grid:
             else:
                 out.append(s[i])
                 i += 1
-        dst.text = "".join(out)
+        self._setcell_no_recalc(dc, dr, "".join(out))
+        dst = self._cells.get((dc, dr))
+        if dst is not None:
+            dst.fmt = src.fmt
+            dst.bold = src.bold
+            dst.underline = src.underline
+            dst.italic = src.italic
+            dst.fmtstr = src.fmtstr
 
     def fmtrange(self, c1: int, r1: int, c2: int, r2: int) -> str:
         if c1 == c2 and r1 == r2:
@@ -1296,7 +1527,7 @@ class Grid:
                         text = f"{v:g}"
                 else:
                     continue
-                self.setcell(c_idx, r_idx, text)
+                self._setcell_no_recalc(c_idx, r_idx, text)
                 cl = self._cells.get((c_idx, r_idx))
                 if not cl:
                     continue
@@ -1306,6 +1537,10 @@ class Grid:
                 cl.fmt = cell_fmt
                 cl.fmtstr = cell_fmtstr
 
+        # Single recalc at the end. The full-rebuild path (`dirty=None`)
+        # picks up named ranges that were registered earlier in this
+        # function and any LEGACY-mode dep entries that were skipped.
+        self.recalc()
         return 0
 
     def jsonsave(self, filename: str) -> int:

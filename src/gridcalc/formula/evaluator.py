@@ -36,6 +36,10 @@ class Env:
         self._named = {k.lower(): v for k, v in (named_ranges or {}).items()}
         self.py_registry = py_registry or {}
         self.refs_used: set[tuple[int, int]] = set()
+        # Set by recalc before evaluating each formula. Functions in
+        # `RAW_ARG_FUNCS` (e.g. ROW(), COLUMN()) consult this when called
+        # with no arguments.
+        self.current_cell: tuple[int, int] | None = None
 
     def lookup_func(self, name: str) -> Callable[..., Any] | None:
         return self._builtins.get(name.lower())
@@ -354,13 +358,29 @@ def _eval_name(node: Name, env: Env) -> Any:
 
 _ERROR_AWARE_FUNCS = frozenset({"iferror", "ifna", "iserror", "iserr", "isna"})
 
+# Functions that receive raw AST nodes (CellRef/RangeRef/...) plus the
+# Env, instead of evaluated values. Used for functions whose semantics
+# depend on the *reference* rather than the cell's value -- ROW(A5),
+# COLUMN(A5), ROWS(A1:B10), COLUMNS(A1:B10).
+RAW_ARG_FUNCS = frozenset({"row", "column", "rows", "columns"})
+
 
 def _eval_call(node: Call, env: Env) -> Any:
     fn = env.lookup_func(node.name)
     if fn is None:
         return ExcelError.NAME
+    name_lower = node.name.lower()
+    if name_lower in RAW_ARG_FUNCS:
+        try:
+            return fn(env, *node.args)
+        except ZeroDivisionError:
+            return ExcelError.DIV0
+        except (ValueError, OverflowError, ArithmeticError):
+            return ExcelError.NUM
+        except (TypeError, AttributeError):
+            return ExcelError.VALUE
     args = [_eval(a, env) for a in node.args]
-    if node.name not in _ERROR_AWARE_FUNCS:
+    if name_lower not in _ERROR_AWARE_FUNCS:
         err = first_error(*args)
         if err:
             return err

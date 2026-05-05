@@ -39,34 +39,37 @@ CHANGELOG.md.
 
 ## Performance
 
-- [ ] **Topological recalc.** The formula evaluator collects referenced
-  cells during evaluation (`Env.refs_used`); a reverse dependency
-  index keyed on those would let recalc evaluate only the transitive
-  closure of changed cells, detect cycles structurally, and remove
-  the 100-iteration convergence cap. AST caching is already in place
-  (text-keyed on `Cell.ast`).
+- [ ] **Range subscriber explosion (Phase E from `docs/topological.md`).**
+  `SUM(A1:Z1000)` registers 26000 reverse-index entries. Replace with
+  an interval representation (per-column interval tree, or aggregation
+  nodes that fan out at change time). Defer until profiling shows
+  large-range workloads as a hot spot.
+- [ ] **Use `#REF!` (or a dedicated `#CIRC!`) for cycle cells**
+  instead of NaN. Cosmetic but matches Excel semantics; would require
+  surfacing an error type into `Cell.val` or a parallel error field.
+- [ ] **Delete the legacy fixed-point recalc path** (`Grid._recalc_formula`).
+  Topo recalc is the default; the fixed-point loop is retained one
+  release as a fallback gated by `_use_topo_recalc = False` /
+  `GRIDCALC_TOPO=0`. After a soak period, drop the fallback, the env
+  hook in `tests/conftest.py`, and the `_use_topo_recalc` flag.
 - [ ] **Memoize named-range Vecs within a recalc.** `Env` is built once
   per recalc but `_eval_name` re-fetches all cells of a range on every
   formula evaluation that mentions the name. Cache the materialised
   Vec keyed on the named range's text.
-- [ ] **Phase 3: nanobind C++ port of the EXCEL evaluator** (lexer,
-  parser, tree walker, cell store, dependency graph). HYBRID would
-  cross back into Python only at the `py.*` gateway. Months of work;
-  defer until the grammar and function library have soaked in real
-  use.
-- [ ] **Wrap OpenXLSX (C++) via nanobind for xlsx I/O.**
-  [OpenXLSX](https://github.com/troldal/OpenXLSX) is a fast, header-
-  capable C++ Excel reader/writer that doesn't depend on a Python xlsx
-  stack. Replacing openpyxl with a nanobind-wrapped OpenXLSX would cut
-  load/save time on large workbooks substantially and drop a heavy
-  pure-Python dependency. Scope: thin nanobind module exposing
-  `Workbook`, `Worksheet`, `Cell`-level read/write of value, formula,
-  type, and the iter-rows path; gridcalc's `xlsxload`/`xlsxsave` swap
-  to call it; openpyxl moves to an optional fallback or drops out.
-  Couple to phase 3 -- if the EXCEL evaluator is going native, the
-  xlsx codec might as well too. Risks: build matrix complexity (must
-  ship wheels per platform), licensing audit (OpenXLSX is BSD-3),
-  date/time and styled-cell coverage gaps vs. openpyxl.
+- [ ] **Targeted C++ acceleration for measured hot spots.** A full
+  C++ evaluator port (lexer + parser + tree walker + cell store +
+  dep graph) is not justified by current benchmarks: topological
+  recalc closed the gap that originally motivated it. Surgical edits
+  on 10k-cell sheets are <0.1 ms; xlsxload of 5k cells is ~12 ms;
+  long-chain edits are single-digit ms. A wholesale port would
+  duplicate the function library in C++, complicate the HYBRID
+  `py.*` gateway with three-way Python<->C++ bouncing, and slow
+  development velocity (rebuild required for every formula-system
+  change). If a real workload exposes a hot spot, C++ that single
+  component (Vec arithmetic in `engine.py:87-129`, range
+  materialization in `_expand_ranges`, or the closure BFS in
+  `_recalc_topo`) -- a few hundred lines, not thousands. See git
+  history for the original "Phase 3" entry if scope ever shifts.
 
 ## Refactoring & code quality
 
@@ -83,6 +86,55 @@ CHANGELOG.md.
 - [ ] **Audit `libs/xlsx.py` against the Excel spec.** Especially
   `VLOOKUP`/`HLOOKUP` approximate-match, `MATCH` with non-default
   `match_type`, and `SUMIF`/`COUNTIF` criteria edge cases.
+- [ ] **`ADDRESS`** -- mostly mechanical: build an A1-style string from
+  `(row, col, [abs_num], [r1c1_style], [sheet])`. No evaluator change
+  needed. Defer until someone needs it.
+- [ ] **Tier 3 function round-out (~50 functions, mechanical).**
+  Mostly-mechanical fill-ins that complete common categories without
+  architectural change. Group as a single PR when prioritized:
+    - **Aggregates**: `COUNTA`, `COUNTBLANK`, `PRODUCT`, `AVERAGEA`,
+      `MAXA`, `MINA`.
+    - **Stats (modern names)**: `STDEV.S`, `STDEV.P`, `VAR.S`, `VAR.P`,
+      `MODE.SNGL`, `MODE.MULT`, `COVARIANCE.P`, `COVARIANCE.S`,
+      `PERCENTILE.INC`, `PERCENTILE.EXC`, `QUARTILE.INC`,
+      `QUARTILE.EXC`, `RANK.EQ`, `RANK.AVG`. (Aliases for existing
+      implementations; needs name-with-dot support in the parser/lexer
+      -- check if `.` is already accepted in function names.)
+    - **Stats (additional)**: `AVEDEV`, `DEVSQ`, `SLOPE`, `INTERCEPT`,
+      `RSQ`, `STEYX`, `SKEW`, `KURT`, `PERCENTRANK`.
+    - **Date**: `DAYS`, `DAYS360`, `WEEKNUM`, `ISOWEEKNUM`, `YEARFRAC`.
+    - **Information**: `ERROR.TYPE`, `TYPE`, `ISFORMULA`, `ISREF`,
+      `ISNONTEXT` (`CELL` deferred -- needs format/style metadata
+      surface).
+    - **Text**: `CLEAN`, `NUMBERVALUE`, `FIXED`, `DOLLAR`, `T`,
+      `UNICHAR`, `UNICODE`.
+    - **Math**: `COMBIN`, `COMBINA`, `PERMUT`, `PERMUTATIONA`,
+      `MULTINOMIAL`, `QUOTIENT`, `CEILING.MATH`, `FLOOR.MATH`,
+      `RADIANS`, `DEGREES` (last two need uppercase aliases for the
+      `math.radians`/`math.degrees` already in `_eval_globals`).
+    - **Math (paired sums)**: `SUMSQ`, `SUMX2MY2`, `SUMX2PY2`, `SUMXMY2`.
+    - **Hyperbolic trig**: `SINH`, `COSH`, `TANH`, `ASINH`, `ACOSH`,
+      `ATANH`.
+    - **Bitwise**: `BITAND`, `BITOR`, `BITXOR`, `BITLSHIFT`, `BITRSHIFT`.
+    - **Random (volatile)**: `RAND`, `RANDBETWEEN` -- must register in
+      `formula.deps.DYNAMIC_REF_FUNCS` (or a new `VOLATILE_FUNCS` set)
+      so the topo path adds them to the closure on every recalc.
+  `TRANSPOSE` is *not* in this list -- it returns a reshaped array,
+  which requires a 2D-aware result type; defer to dynamic-array work.
+- [ ] **`OFFSET`** -- dynamic-ref function (already in `DYNAMIC_REF_FUNCS`
+  for volatile flagging). Needs the evaluator to materialise a reference
+  result (not just a value) so chained constructs like
+  `SUM(OFFSET(A1, 1, 0, 5, 1))` work. Out of scope without a reference
+  type in the value system.
+- [ ] **Excel 365 dynamic arrays**: `FILTER`, `SORT`, `UNIQUE`,
+  `SEQUENCE`, `RANDARRAY`, `LET`, `LAMBDA`, `XLOOKUP`, `XMATCH`.
+  These spill into adjacent cells and need architectural support
+  beyond just adding functions.
+- [ ] **Date type system in xlsx I/O.** `_core.xlsx_read` collapses
+  date serials into `XLValueType::Float`. Need to read the cell's
+  number format to distinguish dates from numbers, and a per-cell
+  `Cell.fmtstr` extension to render serials as formatted dates in
+  the TUI.
 - [ ] **`requires` field has no version pinning.**
   `"requires": ["numpy"]` loads whatever version is installed. Version
   constraints would improve reproducibility.
@@ -100,7 +152,14 @@ CHANGELOG.md.
 - [ ] **xlsx interop level (c): round-trip formulas, not just values.**
   Requires the EXCEL grammar to be a strict subset of Excel's and the
   `xlsx` library's function semantics to match Excel bug-for-bug for
-  the supported set.
+  the supported set. The `_core.xlsx_write` path currently writes
+  evaluated values only; formula write-through needs `cell.formula().set()`
+  and a serialiser for the EXCEL AST back to Excel-grammar text.
+- [ ] **Date/time and styled-cell coverage in `_core` xlsx I/O.**
+  `XLValueType` does not distinguish date serials from floats; styles
+  and number formats are not read or written. openpyxl-backed gridcalc
+  did not handle these either, so this is a known gap to plan, not a
+  regression.
 - [ ] **Migration tool `gridcalc migrate file.json`.** Attempts to
   upgrade a LEGACY file to HYBRID by reparsing each formula with the
   EXCEL grammar and reporting the unparseable ones.
@@ -120,6 +179,12 @@ CHANGELOG.md.
 - [ ] **CI workflow running `make qa` on push.** One-file change;
   catches regressions and prevents lint findings (e.g. the `S101`
   that lived for releases) from sneaking back in.
+- [ ] **Wheel build matrix.** scikit-build-core + the vendored OpenXLSX
+  mean sdist installs require a C++17 toolchain, CMake, and network
+  access for the FetchContent of pugixml/miniz/nowide. Ship prebuilt
+  wheels for macOS (x86_64, arm64), Linux (manylinux x86_64, aarch64),
+  and Windows so `pip install gridcalc` works without a compiler. Once
+  wheels exist, drop the documented build prerequisites note.
 - [ ] **mkdocs documentation site** (mkdocs-material). Publish to
   GitHub Pages via `gh-pages` branch or GitHub Actions.
 - [ ] **EXCEL grammar reference page.** Operators, precedence, error

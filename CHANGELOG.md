@@ -4,6 +4,83 @@
 
 ### Added
 
+- **Excel function library: Tier 1 + Tier 2 (~60 new functions).**
+  - **Multi-criteria aggregates**: `SUMIFS`, `COUNTIFS`, `AVERAGEIFS`,
+    `MAXIFS`, `MINIFS`.
+  - **Date/time**: `NOW`, `TODAY`, `DATE`, `TIME`, `DATEVALUE`,
+    `TIMEVALUE`, `YEAR`, `MONTH`, `DAY`, `HOUR`, `MINUTE`, `SECOND`,
+    `WEEKDAY`, `EDATE`, `EOMONTH`, `DATEDIF`, `NETWORKDAYS`, `WORKDAY`.
+    Excel epoch (1899-12-30) so serials match Excel's 1900-leap-year
+    convention.
+  - **Information**: `ISNUMBER`, `ISTEXT`, `ISBLANK`, `ISERROR`, `ISNA`,
+    `ISERR`, `ISLOGICAL`, `ISEVEN`, `ISODD`, `NA`, `N`.
+  - **Text utilities**: `FIND`, `SEARCH`, `REPLACE`, `TEXTJOIN`, `CHAR`,
+    `CODE`, `VALUE`, `TEXT` (subset of Excel format strings).
+  - **Statistical**: `STDEV`, `STDEVP`, `VAR`, `VARP`, `CORREL`, `COVAR`,
+    `RANK`, `PERCENTILE`, `QUARTILE`, `MODE`, `GEOMEAN`, `HARMEAN`.
+  - **Financial**: `PV`, `FV`, `PMT`, `NPER`, `RATE`, `NPV`, `IRR`,
+    `IPMT`, `PPMT`. `RATE` and `IRR` use Newton's method.
+  - **Math**: `CEILING`, `FLOOR`, `MROUND`, `ODD`, `EVEN`, `FACT`,
+    `GCD`, `LCM`, `TRUNC`.
+  - **Logical**: `IFS`, `SWITCH`, `IFNA`, `XOR`.
+  - **Reference subset**: `CHOOSE`. (`ADDRESS`, `OFFSET` deferred --
+    `OFFSET` needs dynamic-ref handling.)
+  - 39 new tests in `tests/test_libs.py` exercising these via direct
+    calls and end-to-end formula evaluation.
+
+- **`ROW`, `COLUMN`, `ROWS`, `COLUMNS`** via a new raw-args path in
+  the evaluator. Functions registered in `RAW_ARG_FUNCS` (`evaluator.py`)
+  receive AST nodes (`CellRef`, `RangeRef`) plus `Env`, instead of
+  evaluated values. `Env.current_cell` is populated by recalc loops
+  before each formula eval so `ROW()`/`COLUMN()` can report the
+  calling cell. `formula.deps.extract_refs` and `engine._ast_uses_cell`
+  both treat these functions as address-only, so e.g. `=ROWS(A1:B10)`
+  written into a cell inside the range does not register a spurious
+  self-cycle. 8 new tests in `TestRowColumnFunctions`. Total function
+  count: ~108.
+
+- **Topological recalc graph stays consistent across structural edits.**
+  `Grid._rebuild_dep_graph()` walks all formula cells and reconstructs
+  `_dep_of`/`_subscribers`/`_volatile`; called from `insertrow`,
+  `insertcol`, `deleterow`, `deletecol`, `swaprow`, `swapcol`, and at
+  the top of `_recalc_topo` on full-recalc paths (handles
+  LEGACY -> EXCEL/HYBRID mode switches and initial loads).
+  `replicatecell` was refactored to route through `_setcell_no_recalc`
+  so the destination cell's deps are tracked. New
+  `TestTopoGraphInvariants` (7 tests) exercises each path with a
+  forward/reverse-index consistency check.
+
+- **`jsonload` uses bulk-set semantics**: was N x O(formulas) per-cell
+  recalcs; now single recalc at the end. 5000-cell load: ~18 ms.
+
+- **LEGACY mode skips dep-graph maintenance.** `_refresh_deps` returns
+  early in LEGACY mode -- the graph is unused there (fixed-point
+  recalc). Removes the parsing overhead per cell-write in LEGACY.
+
+- **Topological recalc** (default ON): replaces the fixed-point recalc
+  loop with a dependency-graph traversal. `Grid` now maintains forward
+  (`_dep_of`) and reverse (`_subscribers`) indexes built from each
+  formula's AST via `formula.deps.extract_refs`. `recalc(dirty)`
+  computes the transitive closure of changed cells through the reverse
+  index, topologically sorts via Kahn's algorithm, and evaluates each
+  cell exactly once. Cells containing `INDIRECT`/`OFFSET`/`INDEX`/`PyCall`
+  are flagged volatile and unconditionally added to the closure.
+  Surgical edit benchmark (1 source change in a 10,000-cell sheet,
+  5000 formulas): 7.4 ms -> <0.1 ms. Cycle detection is now structural
+  (Kahn's leftover) rather than "didn't converge in 100 iterations".
+  Design rationale and remaining phases in `docs/topological.md`. The
+  legacy fixed-point path (`Grid._recalc_formula`) remains in the
+  codebase one release as a fallback, gated by `_use_topo_recalc =
+  False` per-instance or `GRIDCALC_TOPO=0` for the test suite.
+
+- **`docs/topological.md`**: design note covering the algorithmic
+  motivation, current cost model, the static dep extractor, hard
+  parts (dynamic refs, range explosion, named ranges, py.* gateway,
+  graph mutation, LEGACY mode), the phased implementation plan, open
+  questions, and triggers for when to revisit.
+
+
+
 - **Native xlsx I/O via OpenXLSX** (nanobind `_core` extension): xlsx read
   and write now go through a C++ binding around vendored
   [OpenXLSX](https://github.com/troldal/OpenXLSX). On a 5000-cell grid,
@@ -45,6 +122,12 @@
 
 - **Internal `_xlsx_cell_to_text` helper**: no longer needed once the
   openpyxl read path was removed.
+
+- **Vendored OpenXLSX trimmed** (2.8M -> 1.5M): dropped `Benchmarks/`,
+  `Documentation/`, `Examples/`, `Tests/`, `gnu-make-crutch/`, `Notes/`,
+  `Scripts/`, `Makefile.GNU`, `vcpkg.json`, and `README.md` from
+  `thirdparty/OpenXLSX/`. Retained `CMakeLists.txt`, `cmake/`,
+  `OpenXLSX/`, and `LICENSE.md` (BSD-3 attribution).
 
 ## [0.1.3]
 

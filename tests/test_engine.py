@@ -1361,6 +1361,210 @@ class TestCircularReference:
         assert (1, 0) in g._circular
 
 
+class TestTopoCycleDetection:
+    """Cycle detection under the topological recalc path.
+
+    Topo's detection is structural: cells that survive Kahn's algorithm
+    are exactly those participating in a strongly-connected component.
+    The tests below cover behaviour that fixed-point can't guarantee
+    (false positives via convergence-cap) but topo must.
+    """
+
+    def _topo_grid(self):
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g._use_topo_recalc = True
+        return g
+
+    def test_cycle_is_exactly_the_cycle(self):
+        """`_circular` is the SCC, no innocent dependents leaking in."""
+        g = self._topo_grid()
+        g.setcell(0, 0, "=B1")  # A1 in cycle
+        g.setcell(1, 0, "=A1")  # B1 in cycle
+        g.setcell(2, 0, "=A1+1")  # C1 depends on cycle but is NOT in it
+        g.setcell(3, 0, "=C1+1")  # D1 depends transitively
+        assert g._circular == {(0, 0), (1, 0)}
+        # Innocent dependents pick up NaN because their input is NaN,
+        # but they are not flagged as cyclic.
+        assert math.isnan(g.cells[2][0].val)
+        assert math.isnan(g.cells[3][0].val)
+        assert (2, 0) not in g._circular
+        assert (3, 0) not in g._circular
+
+    def test_two_disjoint_cycles(self):
+        """Both SCCs detected; innocent regions evaluate normally."""
+        g = self._topo_grid()
+        g.setcell(0, 0, "=B1")
+        g.setcell(1, 0, "=A1")
+        g.setcell(0, 5, "=B6")
+        g.setcell(1, 5, "=A6")
+        # Independent acyclic region.
+        g.setcell(3, 0, "10")
+        g.setcell(3, 1, "=D1+1")
+        assert g._circular == {(0, 0), (1, 0), (0, 5), (1, 5)}
+        assert g.cells[3][1].val == 11.0
+
+    def test_long_cycle_exceeds_iteration_cap(self):
+        """A 150-cell cycle is detected structurally, not by iteration cap."""
+        g = self._topo_grid()
+        from gridcalc.engine import col_name
+
+        n = 150
+        # Build an n-cell cycle: A1 -> B1 -> ... -> [n-th col]1 -> A1.
+        for i in range(n):
+            target = col_name((i + 1) % n)
+            g.setcell(i, 0, f"={target}1")
+        # Every cell in the chain is part of the cycle.
+        assert len(g._circular) == n
+        for i in range(n):
+            assert (i, 0) in g._circular
+
+    def test_cycle_through_range(self):
+        """Range-mediated cycle: A1=SUM(B1:B3), B1=A1."""
+        g = self._topo_grid()
+        g.setcell(0, 0, "=SUM(B1:B3)")  # A1
+        g.setcell(1, 0, "=A1")  # B1 — closes cycle through SUM
+        g.setcell(1, 1, "5")  # B2 — not in cycle
+        g.setcell(1, 2, "7")  # B3 — not in cycle
+        assert (0, 0) in g._circular
+        assert (1, 0) in g._circular
+        # B2, B3 are values, not formulas — they shouldn't be in the
+        # cycle set even though they're inside the range.
+        assert (1, 1) not in g._circular
+        assert (1, 2) not in g._circular
+
+    def test_break_cycle_clears_flag(self):
+        """Editing a cycle cell to a non-formula clears `_circular`."""
+        g = self._topo_grid()
+        g.setcell(0, 0, "=B1")
+        g.setcell(1, 0, "=A1")
+        assert g._circular == {(0, 0), (1, 0)}
+        g.setcell(1, 0, "42")
+        assert g._circular == set()
+        assert g.cells[0][0].val == 42.0
+
+    def test_form_cycle_then_detect(self):
+        """Adding the closing edge to a chain flips it into a cycle."""
+        g = self._topo_grid()
+        g.setcell(0, 0, "1")
+        g.setcell(1, 0, "=A1")
+        g.setcell(2, 0, "=B1")
+        # No cycle yet.
+        assert g._circular == set()
+        assert g.cells[2][0].val == 1.0
+        # Replace A1's value with a back-edge to C1 to close the cycle.
+        g.setcell(0, 0, "=C1")
+        assert g._circular == {(0, 0), (1, 0), (2, 0)}
+
+
+class TestTopoGraphInvariants:
+    """Verify the dep graph stays consistent across structural edits.
+
+    Each test edits a source cell after a structural mutation and checks
+    that the dependent formula re-evaluates correctly. A stale graph
+    would silently propagate to the wrong cells (or none at all).
+    """
+
+    def _topo_grid(self):
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g._use_topo_recalc = True
+        return g
+
+    def _assert_graph_consistent(self, g):
+        """Forward and reverse indexes must agree."""
+        for src, deps in g._dep_of.items():
+            for d in deps:
+                assert src in g._subscribers.get(d, set()), (
+                    f"forward edge {src}->{d} missing in subscribers"
+                )
+        for tgt, subs in g._subscribers.items():
+            for s in subs:
+                assert tgt in g._dep_of.get(s, set()), f"reverse edge {tgt}<-{s} missing in dep_of"
+
+    def test_insertrow_propagates(self):
+        g = self._topo_grid()
+        g.setcell(0, 0, "5")
+        g.setcell(0, 1, "=A1+1")
+        assert g.cells[0][1].val == 6.0
+        g.insertrow(0)
+        self._assert_graph_consistent(g)
+        # Editing the value (now at A2) must propagate to the formula at A3.
+        g.setcell(0, 1, "100")
+        assert g.cells[0][2].val == 101.0
+
+    def test_insertcol_propagates(self):
+        g = self._topo_grid()
+        g.setcell(0, 0, "5")
+        g.setcell(1, 0, "=A1+1")
+        assert g.cells[1][0].val == 6.0
+        g.insertcol(0)
+        self._assert_graph_consistent(g)
+        g.setcell(1, 0, "100")
+        assert g.cells[2][0].val == 101.0
+
+    def test_deleterow_propagates(self):
+        g = self._topo_grid()
+        g.setcell(0, 0, "ignored")
+        g.setcell(0, 1, "5")
+        g.setcell(0, 2, "=A2+1")
+        g.deleterow(0)
+        self._assert_graph_consistent(g)
+        g.setcell(0, 0, "100")
+        assert g.cells[0][1].val == 101.0
+
+    def test_swaprow_propagates(self):
+        g = self._topo_grid()
+        g.setcell(0, 0, "5")
+        g.setcell(0, 1, "=A1+1")
+        g.swaprow(0, 1)
+        self._assert_graph_consistent(g)
+        # After swap the formula text is rewritten; A1 holds the formula
+        # and A2 holds the value. Editing A2 must re-propagate to A1.
+        g.setcell(0, 1, "100")
+        assert g.cells[0][0].val == 101.0
+
+    def test_replicate_formula_propagates(self):
+        g = self._topo_grid()
+        g.setcell(0, 0, "5")
+        g.setcell(0, 1, "=A1*2")
+        # Replicate (0,1) -> (1,1): refs shift +1 col, so B2 = B1*2.
+        g.replicatecell(0, 1, 1, 1)
+        self._assert_graph_consistent(g)
+        g.setcell(1, 0, "7")
+        g.recalc({(1, 0)})
+        assert g.cells[1][1].val == 14.0
+
+    def test_replicate_clears_old_deps(self):
+        g = self._topo_grid()
+        g.setcell(0, 0, "5")
+        g.setcell(1, 0, "=A1*2")
+        # Replicate from a value cell over the formula -- B1 becomes "7".
+        g.setcell(2, 0, "7")
+        g.replicatecell(2, 0, 1, 0)
+        self._assert_graph_consistent(g)
+        # B1 should no longer subscribe to A1 changes.
+        assert (1, 0) not in g._subscribers.get((0, 0), set())
+
+    def test_legacy_to_excel_mode_switch_rebuilds_graph(self):
+        """LEGACY mode doesn't populate the graph; switching needs rebuild."""
+        g = Grid()  # default LEGACY
+        g.setcell(0, 0, "5")
+        g.setcell(0, 1, "=A1+1")
+        assert g.cells[0][1].val == 6.0
+        # Switch to EXCEL. Graph was empty in LEGACY.
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g._use_topo_recalc = True
+        g.recalc()  # full-recalc path triggers _rebuild_dep_graph
+        self._assert_graph_consistent(g)
+        # Now incremental edits should propagate.
+        g.setcell(0, 0, "100")
+        assert g.cells[0][1].val == 101.0
+
+
 np = pytest.importorskip("numpy")
 
 

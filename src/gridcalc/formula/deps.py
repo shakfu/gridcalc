@@ -27,11 +27,17 @@ from .ast_nodes import (
 # statically and must be treated as volatile (always recompute).
 DYNAMIC_REF_FUNCS: frozenset[str] = frozenset({"INDIRECT", "OFFSET", "INDEX"})
 
+# Functions that return a different value on every call (RAND, RANDBETWEEN).
+# Cells calling them must recompute on every recalc -- treat as volatile.
+VOLATILE_FUNCS: frozenset[str] = frozenset({"RAND", "RANDBETWEEN", "RANDARRAY"})
+
 # Functions whose CellRef/RangeRef arguments are inspected as references
 # rather than read for value. Their args do not contribute to the cell's
 # dependency set -- e.g. `=ROWS(A1:B10)` does not read A1..B10, it only
 # uses the range's shape. Mirrors `formula.evaluator.RAW_ARG_FUNCS`.
-ADDRESS_ONLY_FUNCS: frozenset[str] = frozenset({"ROW", "COLUMN", "ROWS", "COLUMNS"})
+ADDRESS_ONLY_FUNCS: frozenset[str] = frozenset(
+    {"ROW", "COLUMN", "ROWS", "COLUMNS", "ISREF", "ISFORMULA"}
+)
 
 
 def extract_refs(
@@ -56,7 +62,8 @@ def has_dynamic_refs(node: Node) -> bool:
     Cells matching this need always-recompute treatment in topo recalc.
     """
     if isinstance(node, Call):
-        if node.name.upper() in DYNAMIC_REF_FUNCS:
+        up = node.name.upper()
+        if up in DYNAMIC_REF_FUNCS or up in VOLATILE_FUNCS:
             return True
         return any(has_dynamic_refs(a) for a in node.args)
     if isinstance(node, PyCall):

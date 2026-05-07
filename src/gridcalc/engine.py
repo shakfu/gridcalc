@@ -69,8 +69,12 @@ def _is_series(obj: object) -> bool:
 
 
 class Vec:
-    def __init__(self, data: Iterable[float]) -> None:
+    def __init__(self, data: Iterable[float], cols: int | None = None) -> None:
         self.data: list[float] = list(data)
+        # Number of columns when this Vec materialises a 2D range (row-major).
+        # None means shape is unknown / treat as 1D. Set by _eval_range when
+        # building from a RangeRef so INDEX(rng, row, col) can re-index.
+        self.cols: int | None = cols
 
     def __repr__(self) -> str:
         return "Vec(" + repr(self.data) + ")"
@@ -945,6 +949,10 @@ class Grid:
                 named[nr.name] = F_RangeRef(start, end)
         return named
 
+    def _cell_is_formula(self, c: int, r: int) -> bool:
+        cl = self._cells.get((c, r))
+        return cl is not None and cl.type == FORMULA
+
     def _cell_lookup_value(self, c: int, r: int) -> object:
         cl = self._cells.get((c, r))
         if cl is None or cl.type == EMPTY:
@@ -1034,6 +1042,7 @@ class Grid:
             builtins=self._eval_globals,
             named_ranges=named,
             py_registry=py_registry,
+            cell_is_formula=self._cell_is_formula,
         )
 
         changed_cells: set[tuple[int, int]] = set()
@@ -1130,6 +1139,7 @@ class Grid:
             builtins=self._eval_globals,
             named_ranges=named,
             py_registry=py_registry,
+            cell_is_formula=self._cell_is_formula,
         )
 
         # Build the closure: BFS over `_subscribers` from the dirty set,

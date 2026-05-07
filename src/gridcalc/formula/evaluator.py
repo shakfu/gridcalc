@@ -30,11 +30,13 @@ class Env:
         builtins: dict[str, Callable[..., Any]],
         named_ranges: dict[str, Node] | None = None,
         py_registry: dict[str, Callable[..., Any]] | None = None,
+        cell_is_formula: Callable[[int, int], bool] | None = None,
     ) -> None:
         self.cell_value = cell_value
         self._builtins = {k.lower(): v for k, v in builtins.items()}
         self._named = {k.lower(): v for k, v in (named_ranges or {}).items()}
         self.py_registry = py_registry or {}
+        self.cell_is_formula = cell_is_formula or (lambda _c, _r: False)
         self.refs_used: set[tuple[int, int]] = set()
         # Set by recalc before evaluating each formula. Functions in
         # `RAW_ARG_FUNCS` (e.g. ROW(), COLUMN()) consult this when called
@@ -346,7 +348,9 @@ def _eval_range(node: RangeRef, env: Env) -> Any:
             if isinstance(v, ExcelError):
                 return v
             data.append(_to_number_or_zero(v))
-    return _make_vec(data)
+    from ..engine import Vec  # lazy import to break cycle
+
+    return Vec(data, cols=c2 - c1 + 1)
 
 
 def _eval_name(node: Name, env: Env) -> Any:
@@ -362,7 +366,7 @@ _ERROR_AWARE_FUNCS = frozenset({"iferror", "ifna", "iserror", "iserr", "isna"})
 # Env, instead of evaluated values. Used for functions whose semantics
 # depend on the *reference* rather than the cell's value -- ROW(A5),
 # COLUMN(A5), ROWS(A1:B10), COLUMNS(A1:B10).
-RAW_ARG_FUNCS = frozenset({"row", "column", "rows", "columns"})
+RAW_ARG_FUNCS = frozenset({"row", "column", "rows", "columns", "isref", "isformula"})
 
 
 def _eval_call(node: Call, env: Env) -> Any:

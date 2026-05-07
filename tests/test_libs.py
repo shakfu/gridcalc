@@ -180,7 +180,7 @@ class TestLookup:
 
     def test_vlookup_not_found(self) -> None:
         table = Vec([1, 10, 2, 20])
-        assert math.isnan(VLOOKUP(5, table, 2, 0))
+        assert VLOOKUP(5, table, 2, 0) is ExcelError.NA
 
     def test_index(self) -> None:
         assert INDEX(Vec([10, 20, 30, 40]), 3) == 30.0
@@ -189,7 +189,7 @@ class TestLookup:
         assert MATCH(20, Vec([10, 20, 30]), 0) == 2
 
     def test_match_not_found(self) -> None:
-        assert MATCH(99, Vec([10, 20, 30]), 0) == 0
+        assert MATCH(99, Vec([10, 20, 30]), 0) is ExcelError.NA
 
     def test_match_approx(self) -> None:
         assert MATCH(25, Vec([10, 20, 30]), 1) == 2
@@ -744,3 +744,547 @@ class TestRowColumnFunctions:
         g.setcell(0, 9, "=ROW()*10")
         assert g.cells[0][0].val == 10.0
         assert g.cells[0][9].val == 100.0
+
+
+class TestTier3Aggregates:
+    def test_counta_countblank(self) -> None:
+        from gridcalc.libs.xlsx import COUNTA, COUNTBLANK
+
+        assert COUNTA(Vec([1.0, 2.0, 3.0])) == 3
+        assert COUNTA(1, "x", None, "", 5) == 3
+        assert COUNTBLANK(1, None, "", "x") == 2
+
+    def test_product(self) -> None:
+        from gridcalc.libs.xlsx import PRODUCT
+
+        assert PRODUCT(Vec([2.0, 3.0, 4.0])) == 24.0
+        assert PRODUCT(2, 3, 4) == 24.0
+
+    def test_averagea_maxa_mina(self) -> None:
+        from gridcalc.libs.xlsx import AVERAGEA, MAXA, MINA
+
+        # text counts as 0
+        assert AVERAGEA(2, "abc", 4) == 2.0  # (2+0+4)/3
+        assert MAXA(2, "abc", 4) == 4.0
+        assert MINA(2, "abc", 4) == 0.0
+        # bool: TRUE=1
+        assert MAXA(0, True) == 1.0
+
+
+class TestTier3StatsAliases:
+    """Stats modern dot-name aliases must be reachable through the
+    parser/lexer path; this also verifies BUILTINS lookup is case-insensitive."""
+
+    def _grid(self) -> Grid:
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        return g
+
+    def test_stdev_dotted(self) -> None:
+        g = self._grid()
+        for i, v in enumerate([2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]):
+            g.setcell(0, i, str(v))
+        g.setcell(1, 0, "=STDEV.S(A1:A8)")
+        g.setcell(1, 1, "=STDEV.P(A1:A8)")
+        assert abs(g.cells[1][0].val - 2.138089935) < 1e-6
+        assert abs(g.cells[1][1].val - 2.0) < 1e-6
+
+    def test_var_dotted(self) -> None:
+        g = self._grid()
+        for i, v in enumerate([2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]):
+            g.setcell(0, i, str(v))
+        g.setcell(1, 0, "=VAR.S(A1:A8)")
+        g.setcell(1, 1, "=VAR.P(A1:A8)")
+        assert abs(g.cells[1][0].val - 4.571428571) < 1e-6
+        assert abs(g.cells[1][1].val - 4.0) < 1e-6
+
+    def test_percentile_quartile_dotted(self) -> None:
+        g = self._grid()
+        for i, v in enumerate([1.0, 2.0, 3.0, 4.0, 5.0]):
+            g.setcell(0, i, str(v))
+        g.setcell(1, 0, "=PERCENTILE.INC(A1:A5, 0.5)")
+        g.setcell(1, 1, "=QUARTILE.INC(A1:A5, 2)")
+        assert g.cells[1][0].val == 3.0
+        assert g.cells[1][1].val == 3.0
+
+    def test_rank_eq_avg(self) -> None:
+        from gridcalc.libs.xlsx import RANK_AVG
+
+        v = Vec([10.0, 20.0, 20.0, 30.0])
+        # RANK.AVG of 20 (descending default): positions 2 and 3 -> 2.5
+        assert RANK_AVG(20.0, v) == 2.5
+
+    def test_mode_mult(self) -> None:
+        from gridcalc.libs.xlsx import MODE_MULT
+
+        result = MODE_MULT(Vec([1.0, 2.0, 2.0, 3.0, 3.0, 4.0]))
+        assert isinstance(result, Vec)
+        assert sorted(result.data) == [2.0, 3.0]
+
+    def test_covariance_p_s(self) -> None:
+        from gridcalc.libs.xlsx import COVARIANCE_P, COVARIANCE_S
+
+        x = Vec([1.0, 2.0, 3.0, 4.0])
+        y = Vec([2.0, 4.0, 6.0, 8.0])
+        # population covariance = 2.5 (matches existing COVAR test)
+        assert abs(COVARIANCE_P(x, y) - 2.5) < 1e-9
+        # sample covariance: divisor n-1=3
+        assert abs(COVARIANCE_S(x, y) - 10.0 / 3) < 1e-9
+
+
+class TestTier3StatsAdditional:
+    def test_avedev_devsq(self) -> None:
+        from gridcalc.libs.xlsx import AVEDEV, DEVSQ
+
+        v = Vec([2.0, 4.0, 6.0])  # mean=4
+        assert AVEDEV(v) == (2 + 0 + 2) / 3
+        assert DEVSQ(v) == 4 + 0 + 4
+
+    def test_slope_intercept_rsq(self) -> None:
+        from gridcalc.libs.xlsx import INTERCEPT, RSQ, SLOPE
+
+        x = Vec([1.0, 2.0, 3.0, 4.0])
+        y = Vec([3.0, 5.0, 7.0, 9.0])  # y = 2x + 1
+        assert abs(SLOPE(y, x) - 2.0) < 1e-9
+        assert abs(INTERCEPT(y, x) - 1.0) < 1e-9
+        assert abs(RSQ(y, x) - 1.0) < 1e-9
+
+    def test_steyx(self) -> None:
+        from gridcalc.libs.xlsx import STEYX
+
+        x = Vec([1.0, 2.0, 3.0, 4.0])
+        y = Vec([3.0, 5.0, 7.0, 9.0])
+        # Perfect fit -> standard error 0
+        assert abs(STEYX(y, x)) < 1e-9
+
+    def test_skew_kurt(self) -> None:
+        from gridcalc.libs.xlsx import KURT, SKEW
+
+        # Symmetric data -> skew ~ 0
+        v = Vec([1.0, 2.0, 3.0, 4.0, 5.0])
+        s = SKEW(v)
+        assert isinstance(s, float) and abs(s) < 1e-9
+        # KURT defined for n >= 4
+        k = KURT(v)
+        assert isinstance(k, float)
+
+    def test_percentrank(self) -> None:
+        from gridcalc.libs.xlsx import PERCENTRANK
+
+        v = Vec([1.0, 2.0, 3.0, 4.0, 5.0])
+        # 3 is at position index 2 of 5 -> rank 2/(5-1)=0.5
+        assert PERCENTRANK(v, 3.0) == 0.5
+        assert PERCENTRANK(v, 1.0) == 0.0
+        assert PERCENTRANK(v, 5.0) == 1.0
+
+
+class TestTier3Dates:
+    def test_days(self) -> None:
+        from gridcalc.libs.xlsx import DATE, DAYS
+
+        assert DAYS(DATE(2026, 1, 11), DATE(2026, 1, 1)) == 10
+
+    def test_days360(self) -> None:
+        from gridcalc.libs.xlsx import DATE, DAYS360
+
+        # Whole year on the 30/360 calendar
+        assert DAYS360(DATE(2026, 1, 1), DATE(2027, 1, 1)) == 360
+
+    def test_weeknum_isoweeknum(self) -> None:
+        from gridcalc.libs.xlsx import DATE, ISOWEEKNUM, WEEKNUM
+
+        # 2026-01-01 is a Thursday
+        s = DATE(2026, 1, 1)
+        # Default type (1, week starts Sunday) -> week 1
+        assert WEEKNUM(s) == 1
+        assert ISOWEEKNUM(s) == 1
+
+    def test_yearfrac(self) -> None:
+        from gridcalc.libs.xlsx import DATE, YEARFRAC
+
+        # Full year, basis 4 (European 30/360) -> 1.0
+        assert abs(YEARFRAC(DATE(2026, 1, 1), DATE(2027, 1, 1), 4) - 1.0) < 1e-9
+        # Basis 3 (actual/365): non-leap 2026 -> 365/365 = 1.0
+        assert abs(YEARFRAC(DATE(2026, 1, 1), DATE(2027, 1, 1), 3) - 1.0) < 1e-9
+
+
+class TestTier3Information:
+    def test_error_type(self) -> None:
+        from gridcalc.libs.xlsx import ERROR_TYPE
+
+        assert ERROR_TYPE(ExcelError.DIV0) == 2
+        assert ERROR_TYPE(ExcelError.NA) == 7
+        assert ERROR_TYPE(123) is ExcelError.NA
+
+    def test_type(self) -> None:
+        from gridcalc.libs.xlsx import TYPE
+
+        assert TYPE(1) == 1
+        assert TYPE("x") == 2
+        assert TYPE(True) == 4
+        assert TYPE(ExcelError.NA) == 16
+        assert TYPE(Vec([1.0, 2.0])) == 64
+
+    def test_isnontext(self) -> None:
+        from gridcalc.libs.xlsx import ISNONTEXT
+
+        assert ISNONTEXT(1) is True
+        assert ISNONTEXT("x") is False
+
+    def test_isref_isformula(self) -> None:
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, "5")  # A1 = number
+        g.setcell(0, 1, "=A1+1")  # A2 = formula
+        g.setcell(1, 0, "=ISREF(A1)")
+        g.setcell(1, 1, "=ISFORMULA(A1)")
+        g.setcell(1, 2, "=ISFORMULA(A2)")
+        assert g.cells[1][0].val == 1.0  # ISREF(A1) -> True
+        assert g.cells[1][1].val == 0.0
+        assert g.cells[1][2].val == 1.0
+
+
+class TestTier3Text:
+    def test_clean(self) -> None:
+        from gridcalc.libs.xlsx import CLEAN
+
+        assert CLEAN("ab\tcd\n") == "abcd"
+
+    def test_numbervalue(self) -> None:
+        from gridcalc.libs.xlsx import NUMBERVALUE
+
+        assert NUMBERVALUE("1,234.5") == 1234.5
+        assert NUMBERVALUE("50%") == 0.5
+        assert NUMBERVALUE("1.234,56", ",", ".") == 1234.56
+
+    def test_fixed_dollar(self) -> None:
+        from gridcalc.libs.xlsx import DOLLAR, FIXED
+
+        assert FIXED(1234.5, 2) == "1,234.50"
+        assert FIXED(1234.5, 2, True) == "1234.50"
+        assert DOLLAR(1234.5, 2) == "$1,234.50"
+
+    def test_t(self) -> None:
+        from gridcalc.libs.xlsx import T
+
+        assert T("hello") == "hello"
+        assert T(1.0) == ""
+
+    def test_unichar_unicode(self) -> None:
+        from gridcalc.libs.xlsx import UNICHAR, UNICODE
+
+        assert UNICHAR(65) == "A"
+        assert UNICODE("A") == 65
+
+
+class TestTier3Math:
+    def test_combin_permut(self) -> None:
+        from gridcalc.libs.xlsx import COMBIN, COMBINA, PERMUT, PERMUTATIONA
+
+        assert COMBIN(5, 2) == 10
+        assert PERMUT(5, 2) == 20
+        assert COMBINA(3, 2) == 6  # C(4,2)
+        assert PERMUTATIONA(3, 2) == 9  # 3^2
+
+    def test_multinomial(self) -> None:
+        from gridcalc.libs.xlsx import MULTINOMIAL
+
+        # 4! / (2! * 2!) = 6
+        assert MULTINOMIAL(2, 2) == 6
+
+    def test_quotient(self) -> None:
+        from gridcalc.libs.xlsx import QUOTIENT
+
+        assert QUOTIENT(10, 3) == 3
+        assert QUOTIENT(10, 0) is ExcelError.DIV0
+
+    def test_ceiling_floor_math(self) -> None:
+        from gridcalc.libs.xlsx import CEILING_MATH, FLOOR_MATH
+
+        assert CEILING_MATH(2.3) == 3.0
+        assert CEILING_MATH(-2.3, 1, 0) == -2.0  # toward +inf
+        assert CEILING_MATH(-2.3, 1, 1) == -3.0  # away from zero
+        assert FLOOR_MATH(2.7) == 2.0
+        assert FLOOR_MATH(-2.7, 1, 1) == -2.0  # toward zero
+
+    def test_radians_degrees_uppercase(self) -> None:
+        from gridcalc.libs.xlsx import DEGREES, RADIANS
+
+        assert abs(RADIANS(180) - math.pi) < 1e-9
+        assert abs(DEGREES(math.pi) - 180.0) < 1e-9
+
+
+class TestTier3PairedSums:
+    def test_sumsq(self) -> None:
+        from gridcalc.libs.xlsx import SUMSQ
+
+        assert SUMSQ(Vec([1.0, 2.0, 3.0])) == 14.0
+        assert SUMSQ(1, 2, 3) == 14.0
+
+    def test_paired_sums(self) -> None:
+        from gridcalc.libs.xlsx import SUMX2MY2, SUMX2PY2, SUMXMY2
+
+        x = Vec([1.0, 2.0, 3.0])
+        y = Vec([4.0, 5.0, 6.0])
+        assert SUMX2MY2(x, y) == (1 - 16) + (4 - 25) + (9 - 36)
+        assert SUMX2PY2(x, y) == (1 + 16) + (4 + 25) + (9 + 36)
+        assert SUMXMY2(x, y) == 9 + 9 + 9
+
+
+class TestTier3Hyperbolic:
+    def test_hyperbolic(self) -> None:
+        from gridcalc.libs.xlsx import ACOSH, ASINH, ATANH, COSH, SINH, TANH
+
+        assert abs(SINH(0)) < 1e-12
+        assert abs(COSH(0) - 1.0) < 1e-12
+        assert abs(TANH(0)) < 1e-12
+        assert abs(ASINH(0)) < 1e-12
+        assert abs(ACOSH(1)) < 1e-12
+        assert abs(ATANH(0)) < 1e-12
+        assert ACOSH(0.5) is ExcelError.NUM
+        assert ATANH(2.0) is ExcelError.NUM
+
+
+class TestTier3Bitwise:
+    def test_bitwise(self) -> None:
+        from gridcalc.libs.xlsx import BITAND, BITLSHIFT, BITOR, BITRSHIFT, BITXOR
+
+        assert BITAND(13, 11) == 9
+        assert BITOR(13, 11) == 15
+        assert BITXOR(13, 11) == 6
+        assert BITLSHIFT(1, 4) == 16
+        assert BITRSHIFT(16, 4) == 1
+        assert BITAND(-1, 1) is ExcelError.NUM
+
+
+class TestTier3Random:
+    def test_rand_in_range(self) -> None:
+        from gridcalc.libs.xlsx import RAND, RANDBETWEEN
+
+        for _ in range(20):
+            r = RAND()
+            assert 0.0 <= r < 1.0
+            n = RANDBETWEEN(1, 10)
+            assert 1 <= n <= 10
+
+    def test_rand_volatile_marks_cell(self) -> None:
+        """RAND-using cells must be added to the volatile set so they
+        recompute on every recalc."""
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, "=RAND()")
+        # Cell should be flagged as volatile in topo recalc bookkeeping.
+        assert (0, 0) in g._volatile
+
+
+class TestCriteriaAuditFixes:
+    def test_numeric_criteria_argument(self) -> None:
+        from gridcalc.libs.xlsx import COUNTIF, SUMIF
+
+        # SUMIF/COUNTIF must accept a number directly, not just a string
+        rng = Vec([1.0, 2.0, 2.0, 3.0])
+        assert COUNTIF(rng, 2) == 2
+        assert SUMIF(rng, 2) == 4.0
+
+    def test_text_comparison_criteria(self) -> None:
+        from gridcalc.libs.xlsx import _parse_criteria
+
+        # ">m" with a text range should compare strings, not flatten to wildcard
+        pred = _parse_criteria(">m")
+        assert pred("z") is True
+        assert pred("a") is False
+        # Numbers don't satisfy a text comparison
+        assert pred(5) is False
+
+    def test_wildcard_escape(self) -> None:
+        from gridcalc.libs.xlsx import _parse_criteria
+
+        pred = _parse_criteria("a~*b")  # literal "a*b"
+        assert pred("a*b") is True
+        assert pred("axb") is False
+
+    def test_blank_criteria(self) -> None:
+        from gridcalc.libs.xlsx import COUNTIF
+
+        assert COUNTIF(Vec([1.0, None, "", 2.0]), "") == 2  # type: ignore[list-item]
+
+
+class TestLookupAuditFixes:
+    def test_index_2d_via_range(self) -> None:
+        """INDEX must use the row,col arguments correctly with a 2D range."""
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        # 3x3 block of values
+        for r in range(3):
+            for c in range(3):
+                g.setcell(c, r, str(r * 10 + c + 1))
+        # B2 = INDEX(A1:C3, 2, 3) -> row 2 col 3 -> value 13
+        g.setcell(4, 0, "=INDEX(A1:C3, 2, 3)")
+        assert g.cells[4][0].val == 13.0
+        # Whole row: INDEX(A1:C3, 1, 0) -> Vec of row 1
+        g.setcell(4, 1, "=SUM(INDEX(A1:C3, 1, 0))")
+        assert g.cells[4][1].val == 1 + 2 + 3
+        # Whole column: INDEX(A1:C3, 0, 2) -> Vec of col 2
+        g.setcell(4, 2, "=SUM(INDEX(A1:C3, 0, 2))")
+        assert g.cells[4][2].val == 2 + 12 + 22
+
+    def test_match_returns_na(self) -> None:
+        from gridcalc.libs.xlsx import MATCH
+
+        assert MATCH(99, Vec([10, 20, 30]), 0) is ExcelError.NA
+
+    def test_match_text_wildcard(self) -> None:
+        # Range materialization coerces text to 0, so this is verified at the
+        # function-call level rather than via a Grid range.
+        rng = Vec(["alpha", "beta", "gamma"])  # type: ignore[list-item]
+        assert MATCH("be*", rng, 0) == 2
+        assert MATCH("?amma", rng, 0) == 3
+        # Tilde escape: literal "*" in pattern.
+        assert MATCH("a~*", Vec(["a*", "ab"]), 0) == 1  # type: ignore[list-item]
+
+
+class TestAddress:
+    def test_address_styles(self) -> None:
+        from gridcalc.libs.xlsx import ADDRESS
+
+        assert ADDRESS(1, 1) == "$A$1"
+        assert ADDRESS(2, 3, 4) == "C2"
+        assert ADDRESS(2, 3, 2) == "C$2"
+        assert ADDRESS(2, 3, 3) == "$C2"
+        # R1C1
+        assert ADDRESS(2, 3, 1, False) == "R2C3"
+        assert ADDRESS(2, 3, 4, False) == "R[2]C[3]"
+        # With sheet
+        assert ADDRESS(1, 1, 1, True, "Sheet1") == "Sheet1!$A$1"
+
+    def test_address_multichar_column(self) -> None:
+        from gridcalc.libs.xlsx import ADDRESS
+
+        assert ADDRESS(1, 27, 4) == "AA1"
+        assert ADDRESS(1, 702, 4) == "ZZ1"
+
+
+class TestXLookupXMatch:
+    def test_xlookup_exact(self) -> None:
+        from gridcalc.libs.xlsx import XLOOKUP
+
+        keys = Vec([10.0, 20.0, 30.0])
+        vals = Vec([100.0, 200.0, 300.0])
+        assert XLOOKUP(20, keys, vals) == 200.0
+        # not found
+        assert XLOOKUP(99, keys, vals) is ExcelError.NA
+        # if_not_found fallback
+        assert XLOOKUP(99, keys, vals, "missing") == "missing"
+
+    def test_xlookup_next_smaller_larger(self) -> None:
+        from gridcalc.libs.xlsx import XLOOKUP
+
+        keys = Vec([10.0, 20.0, 30.0])
+        vals = Vec([100.0, 200.0, 300.0])
+        # next-smaller
+        assert XLOOKUP(25, keys, vals, None, -1) == 200.0
+        # next-larger
+        assert XLOOKUP(25, keys, vals, None, 1) == 300.0
+
+    def test_xlookup_reverse_search(self) -> None:
+        from gridcalc.libs.xlsx import XLOOKUP
+
+        keys = Vec([1.0, 2.0, 1.0])
+        vals = Vec([10.0, 20.0, 30.0])
+        # Last-to-first finds the trailing 1 first.
+        assert XLOOKUP(1, keys, vals, None, 0, -1) == 30.0
+        assert XLOOKUP(1, keys, vals) == 10.0
+
+    def test_xlookup_wildcard(self) -> None:
+        from gridcalc.libs.xlsx import XLOOKUP
+
+        keys = Vec(["alpha", "beta", "gamma"])  # type: ignore[list-item]
+        vals = Vec([1.0, 2.0, 3.0])
+        assert XLOOKUP("be*", keys, vals, None, 2) == 2.0
+
+    def test_xmatch(self) -> None:
+        from gridcalc.libs.xlsx import XMATCH
+
+        keys = Vec([10.0, 20.0, 30.0])
+        assert XMATCH(20, keys) == 2
+        assert XMATCH(99, keys) is ExcelError.NA
+        assert XMATCH(25, keys, -1) == 2
+        assert XMATCH(25, keys, 1) == 3
+
+
+class TestArrayFunctions:
+    def test_filter(self) -> None:
+        from gridcalc.libs.xlsx import FILTER
+
+        rng = Vec([10.0, 20.0, 30.0, 40.0])
+        include = Vec([1.0, 0.0, 1.0, 0.0])
+        out = FILTER(rng, include)
+        assert isinstance(out, Vec)
+        assert out.data == [10.0, 30.0]
+        # Empty -> if_empty fallback
+        assert FILTER(rng, Vec([0.0, 0.0, 0.0, 0.0]), "none") == "none"
+        assert FILTER(rng, Vec([0.0, 0.0, 0.0, 0.0])) is ExcelError.NA
+
+    def test_sort(self) -> None:
+        from gridcalc.libs.xlsx import SORT
+
+        v = Vec([3.0, 1.0, 2.0])
+        assert SORT(v).data == [1.0, 2.0, 3.0]
+        assert SORT(v, 1, -1).data == [3.0, 2.0, 1.0]
+
+    def test_unique(self) -> None:
+        from gridcalc.libs.xlsx import UNIQUE
+
+        v = Vec([1.0, 2.0, 2.0, 3.0, 1.0, 4.0])
+        assert UNIQUE(v).data == [1.0, 2.0, 3.0, 4.0]
+        # exactly_once
+        assert UNIQUE(v, False, True).data == [3.0, 4.0]
+
+    def test_sequence(self) -> None:
+        from gridcalc.libs.xlsx import SEQUENCE
+
+        s = SEQUENCE(3)
+        assert s.data == [1.0, 2.0, 3.0]
+        s2 = SEQUENCE(2, 3, 10, 5)
+        assert s2.data == [10.0, 15.0, 20.0, 25.0, 30.0, 35.0]
+        assert s2.cols == 3
+
+    def test_sequence_into_index(self) -> None:
+        """SEQUENCE preserves cols so INDEX can address it as 2D."""
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        # 2x3 sequence: 1 2 3 / 4 5 6, INDEX row 2 col 3 -> 6
+        g.setcell(0, 0, "=INDEX(SEQUENCE(2, 3), 2, 3)")
+        assert g.cells[0][0].val == 6.0
+
+    def test_randarray_volatile(self) -> None:
+        from gridcalc.libs.xlsx import RANDARRAY
+
+        v = RANDARRAY(2, 3, 0, 1, False)
+        assert isinstance(v, Vec)
+        assert len(v.data) == 6
+        assert v.cols == 3
+        assert all(0.0 <= x <= 1.0 for x in v.data)
+        # Volatility wired through deps
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, "=SUM(RANDARRAY(3))")
+        assert (0, 0) in g._volatile
+
+    def test_filter_in_pipeline(self) -> None:
+        """FILTER result feeds SUM, exercising Vec consumption."""
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        for i, v in enumerate([10.0, 20.0, 30.0, 40.0]):
+            g.setcell(0, i, str(v))
+        for i, v in enumerate([1.0, 0.0, 1.0, 0.0]):
+            g.setcell(1, i, str(v))
+        g.setcell(2, 0, "=SUM(FILTER(A1:A4, B1:B4))")
+        assert g.cells[2][0].val == 40.0

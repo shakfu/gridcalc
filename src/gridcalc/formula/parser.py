@@ -180,10 +180,23 @@ class _Parser:
             fname_tok = self._expect(IDENT)
             args = self._call_args()
             return PyCall(fname_tok.value, tuple(args))
+        # Dotted function names: STDEV.S, PERCENTILE.INC, etc.
+        # Only consume the dot if followed by IDENT and the dotted name
+        # is followed by LPAREN, so plain Names with trailing dots (none
+        # in our grammar) are unaffected.
+        name = t.value
+        while (
+            self._peek().kind == DOT
+            and self.i + 1 < len(self.tokens)
+            and self.tokens[self.i + 1].kind == IDENT
+        ):
+            self._advance()  # DOT
+            part = self._advance()  # IDENT
+            name = f"{name}.{part.value}"
         if self._peek().kind == LPAREN:
             args = self._call_args()
-            return Call(t.value.lower(), tuple(args))
-        return Name(t.value)
+            return Call(name.lower(), tuple(args))
+        return Name(name)
 
     def _call_args(self) -> list[Node]:
         self._expect(LPAREN)

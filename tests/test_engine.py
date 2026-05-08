@@ -14,6 +14,7 @@ from gridcalc.engine import (
     Grid,
     Mode,
     NamedRange,
+    Vec,
     _is_dataframe,
     col_name,
     ref,
@@ -2087,3 +2088,181 @@ class TestMode:
         assert Mode.parse("nonsense") is None
         assert Mode.parse(True) is None
         assert Mode.parse(99) is None
+
+
+class TestVecShapeAPI:
+    """Phase 1 of 2D-aware Vec: read-only shape accessors. No behavior
+    change for existing 1D consumers."""
+
+    def test_1d_shape(self):
+        v = Vec([1.0, 2.0, 3.0])
+        assert v.cols is None
+        assert v.is_2d is False
+        assert v.rows == 3
+        assert v.shape == (3, 1)
+
+    def test_2d_shape(self):
+        # 2 rows, 3 cols, row-major.
+        v = Vec([1, 2, 3, 4, 5, 6], cols=3)
+        assert v.is_2d is True
+        assert v.rows == 2
+        assert v.shape == (2, 3)
+
+    def test_at_2d(self):
+        v = Vec([1, 2, 3, 4, 5, 6], cols=3)
+        assert v.at(1, 1) == 1
+        assert v.at(1, 3) == 3
+        assert v.at(2, 1) == 4
+        assert v.at(2, 3) == 6
+
+    def test_at_1d(self):
+        v = Vec([10, 20, 30])
+        # 1D treats c=1 as the only valid column; r walks the data.
+        assert v.at(1, 1) == 10
+        assert v.at(3, 1) == 30
+
+    def test_at_out_of_range(self):
+        v = Vec([1, 2, 3, 4], cols=2)
+        with pytest.raises(IndexError):
+            v.at(0, 1)
+        with pytest.raises(IndexError):
+            v.at(3, 1)
+        with pytest.raises(IndexError):
+            v.at(1, 3)
+
+    def test_row_extraction(self):
+        v = Vec([1, 2, 3, 4, 5, 6], cols=3)
+        r = v.row(2)
+        assert isinstance(r, Vec)
+        assert r.data == [4, 5, 6]
+        assert r.is_2d is False  # extracted row is 1D
+
+    def test_col_extraction(self):
+        v = Vec([1, 2, 3, 4, 5, 6], cols=3)
+        c = v.col(2)
+        assert isinstance(c, Vec)
+        assert c.data == [2, 5]
+
+    def test_row_col_1d(self):
+        # A 1D Vec is shape (n, 1) -- a column vector.
+        v = Vec([10, 20, 30])
+        assert v.row(1).data == [10]
+        assert v.row(3).data == [30]
+        # Only column 1 exists; it returns the whole data.
+        assert v.col(1).data == [10, 20, 30]
+        with pytest.raises(IndexError):
+            v.row(4)
+        with pytest.raises(IndexError):
+            v.col(2)
+
+    def test_iter_rows_2d(self):
+        v = Vec([1, 2, 3, 4, 5, 6], cols=3)
+        rows = list(v.iter_rows())
+        assert rows == [[1, 2, 3], [4, 5, 6]]
+
+    def test_iter_rows_1d(self):
+        v = Vec([10, 20, 30])
+        rows = list(v.iter_rows())
+        # 1D Vec is shape (n, 1) -- one element per row.
+        assert rows == [[10], [20], [30]]
+
+    def test_repr_shape(self):
+        v1 = Vec([1, 2, 3])
+        assert repr(v1) == "Vec([1, 2, 3])"
+        v2 = Vec([1, 2, 3, 4], cols=2)
+        assert "[2x2]" in repr(v2)
+
+    def test_iter_unchanged(self):
+        """1D iteration semantics must not regress -- SUM/AVG depend on it."""
+        v = Vec([1, 2, 3, 4], cols=2)
+        # __iter__ yields flat values, not rows.
+        assert list(v) == [1, 2, 3, 4]
+        # __len__ is flat length.
+        assert len(v) == 4
+        # __getitem__ is flat indexing.
+        assert v[0] == 1
+        assert v[3] == 4
+
+
+class TestVecShapePreservation:
+    """Phase 2: arithmetic forwards `cols` through Vec ops; shape is
+    preserved through cell persistence; mismatched 2D shapes ->
+    per-element #VALUE!."""
+
+    def test_scalar_arithmetic_preserves_shape(self):
+        v = Vec([1.0, 2.0, 3.0, 4.0], cols=2)
+        r = v + 1
+        assert r.cols == 2
+        assert r.shape == (2, 2)
+        assert r.data == [2.0, 3.0, 4.0, 5.0]
+
+    def test_vec_vec_same_shape_preserves(self):
+        a = Vec([1.0, 2.0, 3.0, 4.0], cols=2)
+        b = Vec([10.0, 20.0, 30.0, 40.0], cols=2)
+        r = a + b
+        assert r.cols == 2
+        assert r.data == [11.0, 22.0, 33.0, 44.0]
+
+    def test_vec_vec_mismatched_2d_yields_value_error(self):
+        from gridcalc.formula.errors import ExcelError
+
+        a = Vec([1.0, 2.0, 3.0, 4.0], cols=2)  # 2x2
+        b = Vec([1.0, 2.0, 3.0, 4.0], cols=4)  # 1x4
+        r = a + b
+        # All elements should be #VALUE!.
+        assert all(v is ExcelError.VALUE for v in r.data)
+
+    def test_one_2d_one_1d_preserves_2d_shape(self):
+        a = Vec([1.0, 2.0, 3.0, 4.0], cols=2)
+        b = Vec([10.0, 20.0, 30.0, 40.0])  # 1D
+        r = a + b
+        # 2D side wins the shape.
+        assert r.cols == 2
+
+    def test_unary_preserves_shape(self):
+        v = Vec([1.0, 2.0, 3.0, 4.0], cols=2)
+        assert (-v).cols == 2
+        assert abs(v).cols == 2
+
+    def test_2d_vec_round_trips_through_cell(self):
+        """=A1:B2+1 should produce a 2D result that INDEX can re-pick."""
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, "1")
+        g.setcell(1, 0, "2")
+        g.setcell(0, 1, "3")
+        g.setcell(1, 1, "4")
+        # D1 = INDEX(A1:B2 + 1, 2, 2) — should pick the bottom-right of
+        # the 2x2 result, i.e. 4 + 1 = 5.
+        g.setcell(3, 0, "=INDEX(A1:B2 + 1, 2, 2)")
+        assert g.cells[3][0].val == 5.0
+
+    def test_arr_cols_persisted_on_cell(self):
+        """A 2D Vec result must store both arr and arr_cols on the cell."""
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, "1")
+        g.setcell(1, 0, "2")
+        g.setcell(0, 1, "3")
+        g.setcell(1, 1, "4")
+        g.setcell(3, 0, "=A1:B2 + 10")
+        cl = g.cells[3][0]
+        assert cl.arr == [11.0, 12.0, 13.0, 14.0]
+        assert cl.arr_cols == 2
+
+    def test_setcell_clears_arr_cols(self):
+        """Re-setting a cell to a scalar must clear stale arr_cols."""
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, "1")
+        g.setcell(1, 0, "2")
+        g.setcell(0, 1, "3")
+        g.setcell(1, 1, "4")
+        g.setcell(3, 0, "=A1:B2 + 10")
+        assert g.cells[3][0].arr_cols == 2
+        g.setcell(3, 0, "42")
+        assert g.cells[3][0].arr is None
+        assert g.cells[3][0].arr_cols is None

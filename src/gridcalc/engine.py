@@ -116,6 +116,8 @@ class Vec:
         self.cols: int | None = cols
 
     def __repr__(self) -> str:
+        if self.is_2d:
+            return f"Vec[{self.rows}x{self.cols}]({self.data!r})"
         return "Vec(" + repr(self.data) + ")"
 
     def __len__(self) -> int:
@@ -127,15 +129,98 @@ class Vec:
     def __getitem__(self, i: int) -> Any:
         return self.data[i]
 
+    # -- Shape API (Phase 1: read-only views, no behaviour change) --
+
+    @property
+    def is_2d(self) -> bool:
+        return self.cols is not None and self.cols > 0
+
+    @property
+    def rows(self) -> int:
+        """Row count. For 1D Vecs this is the flat length."""
+        if not self.is_2d:
+            return len(self.data)
+        assert self.cols is not None  # noqa: S101 -- type-narrowing after is_2d guard
+        return len(self.data) // self.cols
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        """``(rows, cols)``. 1D Vecs report ``(len, 1)``."""
+        if not self.is_2d:
+            return (len(self.data), 1)
+        assert self.cols is not None  # noqa: S101 -- type-narrowing after is_2d guard
+        return (len(self.data) // self.cols, self.cols)
+
+    def at(self, r: int, c: int) -> Any:
+        """1-based 2D access. Treats a 1D Vec as a column vector (n×1)
+        so ``at(i, 1)`` walks the flat data."""
+        rows, cols = self.shape
+        if not 1 <= r <= rows or not 1 <= c <= cols:
+            raise IndexError(f"Vec.at({r},{c}) out of range for shape {self.shape}")
+        if not self.is_2d:
+            return self.data[r - 1]
+        assert self.cols is not None  # noqa: S101 -- type-narrowing after is_2d guard
+        return self.data[(r - 1) * self.cols + (c - 1)]
+
+    def row(self, i: int) -> Vec:
+        """1-based row extraction. Returns a 1D Vec.
+
+        A 1D Vec is treated as a column vector (n×1), so ``row(i)``
+        returns a 1-element Vec for valid ``i``.
+        """
+        rows, _ = self.shape
+        if not 1 <= i <= rows:
+            raise IndexError(f"Vec.row({i}) out of range for shape {self.shape}")
+        if not self.is_2d:
+            return Vec([self.data[i - 1]])
+        assert self.cols is not None  # noqa: S101 -- type-narrowing after is_2d guard
+        start = (i - 1) * self.cols
+        return Vec(self.data[start : start + self.cols])
+
+    def col(self, j: int) -> Vec:
+        """1-based column extraction. Returns a 1D Vec.
+
+        A 1D Vec is treated as a column vector (n×1), so ``col(1)``
+        returns the whole vec; other indices raise.
+        """
+        _, cols = self.shape
+        if not 1 <= j <= cols:
+            raise IndexError(f"Vec.col({j}) out of range for shape {self.shape}")
+        if not self.is_2d:
+            return Vec(list(self.data))
+        assert self.cols is not None  # noqa: S101 -- type-narrowing after is_2d guard
+        return Vec([self.data[i * self.cols + (j - 1)] for i in range(self.rows)])
+
+    def iter_rows(self) -> Iterator[list[Any]]:
+        """Iterate rows as plain ``list``s. A 1D Vec is treated as
+        column-shaped (n×1), so each element yields its own 1-element row."""
+        if not self.is_2d:
+            for v in self.data:
+                yield [v]
+            return
+        assert self.cols is not None  # noqa: S101 -- type-narrowing after is_2d guard
+        for i in range(self.rows):
+            yield list(self.data[i * self.cols : (i + 1) * self.cols])
+
     def _binop(self, other: Vec | float, op: Callable[[float, float], Any]) -> Vec:
         if isinstance(other, Vec):
+            # Two 2D Vecs: shapes must match exactly; mismatch -> #VALUE!
+            # per element. Otherwise pair element-wise; the result inherits
+            # whichever side carries shape (or self.cols if both do).
+            if self.is_2d and other.is_2d and self.shape != other.shape:
+                from .formula.errors import ExcelError
+
+                n = max(len(self.data), len(other.data))
+                return Vec([ExcelError.VALUE] * n)
+            out_cols = self.cols if self.is_2d else other.cols
             return Vec(
-                [_vec_elem_op(a, b, op) for a, b in zip(self.data, other.data, strict=False)]
+                [_vec_elem_op(a, b, op) for a, b in zip(self.data, other.data, strict=False)],
+                cols=out_cols,
             )
-        return Vec([_vec_elem_op(a, other, op) for a in self.data])
+        return Vec([_vec_elem_op(a, other, op) for a in self.data], cols=self.cols)
 
     def _rbinop(self, other: float, op: Callable[[float, float], Any]) -> Vec:
-        return Vec([_vec_elem_op(other, a, op) for a in self.data])
+        return Vec([_vec_elem_op(other, a, op) for a in self.data], cols=self.cols)
 
     def __add__(self, o: Vec | float) -> Vec:
         return self._binop(o, lambda a, b: a + b)
@@ -168,10 +253,10 @@ class Vec:
         return self._rbinop(o, lambda a, b: a**b)
 
     def __neg__(self) -> Vec:
-        return Vec([_unary_or_error(a, lambda v: -v) for a in self.data])
+        return Vec([_unary_or_error(a, lambda v: -v) for a in self.data], cols=self.cols)
 
     def __abs__(self) -> Vec:
-        return Vec([_unary_or_error(a, abs) for a in self.data])
+        return Vec([_unary_or_error(a, abs) for a in self.data], cols=self.cols)
 
 
 def _numeric_only(data: Iterable[Any]) -> list[float]:
@@ -339,6 +424,7 @@ class Cell:
         "val",
         "sval",
         "arr",
+        "arr_cols",
         "matrix",
         "text",
         "fmt",
@@ -355,6 +441,9 @@ class Cell:
         self.val: float = 0.0
         self.sval: str | None = None
         self.arr: list[float] | None = None
+        # When arr holds a 2D Vec result, arr_cols is the column count.
+        # None means 1D (or no array).
+        self.arr_cols: int | None = None
         self.matrix: Any = None
         self.text: str = ""
         self.fmt: str = ""
@@ -370,6 +459,7 @@ class Cell:
         self.val = 0.0
         self.sval = None
         self.arr = None
+        self.arr_cols = None
         self.matrix = None
         self.text = ""
         self.fmt = ""
@@ -385,6 +475,7 @@ class Cell:
         self.val = src.val
         self.sval = src.sval
         self.arr = list(src.arr) if src.arr is not None else None
+        self.arr_cols = src.arr_cols
         self.matrix = src.matrix.copy() if src.matrix is not None else None
         self.text = src.text
         self.fmt = src.fmt
@@ -788,6 +879,7 @@ class Grid:
 
         cl = self._ensure_cell(c, r)
         cl.arr = None
+        cl.arr_cols = None
         cl.matrix = None
         cl.sval = None
         cl.text = text
@@ -861,7 +953,7 @@ class Grid:
                 if cl.matrix is not None:
                     g[name] = cl.matrix
                 elif cl.arr is not None and len(cl.arr) > 0:
-                    g[name] = Vec(cl.arr)
+                    g[name] = Vec(cl.arr, cols=cl.arr_cols)
                 else:
                     g[name] = cl.val
 
@@ -892,6 +984,7 @@ class Grid:
                 valid, _ = validate_formula(evalbuf)
                 if not valid:
                     cl.arr = None
+                    cl.arr_cols = None
                     cl.matrix = None
                     cl.val = float("nan")
                 else:
@@ -900,6 +993,7 @@ class Grid:
                         if _is_dataframe(result):
                             cl.matrix = result
                             cl.arr = None
+                            cl.arr_cols = None
                             try:
                                 cl.val = float(result.iloc[0, 0])
                             except (TypeError, ValueError, IndexError):
@@ -907,6 +1001,7 @@ class Grid:
                         elif _is_series(result):
                             cl.matrix = result.to_frame()
                             cl.arr = None
+                            cl.arr_cols = None
                             try:
                                 cl.val = float(result.iloc[0])
                             except (TypeError, ValueError, IndexError):
@@ -915,10 +1010,12 @@ class Grid:
                             if result.ndim == 0:
                                 cl.matrix = None
                                 cl.arr = None
+                                cl.arr_cols = None
                                 cl.val = float(result)
                             else:
                                 cl.matrix = result
                                 cl.arr = None
+                                cl.arr_cols = None
                                 try:
                                     cl.val = float(result.flat[0])
                                 except (TypeError, ValueError):
@@ -926,13 +1023,16 @@ class Grid:
                         elif isinstance(result, Vec):
                             cl.matrix = None
                             cl.arr = list(result.data)
+                            cl.arr_cols = result.cols
                             cl.val = result.data[0] if result.data else float("nan")
                         else:
                             cl.matrix = None
                             cl.arr = None
+                            cl.arr_cols = None
                             cl.val = float(result)
                     except Exception:
                         cl.arr = None
+                        cl.arr_cols = None
                         cl.matrix = None
                         cl.val = float("nan")
                 both_nan = (
@@ -988,6 +1088,7 @@ class Grid:
                 circ = self._cells.get(pos)
                 if circ:
                     circ.arr = None
+                    circ.arr_cols = None
                     circ.matrix = None
                     circ.val = float("nan")
 
@@ -1036,7 +1137,7 @@ class Grid:
         if cl.matrix is not None:
             return cl.matrix
         if cl.arr is not None and cl.arr:
-            return Vec(cl.arr)
+            return Vec(cl.arr, cols=cl.arr_cols)
         return cl.val
 
     def _store_formula_result(self, cl: Cell, result: Any) -> None:
@@ -1045,24 +1146,28 @@ class Grid:
         cl.sval = None
         if isinstance(result, ExcelError):
             cl.arr = None
+            cl.arr_cols = None
             cl.matrix = None
             cl.val = float("nan")
             return
         if isinstance(result, str):
             cl.matrix = None
             cl.arr = None
+            cl.arr_cols = None
             cl.sval = result
             cl.val = 0.0
             return
         if isinstance(result, bool):
             cl.matrix = None
             cl.arr = None
+            cl.arr_cols = None
             cl.sval = "TRUE" if result else "FALSE"
             cl.val = 1.0 if result else 0.0
             return
         if _is_dataframe(result):
             cl.matrix = result
             cl.arr = None
+            cl.arr_cols = None
             try:
                 cl.val = float(result.iloc[0, 0])
             except (TypeError, ValueError, IndexError):
@@ -1071,6 +1176,7 @@ class Grid:
         if _is_series(result):
             cl.matrix = result.to_frame()
             cl.arr = None
+            cl.arr_cols = None
             try:
                 cl.val = float(result.iloc[0])
             except (TypeError, ValueError, IndexError):
@@ -1080,6 +1186,7 @@ class Grid:
             if result.ndim == 0:
                 cl.matrix = None
                 cl.arr = None
+                cl.arr_cols = None
                 try:
                     cl.val = float(result)
                 except (TypeError, ValueError):
@@ -1087,6 +1194,7 @@ class Grid:
             else:
                 cl.matrix = result
                 cl.arr = None
+                cl.arr_cols = None
                 try:
                     cl.val = float(result.flat[0])
                 except (TypeError, ValueError):
@@ -1095,10 +1203,12 @@ class Grid:
         if isinstance(result, Vec):
             cl.matrix = None
             cl.arr = list(result.data)
+            cl.arr_cols = result.cols
             cl.val = result.data[0] if result.data else float("nan")
             return
         cl.matrix = None
         cl.arr = None
+        cl.arr_cols = None
         try:
             cl.val = float(result)
         except (TypeError, ValueError):
@@ -1188,6 +1298,7 @@ class Grid:
                 circ = self._cells.get(pos)
                 if circ:
                     circ.arr = None
+                    circ.arr_cols = None
                     circ.matrix = None
                     circ.val = float("nan")
 

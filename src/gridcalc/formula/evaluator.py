@@ -140,10 +140,18 @@ def _vec_data(v: object) -> list[Any]:
     return list(v.data)  # type: ignore[attr-defined]
 
 
-def _make_vec(data: list[Any]) -> Any:
+def _make_vec(data: list[Any], cols: int | None = None) -> Any:
     from ..engine import Vec  # lazy import to break cycle
 
-    return Vec(data)
+    return Vec(data, cols=cols)
+
+
+def _vec_cols(v: object) -> int | None:
+    return getattr(v, "cols", None)
+
+
+def _vec_shape(v: object) -> tuple[int, int]:
+    return getattr(v, "shape", (len(_vec_data(v)), 1))
 
 
 def _vec_apply2(op: Callable[[Any, Any], Any], a: Any, b: Any) -> Any:
@@ -151,17 +159,22 @@ def _vec_apply2(op: Callable[[Any, Any], Any], a: Any, b: Any) -> Any:
         ad, bd = _vec_data(a), _vec_data(b)
         if len(ad) != len(bd):
             return ExcelError.VALUE
-        return _make_vec([op(x, y) for x, y in zip(ad, bd, strict=False)])
+        ca, cb = _vec_cols(a), _vec_cols(b)
+        # Two 2D shapes must match exactly; mismatch -> per-element #VALUE!.
+        if ca and cb and _vec_shape(a) != _vec_shape(b):
+            return _make_vec([ExcelError.VALUE] * len(ad), cols=ca)
+        out_cols = ca if ca else cb
+        return _make_vec([op(x, y) for x, y in zip(ad, bd, strict=False)], cols=out_cols)
     if _is_vec(a):
-        return _make_vec([op(x, b) for x in _vec_data(a)])
+        return _make_vec([op(x, b) for x in _vec_data(a)], cols=_vec_cols(a))
     if _is_vec(b):
-        return _make_vec([op(a, y) for y in _vec_data(b)])
+        return _make_vec([op(a, y) for y in _vec_data(b)], cols=_vec_cols(b))
     return op(a, b)
 
 
 def _vec_apply1(op: Callable[[Any], Any], a: Any) -> Any:
     if _is_vec(a):
-        return _make_vec([op(x) for x in _vec_data(a)])
+        return _make_vec([op(x) for x in _vec_data(a)], cols=_vec_cols(a))
     return op(a)
 
 

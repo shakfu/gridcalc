@@ -347,7 +347,14 @@ def _eval_range(node: RangeRef, env: Env) -> Any:
             v = env.get_cell(c, r)
             if isinstance(v, ExcelError):
                 return v
-            data.append(_to_number_or_zero(v))
+            if v is None:
+                data.append(0.0)
+            elif isinstance(v, bool):
+                data.append(v)
+            elif isinstance(v, (int, float)):
+                data.append(float(v))
+            else:
+                data.append(v)
     from ..engine import Vec  # lazy import to break cycle
 
     return Vec(data, cols=c2 - c1 + 1)

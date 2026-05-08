@@ -68,9 +68,48 @@ def _is_series(obj: object) -> bool:
     return mod.startswith("pandas") and name == "Series"
 
 
+def _is_num(v: Any) -> bool:
+    """True for real numerics; bools excluded (Excel ranges don't auto-coerce)."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _unary_or_error(a: Any, op: Callable[[float], float]) -> Any:
+    from .formula.errors import ExcelError
+
+    if isinstance(a, ExcelError):
+        return a
+    if not _is_num(a):
+        return ExcelError.VALUE
+    return op(float(a))
+
+
+def _vec_elem_op(a: Any, b: Any, op: Callable[[float, float], Any]) -> Any:
+    """Per-element binary op with Excel-style type guard.
+
+    ExcelError on either side propagates. Mixed numeric/non-numeric -> #VALUE!.
+    """
+    from .formula.errors import ExcelError
+
+    if isinstance(a, ExcelError):
+        return a
+    if isinstance(b, ExcelError):
+        return b
+    if not (_is_num(a) and _is_num(b)):
+        return ExcelError.VALUE
+    try:
+        r = op(float(a), float(b))
+    except ZeroDivisionError:
+        return ExcelError.DIV0
+    except (ValueError, OverflowError, ArithmeticError):
+        return ExcelError.NUM
+    if isinstance(r, complex):
+        return ExcelError.NUM
+    return r
+
+
 class Vec:
-    def __init__(self, data: Iterable[float], cols: int | None = None) -> None:
-        self.data: list[float] = list(data)
+    def __init__(self, data: Iterable[Any], cols: int | None = None) -> None:
+        self.data: list[Any] = list(data)
         # Number of columns when this Vec materialises a 2D range (row-major).
         # None means shape is unknown / treat as 1D. Set by _eval_range when
         # building from a RangeRef so INDEX(rng, row, col) can re-index.
@@ -82,19 +121,21 @@ class Vec:
     def __len__(self) -> int:
         return len(self.data)
 
-    def __iter__(self) -> Iterator[float]:
+    def __iter__(self) -> Iterator[Any]:
         return iter(self.data)
 
-    def __getitem__(self, i: int) -> float:
+    def __getitem__(self, i: int) -> Any:
         return self.data[i]
 
-    def _binop(self, other: Vec | float, op: Callable[[float, float], float]) -> Vec:
+    def _binop(self, other: Vec | float, op: Callable[[float, float], Any]) -> Vec:
         if isinstance(other, Vec):
-            return Vec([op(a, b) for a, b in zip(self.data, other.data, strict=False)])
-        return Vec([op(a, other) for a in self.data])
+            return Vec(
+                [_vec_elem_op(a, b, op) for a, b in zip(self.data, other.data, strict=False)]
+            )
+        return Vec([_vec_elem_op(a, other, op) for a in self.data])
 
-    def _rbinop(self, other: float, op: Callable[[float, float], float]) -> Vec:
-        return Vec([op(other, a) for a in self.data])
+    def _rbinop(self, other: float, op: Callable[[float, float], Any]) -> Vec:
+        return Vec([_vec_elem_op(other, a, op) for a in self.data])
 
     def __add__(self, o: Vec | float) -> Vec:
         return self._binop(o, lambda a, b: a + b)
@@ -127,76 +168,109 @@ class Vec:
         return self._rbinop(o, lambda a, b: a**b)
 
     def __neg__(self) -> Vec:
-        return Vec([-a for a in self.data])
+        return Vec([_unary_or_error(a, lambda v: -v) for a in self.data])
 
     def __abs__(self) -> Vec:
-        return Vec([abs(a) for a in self.data])
+        return Vec([_unary_or_error(a, abs) for a in self.data])
+
+
+def _numeric_only(data: Iterable[Any]) -> list[float]:
+    """Excel rule: SUM/AVG/MIN/MAX/COUNT skip text and bools-from-ranges."""
+    return [float(v) for v in data if _is_num(v)]
 
 
 def SUM(x: Any) -> float:
     if isinstance(x, Vec):
-        return sum(x.data)
+        return sum(_numeric_only(x.data))
     if _is_ndarray(x):
         return float(x.sum())
+    if not _is_num(x):
+        return 0.0
     return float(x)
 
 
 def AVG(x: Any) -> float:
     if isinstance(x, Vec):
-        return sum(x.data) / len(x.data) if x.data else 0.0
+        nums = _numeric_only(x.data)
+        return sum(nums) / len(nums) if nums else 0.0
     if _is_ndarray(x):
         return float(x.mean()) if x.size > 0 else 0.0
+    if not _is_num(x):
+        return 0.0
     return float(x)
 
 
 def MIN(x: Any) -> float:
     if isinstance(x, Vec):
-        return min(x.data)
+        nums = _numeric_only(x.data)
+        return min(nums) if nums else 0.0
     if _is_ndarray(x):
         return float(x.min())
+    if not _is_num(x):
+        return 0.0
     return float(x)
 
 
 def MAX(x: Any) -> float:
     if isinstance(x, Vec):
-        return max(x.data)
+        nums = _numeric_only(x.data)
+        return max(nums) if nums else 0.0
     if _is_ndarray(x):
         return float(x.max())
+    if not _is_num(x):
+        return 0.0
     return float(x)
 
 
 def COUNT(x: Any) -> int | float:
     if isinstance(x, Vec):
-        return len(x.data)
+        return len(_numeric_only(x.data))
     if _is_ndarray(x):
         return int(x.size)
-    return 1
+    return 1 if _is_num(x) else 0
+
+
+def _scalar_or_error(x: Any, op: Callable[[float], float]) -> Any:
+    from .formula.errors import ExcelError
+
+    if isinstance(x, ExcelError):
+        return x
+    if not _is_num(x):
+        return ExcelError.VALUE
+    try:
+        return op(float(x))
+    except (ValueError, OverflowError, ArithmeticError):
+        return ExcelError.NUM
+
+
+def _vec_per_elem(x: Vec, op: Callable[[float], float]) -> Vec:
+    return Vec([_scalar_or_error(v, op) for v in x.data])
 
 
 def ABS(x: Any) -> Any:
     if isinstance(x, Vec):
-        return Vec([abs(a) for a in x.data])
+        return _vec_per_elem(x, abs)
     if _is_ndarray(x):
         return abs(x)
-    return abs(x)
+    return _scalar_or_error(x, abs)
 
 
 def SQRT(x: Any) -> Any:
     if isinstance(x, Vec):
-        return Vec([math.sqrt(a) for a in x.data])
+        return _vec_per_elem(x, math.sqrt)
     if _is_ndarray(x):
         import numpy as _np  # noqa: I001
 
         return _np.sqrt(x)
-    return math.sqrt(x)
+    return _scalar_or_error(x, math.sqrt)
 
 
 def INT(x: Any) -> Any:
     if isinstance(x, Vec):
-        return Vec([int(a) for a in x.data])
+        return _vec_per_elem(x, lambda v: float(int(v)))
     if _is_ndarray(x):
         return x.astype(int)
-    return int(x)
+    return _scalar_or_error(x, lambda v: float(int(v)))
 
 
 def _make_eval_globals() -> dict[str, Any]:

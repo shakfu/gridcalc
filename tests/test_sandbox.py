@@ -457,6 +457,54 @@ class TestLoadModules:
         assert len(mods) == 0
         assert len(errors) == 3
 
+    def test_version_pin_stdlib_metadata_missing(self):
+        # stdlib modules have no distribution metadata; pinning a version
+        # on one is rejected with a 'metadata not found' error.
+        mods, errors = load_modules(["decimal>=0.0"])
+        assert "decimal" not in mods
+        assert len(errors) == 1
+        assert "metadata not found" in errors[0]
+
+    def test_version_pin_eq_known_dist(self):
+        # pytest is always installed in the test env; pin to its version.
+        import importlib.metadata as md
+
+        v = md.version("pytest")
+        mods, errors = load_modules([f"pytest=={v}"])
+        assert "pytest" in mods
+        assert errors == []
+
+    def test_version_pin_mismatch_known_dist(self):
+        mods, errors = load_modules(["pytest==0.0.1"])
+        assert "pytest" not in mods
+        assert len(errors) == 1
+        assert "does not satisfy" in errors[0]
+
+
+# -- _parse_requirement tests --
+
+
+class TestParseRequirement:
+    def test_bare_name(self):
+        from gridcalc.sandbox import _parse_requirement
+
+        assert _parse_requirement("numpy") == ("numpy", None, None)
+
+    def test_with_eq(self):
+        from gridcalc.sandbox import _parse_requirement
+
+        assert _parse_requirement("numpy==1.24.0") == ("numpy", "==", "1.24.0")
+
+    def test_with_ge(self):
+        from gridcalc.sandbox import _parse_requirement
+
+        assert _parse_requirement("pandas>=2.0") == ("pandas", ">=", "2.0")
+
+    def test_with_compat(self):
+        from gridcalc.sandbox import _parse_requirement
+
+        assert _parse_requirement("numpy~=1.24") == ("numpy", "~=", "1.24")
+
 
 # -- LoadPolicy tests --
 

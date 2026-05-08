@@ -1050,6 +1050,125 @@ class TestErrorConditions:
         assert g.cells[0][0].type == EMPTY
 
 
+class TestCodeBlockError:
+    def test_code_exec_runtime_failure_captured(self):
+        g = make_grid()
+        # 1/0 raises ZeroDivisionError at top level -- reaches the
+        # exec try/except even with the restricted builtins.
+        g.code = "x = 1 / 0"
+        g.recalc()
+        assert g.code_error is not None
+        assert "ZeroDivisionError" in g.code_error
+
+    def test_code_validation_failure_captured(self):
+        g = make_grid()
+        g.code = "import os"
+        g.recalc()
+        assert g.code_error is not None
+        assert "code rejected" in g.code_error
+
+    def test_code_success_clears_error(self):
+        g = make_grid()
+        g.code = "x = 1 / 0"
+        g.recalc()
+        assert g.code_error is not None
+        g.code = "x = 1"
+        g.recalc()
+        assert g.code_error is None
+
+    def test_no_code_clears_error(self):
+        g = make_grid()
+        g.code = "x = 1 / 0"
+        g.recalc()
+        assert g.code_error is not None
+        g.code = ""
+        g.recalc()
+        assert g.code_error is None
+
+
+class TestBuiltinsFrozen:
+    def test_builtins_is_mappingproxy(self):
+        import types
+
+        g = make_grid()
+        assert isinstance(g._eval_globals["__builtins__"], types.MappingProxyType)
+
+    def test_builtins_rejects_writes(self):
+        g = make_grid()
+        with pytest.raises(TypeError):
+            g._eval_globals["__builtins__"]["evil"] = lambda: None  # type: ignore[index]
+
+    def test_eval_still_resolves_through_proxy(self):
+        g = make_grid()
+        g.setcell(0, 0, "=abs(-5)")
+        assert g.cells[0][0].val == 5.0
+
+    def test_outer_globals_still_mutable_for_cell_injection(self):
+        g = make_grid()
+        g.setcell(0, 0, "10")
+        g.setcell(1, 0, "=A1*2")
+        assert g.cells[1][0].val == 20.0
+
+
+class TestCellError:
+    def test_eval_failure_sets_value_error(self):
+        from gridcalc.formula.errors import ExcelError
+
+        g = make_grid()
+        g.setcell(0, 0, "=undefined_var")
+        cl = g.cells[0][0]
+        assert cl.err is ExcelError.VALUE
+        assert cl.err_msg is not None
+        assert "NameError" in cl.err_msg
+
+    def test_validation_failure_sets_name_error(self):
+        from gridcalc.formula.errors import ExcelError
+
+        g = make_grid()
+        g.setcell(0, 0, "=__import__('os')")
+        cl = g.cells[0][0]
+        assert cl.err is ExcelError.NAME
+
+    def test_success_clears_error(self):
+        g = make_grid()
+        g.setcell(0, 0, "=undefined_var")
+        assert g.cells[0][0].err is not None
+        g.setcell(0, 0, "=1+2")
+        cl = g.cells[0][0]
+        assert cl.err is None
+        assert cl.err_msg is None
+        assert cl.val == 3.0
+
+    def test_error_survives_snapshot_roundtrip(self):
+        from gridcalc.formula.errors import ExcelError
+
+        g = make_grid()
+        g.setcell(0, 0, "=undefined_var")
+        snap = g.cells[0][0].snapshot()
+        assert snap.err is ExcelError.VALUE
+        assert snap.err_msg is not None
+
+
+class TestCircularError:
+    def test_self_reference_marked_circ(self):
+        from gridcalc.formula.errors import ExcelError
+
+        g = make_grid()
+        g.setcell(0, 0, "=A1+1")
+        cl = g.cells[0][0]
+        assert (0, 0) in g._circular
+        assert cl.err is ExcelError.CIRC
+
+    def test_mutual_reference_marked_circ(self):
+        from gridcalc.formula.errors import ExcelError
+
+        g = make_grid()
+        g.setcell(0, 0, "=B1+1")
+        g.setcell(1, 0, "=A1+1")
+        assert g.cells[0][0].err is ExcelError.CIRC
+        assert g.cells[1][0].err is ExcelError.CIRC
+
+
 class TestCellclearCellcopy:
     def test_clear_empty(self):
         a = Cell()

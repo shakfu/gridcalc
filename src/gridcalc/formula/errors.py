@@ -11,6 +11,7 @@ class ExcelError(Enum):
     VALUE = "#VALUE!"
     NUM = "#NUM!"
     NULL = "#NULL!"
+    CIRC = "#CIRC!"
 
     def __str__(self) -> str:
         return self.value

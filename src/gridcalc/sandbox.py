@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import ast
 import importlib
+import importlib.metadata
 import json
 import os
+import re
 from dataclasses import dataclass, field
 
 # Sandbox is on by default. Set GRIDCALC_SANDBOX=0 to disable.
@@ -98,21 +100,94 @@ def classify_module(name: str) -> str:
     return "unknown"
 
 
-def load_modules(names: list[str]) -> tuple[dict[str, object], list[str]]:
-    """Import modules by name. Returns (alias_to_module, error_messages)."""
+_SPEC_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_.]*)\s*(==|>=|<=|>|<|~=)?\s*(.*)$")
+
+
+def _parse_requirement(spec: str) -> tuple[str, str | None, str | None]:
+    """Parse a requirement spec into (name, op, version).
+
+    Accepts ``name``, ``name==1.2.3``, ``name>=1.0``, etc. Returns
+    (name, None, None) when no version is pinned.
+    """
+    m = _SPEC_RE.match(spec)
+    if not m:
+        return spec.strip(), None, None
+    name, op, ver = m.group(1), m.group(2), (m.group(3) or "").strip()
+    if not op or not ver:
+        return name, None, None
+    return name, op, ver
+
+
+def _version_tuple(v: str) -> tuple[int, ...]:
+    """Best-effort conversion of a version string to a tuple of ints.
+
+    Splits on ``.``; non-integer leading portions (e.g. ``2`` in ``2rc1``)
+    are kept, the rest of the segment is dropped. Truncated comparison
+    is good enough for the version-pinning use case here.
+    """
+    parts: list[int] = []
+    for seg in v.split("."):
+        m = re.match(r"\d+", seg)
+        if m:
+            parts.append(int(m.group()))
+        else:
+            break
+    return tuple(parts)
+
+
+def _check_version(installed: str, op: str, required: str) -> bool:
+    a = _version_tuple(installed)
+    b = _version_tuple(required)
+    if op == "==":
+        return a == b
+    if op == ">=":
+        return a >= b
+    if op == "<=":
+        return a <= b
+    if op == ">":
+        return a > b
+    if op == "<":
+        return a < b
+    if op == "~=":
+        if len(b) < 2:
+            return a >= b
+        upper = b[:-1]
+        upper = upper[:-1] + (upper[-1] + 1,)
+        return a >= b and a[: len(upper)] < upper
+    return True
+
+
+def load_modules(specs: list[str]) -> tuple[dict[str, object], list[str]]:
+    """Import modules by spec. Returns (alias_to_module, error_messages).
+
+    Each spec is either a bare module name (``numpy``) or a name with a
+    version specifier (``numpy>=1.24``, ``pandas==2.0.3``). Supported
+    operators: ``==``, ``>=``, ``<=``, ``>``, ``<``, ``~=``.
+    """
     result: dict[str, object] = {}
     errors: list[str] = []
-    for name in names:
+    for spec in specs:
+        name, op, ver = _parse_requirement(spec)
         cls = classify_module(name)
         if cls == "blocked":
             errors.append(f"'{name}' is blocked (security)")
             continue
         try:
             mod = importlib.import_module(name)
-            alias = MODULE_ALIASES.get(name, name.split(".")[-1])
-            result[alias] = mod
         except ImportError:
             errors.append(f"'{name}' is not installed")
+            continue
+        if op is not None and ver is not None:
+            try:
+                installed = importlib.metadata.version(name.split(".")[0])
+            except importlib.metadata.PackageNotFoundError:
+                errors.append(f"'{name}': installed but version metadata not found")
+                continue
+            if not _check_version(installed, op, ver):
+                errors.append(f"'{name}': installed {installed} does not satisfy {op}{ver}")
+                continue
+        alias = MODULE_ALIASES.get(name, name.split(".")[-1])
+        result[alias] = mod
     return result, errors
 
 
@@ -327,8 +402,12 @@ def inspect_file(filename: str) -> FileInfo | None:
     requires = d.get("requires", [])
     if isinstance(requires, list):
         info.requires = list(requires)
-        info.blocked_modules = [m for m in requires if classify_module(m) == "blocked"]
-        info.side_effect_modules = [m for m in requires if classify_module(m) == "side_effect"]
+        info.blocked_modules = [
+            m for m in requires if classify_module(_parse_requirement(m)[0]) == "blocked"
+        ]
+        info.side_effect_modules = [
+            m for m in requires if classify_module(_parse_requirement(m)[0]) == "side_effect"
+        ]
 
     rows = d.get("cells", [])
     for row in rows:

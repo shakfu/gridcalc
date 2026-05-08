@@ -62,6 +62,41 @@ class TestUndoManagerSaveCell:
         undo.undo(g)  # should not crash
         assert g.cells[0][0].val == 10.0
 
+    def test_undo_atomic_on_apply_failure(self, monkeypatch):
+        """If the restore mutation raises, grid and stacks roll back together."""
+        g = Grid()
+        g.setcell(0, 0, "10")
+        g.setcell(1, 0, "20")
+        undo = UndoManager()
+        undo.save_region(g, 0, 0, 1, 0)
+        g.setcell(0, 0, "100")
+        g.setcell(1, 0, "200")
+
+        # Force the second copy_from in the restore loop to raise.
+        from gridcalc.engine import Cell as _Cell
+
+        original = _Cell.copy_from
+        calls = {"n": 0}
+
+        def flaky(self, src):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated mid-restore failure")
+            original(self, src)
+
+        monkeypatch.setattr(_Cell, "copy_from", flaky)
+
+        with pytest.raises(RuntimeError):
+            undo.undo(g)
+
+        # Grid restored to the post-edit state (pre-undo).
+        assert g.cells[0][0].val == 100.0
+        assert g.cells[1][0].val == 200.0
+        # Undo entry remained on the stack so the user can retry.
+        assert len(undo.undo_stack) == 1
+        # Nothing pushed to redo despite the failed apply.
+        assert len(undo.redo_stack) == 0
+
     def test_redo_empty_stack_noop(self):
         g = Grid()
         g.setcell(0, 0, "10")

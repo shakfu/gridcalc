@@ -4,6 +4,85 @@
 
 ### Added
 
+- **Typed per-cell errors with `Cell.err` and `Cell.err_msg`.** New
+  `Cell.err: ExcelError | None` and `Cell.err_msg: str | None` slots
+  capture the Excel error code and a human-readable message for any
+  failed formula. `_store_formula_result` records `ExcelError` returns
+  from EXCEL/HYBRID; `_recalc_legacy` maps validation failures to
+  `#NAME?` (with the validator's reason in `err_msg`) and `eval`
+  exceptions to `#VALUE!` (with `TypeName: msg` in `err_msg`). An
+  `ExcelError` returned through LEGACY's `eval()` (e.g. from a
+  `VLOOKUP` returning `#N/A`) is now stored verbatim instead of being
+  flattened to NaN. Errors propagate through `Cell.copy_from` /
+  `snapshot()` so undo/redo preserves them. TUI rendering: `fmtcell`
+  shows the error code (e.g. `#VALUE!`) right-aligned in the cell,
+  and the status bar appends the `err_msg` when the cursor is on an
+  error cell. New `ExcelError.CIRC = "#CIRC!"` distinguishes structural
+  cycles from generic `#VALUE!`; all three cycle-flagging sites
+  (`_recalc_legacy`, EXCEL/HYBRID fixed-point, `_recalc_topo`
+  unresolved-closure path) now set `cl.err = ExcelError.CIRC`. 10 new
+  tests across `TestCodeBlockError`, `TestCellError`,
+  `TestCircularError`.
+
+- **Code-block exec failures surfaced via `Grid.code_error`.** New
+  `Grid.code_error: str | None` captures the exception type and
+  message when a user code block fails to load. Previously
+  `contextlib.suppress(Exception)` silently dropped exec failures in
+  both `_recalc_legacy` (engine.py:948) and `_build_py_registry`
+  (engine.py:1109, HYBRID's `py.*` gateway), leaving the user with NaN
+  cells and no diagnostic. Both sites now `try`/`except`, store the
+  message, and clear it on success / no-code. The TUI status bar
+  appends `[CODE ERR: <msg>]` whenever `g.code_error` is set, so the
+  failure is visible until the user fixes the block. `contextlib`
+  import dropped (no remaining uses).
+
+- **Persistent "SANDBOX OFF" banner in the status row.** When the
+  sandbox is disabled (`GRIDCALC_SANDBOX=0` or `sandbox = false` in
+  config), the top status row renders a red-on-default reverse-bold
+  `SANDBOX OFF` indicator right-aligned over the existing chrome. The
+  user has continuous on-screen evidence that loaded code is running
+  unrestricted; previously there was no indication after the trust
+  prompt closed.
+
+- **Trust-prompt code-block pager.** The `v` viewer in the trust
+  prompt previously truncated to `curses.LINES - 2` with no scrolling,
+  so any block longer than ~50 lines authorised invisible code at the
+  tail. New `_view_code_block` helper paginates with j/k (line),
+  space/b (page), g/G (top/bottom), q (back); footer shows
+  `lines N-M/total` and the keymap.
+
+- **Atomic two-phase undo/redo apply.** `UndoManager._apply` now
+  builds the rollback snapshot in phase 1 (read-only — no stack
+  mutation if it raises), then commits the restore in phase 2 inside
+  a try/except that rolls back from the snapshot on failure and
+  leaves the source entry on the stack so the user can retry. The
+  prior implementation pushed the reverse entry to `to_stack`
+  *before* the mutation loop, so a mid-restore failure could drift
+  both stack and grid. New `test_undo_atomic_on_apply_failure`
+  injects a failing `Cell.copy_from` and verifies stacks/grid stay
+  consistent.
+
+- **Config loader diagnostics.** `Config.warnings: list[str]`
+  collects: TOML parse errors (previously swallowed), unknown
+  top-level keys (typo guard), out-of-range numeric values, and
+  wrong-type entries. New `emit_warnings(cfg)` prints each as
+  `gridcalc: config warning: <msg>` to stderr; called once from
+  `tui.main` after `load_config`. 5 new tests covering parse-error
+  capture, unknown-key warnings, width out-of-range, format
+  validation, and the no-warning happy path.
+
+- **`requires` field accepts version specifiers.** `load_modules`
+  now parses each spec as `name`, `name==1.2.3`, `name>=1.0`,
+  `name<=`, `name>`, `name<`, or `name~=`. Version is checked against
+  `importlib.metadata.version(name)`; mismatches surface as
+  `'name': installed X does not satisfy >=Y` errors. Bare names keep
+  prior behavior. Stdlib modules with no distribution metadata report
+  `metadata not found` when pinned. New `_parse_requirement`,
+  `_version_tuple`, `_check_version` helpers in `sandbox.py`; sites
+  that classified raw `requires` strings (`FileInfo` blocked /
+  side-effect lists) now strip the spec first. 8 new tests across
+  `TestLoadModules` and `TestParseRequirement`.
+
 - **CLI accepts `.xlsx` files directly.** `gridcalc model.xlsx`
   dispatches to `Grid.xlsxload` (the OpenXLSX-backed C++ path)
   instead of `jsonload`. Detection is by extension match. Sandbox
@@ -275,6 +354,24 @@
   mypy resolves `_core.xlsx_read` / `_core.xlsx_write`.
 
 ### Changed
+
+- **`__builtins__` in the LEGACY eval namespace is now read-only.**
+  `_make_eval_globals` wraps the inner allowlisted-builtins dict with
+  `types.MappingProxyType` so a sandbox escape that obtains a
+  reference to `__builtins__` cannot inject `eval`/`__import__`/etc.
+  to poison subsequent formulas in the same recalc. The outer
+  `_eval_globals` stays mutable (lib loading, per-iteration cell-value
+  injection), and the HYBRID `_build_py_registry` shallow copy still
+  works because the proxy points at the same underlying dict, which
+  exec cannot mutate via the proxy. 4 new tests in
+  `TestBuiltinsFrozen` (proxy type, write rejection, name resolution
+  through the proxy, outer-globals mutability).
+
+- **`refabs` returns a named `RefMatch` tuple.** Promoted the
+  unnamed 5-tuple `(chars_consumed, col, row, abs_col, abs_row)` to a
+  `NamedTuple` so call sites self-document. Existing tuple-unpacking
+  call sites (`n, rc, rr, ac, ar = result`) continue to work
+  unchanged.
 
 - **Zero third-party runtime dependencies for the core install.**
   `numpy`, `pandas`, and `pygments` moved out of

@@ -3,40 +3,6 @@
 Open tasks, ordered by priority within each section. Resolved items live in
 CHANGELOG.md.
 
-## Robustness & safety
-
-- [ ] **LEGACY recalc swallows code-block exceptions.** The
-  `contextlib.suppress(Exception)` in `_recalc_legacy` hides every
-  failure from custom functions. EXCEL/HYBRID already produce typed
-  `ExcelError` values; bring the legacy path in line by adding a
-  per-cell error field that the TUI can render uniformly.
-- [ ] **`chr`/`ord` reachable from LEGACY formulas.** Affects LEGACY
-  mode only (EXCEL/HYBRID don't use `eval()`). Drop them from the
-  restricted globals, or reject `getattr` with a non-literal second
-  argument so that runtime-constructed dunder names can't slip past
-  the AST blocklist.
-- [ ] **Mutable shared `__builtins__` in LEGACY recalc.** `_eval_globals`
-  is reused across all formula evaluations within a recalc, so a single
-  successful escape that mutates `g['__builtins__']` poisons every
-  subsequent formula. Wrap with `types.MappingProxyType` or build a
-  fresh globals dict per cell.
-- [ ] **No persistent banner when sandbox is disabled.** A user with
-  `sandbox = false` in config gets no on-screen reminder that loaded
-  code is running unrestricted. Render a banner in the status row.
-- [ ] **Trust prompt shows truncated code preview.** The user authorises
-  based on `info.code_preview` but the full block is what executes.
-  Either page through the full block or refuse to run blocks longer
-  than the preview.
-- [ ] **Undo/redo apply is non-atomic.** `_apply` mutates the grid
-  before the reverse-entry capture completes, so a partial failure
-  mid-restore can drift the stack and the grid out of sync. Wrap in
-  try/except and reject the operation atomically rather than partially
-  restoring.
-- [ ] **Config loader silently accepts garbage.** `tomllib.TOMLDecodeError`
-  is swallowed, unknown keys are ignored, and out-of-range numeric
-  values pass through. Validate width and other numeric bounds; warn
-  on unknown keys; surface TOML parse errors to stderr.
-
 ## Performance
 
 - [ ] **Range subscriber explosion (Phase E from `docs/topological.md`).**
@@ -44,18 +10,11 @@ CHANGELOG.md.
   an interval representation (per-column interval tree, or aggregation
   nodes that fan out at change time). Defer until profiling shows
   large-range workloads as a hot spot.
-- [ ] **Use `#REF!` (or a dedicated `#CIRC!`) for cycle cells**
-  instead of NaN. Cosmetic but matches Excel semantics; would require
-  surfacing an error type into `Cell.val` or a parallel error field.
 - [ ] **Delete the legacy fixed-point recalc path** (`Grid._recalc_formula`).
   Topo recalc is the default; the fixed-point loop is retained one
   release as a fallback gated by `_use_topo_recalc = False` /
   `GRIDCALC_TOPO=0`. After a soak period, drop the fallback, the env
   hook in `tests/conftest.py`, and the `_use_topo_recalc` flag.
-- [ ] **Memoize named-range Vecs within a recalc.** `Env` is built once
-  per recalc but `_eval_name` re-fetches all cells of a range on every
-  formula evaluation that mentions the name. Cache the materialised
-  Vec keyed on the named range's text.
 - [ ] **Targeted C++ acceleration for measured hot spots.** A full
   C++ evaluator port (lexer + parser + tree walker + cell store +
   dep graph) is not justified by current benchmarks: topological
@@ -78,66 +37,33 @@ CHANGELOG.md.
   input loops in `cmdline()`, `nav()`, `selectrange()`, `_resolve_fmt()`,
   and `replcmd()` should collapse into a single
   `read_line(prompt, validator)` helper.
-- [ ] **`refabs` returns an unnamed 5-tuple.** Promote to a `NamedTuple`
-  or small dataclass so call sites self-document.
 - [ ] **`Cell.ast` cache invalidates by text equality.** For very large
   sheets where many formulas share text, hashing the text would cut
   cache lookups; not a priority but worth measuring.
 - [ ] **Audit `libs/xlsx.py` against the Excel spec.** Especially
   `VLOOKUP`/`HLOOKUP` approximate-match, `MATCH` with non-default
   `match_type`, and `SUMIF`/`COUNTIF` criteria edge cases.
-- [ ] **`ADDRESS`** -- mostly mechanical: build an A1-style string from
-  `(row, col, [abs_num], [r1c1_style], [sheet])`. No evaluator change
-  needed. Defer until someone needs it.
-- [ ] **Tier 3 function round-out (~50 functions, mechanical).**
-  Mostly-mechanical fill-ins that complete common categories without
-  architectural change. Group as a single PR when prioritized:
-    - **Aggregates**: `COUNTA`, `COUNTBLANK`, `PRODUCT`, `AVERAGEA`,
-      `MAXA`, `MINA`.
-    - **Stats (modern names)**: `STDEV.S`, `STDEV.P`, `VAR.S`, `VAR.P`,
-      `MODE.SNGL`, `MODE.MULT`, `COVARIANCE.P`, `COVARIANCE.S`,
-      `PERCENTILE.INC`, `PERCENTILE.EXC`, `QUARTILE.INC`,
-      `QUARTILE.EXC`, `RANK.EQ`, `RANK.AVG`. (Aliases for existing
-      implementations; needs name-with-dot support in the parser/lexer
-      -- check if `.` is already accepted in function names.)
-    - **Stats (additional)**: `AVEDEV`, `DEVSQ`, `SLOPE`, `INTERCEPT`,
-      `RSQ`, `STEYX`, `SKEW`, `KURT`, `PERCENTRANK`.
-    - **Date**: `DAYS`, `DAYS360`, `WEEKNUM`, `ISOWEEKNUM`, `YEARFRAC`.
-    - **Information**: `ERROR.TYPE`, `TYPE`, `ISFORMULA`, `ISREF`,
-      `ISNONTEXT` (`CELL` deferred -- needs format/style metadata
-      surface).
-    - **Text**: `CLEAN`, `NUMBERVALUE`, `FIXED`, `DOLLAR`, `T`,
-      `UNICHAR`, `UNICODE`.
-    - **Math**: `COMBIN`, `COMBINA`, `PERMUT`, `PERMUTATIONA`,
-      `MULTINOMIAL`, `QUOTIENT`, `CEILING.MATH`, `FLOOR.MATH`,
-      `RADIANS`, `DEGREES` (last two need uppercase aliases for the
-      `math.radians`/`math.degrees` already in `_eval_globals`).
-    - **Math (paired sums)**: `SUMSQ`, `SUMX2MY2`, `SUMX2PY2`, `SUMXMY2`.
-    - **Hyperbolic trig**: `SINH`, `COSH`, `TANH`, `ASINH`, `ACOSH`,
-      `ATANH`.
-    - **Bitwise**: `BITAND`, `BITOR`, `BITXOR`, `BITLSHIFT`, `BITRSHIFT`.
-    - **Random (volatile)**: `RAND`, `RANDBETWEEN` -- must register in
-      `formula.deps.DYNAMIC_REF_FUNCS` (or a new `VOLATILE_FUNCS` set)
-      so the topo path adds them to the closure on every recalc.
-  `TRANSPOSE` is *not* in this list -- it returns a reshaped array,
-  which requires a 2D-aware result type; defer to dynamic-array work.
 - [ ] **`OFFSET`** -- dynamic-ref function (already in `DYNAMIC_REF_FUNCS`
   for volatile flagging). Needs the evaluator to materialise a reference
   result (not just a value) so chained constructs like
   `SUM(OFFSET(A1, 1, 0, 5, 1))` work. Out of scope without a reference
   type in the value system.
-- [ ] **Excel 365 dynamic arrays**: `FILTER`, `SORT`, `UNIQUE`,
-  `SEQUENCE`, `RANDARRAY`, `LET`, `LAMBDA`, `XLOOKUP`, `XMATCH`.
-  These spill into adjacent cells and need architectural support
-  beyond just adding functions.
+- [ ] **Excel 365 dynamic arrays -- gaps and spill audit.**
+  `XLOOKUP`, `XMATCH`, `FILTER`, `SORT`, `UNIQUE`, `SEQUENCE`,
+  `RANDARRAY`, `TRANSPOSE` are already implemented in `libs/xlsx.py`
+  (returning `Vec`). Still missing: `LET`, `LAMBDA` (need parser/eval
+  support for local bindings and user-defined inline functions, not
+  just a function entry). Audit the implemented ones for true spill
+  semantics -- e.g. `SORT` docstring notes 2D is "reserved and
+  ignored", so multi-column behaviour likely doesn't match Excel.
+  Spill into adjacent cells (writing results into neighbouring cells
+  rather than packing into one cell's `arr`/`matrix`) is still
+  unimplemented and is the architectural piece.
 - [ ] **Date type system in xlsx I/O.** `_core.xlsx_read` collapses
   date serials into `XLValueType::Float`. Need to read the cell's
   number format to distinguish dates from numbers, and a per-cell
   `Cell.fmtstr` extension to render serials as formatted dates in
   the TUI.
-- [ ] **`requires` field has no version pinning.**
-  `"requires": ["numpy"]` loads whatever version is installed. Version
-  constraints would improve reproducibility.
 
 ## Features
 
@@ -176,19 +102,16 @@ CHANGELOG.md.
 
 ## Documentation & infrastructure
 
-- [ ] **CI workflow running `make qa` on push.** One-file change;
-  catches regressions and prevents lint findings (e.g. the `S101`
-  that lived for releases) from sneaking back in.
-- [ ] **Wheel build matrix.** scikit-build-core + the vendored OpenXLSX
-  mean sdist installs require a C++17 toolchain, CMake, and network
-  access for the FetchContent of pugixml/miniz/nowide. Ship prebuilt
-  wheels for macOS (x86_64, arm64), Linux (manylinux x86_64, aarch64),
-  and Windows so `pip install gridcalc` works without a compiler. Once
-  wheels exist, drop the documented build prerequisites note.
+- [ ] **Wheel build matrix -- aarch64 / manylinux variants.** Linux
+  (ubuntu-latest), macOS (macos-latest), and Windows (windows-latest)
+  wheels for cp39-cp313 are already built by
+  `.github/workflows/build-publish.yml` via cibuildwheel. Verify the
+  resulting matrix actually covers manylinux x86_64 *and* aarch64,
+  and macOS arm64 (the `runs-on: macos-latest` runner produces arm64
+  but x86_64 may need a separate job). Once confirmed end-to-end,
+  drop the documented build prerequisites note.
 - [ ] **mkdocs documentation site** (mkdocs-material). Publish to
   GitHub Pages via `gh-pages` branch or GitHub Actions.
 - [ ] **EXCEL grammar reference page.** Operators, precedence, error
   values, the function library, mode semantics. Lives in the docs
   site once it exists.
-- [ ] **Document `INDIRECT` omission** in user-facing docs (deliberately
-  unsupported because it defeats static analysis and recalc ordering).

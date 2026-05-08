@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import csv
 import json
 import math
@@ -8,7 +7,8 @@ import re
 from collections.abc import Callable, Iterable, Iterator
 from enum import IntEnum
 from io import StringIO
-from typing import Any
+from types import MappingProxyType
+from typing import Any, NamedTuple
 
 from .sandbox import load_modules, validate_code, validate_formula
 
@@ -359,28 +359,32 @@ def INT(x: Any) -> Any:
 
 
 def _make_eval_globals() -> dict[str, Any]:
+    builtins = {
+        "abs": abs,
+        "min": min,
+        "max": max,
+        "sum": sum,
+        "len": len,
+        "int": int,
+        "float": float,
+        "round": round,
+        "range": range,
+        "enumerate": enumerate,
+        "zip": zip,
+        "map": map,
+        "filter": filter,
+        "list": list,
+        "tuple": tuple,
+        "True": True,
+        "False": False,
+        "None": None,
+        "isinstance": isinstance,
+    }
     g: dict[str, Any] = {
-        "__builtins__": {
-            "abs": abs,
-            "min": min,
-            "max": max,
-            "sum": sum,
-            "len": len,
-            "int": int,
-            "float": float,
-            "round": round,
-            "range": range,
-            "enumerate": enumerate,
-            "zip": zip,
-            "map": map,
-            "filter": filter,
-            "list": list,
-            "tuple": tuple,
-            "True": True,
-            "False": False,
-            "None": None,
-            "isinstance": isinstance,
-        },
+        # Frozen so a sandbox escape that obtains a reference to
+        # `__builtins__` cannot inject new names that would persist
+        # across formulas in the same recalc.
+        "__builtins__": MappingProxyType(builtins),
         "math": math,
         "Vec": Vec,
         "SUM": SUM,
@@ -434,6 +438,8 @@ class Cell:
         "fmtstr",
         "ast",
         "ast_text",
+        "err",
+        "err_msg",
     )
 
     def __init__(self) -> None:
@@ -453,6 +459,8 @@ class Cell:
         self.fmtstr: str = ""
         self.ast: Any = None
         self.ast_text: str = ""
+        self.err: Any = None
+        self.err_msg: str | None = None
 
     def clear(self) -> None:
         self.type = EMPTY
@@ -469,6 +477,8 @@ class Cell:
         self.fmtstr = ""
         self.ast = None
         self.ast_text = ""
+        self.err = None
+        self.err_msg = None
 
     def copy_from(self, src: Cell) -> None:
         self.type = src.type
@@ -485,6 +495,8 @@ class Cell:
         self.fmtstr = src.fmtstr
         self.ast = None
         self.ast_text = ""
+        self.err = src.err
+        self.err_msg = src.err_msg
 
     def snapshot(self) -> Cell:
         c = Cell()
@@ -506,9 +518,20 @@ class NamedRange:
 _REF_RE = re.compile(r"(\$?)([A-Za-z]{1,2})(\$?)(\d+)")
 
 
-def refabs(s: str) -> tuple[int, int, int, int, int] | None:
-    """Parse a cell reference at the start of string s.
-    Returns (chars_consumed, col, row, abs_col, abs_row) or None."""
+class RefMatch(NamedTuple):
+    chars_consumed: int
+    col: int
+    row: int
+    abs_col: int
+    abs_row: int
+
+
+def refabs(s: str) -> RefMatch | None:
+    """Parse a cell reference at the start of `s`.
+
+    Returns a `RefMatch` (still tuple-unpackable as
+    `n, col, row, abs_col, abs_row`), or None if no ref matches.
+    """
     m = _REF_RE.match(s)
     if not m:
         return None
@@ -523,7 +546,7 @@ def refabs(s: str) -> tuple[int, int, int, int, int] | None:
         col = col * 26 + (ord(ch) - ord("A") + 1)
     col -= 1
     row = rownum - 1
-    return (m.end(), col, row, absc, absr)
+    return RefMatch(m.end(), col, row, absc, absr)
 
 
 def ref(s: str) -> tuple[int, int, int] | None:
@@ -722,6 +745,7 @@ class Grid:
         self.requires: list[str] = []
         self.libs: list[str] = []
         self._module_errors: list[str] = []
+        self.code_error: str | None = None
         self._circular: set[tuple[int, int]] = set()
         self.mode: Mode = Mode.LEGACY
         # Topological recalc bookkeeping. Off by default; opt-in via
@@ -943,10 +967,17 @@ class Grid:
         self._circular = set()
 
         if self.code:
-            valid, _ = validate_code(self.code)
-            if valid:
-                with contextlib.suppress(Exception):
+            valid, msg = validate_code(self.code)
+            if not valid:
+                self.code_error = f"code rejected: {msg}"
+            else:
+                try:
                     exec(self.code, g)  # noqa: S102
+                    self.code_error = None
+                except Exception as exc:  # noqa: BLE001
+                    self.code_error = f"{type(exc).__name__}: {exc}"
+        else:
+            self.code_error = None
 
         changed_cells: set[tuple[int, int]] = set()
         for _ in range(100):
@@ -988,16 +1019,30 @@ class Grid:
                 evalbuf = _expand_ranges(stripped)
                 oldval = cl.val
                 old_matrix = cl.matrix
-                valid, _ = validate_formula(evalbuf)
+                valid, vmsg = validate_formula(evalbuf)
                 if not valid:
+                    from .formula.errors import ExcelError as _XE
+
                     cl.arr = None
                     cl.arr_cols = None
                     cl.matrix = None
                     cl.val = float("nan")
+                    cl.err = _XE.NAME
+                    cl.err_msg = vmsg
                 else:
+                    cl.err = None
+                    cl.err_msg = None
                     try:
                         result = eval(evalbuf, g)  # noqa: S307
-                        if _is_dataframe(result):
+                        from .formula.errors import ExcelError as _XE
+
+                        if isinstance(result, _XE):
+                            cl.matrix = None
+                            cl.arr = None
+                            cl.arr_cols = None
+                            cl.val = float("nan")
+                            cl.err = result
+                        elif _is_dataframe(result):
                             cl.matrix = result
                             cl.arr = None
                             cl.arr_cols = None
@@ -1037,11 +1082,15 @@ class Grid:
                             cl.arr = None
                             cl.arr_cols = None
                             cl.val = float(result)
-                    except Exception:
+                    except Exception as exc:  # noqa: BLE001
+                        from .formula.errors import ExcelError as _XE
+
                         cl.arr = None
                         cl.arr_cols = None
                         cl.matrix = None
                         cl.val = float("nan")
+                        cl.err = _XE.VALUE
+                        cl.err_msg = f"{type(exc).__name__}: {exc}"
                 both_nan = (
                     isinstance(cl.val, float)
                     and math.isnan(cl.val)
@@ -1091,6 +1140,8 @@ class Grid:
                 self._circular.add((c, r))
 
         if self._circular:
+            from .formula.errors import ExcelError as _XE
+
             for pos in self._circular:
                 circ = self._cells.get(pos)
                 if circ:
@@ -1098,16 +1149,24 @@ class Grid:
                     circ.arr_cols = None
                     circ.matrix = None
                     circ.val = float("nan")
+                    circ.err = _XE.CIRC
+                    circ.err_msg = None
 
     def _build_py_registry(self) -> dict[str, Any]:
         if self.mode != Mode.HYBRID or not self.code:
+            self.code_error = None
             return {}
-        valid, _ = validate_code(self.code)
+        valid, msg = validate_code(self.code)
         if not valid:
+            self.code_error = f"code rejected: {msg}"
             return {}
         ns: dict[str, Any] = dict(self._eval_globals)
-        with contextlib.suppress(Exception):
+        try:
             exec(self.code, ns)  # noqa: S102
+            self.code_error = None
+        except Exception as exc:  # noqa: BLE001
+            self.code_error = f"{type(exc).__name__}: {exc}"
+            return {}
         base_keys = set(self._eval_globals.keys())
         registry: dict[str, Any] = {}
         for k, v in ns.items():
@@ -1156,7 +1215,11 @@ class Grid:
             cl.arr_cols = None
             cl.matrix = None
             cl.val = float("nan")
+            cl.err = result
+            cl.err_msg = None
             return
+        cl.err = None
+        cl.err_msg = None
         if isinstance(result, str):
             cl.matrix = None
             cl.arr = None
@@ -1305,6 +1368,8 @@ class Grid:
                 self._circular.add((c, r))
 
         if self._circular:
+            from .formula.errors import ExcelError as _XE
+
             for pos in self._circular:
                 circ = self._cells.get(pos)
                 if circ:
@@ -1312,6 +1377,8 @@ class Grid:
                     circ.arr_cols = None
                     circ.matrix = None
                     circ.val = float("nan")
+                    circ.err = _XE.CIRC
+                    circ.err_msg = None
 
     def _recalc_topo(self, dirty: set[tuple[int, int]] | None) -> None:
         """Topological recalc: evaluate only the closure of dirty cells.
@@ -1420,12 +1487,17 @@ class Grid:
         if dirty is not None:
             self._circular -= dirty
         self._circular |= unresolved
-        for pos in unresolved:
-            cl = self._cells.get(pos)
-            if cl is not None:
-                cl.arr = None
-                cl.matrix = None
-                cl.val = float("nan")
+        if unresolved:
+            from .formula.errors import ExcelError as _XE
+
+            for pos in unresolved:
+                cl = self._cells.get(pos)
+                if cl is not None:
+                    cl.arr = None
+                    cl.matrix = None
+                    cl.val = float("nan")
+                    cl.err = _XE.CIRC
+                    cl.err_msg = None
 
     def _fixrefs(self, axis: str, a: int, b: int) -> None:
         for cl in self._cells.values():

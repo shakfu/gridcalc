@@ -7,7 +7,7 @@ import os
 import subprocess
 import tempfile
 
-from .config import Config, load_config
+from .config import Config, emit_warnings, load_config
 from .engine import (
     CW_DEFAULT,
     EMPTY,
@@ -140,6 +140,8 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
             return f"{cl.sval:<{cw}}"[:cw]
         return f"{cl.sval:>{cw}}"[:cw]
 
+    if cl.err is not None:
+        return f"{str(cl.err):>{cw}}"[:cw]
     if isinstance(cl.val, float) and math.isnan(cl.val):
         return f"{'ERROR':>{cw}}"
 
@@ -263,9 +265,10 @@ class UndoManager:
     def _apply(self, g: Grid, from_stack: list[UndoEntry], to_stack: list[UndoEntry]) -> None:
         if not from_stack:
             return
-        e = from_stack.pop()
+        e = from_stack[-1]
 
-        # Save current state to opposite stack
+        # Phase 1: capture the rollback snapshot. No mutation yet, so if
+        # this raises the stacks and grid are untouched.
         re = UndoEntry()
         re.cc = g.cc
         re.cr = g.cr
@@ -274,24 +277,43 @@ class UndoManager:
             for (c, r), cl in g._cells.items():
                 if cl.type != EMPTY:
                     re.cells.append((c, r, cl.snapshot()))
-            to_stack.append(re)
-            g.clear_all()
         else:
             for c, r, _ in e.cells:
                 maybe_cl: Cell | None = g.cell(c, r)
                 re.cells.append((c, r, maybe_cl.snapshot() if maybe_cl else Cell()))
-            to_stack.append(re)
 
-        for c, r, snap in e.cells:
-            if snap.type == EMPTY:
-                g._cells.pop((c, r), None)
+        # Phase 2: apply the restore. If anything raises, roll back from
+        # `re` and leave `e` on `from_stack` so the user can retry.
+        try:
+            if e.is_grid:
+                g.clear_all()
+            for c, r, snap in e.cells:
+                if snap.type == EMPTY:
+                    g._cells.pop((c, r), None)
+                else:
+                    cl = g._ensure_cell(c, r)
+                    cl.copy_from(snap)
+            g.cc = e.cc
+            g.cr = e.cr
+            g.recalc()
+        except Exception:
+            if re.is_grid:
+                g.clear_all()
             else:
-                cl = g._ensure_cell(c, r)
-                cl.copy_from(snap)
+                for c, r, _snap in re.cells:
+                    g._cells.pop((c, r), None)
+            for c, r, snap in re.cells:
+                if snap.type != EMPTY:
+                    cl = g._ensure_cell(c, r)
+                    cl.copy_from(snap)
+            g.cc = re.cc
+            g.cr = re.cr
+            g.recalc()
+            raise
 
-        g.cc = e.cc
-        g.cr = e.cr
-        g.recalc()
+        # Both phases succeeded; commit.
+        from_stack.pop()
+        to_stack.append(re)
 
     def undo(self, g: Grid) -> None:
         self._apply(g, self.undo_stack, self.redo_stack)
@@ -410,7 +432,11 @@ def draw(
         elif cur.sval is not None:
             status += repr(cur.sval)
         else:
-            if isinstance(cur.val, float) and math.isnan(cur.val):
+            if cur.err is not None:
+                status += str(cur.err)
+                if cur.err_msg:
+                    status += f"  ({cur.err_msg})"
+            elif isinstance(cur.val, float) and math.isnan(cur.val):
                 if (g.cc, g.cr) in g._circular:
                     status += "CIRC"
                 else:
@@ -419,8 +445,16 @@ def draw(
                 status += f"{cur.val:.10g}"
     elif cur and cur.type == LABEL:
         status += f"  {cur.text}"
+    if g.code_error:
+        status += f"  [CODE ERR: {g.code_error}]"
     stdscr.addnstr(0, 0, status, curses.COLS - 1)
     stdscr.attroff(curses.color_pair(CP_CHROME) | curses.A_BOLD)
+    if not SANDBOX_ENABLED:
+        banner = " SANDBOX OFF "
+        x = max(0, curses.COLS - len(banner) - 1)
+        stdscr.attron(curses.color_pair(CP_ERROR) | curses.A_BOLD | curses.A_REVERSE)
+        stdscr.addnstr(0, x, banner, len(banner))
+        stdscr.attroff(curses.color_pair(CP_ERROR) | curses.A_BOLD | curses.A_REVERSE)
 
     grid_mode_tag = f"[{g.mode.name}]"
     right_label = f"{mode}  {grid_mode_tag}" if mode else grid_mode_tag
@@ -790,6 +824,56 @@ def cmd_edit(stdscr: curses.window, g: Grid) -> bool:
     return False
 
 
+def _view_code_block(stdscr: curses.window, code: str) -> None:
+    """Pager for the trust-prompt code preview.
+
+    j/down scroll one line; k/up scroll back; space/PgDn page down; b/PgUp
+    page up; g/G jump to top/bottom; any other key returns to the prompt.
+    """
+    lines = code.splitlines() or [""]
+    offset = 0
+    while True:
+        stdscr.erase()
+        stdscr.attron(curses.A_BOLD)
+        header = f"Code block ({len(lines)} lines):"
+        stdscr.addnstr(0, 0, header, curses.COLS - 1)
+        stdscr.attroff(curses.A_BOLD)
+
+        visible = max(1, curses.LINES - 3)
+        max_offset = max(0, len(lines) - visible)
+        offset = max(0, min(offset, max_offset))
+
+        for i in range(visible):
+            idx = offset + i
+            if idx >= len(lines):
+                break
+            stdscr.addnstr(i + 1, 0, f"  {lines[idx]}", curses.COLS - 1)
+
+        end = min(offset + visible, len(lines))
+        footer = (
+            f"  lines {offset + 1}-{end}/{len(lines)}  "
+            "[j/k]scroll [space/b]page [g/G]top/bot [q]back"
+        )
+        stdscr.addnstr(curses.LINES - 1, 0, footer, curses.COLS - 1, curses.A_DIM)
+        stdscr.refresh()
+
+        ch = stdscr.getch()
+        if ch in (ord("j"), curses.KEY_DOWN):
+            offset += 1
+        elif ch in (ord("k"), curses.KEY_UP):
+            offset -= 1
+        elif ch in (ord(" "), curses.KEY_NPAGE):
+            offset += visible
+        elif ch in (ord("b"), curses.KEY_PPAGE):
+            offset -= visible
+        elif ch == ord("g"):
+            offset = 0
+        elif ch == ord("G"):
+            offset = max_offset
+        else:
+            return
+
+
 def trust_prompt(stdscr: curses.window, filename: str, info: FileInfo) -> LoadPolicy | None:
     """Curses-based trust prompt for loading files with code or requires.
 
@@ -842,19 +926,7 @@ def trust_prompt(stdscr: curses.window, filename: str, info: FileInfo) -> LoadPo
         elif ch == ord("f"):
             return LoadPolicy.formulas_only()
         elif ch == ord("v") and info.has_code:
-            stdscr.erase()
-            stdscr.attron(curses.A_BOLD)
-            stdscr.addnstr(0, 0, "Code block:", curses.COLS - 1)
-            stdscr.attroff(curses.A_BOLD)
-            lines = info.code_preview.splitlines()
-            for i, line in enumerate(lines):
-                if i + 1 >= curses.LINES - 2:
-                    break
-                stdscr.addnstr(i + 1, 0, f"  {line}", curses.COLS - 1)
-            footer_y = min(len(lines) + 2, curses.LINES - 1)
-            stdscr.addnstr(footer_y, 0, "Press any key.", curses.COLS - 1)
-            stdscr.refresh()
-            stdscr.getch()
+            _view_code_block(stdscr, info.code_preview)
             continue
         elif ch == ord("c") or ch == 27:
             return None
@@ -2507,6 +2579,7 @@ def main() -> None:
 
     global _cfg
     _cfg = load_config()
+    emit_warnings(_cfg)
     configure_sandbox(_cfg.sandbox)
 
     g = Grid()

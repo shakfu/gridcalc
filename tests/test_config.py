@@ -59,6 +59,26 @@ class TestParseConfig:
     def test_unknown_keys_ignored(self):
         cfg = _parse_config({"unknown_key": "value", "editor": "vim"})
         assert cfg.editor == "vim"
+        assert any("unknown_key" in w for w in cfg.warnings)
+
+    def test_width_out_of_range_warns(self):
+        cfg = _parse_config({"width": 100})
+        assert cfg.width == 0
+        assert any("width" in w and "out of range" in w for w in cfg.warnings)
+
+    def test_width_wrong_type_warns(self):
+        cfg = _parse_config({"width": "abc"})
+        assert cfg.width == 0
+        assert any("width" in w for w in cfg.warnings)
+
+    def test_format_invalid_warns(self):
+        cfg = _parse_config({"format": "abc"})
+        assert cfg.format == ""
+        assert any("format" in w for w in cfg.warnings)
+
+    def test_clean_config_has_no_warnings(self):
+        cfg = _parse_config({"editor": "vim", "sandbox": True, "width": 10})
+        assert cfg.warnings == []
 
     def test_wrong_type_editor(self):
         cfg = _parse_config({"editor": 123})
@@ -89,6 +109,7 @@ class TestLoadConfig:
         f.write_text("not valid toml [[[")
         cfg = load_config(f)
         assert cfg.editor == ""
+        assert any("TOML parse error" in w for w in cfg.warnings)
 
     def test_empty_file(self, tmp_path):
         f = tmp_path / "gridcalc.toml"

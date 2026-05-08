@@ -4,6 +4,108 @@
 
 ### Added
 
+- **2D-aware `Vec` (Phase 1 + 2 of `docs/2d-vec-design.md`).** Foundation
+  for `TRANSPOSE`/`LINEST`/`HSTACK`/2D `CHISQ.TEST`/spill semantics.
+  - **Phase 1 — shape API on `Vec`** (`engine.py`): new `is_2d`, `rows`,
+    `shape`, `at(r, c)` (1-based), `row(i)`, `col(j)`, `iter_rows()`.
+    `__repr__` now shows shape: `Vec[2x3]([...])`. `__iter__`/`__len__`/
+    `__getitem__` keep flat semantics so existing `SUM`/`AVG`/etc.
+    consumers stay correct. A 1D `Vec` is a column vector (shape `(n, 1)`).
+    11 new tests in `TestVecShapeAPI`.
+  - **Phase 2 — shape preservation through arithmetic + persistence.**
+    `Vec._binop`/`_rbinop`/`__neg__`/`__abs__` and the evaluator's
+    `_vec_apply2`/`_vec_apply1` now forward `cols` whenever inputs share
+    or imply a shape. Mismatched 2D shapes emit per-element `#VALUE!`
+    instead of silently zip-pairing. New `Cell.arr_cols: int | None`
+    slot; `_store_formula_result` stores `result.cols` alongside
+    `arr`, and `_cell_lookup_value` rebuilds `Vec(cl.arr, cols=cl.arr_cols)`.
+    All ~12 `cl.arr = ...` write sites updated to keep `arr_cols` in
+    lockstep. JSON format unchanged (saves cell *text*, not computed
+    arrays — recalc rebuilds shape from formulas on load).
+    Ship gate: `=INDEX(A1:B2 + 1, 2, 2)` now picks the bottom-right of
+    a 2D arithmetic result (was broken: `cols` dropped through `+`). 8
+    new tests in `TestVecShapePreservation`.
+
+- **Heavier stat distributions (Tier 4, batch 2; ~25 new dotted names
+  + 17 pre-2010 aliases).** Builds on the regularised incomplete beta
+  (`_incbeta`) infra from batch 1 plus a new regularised lower
+  incomplete gamma (`_gser`/`_gcf`/`_incgamma`, Numerical Recipes).
+  Inverses use 200-step bisection on the CDF (1e-12 in p; ~10
+  decimal-digit accuracy in x).
+  - **F**: `F.DIST`, `F.DIST.RT`, `F.INV`, `F.INV.RT`.
+  - **Chi-square**: `CHISQ.DIST`, `CHISQ.DIST.RT`, `CHISQ.INV`,
+    `CHISQ.INV.RT`, `CHISQ.TEST` (1D arrays, `df = n − 1`; 2D
+    contingency form blocked on 2D Vec).
+  - **Gamma family**: `GAMMA`, `GAMMALN`, `GAMMALN.PRECISE`,
+    `GAMMA.DIST`, `GAMMA.INV`.
+  - **Beta**: `BETA.DIST` (with `[a, b]` bounds), `BETA.INV`.
+  - **Lognormal**: `LOGNORM.DIST`, `LOGNORM.INV`.
+  - **Weibull**: `WEIBULL.DIST`.
+  - **Hypergeometric / negative binomial / inverse binomial**:
+    `HYPGEOM.DIST` (with cumulative), `NEGBINOM.DIST`, `BINOM.INV`.
+  - **Hypothesis tests**: `T.TEST` (paired / equal-var / Welch),
+    `Z.TEST` (one-tailed; sample stdev when σ omitted), `CONFIDENCE.T`.
+  - **Other**: `STANDARDIZE`, `PHI`, `PROB`.
+  - **Pre-2010 aliases**: `FDIST`/`FINV` (right-tail), `CHIDIST`,
+    `CHIINV`, `CHITEST`, `GAMMADIST`, `GAMMAINV`, `BETADIST`, `BETAINV`,
+    `LOGNORMDIST`, `LOGINV`, `WEIBULL`, `HYPGEOMDIST`, `NEGBINOMDIST`,
+    `CRITBINOM`, `TTEST`, `ZTEST`.
+  - 19 new tests cross-checked against Excel reference values
+    (≥5–9 sig figs).
+
+- **Mechanical fill-in batch (~32 new functions).**
+  - **Math**: `ERF` (one- and two-arg), `ERFC` via `math.erf`/`erfc`.
+  - **Tier 4 text parsing**: `TEXTSPLIT` (1D/2D, with `ignore_empty`/
+    `match_mode`), `TEXTBEFORE`, `TEXTAFTER` (full Excel 365 signatures
+    including negative `instance` from end, list-of-delimiters,
+    `match_end`, `if_not_found`).
+  - **Number-base conversion** (12): `DEC2BIN`/`OCT`/`HEX`,
+    `BIN2DEC`/`OCT2DEC`/`HEX2DEC`, plus all six cross conversions.
+    Excel-style 10-digit two's-complement for negatives; per-base range
+    validation; `places` padding with `#NUM!` on overflow.
+  - **Scalar forecasting**: `FORECAST`, `FORECAST.LINEAR`, `TREND`
+    (scalar + 1D Vec of new x-values; default `known_x = {1, 2, 3, ...}`
+    when omitted). All reuse `_linreg`. Multi-regressor / array forms
+    blocked on 2D Vec.
+  - **D-functions** (12): `DSUM`, `DAVERAGE`, `DCOUNT`, `DCOUNTA`,
+    `DGET`, `DMAX`, `DMIN`, `DPRODUCT`, `DSTDEV`, `DSTDEVP`, `DVAR`,
+    `DVARP`. Shared driver: `_vec_table` decomposes a 2D `Vec` into
+    header + rows, `_resolve_field` accepts column name or 1-based
+    index, `_row_matches_criteria` ANDs across columns within a row
+    and ORs across rows (Excel semantics). 25 new tests.
+
+- **Financial Tier 4 (12 new functions).**
+  - **Depreciation**: `SLN`, `SYD`, `DB` (3-decimal rate rounding +
+    month proration), `DDB` (factor-decline, salvage clamp), `VDB`
+    (DDB with optional SL switch; integer periods only — fractional
+    `start`/`end` returns `#NUM!`).
+  - **Rate conversion**: `EFFECT`, `NOMINAL`.
+  - **Cumulative**: `CUMIPMT`, `CUMPRINC` (sum existing `IPMT`/`PPMT`
+    over a period range).
+  - **Date-based & modified IRR**: `XNPV`, `XIRR` (365-day basis,
+    Newton's method); `MIRR` (closed form on negative-flow PV vs
+    positive-flow FV).
+  - 14 new tests cross-checked against Excel docs reference values
+    (`SLN(10000,1000,5)=1800`; `DB(1e6,1e5,6,1,7)=186083.33`;
+    `DDB(2400,300,10,1)=480`; `EFFECT(0.0525,4)=0.05354266…`;
+    `MIRR` Excel example = `0.126094`; `XNPV(0.09,…)=2086.65`,
+    `XIRR=0.37336` from Excel docs example).
+
+- **Statistical distributions (Tier 4, batch 1; 13 new dotted names +
+  10 legacy aliases).** Stdlib-only implementation. Helpers:
+  `_norm_pdf`/`_norm_cdf` via `math.erf`; `_norm_s_inv` via Acklam's
+  rational approximation (max relative error ~1.15e-9); `_betacf`
+  (Lentz CF) and `_incbeta` for the regularised incomplete beta;
+  `_t_cdf` and `_t_inv`/`_t_inv_2tail` (bisection); `_binom_pmf`,
+  `_pois_pmf` via `math.lgamma`. Functions: `NORM.DIST`/`NORM.INV`,
+  `NORM.S.DIST`/`NORM.S.INV`, `T.DIST`/`T.DIST.2T`/`T.DIST.RT`/
+  `T.INV`/`T.INV.2T`, `BINOM.DIST`, `POISSON.DIST`, `EXPON.DIST`,
+  `CONFIDENCE.NORM`. Pre-2010 aliases: `NORMDIST`, `NORMINV`,
+  `NORMSDIST` (1-arg, always cumulative), `NORMSINV`, `TDIST` (legacy
+  3-arg right/two-tail), `TINV` (legacy two-tailed), `BINOMDIST`,
+  `POISSON`, `EXPONDIST`, `CONFIDENCE`. 17 new tests cross-checked
+  against Excel reference values to ≥5 sig figs.
+
 - **Excel function library: Tier 1 + Tier 2 (~60 new functions).**
   - **Multi-criteria aggregates**: `SUMIFS`, `COUNTIFS`, `AVERAGEIFS`,
     `MAXIFS`, `MINIFS`.
@@ -113,6 +215,36 @@
 
 - **`engine.setcell` refactored**: per-cell parsing/typing extracted to
   `_setcell_no_recalc`; `setcell` composes that helper with `recalc()`.
+
+### Fixed
+
+- **Text and booleans now survive range materialization.**
+  `formula/evaluator.py:_eval_range` previously called
+  `_to_number_or_zero` on every cell, flattening text and bools to
+  `0.0`. This silently broke `MATCH("be*", A1:A3, 0)` and similar over
+  real Grid ranges (the lookup column arrived as `[0.0, 0.0, 0.0]`).
+  `_eval_range` now preserves type per cell: numeric -> float, bool ->
+  bool, str -> str, None -> 0.0, ExcelError -> propagate. `Vec.data`
+  widened to `list[Any]`. `Vec` arithmetic (`__add__`/`__sub__`/...,
+  `__neg__`/`__abs__`) goes through new `_vec_elem_op`/`_unary_or_error`
+  helpers that emit per-element `#VALUE!` for non-numeric pairs and
+  propagate `ExcelError`. `SUM`/`AVG`/`MIN`/`MAX` skip strings and
+  bools-from-ranges (Excel's non-`A` aggregate rule); `COUNT` counts
+  numerics only; `ABS`/`SQRT`/`INT` propagate per-element `#VALUE!`
+  for non-numerics. `libs/xlsx.py` audited: `_vec_data` filters
+  numerics; new `_pair_numeric` for paired stats; `CORREL`/`COVAR`/
+  `_linreg`/`RSQ`/`STEYX`/`_covariance`/`_paired_data`/`RANK`/
+  `PERCENTILE`/`PERCENTILE_EXC`/`RANK_AVG`/`PERCENTRANK`/`NPV`/`IRR`/
+  `SUMIF`/`AVERAGEIF`/`_multi_criteria`/`GCD`/`LCM`/`SUMPRODUCT`/
+  `AVERAGE`/`MEDIAN`/`LARGE`/`SMALL` all skip non-numerics. 10 new
+  tests in `TestRangeTextBool`.
+
+- **`IPMT` sign convention.** Returned positive when paying interest
+  on a positive `pv` (a loan); Excel convention is negative. Fix:
+  `interest = fv_at * rate` (was `-fv_at * rate`); when `when=1` and
+  `period > 1`, discount by one period. `PPMT` and the new
+  `CUMIPMT`/`CUMPRINC` inherit the fix. No existing tests broke
+  (there were no IPMT/PPMT tests before).
 
 ### Removed
 

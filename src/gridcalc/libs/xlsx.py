@@ -3719,7 +3719,7 @@ def HEX2OCT(text: str, places: int | None = None) -> str | ExcelError:
     return _dec_to_base(n, 8, places)
 
 
-# -- Tier 4: scalar forecasting --
+# -- Tier 4: forecasting --
 
 
 def FORECAST(x: float, known_y: Vec, known_x: Vec) -> float | ExcelError:
@@ -3736,27 +3736,354 @@ def FORECAST_LINEAR(x: float, known_y: Vec, known_x: Vec) -> float | ExcelError:
     return FORECAST(x, known_y, known_x)
 
 
-def TREND_SCALAR(known_y: Vec, known_x: Vec | None = None, new_x: Any = None) -> Any:
-    """=TREND(known_y, [known_x], [new_x]).
+# -- Phase 4: regression family with multi-regressor support --
+#
+# Hand-rolled Gauss-Jordan with partial pivoting on the normal-equations
+# matrix X'X β = X'y. Adequate for the typical workbook case (n up to a
+# few thousand, k up to ~10). Highly ill-conditioned designs may lose
+# precision -- if that becomes a problem, swap in a QR factorisation
+# without changing the call sites.
 
-    Scalar form only: when ``new_x`` is a single number or a 1D ``Vec``
-    of new x-values, returns one prediction per x. Multi-column array
-    form (multiple regressors with 2D inputs) requires 2D-aware Vecs and
-    is not yet supported.
+
+def _solve_linear_system(a: list[list[float]], b: list[float]) -> list[float] | ExcelError:
+    """Solve Ax = b for square A.
+
+    Tries ``numpy.linalg.solve`` first (LAPACK-backed; ~100× faster on
+    large systems and more accurate on ill-conditioned designs). Falls
+    back to a pure-Python Gauss-Jordan elimination with partial
+    pivoting when numpy isn't installed. Returns x (length n) or #NUM!
+    if A is singular within tolerance.
+    """
+    n = len(a)
+    if n == 0 or any(len(row) != n for row in a) or len(b) != n:
+        return ExcelError.VALUE
+    try:
+        import numpy as _np  # noqa: I001
+    except ImportError:
+        _np = None  # type: ignore[assignment]
+    if _np is not None:
+        try:
+            sol = _np.linalg.solve(_np.asarray(a, dtype=float), _np.asarray(b, dtype=float))
+            return [float(v) for v in sol]
+        except _np.linalg.LinAlgError:
+            return ExcelError.NUM
+    # Pure-Python Gauss-Jordan with partial pivoting.
+    m = [list(a[i]) + [b[i]] for i in range(n)]
+    for col in range(n):
+        pivot_row = max(range(col, n), key=lambda r: abs(m[r][col]))
+        if abs(m[pivot_row][col]) < 1e-15:
+            return ExcelError.NUM
+        if pivot_row != col:
+            m[col], m[pivot_row] = m[pivot_row], m[col]
+        piv = m[col][col]
+        for j in range(col, n + 1):
+            m[col][j] /= piv
+        for r in range(n):
+            if r == col or m[r][col] == 0:
+                continue
+            factor = m[r][col]
+            for j in range(col, n + 1):
+                m[r][j] -= factor * m[col][j]
+    return [row[n] for row in m]
+
+
+def _to_design_rows(known_x: Vec | None, n: int) -> list[list[float]] | ExcelError:
+    """Return ``known_x`` as a list of ``n`` rows of regressors.
+
+    If ``known_x`` is None: synthesises ``[[1], [2], ..., [n]]``.
+    1D Vec: single regressor; one row per element.
+    2D Vec: multi-regressor; each Vec column is a regressor.
     """
     if known_x is None:
-        known_x = Vec([float(i + 1) for i in range(len(known_y.data))])
-    r = _linreg(known_y, known_x)
-    if isinstance(r, ExcelError):
-        return r
-    slope, intercept, *_ = r
+        return [[float(i + 1)] for i in range(n)]
+    if not isinstance(known_x, Vec):
+        return ExcelError.VALUE
+    if not known_x.is_2d:
+        if len(known_x.data) != n:
+            return ExcelError.NUM
+        return [
+            [float(v)] if isinstance(v, (int, float)) and not isinstance(v, bool) else [0.0]
+            for v in known_x.data
+        ]
+    rows, cols = known_x.shape
+    if rows != n:
+        return ExcelError.NUM
+    out: list[list[float]] = []
+    for i in range(rows):
+        row: list[float] = []
+        for j in range(cols):
+            v = known_x.data[i * cols + j]
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                row.append(float(v))
+            else:
+                return ExcelError.VALUE
+        out.append(row)
+    return out
+
+
+def _linest_core(
+    known_y: Vec, known_x: Vec | None, const: bool
+) -> tuple[list[float], list[list[float]], float, float, list[float]] | ExcelError:
+    """Run multi-regressor OLS. Returns
+    (coeffs, design_rows, ss_total, ss_residual, predicted) or an error.
+
+    ``coeffs`` is in the order ``[m_1, m_2, ..., m_k, b]`` (intercept last).
+    Excel reports the *reverse* order in the LINEST output; the caller
+    handles the reversal.
+    """
+    y = _vec_data(known_y)
+    n = len(y)
+    if n < 2:
+        return ExcelError.NUM
+    x_rows = _to_design_rows(known_x, n)
+    if isinstance(x_rows, ExcelError):
+        return x_rows
+    k = len(x_rows[0]) if x_rows else 0
+    # Augment with 1-column for intercept if const.
+    if const:
+        design = [row + [1.0] for row in x_rows]
+        p = k + 1  # number of parameters
+    else:
+        design = [list(row) for row in x_rows]
+        p = k
+    if p < 1 or n < p:
+        return ExcelError.NUM
+    # Normal equations: (X'X) β = X'y. Use numpy for the matrix builds
+    # when available -- the triple-loop for X'X is O(n*p²) in pure
+    # Python; numpy turns it into a single LAPACK-backed matmul.
+    try:
+        import numpy as _np  # noqa: I001
+    except ImportError:
+        _np = None  # type: ignore[assignment]
+    if _np is not None:
+        x_arr = _np.asarray(design, dtype=float)
+        y_arr = _np.asarray(y, dtype=float)
+        xtx_arr = x_arr.T @ x_arr
+        xty_arr = x_arr.T @ y_arr
+        xtx = [[float(v) for v in row] for row in xtx_arr]
+        xty = [float(v) for v in xty_arr]
+    else:
+        xtx = [[0.0] * p for _ in range(p)]
+        xty = [0.0] * p
+        for i in range(n):
+            for a in range(p):
+                xty[a] += design[i][a] * y[i]
+                for b in range(p):
+                    xtx[a][b] += design[i][a] * design[i][b]
+    coeffs = _solve_linear_system(xtx, xty)
+    if isinstance(coeffs, ExcelError):
+        return coeffs
+    predicted = [sum(design[i][a] * coeffs[a] for a in range(p)) for i in range(n)]
+    mean_y = sum(y) / n
+    ss_total = sum((yi - mean_y) ** 2 for yi in y)
+    ss_residual = sum((y[i] - predicted[i]) ** 2 for i in range(n))
+    return coeffs, design, ss_total, ss_residual, predicted
+
+
+def _linest_stats_matrix(
+    coeffs: list[float],
+    design: list[list[float]],
+    ss_total: float,
+    ss_residual: float,
+    const: bool,
+) -> list[list[Any]] | ExcelError:
+    """Build the 5xp Excel LINEST stats matrix (column order: m_k...m_1, b)."""
+    n = len(design)
+    p = len(coeffs)
+    df = n - p
+    if df <= 0:
+        return ExcelError.NUM
+    sigma2 = ss_residual / df  # mean squared error
+    # SE of each coefficient: sqrt(sigma² * diag((X'X)^-1)).
+    # Recompute (X'X)^-1 by solving each unit vector through the system.
+    xtx = [[0.0] * p for _ in range(p)]
+    for i in range(n):
+        for a in range(p):
+            for b in range(p):
+                xtx[a][b] += design[i][a] * design[i][b]
+    xtx_inv: list[list[float]] = []
+    for col in range(p):
+        e = [0.0] * p
+        e[col] = 1.0
+        sol = _solve_linear_system([row[:] for row in xtx], e)
+        if isinstance(sol, ExcelError):
+            return sol
+        xtx_inv.append(sol)
+    # xtx_inv is column-major (each list is one solved column);
+    # diag entries are xtx_inv[i][i].
+    se = [math.sqrt(max(sigma2 * xtx_inv[i][i], 0.0)) for i in range(p)]
+    r2 = 1 - ss_residual / ss_total if ss_total > 0 else 1.0
+    se_y = math.sqrt(sigma2)
+    # df_regression = (p - 1) when const, else p; matches Excel.
+    df_regression = (p - 1) if const else p
+    if df_regression < 1:
+        f_stat: float | Any = ExcelError.NA
+    elif ss_residual == 0:
+        f_stat = math.inf
+    else:
+        f_stat = (ss_total - ss_residual) / df_regression / sigma2
+    ss_regression = ss_total - ss_residual
+    # Excel reports columns in reverse: m_k ... m_1, b (intercept last).
+    # Our coeffs are [m_1, ..., m_k, b]; reverse the slope portion.
+    if const:
+        slope_part = list(reversed(coeffs[:-1]))
+        slope_se = list(reversed(se[:-1]))
+        col_order = slope_part + [coeffs[-1]]
+        se_order = slope_se + [se[-1]]
+    else:
+        col_order = list(reversed(coeffs))
+        se_order = list(reversed(se))
+    na: Any = ExcelError.NA
+    row1: list[Any] = list(col_order)
+    row2: list[Any] = list(se_order)
+    row3: list[Any] = [r2, se_y] + [na] * (p - 2) if p >= 2 else [r2]
+    row4: list[Any] = [f_stat, df] + [na] * (p - 2) if p >= 2 else [f_stat]
+    row5: list[Any] = [ss_regression, ss_residual] + [na] * (p - 2) if p >= 2 else [ss_regression]
+    return [row1, row2, row3, row4, row5]
+
+
+def LINEST(
+    known_y: Vec,
+    known_x: Vec | None = None,
+    const: Any = True,
+    stats: Any = False,
+) -> Vec | ExcelError:
+    """=LINEST(known_y, [known_x], [const], [stats]).
+
+    Returns coefficients in Excel order (m_k, ..., m_1, b). With
+    ``stats=TRUE``, returns a 5×p stats matrix.
+    """
+    use_const = bool(const)
+    res = _linest_core(known_y, known_x, use_const)
+    if isinstance(res, ExcelError):
+        return res
+    coeffs, design, ss_total, ss_residual, _ = res
+    if not bool(stats):
+        # Single-row coefficients in Excel order.
+        if use_const:
+            ordered = list(reversed(coeffs[:-1])) + [coeffs[-1]]
+        else:
+            ordered = list(reversed(coeffs))
+        return Vec(ordered, cols=len(ordered))
+    matrix = _linest_stats_matrix(coeffs, design, ss_total, ss_residual, use_const)
+    if isinstance(matrix, ExcelError):
+        return matrix
+    flat: list[Any] = []
+    for row in matrix:
+        flat.extend(row)
+    return Vec(flat, cols=len(matrix[0]))
+
+
+def LOGEST(
+    known_y: Vec,
+    known_x: Vec | None = None,
+    const: Any = True,
+    stats: Any = False,
+) -> Vec | ExcelError:
+    """=LOGEST(known_y, ...). LINEST on ln(y); intercept exponentiated.
+
+    The fitted model is y = b · m_1^x_1 · m_2^x_2 · ...; coefficients are
+    the multiplicative factors ``m_i = exp(slope_i)`` and ``b = exp(intercept)``.
+    """
+    yvals = _vec_data(known_y)
+    if any(v <= 0 for v in yvals):
+        return ExcelError.NUM
+    log_y = Vec([math.log(v) for v in yvals])
+    raw = LINEST(log_y, known_x, const, stats)
+    if isinstance(raw, ExcelError):
+        return raw
+    # Coefficients live in row 1 of the result; exponentiate them.
+    if not bool(stats):
+        return Vec([math.exp(c) if isinstance(c, (int, float)) else c for c in raw.data])
+    # 5xp stats matrix: row 1 (first p elements) gets exp.
+    cols = raw.cols or len(raw.data)
+    out = list(raw.data)
+    for i in range(cols):
+        v = out[i]
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            out[i] = math.exp(v)
+    return Vec(out, cols=cols)
+
+
+def TREND(
+    known_y: Vec,
+    known_x: Vec | None = None,
+    new_x: Any = None,
+    const: Any = True,
+) -> Any:
+    """=TREND(known_y, [known_x], [new_x], [const]).
+
+    Predicts y at each row of ``new_x`` using the LINEST-fit model.
+    ``new_x`` may be a scalar, a 1D ``Vec`` (single regressor), or a 2D
+    ``Vec`` whose column count matches the regressor count.
+    """
+    use_const = bool(const)
+    res = _linest_core(known_y, known_x, use_const)
+    if isinstance(res, ExcelError):
+        return res
+    coeffs, _, _, _, _ = res
+    k = len(coeffs) - 1 if use_const else len(coeffs)
     if new_x is None:
-        new_x = known_x
-    if isinstance(new_x, Vec):
-        return Vec([intercept + slope * float(x) for x in _vec_data(new_x)])
+        design_rows = _to_design_rows(known_x, len(_vec_data(known_y)))
+        if isinstance(design_rows, ExcelError):
+            return design_rows
+        return Vec([_predict(coeffs, row, use_const) for row in design_rows])
     if isinstance(new_x, (int, float)) and not isinstance(new_x, bool):
-        return float(intercept + slope * float(new_x))
-    return ExcelError.VALUE
+        if k != 1:
+            return ExcelError.VALUE
+        return _predict(coeffs, [float(new_x)], use_const)
+    if not isinstance(new_x, Vec):
+        return ExcelError.VALUE
+    if not new_x.is_2d:
+        # 1D Vec of new x-values: each is a single-regressor row.
+        if k != 1:
+            return ExcelError.VALUE
+        return Vec(
+            [_predict(coeffs, [float(v)], use_const) for v in _vec_data(new_x)],
+            cols=1,
+        )
+    n_rows, n_cols = new_x.shape
+    if n_cols != k:
+        return ExcelError.VALUE
+    out: list[Any] = []
+    for i in range(n_rows):
+        row = [float(new_x.data[i * n_cols + j]) for j in range(n_cols)]
+        out.append(_predict(coeffs, row, use_const))
+    return Vec(out, cols=1)
+
+
+def _predict(coeffs: list[float], x_row: list[float], const: bool) -> float:
+    """Predict y given coefficients [m_1, ..., m_k, b] and a regressor row."""
+    if const:
+        return coeffs[-1] + sum(coeffs[i] * x_row[i] for i in range(len(x_row)))
+    return sum(coeffs[i] * x_row[i] for i in range(len(x_row)))
+
+
+def GROWTH(
+    known_y: Vec,
+    known_x: Vec | None = None,
+    new_x: Any = None,
+    const: Any = True,
+) -> Any:
+    """=GROWTH(known_y, ...). Exponential model: y = b · m^x.
+
+    Same shape rules as TREND; predicts via ``exp(LINEST(ln(y))·x_row)``.
+    """
+    yvals = _vec_data(known_y)
+    if any(v <= 0 for v in yvals):
+        return ExcelError.NUM
+    log_y = Vec([math.log(v) for v in yvals])
+    pred = TREND(log_y, known_x, new_x, const)
+    if isinstance(pred, ExcelError):
+        return pred
+    if isinstance(pred, Vec):
+        return Vec(
+            [math.exp(v) if isinstance(v, (int, float)) else v for v in pred.data],
+            cols=pred.cols,
+        )
+    if isinstance(pred, (int, float)):
+        return math.exp(pred)
+    return pred
 
 
 # -- Tier 4: D-functions (database queries) --
@@ -3950,6 +4277,279 @@ def DVARP(database: Vec, field: Any, criteria: Vec) -> float | ExcelError:
     if not nums:
         return ExcelError.DIV0
     return statistics.pvariance(nums)
+
+
+# -- Excel 365 reshape / 2D array functions (Phase 3 of 2D-Vec) --
+#
+# These rely on `Vec.cols` carrying shape end-to-end (Phases 1-2). A 1D
+# Vec is treated as a column vector of shape (n, 1).
+
+
+def _shape(v: Vec) -> tuple[int, int]:
+    return v.shape
+
+
+def TRANSPOSE(rng: Vec) -> Vec:
+    """=TRANSPOSE(rng). Swap rows and columns of a 2D Vec.
+
+    A 1D Vec (shape n×1) becomes a 1D Vec interpreted as 1×n (cols=n).
+    """
+    rows, cols = _shape(rng)
+    if not rng.is_2d:
+        # Column vector -> row vector.
+        return Vec(list(rng.data), cols=rows)
+    out: list[Any] = []
+    for j in range(cols):
+        for i in range(rows):
+            out.append(rng.data[i * cols + j])
+    return Vec(out, cols=rows)
+
+
+def _normalize_indices(args: tuple[Any, ...], dim: int) -> list[int] | ExcelError:
+    """Flatten/coerce indices, accept Vec/list of indices. Negative is from end."""
+    out: list[int] = []
+    for a in args:
+        if isinstance(a, Vec):
+            for v in a.data:
+                if not isinstance(v, (int, float)) or isinstance(v, bool):
+                    return ExcelError.VALUE
+                out.append(int(v))
+        elif isinstance(a, (int, float)) and not isinstance(a, bool):
+            out.append(int(a))
+        else:
+            return ExcelError.VALUE
+    resolved: list[int] = []
+    for k in out:
+        if k == 0:
+            return ExcelError.VALUE
+        idx = k - 1 if k > 0 else dim + k  # negative from end
+        if not 0 <= idx < dim:
+            return ExcelError.VALUE
+        resolved.append(idx)
+    return resolved
+
+
+def CHOOSEROWS(rng: Vec, *indices: Any) -> Vec | ExcelError:
+    """=CHOOSEROWS(rng, row1, row2, ...). 1-based; negative counts from end."""
+    rows, cols = _shape(rng)
+    idx = _normalize_indices(indices, rows)
+    if isinstance(idx, ExcelError):
+        return idx
+    if not idx:
+        return ExcelError.VALUE
+    out: list[Any] = []
+    for i in idx:
+        if rng.is_2d:
+            out.extend(rng.data[i * cols : (i + 1) * cols])
+        else:
+            out.append(rng.data[i])
+    return Vec(out, cols=cols if rng.is_2d else None)
+
+
+def CHOOSECOLS(rng: Vec, *indices: Any) -> Vec | ExcelError:
+    """=CHOOSECOLS(rng, col1, col2, ...). 1-based; negative counts from end."""
+    rows, cols = _shape(rng)
+    idx = _normalize_indices(indices, cols)
+    if isinstance(idx, ExcelError):
+        return idx
+    if not idx:
+        return ExcelError.VALUE
+    out: list[Any] = []
+    if not rng.is_2d:
+        # 1D shape is (n, 1); only col index 1 (idx 0) is valid -- already
+        # checked by _normalize_indices. Result is the original column.
+        return Vec(list(rng.data))
+    for i in range(rows):
+        for j in idx:
+            out.append(rng.data[i * cols + j])
+    return Vec(out, cols=len(idx))
+
+
+def TOROW(rng: Vec, ignore: int = 0, scan_by_column: int = 0) -> Vec:
+    """=TOROW(rng, [ignore], [scan_by_column]).
+
+    ignore: 0 keep all, 1 skip blanks, 2 skip errors, 3 skip both.
+    scan_by_column: 0 row-major (default), 1 column-major.
+    """
+    skip_blank = bool(int(ignore) & 1)
+    skip_error = bool(int(ignore) & 2)
+    rows, cols = _shape(rng)
+    if int(scan_by_column) and rng.is_2d:
+        flat = [rng.data[i * cols + j] for j in range(cols) for i in range(rows)]
+    else:
+        flat = list(rng.data)
+    out: list[Any] = []
+    for v in flat:
+        if skip_blank and (v is None or (isinstance(v, str) and v == "")):
+            continue
+        if skip_error and isinstance(v, ExcelError):
+            continue
+        out.append(v)
+    return Vec(out, cols=len(out) if out else 1)
+
+
+def TOCOL(rng: Vec, ignore: int = 0, scan_by_column: int = 0) -> Vec:
+    """=TOCOL(rng, [ignore], [scan_by_column]). Result is a column (1D Vec)."""
+    row = TOROW(rng, ignore, scan_by_column)
+    return Vec(list(row.data))  # 1D = column vector
+
+
+def _wrap(vec: Vec, count: int, pad: Any, by_row: bool) -> Vec | ExcelError:
+    n = int(count)
+    if n < 1:
+        return ExcelError.NUM
+    flat = list(vec.data)
+    total = len(flat)
+    if total == 0:
+        return ExcelError.VALUE
+    if by_row:
+        n_rows = (total + n - 1) // n
+        out: list[Any] = []
+        for i in range(n_rows):
+            chunk = flat[i * n : (i + 1) * n]
+            if len(chunk) < n:
+                chunk = chunk + [pad] * (n - len(chunk))
+            out.extend(chunk)
+        return Vec(out, cols=n)
+    # by column
+    n_cols = (total + n - 1) // n
+    out_grid: list[list[Any]] = [[pad] * n_cols for _ in range(n)]
+    for k, v in enumerate(flat):
+        col = k // n
+        row = k % n
+        out_grid[row][col] = v
+    flat_out: list[Any] = []
+    for r in out_grid:
+        flat_out.extend(r)
+    return Vec(flat_out, cols=n_cols)
+
+
+def WRAPROWS(vec: Vec, wrap_count: int, pad: Any = None) -> Vec | ExcelError:
+    """=WRAPROWS(vec, wrap_count, [pad]). Reshape into rows of length wrap_count."""
+    return _wrap(vec, wrap_count, pad if pad is not None else ExcelError.NA, by_row=True)
+
+
+def WRAPCOLS(vec: Vec, wrap_count: int, pad: Any = None) -> Vec | ExcelError:
+    """=WRAPCOLS(vec, wrap_count, [pad]). Reshape into columns of length wrap_count."""
+    return _wrap(vec, wrap_count, pad if pad is not None else ExcelError.NA, by_row=False)
+
+
+def EXPAND(rng: Vec, rows: int, columns: int | None = None, pad: Any = None) -> Vec | ExcelError:
+    """=EXPAND(rng, rows, [cols], [pad]). Pad rng to (rows, cols) with pad."""
+    src_rows, src_cols = _shape(rng)
+    target_rows = int(rows)
+    target_cols = int(columns) if columns is not None else src_cols
+    if target_rows < src_rows or target_cols < src_cols:
+        return ExcelError.VALUE
+    if target_rows < 1 or target_cols < 1:
+        return ExcelError.NUM
+    p = pad if pad is not None else ExcelError.NA
+    out: list[Any] = []
+    for i in range(target_rows):
+        for j in range(target_cols):
+            if i < src_rows and j < src_cols:
+                if rng.is_2d:
+                    out.append(rng.data[i * src_cols + j])
+                else:
+                    out.append(rng.data[i])  # 1D src col = src_cols=1, j must be 0
+            else:
+                out.append(p)
+    return Vec(out, cols=target_cols)
+
+
+def TAKE(rng: Vec, rows: int, columns: int | None = None) -> Vec | ExcelError:
+    """=TAKE(rng, rows, [cols]). Take first ``rows`` (or last if negative) rows;
+    same for cols (defaults to all columns)."""
+    src_rows, src_cols = _shape(rng)
+    nr = int(rows)
+    nc = int(columns) if columns is not None else src_cols
+    if nr == 0 or nc == 0:
+        return ExcelError.VALUE
+    row_range = range(nr) if nr > 0 else range(src_rows + nr, src_rows)
+    col_range = range(nc) if nc > 0 else range(src_cols + nc, src_cols)
+    rows_keep = [i for i in row_range if 0 <= i < src_rows]
+    cols_keep = [j for j in col_range if 0 <= j < src_cols]
+    if not rows_keep or not cols_keep:
+        return ExcelError.VALUE
+    out: list[Any] = []
+    for i in rows_keep:
+        for j in cols_keep:
+            if rng.is_2d:
+                out.append(rng.data[i * src_cols + j])
+            else:
+                out.append(rng.data[i])
+    return Vec(out, cols=len(cols_keep))
+
+
+def DROP(rng: Vec, rows: int, columns: int | None = None) -> Vec | ExcelError:
+    """=DROP(rng, rows, [cols]). Drop first ``rows`` (or last if negative);
+    same for cols (defaults to drop none)."""
+    src_rows, src_cols = _shape(rng)
+    dr = int(rows)
+    dc = int(columns) if columns is not None else 0
+    keep_rows = list(range(dr, src_rows)) if dr >= 0 else list(range(0, src_rows + dr))
+    keep_cols = list(range(dc, src_cols)) if dc >= 0 else list(range(0, src_cols + dc))
+    if not keep_rows or not keep_cols:
+        return ExcelError.VALUE
+    out: list[Any] = []
+    for i in keep_rows:
+        for j in keep_cols:
+            if rng.is_2d:
+                out.append(rng.data[i * src_cols + j])
+            else:
+                out.append(rng.data[i])
+    return Vec(out, cols=len(keep_cols))
+
+
+def VSTACK(*ranges: Any) -> Vec | ExcelError:
+    """=VSTACK(rng1, rng2, ...). Stack vertically. Mismatched widths
+    pad with #N/A to the widest."""
+    if not ranges:
+        return ExcelError.VALUE
+    grids: list[tuple[int, int, list[Any]]] = []
+    for r in ranges:
+        if not isinstance(r, Vec):
+            return ExcelError.VALUE
+        rows, cols = _shape(r)
+        grids.append((rows, cols, list(r.data)))
+    max_cols = max(g[1] for g in grids)
+    out: list[Any] = []
+    for rows, cols, data in grids:
+        for i in range(rows):
+            if cols == 1 and not isinstance(ranges[grids.index((rows, cols, data))], Vec):
+                pass
+            row = data[i * cols : (i + 1) * cols] if cols > 1 else [data[i]]
+            if len(row) < max_cols:
+                row = row + [ExcelError.NA] * (max_cols - len(row))
+            out.extend(row)
+    total_rows = sum(g[0] for g in grids)
+    return Vec(out, cols=max_cols if total_rows * max_cols == len(out) else max_cols)
+
+
+def HSTACK(*ranges: Any) -> Vec | ExcelError:
+    """=HSTACK(rng1, rng2, ...). Stack horizontally. Mismatched heights
+    pad with #N/A to the tallest."""
+    if not ranges:
+        return ExcelError.VALUE
+    grids: list[tuple[int, int, list[Any]]] = []
+    for r in ranges:
+        if not isinstance(r, Vec):
+            return ExcelError.VALUE
+        rows, cols = _shape(r)
+        grids.append((rows, cols, list(r.data)))
+    max_rows = max(g[0] for g in grids)
+    total_cols = sum(g[1] for g in grids)
+    out: list[Any] = []
+    for i in range(max_rows):
+        for rows, cols, data in grids:
+            if i < rows:
+                if cols == 1 and rows == len(data):
+                    out.append(data[i])
+                else:
+                    out.extend(data[i * cols : (i + 1) * cols])
+            else:
+                out.extend([ExcelError.NA] * cols)
+    return Vec(out, cols=total_cols)
 
 
 # -- Builtins dict for registration --
@@ -4181,6 +4781,19 @@ BUILTINS: dict[str, Any] = {
     "UNIQUE": UNIQUE,
     "SEQUENCE": SEQUENCE,
     "RANDARRAY": RANDARRAY,
+    # Excel 365 reshape / 2D array
+    "TRANSPOSE": TRANSPOSE,
+    "CHOOSEROWS": CHOOSEROWS,
+    "CHOOSECOLS": CHOOSECOLS,
+    "TOROW": TOROW,
+    "TOCOL": TOCOL,
+    "WRAPROWS": WRAPROWS,
+    "WRAPCOLS": WRAPCOLS,
+    "EXPAND": EXPAND,
+    "TAKE": TAKE,
+    "DROP": DROP,
+    "VSTACK": VSTACK,
+    "HSTACK": HSTACK,
     # Tier 4 -- financial
     "SLN": SLN,
     "SYD": SYD,
@@ -4289,7 +4902,10 @@ BUILTINS: dict[str, Any] = {
     # Tier 4 -- scalar forecasting
     "FORECAST": FORECAST,
     "FORECAST.LINEAR": FORECAST_LINEAR,
-    "TREND": TREND_SCALAR,
+    "TREND": TREND,
+    "GROWTH": GROWTH,
+    "LINEST": LINEST,
+    "LOGEST": LOGEST,
     # Tier 4 -- D-functions
     "DSUM": DSUM,
     "DAVERAGE": DAVERAGE,

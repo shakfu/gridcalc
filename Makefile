@@ -1,4 +1,4 @@
-.PHONY: all sync build rebuild test lint format typecheck qa clean  \
+.PHONY: all sync build rebuild test test-stdlib lint format typecheck qa clean  \
        distclean wheel sdist dist check publish-test publish upgrade \
        coverage coverage-html docs release help
 
@@ -19,6 +19,15 @@ rebuild: build
 # Run tests
 test:
 	@GRIDCALC_SANDBOX=1 uv run pytest tests/ -v
+
+# Run tests in an isolated environment without the optional extras
+# (numpy / pandas). Verifies the optional-dep skipif guards work and
+# the core engine operates without any third-party runtime deps.
+# Pygments arrives transitively via pytest -- harmless; tui.py guards
+# its use with try/except.
+test-stdlib:
+	@GRIDCALC_SANDBOX=1 uv run --isolated --no-project --with pytest --with . \
+		pytest tests/ -v
 
 # Lint with ruff
 lint:

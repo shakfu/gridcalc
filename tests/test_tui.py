@@ -1,9 +1,15 @@
 """Tests for TUI components that don't require a live curses terminal."""
 
 import curses
+import importlib.util
+
+import pytest
 
 from gridcalc.engine import Grid
 from gridcalc.tui import UndoManager
+
+_HAS_NUMPY = importlib.util.find_spec("numpy") is not None
+_HAS_PANDAS = importlib.util.find_spec("pandas") is not None
 
 
 class TestUndoManagerSaveCell:
@@ -1058,6 +1064,7 @@ class TestSearchIndicator:
         assert search_indicator(self.g, []) == ""
 
 
+@pytest.mark.skipif(not _HAS_PANDAS, reason="pandas not installed")
 class TestPdCommands:
     """Test pandas load/save via cmdexec."""
 
@@ -1119,6 +1126,7 @@ class TestPdCommands:
         cmdexec(self.stdscr, self.g, self.undo, "pd foo")
 
 
+@pytest.mark.skipif(not _HAS_PANDAS, reason="pandas not installed")
 class TestDataFrameDisplay:
     """Test DataFrame cell display formatting."""
 
@@ -1204,6 +1212,7 @@ class TestBuildFormula:
         cl = g.cell(0, 0)
         assert cl.arr == [10.0, 20.0, 30.0]
 
+    @pytest.mark.skipif(not _HAS_NUMPY, reason="numpy not installed")
     def test_ndarray_2d_roundtrip(self):
         from gridcalc.tui import _build_formula
 
@@ -1216,6 +1225,7 @@ class TestBuildFormula:
         assert cl.matrix is not None
         assert cl.matrix.tolist() == [[1, 2], [3, 4]]
 
+    @pytest.mark.skipif(not _HAS_PANDAS, reason="pandas not installed")
     def test_dataframe_roundtrip(self):
         from gridcalc.tui import _build_formula
 

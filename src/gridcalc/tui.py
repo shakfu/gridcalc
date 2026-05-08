@@ -2463,11 +2463,14 @@ def mainloop(stdscr: curses.window, g: Grid) -> None:
 
 
 def _highlight_code(code: str) -> str:
-    """Syntax-highlight Python code for terminal output using Pygments."""
-    from pygments import highlight
-    from pygments.formatters import TerminalFormatter
-    from pygments.lexers import PythonLexer
-
+    """Syntax-highlight Python code for terminal output. Falls back to
+    plain text when Pygments isn't installed."""
+    try:
+        from pygments import highlight
+        from pygments.formatters import TerminalFormatter
+        from pygments.lexers import PythonLexer
+    except ImportError:
+        return code
     return highlight(code, PythonLexer(), TerminalFormatter())
 
 

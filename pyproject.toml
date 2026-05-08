@@ -28,18 +28,31 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "numpy>=1.24",
-    "pandas>=2.0",
-    "pygments>=2.15",
     "tomli>=1.0; python_version < '3.11'",
 ]
+
+[project.optional-dependencies]
+# numpy: speeds up the regression solver (LINEST/LOGEST/TREND/GROWTH)
+# and matrix-shaped aggregates; required if user formulas use ndarrays.
+numpy = ["numpy>=1.24"]
+# pandas: required for DataFrame-returning formulas and the :pd commands.
+# Pulls numpy via the pandas wheel.
+pandas = ["pandas>=2.0", "numpy>=1.24"]
+# viz: syntax-highlighted code preview in the trust prompt. Without it
+# the preview falls back to plain text.
+viz = ["pygments>=2.15"]
+# Convenience: install everything.
+all = ["numpy>=1.24", "pandas>=2.0", "pygments>=2.15"]
 
 [dependency-groups]
 dev = [
     "build>=1.0",
     "mypy>=1.19.1",
+    "numpy>=1.24",
     "openpyxl>=3.1",
+    "pandas>=2.0",
     "pandas-stubs>=2.0",
+    "pygments>=2.15",
     "pytest",
     "ruff>=0.15.7",
     "twine>=6.2.0",

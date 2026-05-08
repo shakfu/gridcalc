@@ -207,6 +207,33 @@
 
 ### Changed
 
+- **Zero third-party runtime dependencies for the core install.**
+  `numpy`, `pandas`, and `pygments` moved out of
+  `[project.dependencies]` into `[project.optional-dependencies]` as
+  the `[numpy]`, `[pandas]` (implies numpy), `[viz]`, and `[all]`
+  extras. All 300+ Excel functions — including the full
+  statistical-distribution suite, financial functions, the regression
+  family, and the 2D-Vec reshape consumers — work on stdlib alone.
+  `tomli` is the only remaining runtime dep, conditional on Python
+  <3.11. Existing duck-typing helpers (`_is_ndarray`/`_is_dataframe`/
+  `_is_series`) continue to gate ndarray/DataFrame-aware paths
+  without importing the relevant module.
+  - **Optional numpy speedup in regression**: `_solve_linear_system`
+    now tries `numpy.linalg.solve` first (LAPACK-backed; ~100× faster
+    on large systems and more accurate on ill-conditioned designs)
+    and falls back to the existing pure-Python Gauss-Jordan elimination
+    when numpy isn't installed. `_linest_core`'s `X'X` build similarly
+    upgrades to `X.T @ X` when numpy is available.
+  - **Pygments fallback**: the trust-prompt code preview
+    (`tui._highlight_code`) falls back to plain (uncoloured) text when
+    Pygments isn't installed.
+  - **Tests**: numpy/pandas-dependent classes are now guarded with
+    `@pytest.mark.skipif(not _HAS_NUMPY/PANDAS, ...)`. New
+    `make test-stdlib` target runs the suite in a `uv --isolated`
+    environment with no extras, exercising the optional-import paths.
+    897 / 46 split (passing / skipped) without extras; full 951
+    passing with `[all]`.
+
 - **`openpyxl` is now a dev-only dependency**: moved from
   `[project.dependencies]` to `[dependency-groups].dev`. Runtime xlsx I/O
   goes through the OpenXLSX-backed `_core`; failures surface as return

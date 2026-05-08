@@ -1,3 +1,4 @@
+import importlib.util
 import math
 
 import pytest
@@ -1566,9 +1567,6 @@ class TestTopoGraphInvariants:
         assert g.cells[0][1].val == 101.0
 
 
-np = pytest.importorskip("numpy")
-
-
 def make_np_grid():
     """Create a grid with numpy loaded into eval globals."""
     g = Grid()
@@ -1576,6 +1574,15 @@ def make_np_grid():
     return g
 
 
+# Class-level skip means TestNumpyMatrix is skipped when numpy isn't
+# installed -- the rest of the module continues to run.
+_HAS_NUMPY = importlib.util.find_spec("numpy") is not None
+_HAS_PANDAS = importlib.util.find_spec("pandas") is not None
+if _HAS_NUMPY:
+    import numpy as np  # noqa: I001 -- conditional
+
+
+@pytest.mark.skipif(not _HAS_NUMPY, reason="numpy not installed")
 class TestNumpyMatrix:
     def test_basic_ndarray_formula(self):
         g = make_np_grid()
@@ -1840,6 +1847,7 @@ def make_pd_grid():
     return g
 
 
+@pytest.mark.skipif(not _HAS_PANDAS, reason="pandas not installed")
 class TestDataFrameFormula:
     def test_dataframe_creation(self):
         g = make_pd_grid()
@@ -1910,6 +1918,7 @@ class TestDataFrameFormula:
         assert g.cells[0][0].matrix is not None
 
 
+@pytest.mark.skipif(not _HAS_PANDAS, reason="pandas not installed")
 class TestPdLoad:
     def test_pdload_csv(self, tmp_path):
         path = str(tmp_path / "data.csv")
@@ -1968,6 +1977,7 @@ class TestPdLoad:
         assert g.cells[0][1].val == 30.0
 
 
+@pytest.mark.skipif(not _HAS_PANDAS, reason="pandas not installed")
 class TestPdSave:
     def test_pdsave_csv(self, tmp_path):
         g = make_pd_grid()

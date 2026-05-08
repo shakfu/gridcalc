@@ -49,13 +49,35 @@ $ gridcalc budget.json
 From PyPI (requires Python 3.10+):
 
 ```sh
-pip install gridcalc
+pip install gridcalc                  # core only -- stdlib + tomli (3.10)
+pip install 'gridcalc[numpy]'         # adds ndarray support; speeds up regression
+pip install 'gridcalc[pandas]'        # adds DataFrame support (implies numpy)
+pip install 'gridcalc[viz]'           # syntax-highlighted code preview (Pygments)
+pip install 'gridcalc[all]'           # everything
 ```
+
+The core install has **zero third-party runtime dependencies** (just `tomli`
+on Python 3.10 for TOML config; 3.11+ uses stdlib `tomllib`). All 300+
+Excel functions, including the full statistical-distribution suite,
+financial functions, and the regression family (`LINEST`/`LOGEST`/
+`TREND`/`GROWTH`), work on stdlib alone.
+
+Optional extras add capability or speed:
+
+- `[numpy]` — enables `np.array(...)` formulas and ndarray cell values;
+  also speeds up `_solve_linear_system` (LAPACK-backed) and the
+  `LINEST`-family `X'X` build for large datasets. Pure-Python Gauss-Jordan
+  is the fallback when numpy isn't installed.
+- `[pandas]` — enables `pd.DataFrame(...)` formulas, the `:pd load` /
+  `:pd save` commands, and DataFrame cell display.
+- `[viz]` — Pygments syntax-highlighting for the trust-prompt code
+  preview. Falls back to plain text when missing.
 
 Or with [uv](https://docs.astral.sh/uv/):
 
 ```sh
 uv tool install gridcalc
+uv tool install 'gridcalc[all]'       # with all extras
 ```
 
 Then run:

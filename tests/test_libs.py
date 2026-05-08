@@ -1852,7 +1852,7 @@ class TestForecastScalar:
         assert math.isclose(FORECAST(3, y, x), 7.0, abs_tol=1e-12)  # type: ignore[arg-type]
 
     def test_trend_scalar_and_vec(self) -> None:
-        from gridcalc.libs.xlsx import TREND_SCALAR
+        from gridcalc.libs.xlsx import TREND as TREND_SCALAR
 
         x = Vec([1.0, 2.0, 3.0, 4.0])
         y = Vec([2.0, 4.0, 6.0, 8.0])  # y = 2x
@@ -1864,7 +1864,7 @@ class TestForecastScalar:
         assert math.isclose(multi.data[1], 12.0, abs_tol=1e-12)
 
     def test_trend_default_x(self) -> None:
-        from gridcalc.libs.xlsx import TREND_SCALAR
+        from gridcalc.libs.xlsx import TREND as TREND_SCALAR
 
         # known_x defaults to {1, 2, 3, ...}.
         y = Vec([2.0, 4.0, 6.0])
@@ -2209,3 +2209,336 @@ class TestStatDistributionsHeavier:
         assert math.isclose(g.cells[0][1].val, 18.30703805329528, rel_tol=1e-9)
         assert math.isclose(g.cells[0][2].val, 0.5248, rel_tol=1e-9)
         assert math.isclose(g.cells[0][3].val, 4 / 3, rel_tol=1e-12)
+
+
+class TestReshape2D:
+    """Phase 3 of 2D-Vec: TRANSPOSE + reshape consumers."""
+
+    def test_transpose_2d(self) -> None:
+        from gridcalc.libs.xlsx import TRANSPOSE
+
+        m = Vec([1, 2, 3, 4, 5, 6], cols=3)  # 2x3
+        t = TRANSPOSE(m)
+        assert t.shape == (3, 2)
+        assert t.data == [1, 4, 2, 5, 3, 6]
+
+    def test_transpose_round_trip(self) -> None:
+        from gridcalc.libs.xlsx import TRANSPOSE
+
+        m = Vec([1, 2, 3, 4, 5, 6, 7, 8], cols=4)
+        assert TRANSPOSE(TRANSPOSE(m)).data == list(m.data)
+
+    def test_transpose_1d_to_row(self) -> None:
+        from gridcalc.libs.xlsx import TRANSPOSE
+
+        v = Vec([10, 20, 30])  # column vector (3, 1)
+        t = TRANSPOSE(v)
+        assert t.shape == (1, 3)
+        assert t.data == [10, 20, 30]
+
+    def test_chooserows(self) -> None:
+        from gridcalc.libs.xlsx import CHOOSEROWS
+
+        m = Vec([1, 2, 3, 4, 5, 6], cols=2)  # 3x2
+        result = CHOOSEROWS(m, 1, 3)
+        assert isinstance(result, Vec)
+        assert result.data == [1, 2, 5, 6]
+        assert result.cols == 2
+        assert CHOOSEROWS(m, -1).data == [5, 6]
+        assert CHOOSEROWS(m, 1, 1, 2).data == [1, 2, 1, 2, 3, 4]
+
+    def test_chooserows_invalid(self) -> None:
+        from gridcalc.libs.xlsx import CHOOSEROWS
+
+        m = Vec([1, 2, 3, 4], cols=2)
+        assert CHOOSEROWS(m, 0) is ExcelError.VALUE
+        assert CHOOSEROWS(m, 5) is ExcelError.VALUE
+
+    def test_choosecols(self) -> None:
+        from gridcalc.libs.xlsx import CHOOSECOLS
+
+        m = Vec([1, 2, 3, 4, 5, 6, 7, 8, 9], cols=3)  # 3x3
+        result = CHOOSECOLS(m, 2)
+        assert isinstance(result, Vec)
+        assert result.data == [2, 5, 8]
+        result2 = CHOOSECOLS(m, 3, 1)
+        assert isinstance(result2, Vec)
+        assert result2.data == [3, 1, 6, 4, 9, 7]
+        assert result2.cols == 2
+
+    def test_torow_skip_blanks(self) -> None:
+        from gridcalc.libs.xlsx import TOROW
+
+        v = Vec([1, None, 2, "", 3], cols=5)
+        assert TOROW(v, 1).data == [1, 2, 3]
+
+    def test_torow_scan_by_column(self) -> None:
+        from gridcalc.libs.xlsx import TOROW
+
+        m = Vec([1, 2, 3, 4, 5, 6], cols=3)
+        assert TOROW(m, 0, 0).data == [1, 2, 3, 4, 5, 6]
+        assert TOROW(m, 0, 1).data == [1, 4, 2, 5, 3, 6]
+
+    def test_tocol_returns_column(self) -> None:
+        from gridcalc.libs.xlsx import TOCOL
+
+        result = TOCOL(Vec([1, 2, 3, 4], cols=2))
+        assert result.cols is None
+        assert result.data == [1, 2, 3, 4]
+
+    def test_wraprows(self) -> None:
+        from gridcalc.libs.xlsx import WRAPROWS
+
+        result = WRAPROWS(Vec([1, 2, 3, 4, 5, 6]), 2)
+        assert isinstance(result, Vec)
+        assert result.shape == (3, 2)
+        assert result.data == [1, 2, 3, 4, 5, 6]
+        padded = WRAPROWS(Vec([1, 2, 3, 4, 5]), 2, 0)
+        assert isinstance(padded, Vec)
+        assert padded.data == [1, 2, 3, 4, 5, 0]
+
+    def test_wrapcols(self) -> None:
+        from gridcalc.libs.xlsx import WRAPCOLS
+
+        result = WRAPCOLS(Vec([1, 2, 3, 4, 5, 6]), 2)
+        assert isinstance(result, Vec)
+        assert result.shape == (2, 3)
+        # Element k goes to row=k%2, col=k//2.
+        assert result.data == [1, 3, 5, 2, 4, 6]
+
+    def test_expand(self) -> None:
+        from gridcalc.libs.xlsx import EXPAND
+
+        m = Vec([1, 2, 3, 4], cols=2)  # 2x2
+        result = EXPAND(m, 3, 3, 0)
+        assert isinstance(result, Vec)
+        assert result.shape == (3, 3)
+        assert result.data == [1, 2, 0, 3, 4, 0, 0, 0, 0]
+
+    def test_expand_smaller_target_errors(self) -> None:
+        from gridcalc.libs.xlsx import EXPAND
+
+        m = Vec([1, 2, 3, 4], cols=2)
+        assert EXPAND(m, 1, 1, 0) is ExcelError.VALUE
+
+    def test_take_positive_negative(self) -> None:
+        from gridcalc.libs.xlsx import TAKE
+
+        m = Vec([1, 2, 3, 4, 5, 6], cols=2)  # 3x2
+        first = TAKE(m, 2)
+        assert isinstance(first, Vec)
+        assert first.data == [1, 2, 3, 4]
+        last = TAKE(m, -2)
+        assert isinstance(last, Vec)
+        assert last.data == [3, 4, 5, 6]
+        first_col = TAKE(m, 3, 1)
+        assert isinstance(first_col, Vec)
+        assert first_col.data == [1, 3, 5]
+
+    def test_drop_positive_negative(self) -> None:
+        from gridcalc.libs.xlsx import DROP
+
+        m = Vec([1, 2, 3, 4, 5, 6], cols=2)  # 3x2
+        assert DROP(m, 1).data == [3, 4, 5, 6]  # type: ignore[union-attr]
+        assert DROP(m, -1).data == [1, 2, 3, 4]  # type: ignore[union-attr]
+
+    def test_vstack(self) -> None:
+        from gridcalc.libs.xlsx import VSTACK
+
+        a = Vec([1, 2, 3, 4], cols=2)
+        b = Vec([5, 6], cols=2)
+        result = VSTACK(a, b)
+        assert isinstance(result, Vec)
+        assert result.shape == (3, 2)
+        assert result.data == [1, 2, 3, 4, 5, 6]
+
+    def test_vstack_pads_widths(self) -> None:
+        from gridcalc.libs.xlsx import VSTACK
+
+        a = Vec([1, 2, 3, 4], cols=2)
+        b = Vec([5, 6, 7], cols=3)
+        result = VSTACK(a, b)
+        assert isinstance(result, Vec)
+        assert result.shape == (3, 3)
+        assert result.data[0:3] == [1, 2, ExcelError.NA]
+        assert result.data[3:6] == [3, 4, ExcelError.NA]
+        assert result.data[6:9] == [5, 6, 7]
+
+    def test_hstack(self) -> None:
+        from gridcalc.libs.xlsx import HSTACK
+
+        a = Vec([1, 2, 3, 4], cols=2)
+        b = Vec([5, 6], cols=1)
+        result = HSTACK(a, b)
+        assert isinstance(result, Vec)
+        assert result.shape == (2, 3)
+        assert result.data == [1, 2, 5, 3, 4, 6]
+
+    def test_hstack_pads_heights(self) -> None:
+        from gridcalc.libs.xlsx import HSTACK
+
+        a = Vec([1, 2, 3, 4], cols=2)
+        b = Vec([5, 6, 7], cols=1)
+        result = HSTACK(a, b)
+        assert isinstance(result, Vec)
+        assert result.shape == (3, 3)
+        assert result.data[0:3] == [1, 2, 5]
+        assert result.data[3:6] == [3, 4, 6]
+        assert result.data[6:9] == [ExcelError.NA, ExcelError.NA, 7]
+
+    def test_via_grid_excel_mode(self) -> None:
+        """End-to-end TRANSPOSE picked via INDEX."""
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        for c in range(3):
+            g.setcell(c, 0, str(c + 1))
+            g.setcell(c, 1, str(c + 4))
+        # TRANSPOSE(A1:C2) is 3x2; INDEX(.., 1, 2) reads row=1, col=2.
+        # Original (1,2) value (1-based) = the col=2 cell of row 1 in the
+        # transposed = row=1 of transposed = (1, c=1 of transposed) which
+        # is the *original* (col=1 of transposed src, so col=1 row=2),
+        # i.e. A2 = 4.
+        g.setcell(0, 3, "=INDEX(TRANSPOSE(A1:C2), 1, 2)")
+        assert g.cells[0][3].val == 4.0
+
+
+class TestRegressionFamily:
+    """Phase 4: LINEST/LOGEST/TREND/GROWTH with multi-regressor support."""
+
+    def test_solver_2x2(self) -> None:
+        from gridcalc.libs.xlsx import _solve_linear_system
+
+        # 2x + y = 5; x + 3y = 10  ->  x=1, y=3.
+        result = _solve_linear_system([[2.0, 1.0], [1.0, 3.0]], [5.0, 10.0])
+        assert isinstance(result, list)
+        assert math.isclose(result[0], 1.0, abs_tol=1e-12)
+        assert math.isclose(result[1], 3.0, abs_tol=1e-12)
+
+    def test_solver_singular(self) -> None:
+        from gridcalc.libs.xlsx import _solve_linear_system
+
+        # Linearly dependent rows -> singular.
+        result = _solve_linear_system([[1.0, 2.0], [2.0, 4.0]], [3.0, 6.0])
+        assert result is ExcelError.NUM
+
+    def test_linest_single_regressor(self) -> None:
+        from gridcalc.libs.xlsx import LINEST
+
+        # y = 2x + 1
+        x = Vec([1.0, 2.0, 3.0, 4.0, 5.0])
+        y = Vec([3.0, 5.0, 7.0, 9.0, 11.0])
+        result = LINEST(y, x)
+        assert isinstance(result, Vec)
+        # Excel order: m, b.
+        assert math.isclose(result.data[0], 2.0, abs_tol=1e-9)
+        assert math.isclose(result.data[1], 1.0, abs_tol=1e-9)
+
+    def test_linest_multi_regressor(self) -> None:
+        from gridcalc.libs.xlsx import LINEST
+
+        # y = 1 + 2*x1 + 3*x2 (no noise)
+        pairs = [(1, 1), (2, 1), (1, 2), (3, 2), (2, 3), (4, 5)]
+        ys = Vec([float(1 + 2 * a + 3 * b) for a, b in pairs])
+        xs = Vec([float(v) for pair in pairs for v in pair], cols=2)
+        result = LINEST(ys, xs)
+        assert isinstance(result, Vec)
+        # Excel order: m_k (last regressor's slope first), ..., m_1, b.
+        # So: [m2=3, m1=2, b=1].
+        assert math.isclose(result.data[0], 3.0, abs_tol=1e-9)
+        assert math.isclose(result.data[1], 2.0, abs_tol=1e-9)
+        assert math.isclose(result.data[2], 1.0, abs_tol=1e-9)
+
+    def test_linest_no_constant(self) -> None:
+        from gridcalc.libs.xlsx import LINEST
+
+        # y = 2x without intercept; force through origin.
+        x = Vec([1.0, 2.0, 3.0])
+        y = Vec([2.0, 4.0, 6.0])
+        result = LINEST(y, x, False)
+        assert isinstance(result, Vec)
+        # No intercept reported.
+        assert len(result.data) == 1
+        assert math.isclose(result.data[0], 2.0, abs_tol=1e-9)
+
+    def test_linest_stats_matrix(self) -> None:
+        from gridcalc.libs.xlsx import LINEST
+
+        # Perfect linear fit -> r²=1, ss_residual=0.
+        x = Vec([1.0, 2.0, 3.0, 4.0, 5.0])
+        y = Vec([3.0, 5.0, 7.0, 9.0, 11.0])
+        result = LINEST(y, x, True, True)
+        assert isinstance(result, Vec)
+        assert result.shape == (5, 2)
+        # Row 1 = coefficients; row 3 col 1 = r².
+        assert math.isclose(result.at(1, 1), 2.0, abs_tol=1e-9)
+        assert math.isclose(result.at(1, 2), 1.0, abs_tol=1e-9)
+        assert math.isclose(result.at(3, 1), 1.0, abs_tol=1e-9)  # r² = 1
+
+    def test_logest(self) -> None:
+        from gridcalc.libs.xlsx import LOGEST
+
+        # y = 2 * 3^x  ->  ln(y) = ln(2) + ln(3)*x
+        x = Vec([0.0, 1.0, 2.0, 3.0, 4.0])
+        y = Vec([2.0 * 3**i for i in range(5)])
+        result = LOGEST(y, x)
+        assert isinstance(result, Vec)
+        # Excel order: [m=3, b=2] (multiplicative).
+        assert math.isclose(result.data[0], 3.0, abs_tol=1e-9)
+        assert math.isclose(result.data[1], 2.0, abs_tol=1e-9)
+
+    def test_logest_invalid_y(self) -> None:
+        from gridcalc.libs.xlsx import LOGEST
+
+        # ln of non-positive -> #NUM!.
+        assert LOGEST(Vec([1.0, 0.0, 4.0]), Vec([1.0, 2.0, 3.0])) is ExcelError.NUM
+
+    def test_trend_array(self) -> None:
+        from gridcalc.libs.xlsx import TREND
+
+        # y = 2x + 1; predict at new x = [6, 7].
+        x = Vec([1.0, 2.0, 3.0, 4.0, 5.0])
+        y = Vec([3.0, 5.0, 7.0, 9.0, 11.0])
+        result = TREND(y, x, Vec([6.0, 7.0]))
+        assert isinstance(result, Vec)
+        assert math.isclose(result.data[0], 13.0, abs_tol=1e-9)
+        assert math.isclose(result.data[1], 15.0, abs_tol=1e-9)
+
+    def test_trend_multi_regressor(self) -> None:
+        from gridcalc.libs.xlsx import TREND
+
+        # y = 1 + 2*x1 + 3*x2
+        pairs = [(1, 1), (2, 1), (1, 2), (3, 2), (2, 3), (4, 5)]
+        ys = Vec([float(1 + 2 * a + 3 * b) for a, b in pairs])
+        xs = Vec([float(v) for pair in pairs for v in pair], cols=2)
+        # Predict at (5, 5) and (10, 1) -> [1+10+15, 1+20+3] = [26, 24].
+        new_x = Vec([5.0, 5.0, 10.0, 1.0], cols=2)
+        result = TREND(ys, xs, new_x)
+        assert isinstance(result, Vec)
+        assert math.isclose(result.data[0], 26.0, abs_tol=1e-9)
+        assert math.isclose(result.data[1], 24.0, abs_tol=1e-9)
+
+    def test_growth(self) -> None:
+        from gridcalc.libs.xlsx import GROWTH
+
+        # y = 2 * 3^x; predict at x=5 -> 2 * 243 = 486.
+        x = Vec([0.0, 1.0, 2.0, 3.0, 4.0])
+        y = Vec([2.0 * 3**i for i in range(5)])
+        result = GROWTH(y, x, 5)
+        assert isinstance(result, float)
+        assert math.isclose(result, 486.0, rel_tol=1e-9)
+
+    def test_via_grid_excel_mode(self) -> None:
+        """End-to-end LINEST through the formula evaluator."""
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        # y = 2x + 1 in A1:A5 (y) and B1:B5 (x).
+        for i in range(5):
+            g.setcell(0, i, str(2 * (i + 1) + 1))
+            g.setcell(1, i, str(i + 1))
+        # LINEST returns a 1×2 row [slope, intercept].
+        g.setcell(3, 0, "=INDEX(LINEST(A1:A5, B1:B5), 1, 1)")
+        g.setcell(3, 1, "=INDEX(LINEST(A1:A5, B1:B5), 1, 2)")
+        assert math.isclose(g.cells[3][0].val, 2.0, abs_tol=1e-9)
+        assert math.isclose(g.cells[3][1].val, 1.0, abs_tol=1e-9)

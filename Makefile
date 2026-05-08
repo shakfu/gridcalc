@@ -1,6 +1,6 @@
 .PHONY: all sync build rebuild test test-stdlib lint format typecheck qa clean  \
        distclean wheel sdist dist check publish-test publish upgrade \
-       coverage coverage-html docs release help
+       coverage coverage-html docs release bench bench-clean help
 
 # Default target
 all: build
@@ -80,6 +80,15 @@ coverage:
 coverage-html:
 	@GRIDCALC_SANDBOX=1 uv run pytest tests/ -v --cov=src/gridcalc --cov-report=html
 	@echo "Coverage report: htmlcov/index.html"
+
+# Run cProfile-instrumented benchmarks across the four sheet shapes.
+# Generates fixtures (bench_*.json) on first run; reuse on subsequent.
+bench:
+	@GRIDCALC_SANDBOX=1 uv run python -m benches.run
+
+# Remove benchmark fixtures.
+bench-clean:
+	@rm -f bench_*.json bench_*.json.out
 
 # Build documentation (requires sphinx in dev dependencies)
 docs:

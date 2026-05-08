@@ -4,7 +4,47 @@
 
 ### Added
 
-- **2D-aware `Vec` (Phase 1 + 2 of `docs/2d-vec-design.md`).** Foundation
+- **CLI accepts `.xlsx` files directly.** `gridcalc model.xlsx`
+  dispatches to `Grid.xlsxload` (the OpenXLSX-backed C++ path)
+  instead of `jsonload`. Detection is by extension match. Sandbox
+  trust prompt is skipped for xlsx (no code-block surface). Help
+  string updated to ``Usage: gridcalc <sheet.json | sheet.xlsx>``.
+
+- **Per-recalc range materialisation cache.** `Env._range_cache`
+  (evaluator.py) memoises the materialised `Vec` for each
+  ``(c1, r1, c2, r2)`` range encountered during a single recalc pass.
+  `_eval_range` checks the cache before walking cells; subsequent
+  references to the same range reuse the result. Topological recalc
+  evaluates in dep order so source cells finalise before any consumer
+  reads them — cache liveness is bounded by the closure pass and
+  remains sound. The legacy fixed-point `_recalc_formula` clears the
+  cache between iterations because values can change across passes.
+  Hit rate on range-heavy sheets is ~10×; on a 25K-cell range-heavy
+  benchmark this cuts full recalc 871 ms → 259 ms (-70%) and
+  surgical edits 23 ms → 10 ms (-57%).
+
+- **Skip redundant `_rebuild_dep_graph` on cold load.** `jsonload`'s
+  per-cell `_setcell_no_recalc` already populates `_dep_of` /
+  `_subscribers` / `_volatile` via incremental `_refresh_deps` calls.
+  The subsequent `recalc()` previously walked every formula AST a
+  second time to rebuild the same graph from scratch. New
+  `Grid._dep_graph_built` flag tracks whether the graph is consistent;
+  set True at the end of `_rebuild_dep_graph` and at the end of
+  `jsonload` when mode is non-LEGACY. `_recalc_topo` checks the flag
+  and skips the rebuild when the graph is current. Cold load on
+  ranges sheet: 1267 ms → 677 ms (-47%); typical mixed sheet: 662 ms
+  → 476 ms (-28%).
+
+- **`benches/` profiler harness.** New `benches/gen_sheet.py` produces
+  four representative sheet shapes (wide independent formulas, long
+  chains, range-heavy aggregates, realistic mix) at ~30K cells each.
+  `benches/run.py` wraps `cProfile` around four operations (cold load,
+  full recalc, surgical edit, save) per shape and prints top-N
+  hotspots plus a one-page summary. `make bench` runs end-to-end;
+  `make bench-clean` removes fixtures. Used to identify the two
+  optimisations above.
+
+- **2D-aware `Vec` (Phases 1-4 of `docs/2d-vec-design.md`).** Foundation
   for `TRANSPOSE`/`LINEST`/`HSTACK`/2D `CHISQ.TEST`/spill semantics.
   - **Phase 1 — shape API on `Vec`** (`engine.py`): new `is_2d`, `rows`,
     `shape`, `at(r, c)` (1-based), `row(i)`, `col(j)`, `iter_rows()`.
@@ -25,6 +65,35 @@
     Ship gate: `=INDEX(A1:B2 + 1, 2, 2)` now picks the bottom-right of
     a 2D arithmetic result (was broken: `cols` dropped through `+`). 8
     new tests in `TestVecShapePreservation`.
+  - **Phase 3 — TRANSPOSE + reshape consumers (12 new functions).**
+    `TRANSPOSE` (1D column → 1×n row, 2D row/col swap, round-trip
+    correct), `CHOOSEROWS`/`CHOOSECOLS` (1-based index lists with
+    negative-from-end, accept `Vec`/list of indices via
+    `_normalize_indices`), `TOROW`/`TOCOL` (flatten with `ignore`
+    flags for blanks/errors and `scan_by_column` order; `TOCOL`
+    returns a 1D column vector), `WRAPROWS`/`WRAPCOLS` (reshape 1D
+    into 2D with target row/col length; pad short final chunks
+    `#N/A` by default), `EXPAND` (pad to target shape; smaller
+    target → `#VALUE!`), `TAKE`/`DROP` (positive from start, negative
+    from end, along rows + cols), `HSTACK`/`VSTACK` (proper row
+    interleaving + concatenation, mismatched dims pad `#N/A` to the
+    widest/tallest). 20 new tests in `TestReshape2D`.
+    Ship gate: `=INDEX(TRANSPOSE(A1:C2), 1, 2) == 4` end-to-end.
+  - **Phase 4 — `LINEST` family with multi-regressor support (4 new
+    functions).** Hand-rolled `_solve_linear_system` (Gauss-Jordan
+    with partial pivoting, `1e-15` singularity tolerance) on the
+    normal-equations matrix `X'Xβ = X'y`; `_linest_core` builds the
+    design matrix with optional intercept; `_linest_stats_matrix`
+    builds the 5×p Excel stats matrix (row 1 coefficients in Excel
+    order `m_k…m_1, b`; row 2 standard errors via
+    `sqrt(σ²·diag((X'X)⁻¹))`; rows 3-5 r² / standard error / F /
+    df / SS_reg / SS_resid). `LINEST` (single + multi regressor;
+    `const=FALSE` forces through origin; `stats=TRUE` returns the
+    5×p matrix), `LOGEST` (`LINEST` on `ln(y)` then exp of
+    coefficients), `TREND` (replaces the prior `TREND_SCALAR`,
+    accepts scalar/1D/2D `new_x`), `GROWTH` (TREND on log-scale).
+    Recovers `y = 1 + 2·x₁ + 3·x₂` synthetic to ~1e-9 over 6
+    observations. 12 new tests in `TestRegressionFamily`.
 
 - **Heavier stat distributions (Tier 4, batch 2; ~25 new dotted names
   + 17 pre-2010 aliases).** Builds on the regularised incomplete beta

@@ -2524,30 +2524,38 @@ def main() -> None:
         g.requires = list(_cfg.allowed_modules)
 
     if len(sys.argv) == 2 and sys.argv[1] in ("-h", "--help"):
-        print(f"Usage: {sys.argv[0]} sheet.json", file=sys.stderr)
+        print(f"Usage: {sys.argv[0]} <sheet.json | sheet.xlsx>", file=sys.stderr)
         sys.exit(1)
 
     if len(sys.argv) > 1:
         fn = sys.argv[1]
-        info = inspect_file(fn)
-        if info is None:
-            print(f"Failed to load file: {fn}", file=sys.stderr)
-            sys.exit(1)
+        if fn.lower().endswith(".xlsx"):
+            # xlsx files have no code block / sandbox surface; load
+            # directly via the OpenXLSX-backed C++ extension.
+            if g.xlsxload(fn) < 0:
+                print(f"Failed to load file: {fn}", file=sys.stderr)
+                sys.exit(1)
+            g.filename = fn
+        else:
+            info = inspect_file(fn)
+            if info is None:
+                print(f"Failed to load file: {fn}", file=sys.stderr)
+                sys.exit(1)
 
-        policy = None
-        if info.has_code or info.requires:
-            if SANDBOX_ENABLED:
-                policy = startup_trust_prompt(fn, info)
-                if policy is None:
-                    print("Load cancelled.", file=sys.stderr)
-                    sys.exit(0)
-            else:
-                policy = LoadPolicy.trust_all(info.requires)
+            policy = None
+            if info.has_code or info.requires:
+                if SANDBOX_ENABLED:
+                    policy = startup_trust_prompt(fn, info)
+                    if policy is None:
+                        print("Load cancelled.", file=sys.stderr)
+                        sys.exit(0)
+                else:
+                    policy = LoadPolicy.trust_all(info.requires)
 
-        if g.jsonload(fn, policy=policy) < 0:
-            print(f"Failed to load file: {fn}", file=sys.stderr)
-            sys.exit(1)
-        g.filename = fn
+            if g.jsonload(fn, policy=policy) < 0:
+                print(f"Failed to load file: {fn}", file=sys.stderr)
+                sys.exit(1)
+            g.filename = fn
 
     def _main(stdscr: curses.window) -> None:
         curses.raw()

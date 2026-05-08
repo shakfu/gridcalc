@@ -42,6 +42,15 @@ class Env:
         # `RAW_ARG_FUNCS` (e.g. ROW(), COLUMN()) consult this when called
         # with no arguments.
         self.current_cell: tuple[int, int] | None = None
+        # Per-recalc cache for materialised range Vecs. Keyed by the
+        # normalised (c1, r1, c2, r2) tuple after _eval_range sorts
+        # endpoints. Cleared at the start of each recalc pass --
+        # downstream consumers re-evaluate when sources change, so
+        # cache liveness is bounded by the closure pass.
+        self._range_cache: dict[tuple[int, int, int, int], Any] = {}
+
+    def clear_range_cache(self) -> None:
+        self._range_cache.clear()
 
     def lookup_func(self, name: str) -> Callable[..., Any] | None:
         return self._builtins.get(name.lower())
@@ -354,6 +363,15 @@ def _eval_range(node: RangeRef, env: Env) -> Any:
     # Normalise B3:A1 -> A1:B3. Matches Excel's range semantics.
     c1, c2 = sorted([node.start.col, node.end.col])
     r1, r2 = sorted([node.start.row, node.end.row])
+    key = (c1, r1, c2, r2)
+    cached = env._range_cache.get(key)
+    if cached is not None:
+        # Re-register dependencies even on a cache hit -- consumers
+        # rely on `refs_used` to know which cells they touched.
+        for r in range(r1, r2 + 1):
+            for c in range(c1, c2 + 1):
+                env.refs_used.add((c, r))
+        return cached
     data: list[Any] = []
     for r in range(r1, r2 + 1):
         for c in range(c1, c2 + 1):
@@ -370,7 +388,9 @@ def _eval_range(node: RangeRef, env: Env) -> Any:
                 data.append(v)
     from ..engine import Vec  # lazy import to break cycle
 
-    return Vec(data, cols=c2 - c1 + 1)
+    result = Vec(data, cols=c2 - c1 + 1)
+    env._range_cache[key] = result
+    return result
 
 
 def _eval_name(node: Name, env: Env) -> Any:

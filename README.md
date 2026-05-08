@@ -84,7 +84,9 @@ Then run:
 
 ```sh
 gridcalc                     # new spreadsheet
-gridcalc budget.json         # open a file
+gridcalc budget.json         # open a JSON spreadsheet
+gridcalc model.xlsx          # open an Excel file (read-only by default;
+                             #   :xlsx save <name>.xlsx to write back)
 ```
 
 ### From source

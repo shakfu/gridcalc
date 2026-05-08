@@ -731,6 +731,12 @@ class Grid:
         self._subscribers: dict[tuple[int, int], set[tuple[int, int]]] = {}
         self._volatile: set[tuple[int, int]] = set()
         self._use_topo_recalc: bool = True
+        # Set True by `_rebuild_dep_graph`; remains True while
+        # `_refresh_deps`/`_clear_deps` maintain the graph incrementally.
+        # Reset to False on mode entry into EXCEL/HYBRID (LEGACY skips
+        # graph maintenance, so the graph is stale on mode transition).
+        # `_recalc_topo` skips its rebuild call when this flag is True.
+        self._dep_graph_built: bool = False
 
     def load_lib(self, name: str) -> None:
         """Load a formula lib's builtins into the eval namespace."""
@@ -833,6 +839,7 @@ class Grid:
         for (c, r), cl in self._cells.items():
             if cl.type == FORMULA:
                 self._refresh_deps(c, r, cl)
+        self._dep_graph_built = True
 
     def _refresh_deps(self, c: int, r: int, cl: Cell) -> None:
         """Recompute the dep graph for one cell. Call after writing the cell.
@@ -1232,6 +1239,10 @@ class Grid:
         changed_cells: set[tuple[int, int]] = set()
         for _ in range(100):
             changed_cells = set()
+            # Cache materialised ranges for the duration of one
+            # fixed-point iteration only -- next iteration may change
+            # source values.
+            env.clear_range_cache()
             for (fc, fr), cl in self._cells.items():
                 if cl.type != FORMULA:
                     continue
@@ -1329,10 +1340,13 @@ class Grid:
 
         # Build the closure: BFS over `_subscribers` from the dirty set,
         # plus all volatile cells. If dirty is None, the closure is every
-        # formula cell. The graph may be stale after structural edits or
-        # a mode switch from LEGACY -- rebuild it on full-recalc paths.
+        # formula cell.
         if dirty is None:
-            self._rebuild_dep_graph()
+            # The graph may be stale after structural edits or a mode
+            # switch from LEGACY; otherwise `_refresh_deps` has been
+            # maintaining it incrementally and the rebuild is wasted.
+            if not self._dep_graph_built:
+                self._rebuild_dep_graph()
             closure: set[tuple[int, int]] = {
                 k for k, cl in self._cells.items() if cl.type == FORMULA
             }
@@ -1732,9 +1746,12 @@ class Grid:
                 cl.fmt = cell_fmt
                 cl.fmtstr = cell_fmtstr
 
-        # Single recalc at the end. The full-rebuild path (`dirty=None`)
-        # picks up named ranges that were registered earlier in this
-        # function and any LEGACY-mode dep entries that were skipped.
+        # Single recalc at the end. Per-cell `_refresh_deps` already
+        # populated the dep graph during the load loop, so flag it as
+        # built and skip the redundant rebuild inside `_recalc_topo`.
+        # LEGACY mode never built a graph in the first place; no flag.
+        if self.mode != Mode.LEGACY:
+            self._dep_graph_built = True
         self.recalc()
         return 0
 

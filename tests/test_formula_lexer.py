@@ -3,6 +3,7 @@ import pytest
 from gridcalc.formula.errors import ExcelError, FormulaError
 from gridcalc.formula.lexer import (
     AMP,
+    BANG,
     BOOL,
     CARET,
     CELLREF,
@@ -197,6 +198,12 @@ class TestLexerOperators:
 
     def test_py_dot(self):
         assert kinds("py.foo(1)") == [IDENT, DOT, IDENT, LPAREN, NUMBER, RPAREN]
+
+    def test_sheet_qualified_cellref(self):
+        assert kinds("Sheet1!A1") == [IDENT, BANG, CELLREF]
+
+    def test_sheet_qualified_range(self):
+        assert kinds("Sheet1!A1:B5") == [IDENT, BANG, CELLREF, COLON, CELLREF]
 
 
 class TestLexerErrors:

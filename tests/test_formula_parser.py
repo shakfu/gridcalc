@@ -49,6 +49,39 @@ class TestParseRefs:
     def test_named(self):
         assert parse("myrange") == Name("myrange")
 
+    def test_sheet_qualified_cellref(self):
+        assert parse("Sheet2!A1") == CellRef(0, 0, False, False, sheet="Sheet2")
+
+    def test_sheet_qualified_cellref_absolute(self):
+        assert parse("Data!$B$3") == CellRef(1, 2, True, True, sheet="Data")
+
+    def test_sheet_qualified_range_prefix_propagates(self):
+        n = parse("Sheet2!A1:B3")
+        assert n == RangeRef(
+            CellRef(0, 0, False, False, sheet="Sheet2"),
+            CellRef(1, 2, False, False, sheet="Sheet2"),
+        )
+
+    def test_sheet_qualified_range_redundant_prefix_ok(self):
+        # Excel accepts Sheet2!A1:Sheet2!B3 (same sheet on both sides).
+        n = parse("Sheet2!A1:Sheet2!B3")
+        assert n == RangeRef(
+            CellRef(0, 0, False, False, sheet="Sheet2"),
+            CellRef(1, 2, False, False, sheet="Sheet2"),
+        )
+
+    def test_cross_sheet_range_rejected(self):
+        import pytest
+
+        with pytest.raises(Exception, match="cross-sheet"):
+            parse("Sheet1!A1:Sheet2!B5")
+
+    def test_unsheeted_range_with_sheeted_end_rejected(self):
+        import pytest
+
+        with pytest.raises(Exception, match="cross-sheet"):
+            parse("A1:Sheet2!B5")
+
 
 class TestParseOperators:
     def test_addition(self):

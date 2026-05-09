@@ -43,16 +43,25 @@ ADDRESS_ONLY_FUNCS: frozenset[str] = frozenset(
 def extract_refs(
     node: Node,
     named_ranges: dict[str, Node] | None = None,
-) -> set[tuple[int, int]]:
-    """Return the set of (col, row) cells that `node` reads, statically.
+    formula_sheet: str | None = None,
+) -> set[tuple[str | None, int, int]]:
+    """Return the set of (sheet, col, row) cells that `node` reads.
 
-    Range references expand to the full rectangular set. Named ranges are
-    resolved through `named_ranges`; unknown names are ignored.
+    Range references expand to the full rectangular set. Named ranges
+    are resolved through `named_ranges`; unknown names are ignored.
 
-    Does not detect dynamic-ref functions; use `has_dynamic_refs` for that.
+    Sheet identity per ref:
+      - if the ref carries an explicit sheet (``Sheet2!A1``), use it;
+      - otherwise the ref resolves against ``formula_sheet`` (the
+        sheet containing the formula). When ``formula_sheet`` is None,
+        the returned key is ``(None, c, r)`` -- correct for the
+        single-sheet case before phase 1's Sheet class lands and
+        sufficient for any caller that doesn't differentiate sheets.
+
+    Does not detect dynamic-ref functions; use ``has_dynamic_refs``.
     """
-    out: set[tuple[int, int]] = set()
-    _walk(node, named_ranges or {}, out)
+    out: set[tuple[str | None, int, int]] = set()
+    _walk(node, named_ranges or {}, out, formula_sheet)
     return out
 
 
@@ -78,40 +87,43 @@ def has_dynamic_refs(node: Node) -> bool:
 def _walk(
     node: Node,
     named: dict[str, Node],
-    out: set[tuple[int, int]],
+    out: set[tuple[str | None, int, int]],
+    formula_sheet: str | None,
 ) -> None:
     if isinstance(node, CellRef):
-        out.add((node.col, node.row))
+        sheet = node.sheet if node.sheet is not None else formula_sheet
+        out.add((sheet, node.col, node.row))
         return
     if isinstance(node, RangeRef):
+        sheet = node.start.sheet if node.start.sheet is not None else formula_sheet
         c1, c2 = sorted([node.start.col, node.end.col])
         r1, r2 = sorted([node.start.row, node.end.row])
         for r in range(r1, r2 + 1):
             for c in range(c1, c2 + 1):
-                out.add((c, r))
+                out.add((sheet, c, r))
         return
     if isinstance(node, Name):
         target = named.get(node.name.lower())
         if target is not None:
-            _walk(target, named, out)
+            _walk(target, named, out, formula_sheet)
         return
     if isinstance(node, Call):
         if node.name.upper() in ADDRESS_ONLY_FUNCS:
             # Args are used as references, not read for value.
             return
         for a in node.args:
-            _walk(a, named, out)
+            _walk(a, named, out, formula_sheet)
         return
     if isinstance(node, PyCall):
         for a in node.args:
-            _walk(a, named, out)
+            _walk(a, named, out, formula_sheet)
         return
     if isinstance(node, BinOp):
-        _walk(node.left, named, out)
-        _walk(node.right, named, out)
+        _walk(node.left, named, out, formula_sheet)
+        _walk(node.right, named, out, formula_sheet)
         return
     if isinstance(node, (UnaryOp, Percent)):
-        _walk(node.operand, named, out)
+        _walk(node.operand, named, out, formula_sheet)
         return
     # Number, String, Bool, ErrorLit have no refs
     if isinstance(node, (Number, String, Bool, ErrorLit)):

@@ -4,6 +4,146 @@
 
 ### Added
 
+- **Multi-sheet workbook support.** `Grid` now models a workbook of
+  named sheets rather than a single flat cell store. Formulas can
+  reference cells on other sheets (`=Sheet2!A1`,
+  `=SUM(Sheet2!A1:A10)`); the dep graph tracks subscribers across
+  sheets so cross-sheet recalc works. JSON and xlsx I/O round-trip
+  every sheet. Five-phase rollout, all shipped:
+  - **Phase 1 — `Sheet` class.** New `Sheet` (`engine.py`) owns
+    `_cells`, `_circular`, and the cursor (`cc`, `cr`). `Grid` gains
+    `sheets: list[Sheet]`, `active: int`, and an `_active` shortcut.
+    `Grid._cells` / `Grid.cells` / `Grid.cc` / `Grid.cr` /
+    `Grid._circular` are now properties that delegate to the active
+    sheet, so all existing single-sheet code keeps working unchanged.
+    Sheet-management API: `add_sheet`, `remove_sheet`, `rename_sheet`,
+    `set_active`, `sheet_names()`. Six obsolete
+    `self.cells = _CellsProxy(self._cells)` rebinds in
+    insert/delete/replicate paths removed (now redundant -- `cells`
+    is a property returning a fresh proxy on each access). 14 new
+    tests in `TestSheetClass`.
+  - **Phase 2a — sheet-qualified reference syntax.** Lexer adds
+    `BANG = "!"` token; cellref-shaped tokens followed by `!` now
+    defer to `IDENT` (so `Sheet1!A1` lexes as `IDENT BANG CELLREF`).
+    AST: `CellRef.sheet: str | None` (frozen-dataclass default
+    `None`; equality/hashing preserved). Parser handles
+    `IDENT BANG CELLREF` → sheeted `CellRef`, and
+    `IDENT BANG CELLREF COLON [IDENT BANG] CELLREF` → sheeted
+    `RangeRef`. Cross-sheet ranges (`Sheet1!A1:Sheet2!B5`) are
+    rejected at parse time with `ParseError("cross-sheet ranges are
+    not supported")` -- matches Excel.
+  - **Phase 2b — cross-sheet evaluation and recalc.** `Env.get_cell`
+    grows a `sheet` parameter; the engine callback
+    `_cell_lookup_value(c, r, sheet=None)` dispatches via a new
+    `_sheet_cells(sheet)` helper (active sheet when `sheet is None`,
+    looked-up sheet otherwise; unknown sheet returns an empty store
+    so unsheeted-cell semantics apply). `_eval_range` cache key
+    becomes `(sheet, c1, r1, c2, r2)`. The dep graph
+    (`_dep_of`/`_subscribers`/`_volatile`) is now workbook-wide with
+    3-tuple `(sheet, c, r)` keys; `extract_refs` takes
+    `formula_sheet` and emits fully qualified refs (unsheeted refs
+    inherit the formula's home sheet). `_rebuild_dep_graph`,
+    `_refresh_deps`, `_clear_deps`, `_register_deps`, and
+    `_recalc_topo` updated accordingly. `_recalc_topo` swaps
+    `self.active` per formula during evaluation (then restores) so
+    unsheeted refs in formulas on Sheet2 resolve against Sheet2.
+    Cross-sheet subscriber edges now recalc the dependent formula
+    when the source cell on another sheet changes. 6 new tests in
+    `TestCrossSheet` end-to-end (read, recalc on source change,
+    cross-sheet `SUM` over a range, sheet-keyed subscribers proving
+    same-coord cells on different sheets don't collide).
+
+  - **Phase 3 — TUI sheet UX.** Status bar now shows
+    `<sheet>!<cell>` whenever the workbook has more than one sheet
+    (single-sheet workbooks keep the original ` A1 ` chrome
+    unchanged). New `:sheet` command suite handled in `cmdexec`
+    (`tui.py`):
+    - `:sheet` / `:sheet list` -- print all sheets, active marked `*`.
+    - `:sheet add NAME` -- append a new sheet (does not switch).
+    - `:sheet del NAME` -- remove sheet (refuses the last one).
+    - `:sheet rename OLD NEW` -- rename, then rebuild the dep graph
+      (since dep keys carry sheet names).
+    - `:sheet NAME` / `:sheet N` -- switch active sheet by name or
+      zero-based index.
+    Known limitation: `:sheet rename` does not yet rewrite formula
+    text that references the old name; that's tracked as a phase 4
+    follow-up. Keybindings (e.g. PgUp/PgDn for sheet cycling) are
+    deferred until a broader keymap-customisation story exists.
+    9 new tests in `TestCmdSheet`.
+
+  - **Phase 4 — JSON v2 format.** `FILE_VERSION` bumped to 2.
+    `jsonsave` now writes a per-sheet payload:
+    ```json
+    {
+      "version": 2,
+      "mode": "EXCEL",
+      "active": "Sheet1",
+      "sheets": [
+        {"name": "Sheet1", "cells": [...]},
+        {"name": "Other",  "cells": [...]}
+      ],
+      "names": {...}, "code": "...", "libs": [...], "requires": [...]
+    }
+    ```
+    `jsonload` accepts both: a v1 file (no `sheets` key, top-level
+    `cells`) loads into the auto-created Sheet1; a v2 file replaces
+    the auto-created sheet with the saved set, restores the
+    `active` sheet by name (defaults to first sheet when missing or
+    unknown). Cell encoding/decoding extracted to
+    `_encode_sheet_rows` / `_load_cells_into_active` helpers shared
+    by both paths. Cross-sheet recalc survives a save/load cycle.
+    5 new tests in `TestJsonV2MultiSheet`.
+  - **`:sheet rename` now rewrites formula text.** Phase 3 left
+    formulas referencing the old name returning empty; phase 4 adds
+    `_rewrite_sheet_prefix` (engine.py) and wires it into
+    `Grid.rename_sheet`. The rewriter walks every formula on every
+    sheet, replaces `<old>!` prefixes with `<new>!`, and invalidates
+    the cached AST so the next recalc re-parses. Skips matches
+    inside double-quoted string literals (gridcalc's only string
+    syntax) and requires a non-identifier boundary on the left so
+    `=MyOther!A1` is unaffected when renaming `Other`. 5 new
+    tests in `TestRewriteSheetPrefix`.
+
+  - **Phase 5 — xlsx multi-sheet I/O.** `_core.xlsx_read`
+    (C++/OpenXLSX) now iterates every sheet and returns
+    `list[(sheet_name, col, row, text)]` in workbook order;
+    `_core.xlsx_write` accepts `list[(sheet_name, col, row, kind,
+    value)]` and creates worksheets lazily by renaming the default
+    sheet on first use and `addWorksheet`-ing thereafter. Python
+    wrappers `_xlsx_read_cells` / `_xlsx_write_cells` and
+    `Grid.xlsxload` / `Grid.xlsxsave` updated to per-sheet
+    payloads: load groups by sheet preserving workbook order
+    (first xlsx sheet becomes active and replaces the auto-created
+    `Sheet1`); save iterates `g.sheets` and emits each cell with
+    its sheet name. ``.pyi`` stub updated. xlsx still stores
+    evaluated values rather than formulas (formula round-trip is
+    a separate TODO item), but cross-sheet formula *values*
+    survive a save/load cycle. 3 new tests in
+    ``tests/test_xlsx_io.py``: multi-sheet load preserves sheet
+    names + per-sheet cells; multi-sheet save writes every sheet;
+    cross-sheet formula round-trip preserves the evaluated value.
+
+  Multi-sheet rollout complete. Single-sheet workbooks behave
+  identically (1031 tests pass with no behavioural regressions).
+  Remaining xlsx-compat work (formula round-trip, dates, styles)
+  is tracked separately.
+
+  - **`:sheet move NAME N`** reorders a sheet to a zero-based
+    position (`Grid.move_sheet`). Active-sheet identity is preserved
+    -- if the moved sheet is active it follows; if some other sheet is
+    active, its index is recomputed so the same sheet stays active.
+    Dep graph keys carry sheet *names*, so reordering does not
+    invalidate the graph -- no rebuild needed. 7 new engine tests in
+    ``TestSheetClass`` plus 3 TUI tests in ``TestCmdSheet``.
+
+  - **Multi-sheet example**: ``examples/example_multisheet.json`` is
+    a 3-sheet EXCEL-mode budget model (`Inputs`, `Metrics`, `Summary`)
+    that demonstrates cross-sheet formulas (`=Inputs!B2-Inputs!C2`),
+    cross-sheet aggregates (`=SUM(Inputs!B2:B5)`), and `INDEX`/`MATCH`
+    on Metrics columns to pick the best/worst quarter. Loaded by
+    `TestExampleMultiSheet::test_loads_and_computes` as a smoke test
+    for the multi-sheet load path.
+
 - **Typed per-cell errors with `Cell.err` and `Cell.err_msg`.** New
   `Cell.err: ExcelError | None` and `Cell.err_msg: str | None` slots
   capture the Excel error code and a human-readable message for any

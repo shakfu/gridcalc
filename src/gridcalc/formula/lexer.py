@@ -31,6 +31,7 @@ LT = "LT"
 GT = "GT"
 LE = "LE"
 GE = "GE"
+BANG = "BANG"
 EOF = "EOF"
 
 
@@ -96,10 +97,14 @@ def tokenize(text: str) -> list[Token]:
                 # Validate it's not followed by an alpha/digit that would extend it
                 # (e.g., A1B should NOT be a cellref). Already guaranteed because we
                 # match greedy letters then digits; what follows must not be alnum
-                # for the cellref to be standalone.
+                # for the cellref to be standalone. Also: a cellref-shaped token
+                # followed by `!` is actually a sheet name (e.g. `Sheet1!A1`),
+                # so emit an IDENT instead and let the parser handle the prefix.
                 next_idx = i + end
                 if next_idx < n and (s[next_idx].isalnum() or s[next_idx] == "_"):
                     cr = None  # fall through to IDENT
+                elif next_idx < n and s[next_idx] == "!":
+                    cr = None  # sheet prefix; let IDENT branch consume it
                 else:
                     tokens.append(Token(CELLREF, (col, row, ac, ar), pos))
                     i += end
@@ -175,6 +180,7 @@ def tokenize(text: str) -> list[Token]:
             "=": EQ,
             "<": LT,
             ">": GT,
+            "!": BANG,
         }
         kind = single.get(ch)
         if kind is not None:

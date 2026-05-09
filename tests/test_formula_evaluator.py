@@ -3,10 +3,21 @@ from gridcalc.formula import Env, evaluate, parse
 from gridcalc.formula.errors import ExcelError
 
 
-def make_env(cells=None, builtins=None, named=None, py=None):
+def make_env(cells=None, builtins=None, named=None, py=None, sheets=None):
+    """Build an Env. ``cells`` is the active sheet's cell store
+    keyed by ``(c, r)``; ``sheets`` is an optional dict of
+    ``{sheet_name: {(c, r): value}}`` for cross-sheet tests.
+    """
     cells = cells or {}
+    sheets = sheets or {}
+
+    def cell_value(c, r, sheet=None):
+        if sheet is None:
+            return cells.get((c, r))
+        return sheets.get(sheet, {}).get((c, r))
+
     return Env(
-        cell_value=lambda c, r: cells.get((c, r)),
+        cell_value=cell_value,
         builtins=builtins or {},
         named_ranges=named or {},
         py_registry=py or {},
@@ -118,7 +129,7 @@ class TestCellRefs:
     def test_basic(self):
         env = make_env(cells={(0, 0): 5.0})
         assert ev("A1", env) == 5.0
-        assert env.refs_used == {(0, 0)}
+        assert env.refs_used == {(None, 0, 0)}
 
     def test_empty_cell_is_zero(self):
         env = make_env()
@@ -127,6 +138,28 @@ class TestCellRefs:
     def test_string_cell_in_arith(self):
         env = make_env(cells={(0, 0): "hello"})
         assert ev("A1+1", env) == ExcelError.VALUE
+
+    def test_sheet_qualified_ref_resolves(self):
+        env = make_env(
+            cells={(0, 0): 5.0},
+            sheets={"Sheet2": {(0, 0): 99.0}},
+        )
+        assert ev("Sheet2!A1", env) == 99.0
+        assert env.refs_used == {("Sheet2", 0, 0)}
+
+    def test_sheet_qualified_range_resolves(self):
+        env = make_env(
+            sheets={"Sheet2": {(0, 0): 1.0, (0, 1): 2.0, (0, 2): 3.0}},
+            builtins={"sum": lambda v: sum(v.data) if hasattr(v, "data") else v},
+        )
+        assert ev("SUM(Sheet2!A1:A3)", env) == 6.0
+
+    def test_unknown_sheet_resolves_to_empty(self):
+        env = make_env()
+        # Phase 2b: unknown sheet acts like empty (matches an unset
+        # cell). Phase 3 will surface sheet management; #REF! for
+        # missing sheets can come then if needed.
+        assert ev("Bogus!A1+1", env) == 1.0
 
 
 class TestRanges:

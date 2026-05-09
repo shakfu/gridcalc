@@ -49,26 +49,27 @@ std::string cell_to_text(XLCell& cell) {
 }
 
 nb::list xlsx_read(const std::string& path) {
+    // Returns list[(sheet_name, col, row, text)] across every sheet
+    // in the workbook, in workbook order.
     nb::list out;
     XLDocument doc;
     doc.open(path);
     auto wbk = doc.workbook();
     auto names = wbk.sheetNames();
-    if (names.empty()) {
-        doc.close();
-        return out;
-    }
-    auto wks = wbk.worksheet(names.front());
-    for (auto& row : wks.rows()) {
-        uint32_t r = row.rowNumber();
-        for (auto& cell : row.cells()) {
-            if (!cell.hasFormula() && cell.value().type() == XLValueType::Empty) continue;
-            std::string text = cell_to_text(cell);
-            if (text.empty()) continue;
-            uint16_t c = cell.cellReference().column();
-            out.append(nb::make_tuple(static_cast<int>(c) - 1,
-                                      static_cast<int>(r) - 1,
-                                      text));
+    for (auto const& sname : names) {
+        auto wks = wbk.worksheet(sname);
+        for (auto& row : wks.rows()) {
+            uint32_t r = row.rowNumber();
+            for (auto& cell : row.cells()) {
+                if (!cell.hasFormula() && cell.value().type() == XLValueType::Empty) continue;
+                std::string text = cell_to_text(cell);
+                if (text.empty()) continue;
+                uint16_t c = cell.cellReference().column();
+                out.append(nb::make_tuple(sname,
+                                          static_cast<int>(c) - 1,
+                                          static_cast<int>(r) - 1,
+                                          text));
+            }
         }
     }
     doc.close();
@@ -76,25 +77,52 @@ nb::list xlsx_read(const std::string& path) {
 }
 
 void xlsx_write(const std::string& path, nb::list cells) {
+    // Accepts list[(sheet_name, col, row, kind, value)]. Sheets are
+    // created lazily in payload order; the default sheet that
+    // OpenXLSX produces on `create()` is renamed to the first
+    // unique sheet name in the payload (or kept if it already
+    // matches).
     XLDocument doc;
     std::remove(path.c_str());
     doc.create(path);
-    auto wks = doc.workbook().worksheet(doc.workbook().sheetNames().front());
+    auto wbk = doc.workbook();
+    bool default_renamed = false;
+    std::string default_name = wbk.sheetNames().front();
+
+    auto ensure_sheet = [&](const std::string& name) {
+        auto current = wbk.sheetNames();
+        for (auto const& s : current) {
+            if (s == name) return;
+        }
+        if (!default_renamed) {
+            // First payload sheet: rename the auto-created default.
+            wbk.sheet(default_name).setName(name);
+            default_renamed = true;
+            return;
+        }
+        wbk.addWorksheet(name);
+    };
+
     for (auto handle : cells) {
         nb::tuple t = nb::cast<nb::tuple>(handle);
-        int c0 = nb::cast<int>(t[0]);
-        int r0 = nb::cast<int>(t[1]);
-        std::string kind = nb::cast<std::string>(t[2]);
+        std::string sname = nb::cast<std::string>(t[0]);
+        int c0 = nb::cast<int>(t[1]);
+        int r0 = nb::cast<int>(t[2]);
+        std::string kind = nb::cast<std::string>(t[3]);
+        ensure_sheet(sname);
+        auto wks = wbk.worksheet(sname);
         XLCellReference ref(static_cast<uint32_t>(r0 + 1),
                             static_cast<uint16_t>(c0 + 1));
         auto cell = wks.cell(ref);
         if (kind == "s") {
-            cell.value() = nb::cast<std::string>(t[3]);
+            cell.value() = nb::cast<std::string>(t[4]);
         } else if (kind == "n") {
-            double v = nb::cast<double>(t[3]);
+            double v = nb::cast<double>(t[4]);
             if (!std::isnan(v) && !std::isinf(v)) cell.value() = v;
         }
     }
+    // If the payload was empty, the auto-created default sheet is left
+    // in place untouched -- OpenXLSX requires at least one sheet.
     doc.save();
     doc.close();
 }

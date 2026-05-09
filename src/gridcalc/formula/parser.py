@@ -18,6 +18,7 @@ from .ast_nodes import (
 from .errors import FormulaError
 from .lexer import (
     AMP,
+    BANG,
     BOOL,
     CARET,
     CELLREF,
@@ -158,18 +159,44 @@ class _Parser:
             self._expect(RPAREN)
             return node
         if t.kind == IDENT:
+            # IDENT BANG CELLREF is a sheet-qualified cell reference.
+            if (
+                self.i + 1 < len(self.tokens)
+                and self.tokens[self.i + 1].kind == BANG
+                and self.i + 2 < len(self.tokens)
+                and self.tokens[self.i + 2].kind == CELLREF
+            ):
+                sheet_tok = self._advance()
+                self._advance()  # BANG
+                return self._cellref_or_range(sheet=sheet_tok.value)
             return self._ident_or_call()
         raise ParseError(f"unexpected {t.kind} at {t.pos}")
 
-    def _cellref_or_range(self) -> Node:
+    def _cellref_or_range(self, sheet: str | None = None) -> Node:
         t = self._advance()
         col, row, ac, ar = t.value
-        start = CellRef(col, row, ac, ar)
+        start = CellRef(col, row, ac, ar, sheet=sheet)
         if self._peek().kind == COLON:
             self._advance()
+            # The right side may carry its own sheet prefix; if so, it
+            # must match the left's, otherwise cross-sheet ranges are
+            # rejected (Excel doesn't support them).
+            end_sheet = sheet
+            if (
+                self._peek().kind == IDENT
+                and self.i + 1 < len(self.tokens)
+                and self.tokens[self.i + 1].kind == BANG
+                and self.i + 2 < len(self.tokens)
+                and self.tokens[self.i + 2].kind == CELLREF
+            ):
+                end_sheet_tok = self._advance()
+                self._advance()  # BANG
+                end_sheet = end_sheet_tok.value
+            if end_sheet != sheet:
+                raise ParseError(f"cross-sheet ranges are not supported ({sheet!r}:{end_sheet!r})")
             t2 = self._expect(CELLREF)
             col2, row2, ac2, ar2 = t2.value
-            end = CellRef(col2, row2, ac2, ar2)
+            end = CellRef(col2, row2, ac2, ar2, sheet=end_sheet)
             return RangeRef(start, end)
         return start
 

@@ -26,28 +26,33 @@ Value = Any
 class Env:
     def __init__(
         self,
-        cell_value: Callable[[int, int], object],
+        cell_value: Callable[..., object],
         builtins: dict[str, Callable[..., Any]],
         named_ranges: dict[str, Node] | None = None,
         py_registry: dict[str, Callable[..., Any]] | None = None,
-        cell_is_formula: Callable[[int, int], bool] | None = None,
+        cell_is_formula: Callable[..., bool] | None = None,
     ) -> None:
+        # `cell_value` is `(c, r, sheet=None) -> object`; `cell_is_formula`
+        # is `(c, r, sheet=None) -> bool`. The single-sheet case keeps
+        # `sheet=None` so existing callers that pass two-arg lambdas
+        # still work.
         self.cell_value = cell_value
         self._builtins = {k.lower(): v for k, v in builtins.items()}
         self._named = {k.lower(): v for k, v in (named_ranges or {}).items()}
         self.py_registry = py_registry or {}
-        self.cell_is_formula = cell_is_formula or (lambda _c, _r: False)
-        self.refs_used: set[tuple[int, int]] = set()
+        self.cell_is_formula = cell_is_formula or (lambda _c, _r, _s=None: False)
+        # `refs_used` keys are `(sheet, c, r)`; sheet is None for refs
+        # that resolve against the formula's home sheet.
+        self.refs_used: set[tuple[str | None, int, int]] = set()
         # Set by recalc before evaluating each formula. Functions in
         # `RAW_ARG_FUNCS` (e.g. ROW(), COLUMN()) consult this when called
         # with no arguments.
         self.current_cell: tuple[int, int] | None = None
-        # Per-recalc cache for materialised range Vecs. Keyed by the
-        # normalised (c1, r1, c2, r2) tuple after _eval_range sorts
-        # endpoints. Cleared at the start of each recalc pass --
-        # downstream consumers re-evaluate when sources change, so
-        # cache liveness is bounded by the closure pass.
-        self._range_cache: dict[tuple[int, int, int, int], Any] = {}
+        # Per-recalc cache for materialised range Vecs. Key is
+        # `(sheet, c1, r1, c2, r2)`. Cleared at the start of each recalc
+        # pass -- downstream consumers re-evaluate when sources change,
+        # so cache liveness is bounded by the closure pass.
+        self._range_cache: dict[tuple[str | None, int, int, int, int], Any] = {}
 
     def clear_range_cache(self) -> None:
         self._range_cache.clear()
@@ -58,9 +63,9 @@ class Env:
     def lookup_name(self, name: str) -> Node | None:
         return self._named.get(name.lower())
 
-    def get_cell(self, c: int, r: int) -> object:
-        self.refs_used.add((c, r))
-        return self.cell_value(c, r)
+    def get_cell(self, c: int, r: int, sheet: str | None = None) -> object:
+        self.refs_used.add((sheet, c, r))
+        return self.cell_value(c, r, sheet)
 
 
 def _to_number(v: object) -> float | ExcelError:
@@ -341,7 +346,7 @@ def _eval(node: Node, env: Env) -> Value:
     if isinstance(node, ErrorLit):
         return node.error
     if isinstance(node, CellRef):
-        return env.get_cell(node.col, node.row)
+        return env.get_cell(node.col, node.row, node.sheet)
     if isinstance(node, RangeRef):
         return _eval_range(node, env)
     if isinstance(node, Name):
@@ -363,19 +368,20 @@ def _eval_range(node: RangeRef, env: Env) -> Any:
     # Normalise B3:A1 -> A1:B3. Matches Excel's range semantics.
     c1, c2 = sorted([node.start.col, node.end.col])
     r1, r2 = sorted([node.start.row, node.end.row])
-    key = (c1, r1, c2, r2)
+    sheet = node.start.sheet  # parser guarantees start.sheet == end.sheet
+    key = (sheet, c1, r1, c2, r2)
     cached = env._range_cache.get(key)
     if cached is not None:
         # Re-register dependencies even on a cache hit -- consumers
         # rely on `refs_used` to know which cells they touched.
         for r in range(r1, r2 + 1):
             for c in range(c1, c2 + 1):
-                env.refs_used.add((c, r))
+                env.refs_used.add((sheet, c, r))
         return cached
     data: list[Any] = []
     for r in range(r1, r2 + 1):
         for c in range(c1, c2 + 1):
-            v = env.get_cell(c, r)
+            v = env.get_cell(c, r, sheet)
             if isinstance(v, ExcelError):
                 return v
             if v is None:

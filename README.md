@@ -17,9 +17,15 @@ $ gridcalc budget.json
   `LEGACY` (Python `eval()`, full numpy/pandas/list-comprehensions). New TUI
   files default to HYBRID; existing files without an explicit mode load as
   LEGACY for back-compat.
-- **xlsx interop**: `:xlsx load` reads formulas and values from `.xlsx`
-  files via openpyxl and evaluates them with the EXCEL evaluator;
-  `:xlsx save` writes computed values back.
+- **Multi-sheet workbooks**: a workbook can contain any number of named
+  sheets. Formulas reference cells on other sheets via `=Sheet2!A1`,
+  `=SUM(Sheet2!A1:A10)`, etc.; cross-sheet recalc is wired through the
+  dep graph. Manage sheets via `:sheet add/del/rename/list`; switch with
+  `:sheet NAME` or `:sheet N`.
+- **xlsx interop**: `:xlsx load` reads every sheet's formulas and values
+  from an `.xlsx` file via the OpenXLSX-backed C++ shim and evaluates
+  them with the EXCEL evaluator; `:xlsx save` writes computed values
+  back, preserving sheet structure.
 - **Curses-based TUI**: runs in any terminal, vim-style command mode
 - **JSON file format**: spreadsheets stored as plain JSON, easy to version control or script
 - **256 columns x 1024 rows**: column-major grid with four cell types (empty, number, label, formula)
@@ -99,31 +105,45 @@ uv run gridcalc
 
 ### Examples
 
-Three example files ship with the repo:
+Four example files ship with the repo:
 
 ```sh
-gridcalc example_excel.json    # EXCEL mode: sales report, named ranges, IF/IFERROR/MATCH
-gridcalc example_hybrid.json   # HYBRID mode: progressive tax via py.* + Excel aggregations
-gridcalc example.json          # LEGACY mode: numpy/pandas/list-comprehension formulas
+gridcalc example_excel.json       # EXCEL mode: sales report, named ranges, IF/IFERROR/MATCH
+gridcalc example_hybrid.json      # HYBRID mode: progressive tax via py.* + Excel aggregations
+gridcalc example.json             # LEGACY mode: numpy/pandas/list-comprehension formulas
+gridcalc example_multisheet.json  # EXCEL mode: 3-sheet budget model with cross-sheet formulas
 ```
 
 ## File format
 
-Spreadsheets are stored as JSON:
+Spreadsheets are stored as JSON. The current on-disk format is **v2**;
+v1 files (single sheet, top-level `cells`) still load unchanged.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "mode": "HYBRID",
+  "active": "Inputs",
   "code": "def margin(rev, cost):\n    return (rev - cost) / rev * 100\n",
   "names": {
     "revenue": "A1:A12",
-    "costs": "B1:B12"
+    "costs":   "B1:B12"
   },
-  "cells": [
-    ["Revenue", "Cost", "Margin"],
-    [1000, 600, "=py.margin(A1, B1)"],
-    [1200, 700, "=py.margin(A2, B2)"]
+  "sheets": [
+    {
+      "name": "Inputs",
+      "cells": [
+        ["Revenue", "Cost", "Margin"],
+        [1000, 600, "=py.margin(A1, B1)"],
+        [1200, 700, "=py.margin(A2, B2)"]
+      ]
+    },
+    {
+      "name": "Summary",
+      "cells": [
+        ["Total margin", "=SUM(Inputs!C1:C12)"]
+      ]
+    }
   ],
   "format": {
     "width": 10
@@ -134,17 +154,29 @@ Spreadsheets are stored as JSON:
 - **mode** (optional): `"EXCEL"`, `"HYBRID"`, or `"LEGACY"`. Absent means
   `LEGACY` (back-compat with files saved before the modes feature). New
   files saved by the TUI default to `HYBRID`.
-- **cells**: 2D array of cell values (numbers, strings, formulas, or null)
+- **sheets** (v2): list of `{name, cells}` objects. Each sheet's `cells`
+  is a 2D array (numbers, strings, formulas, or null) just like v1.
+  v1 files have a top-level `cells` array instead and load as a single
+  sheet named `Sheet1`.
+- **active** (v2, optional): name of the sheet to make active on load;
+  defaults to the first sheet.
+- **cells** (v1 only): 2D array of cell values, single sheet.
 - **code** (optional): Python code executed before formulas. In `HYBRID`
   mode, callables defined here are reachable from formulas as `py.<name>(...)`.
   In `LEGACY` mode, they are reachable as bare names.
 - **requires** (optional, LEGACY): list of modules to load into the
-  formula namespace (e.g. `["numpy"]`)
-- **names** (optional): named ranges mapping names to cell ranges
+  formula namespace (e.g. `["numpy"]` or `["numpy>=1.24"]` -- version
+  specifiers are honoured).
+- **names** (optional): named ranges, e.g. `"revenue": "A1:A12"`. Names
+  are workbook-global and **sheet-relative**: a formula `=SUM(revenue)`
+  on Sheet2 sums Sheet2!A1:A12, not the sheet where the name was
+  defined. Use a sheet-qualified ref directly in the formula
+  (`=SUM(Inputs!A1:A12)`) when you need to pin to a specific sheet.
 - **format** (optional): display settings (currently only `width`)
 
 xlsx files (`.xlsx`) can also be loaded directly with `:xlsx load` --
-they're treated as `EXCEL` mode automatically.
+every sheet is read and the workbook is treated as `EXCEL` mode
+automatically.
 
 ## Usage
 
@@ -179,6 +211,13 @@ Press `:` for the command line (vim-style):
 	:pd save [file]     Export via pandas (CSV, TSV, Excel, JSON, Parquet)
 	:pd load [file]     Import via pandas (auto-detects format)
 	:mode [excel|hybrid|legacy]   Show or set the formula evaluator mode
+	:sheet              List sheets (active marked with *)
+	:sheet <name>       Switch active sheet by name
+	:sheet <N>          Switch active sheet by zero-based index
+	:sheet add <name>   Append a new sheet (does not switch)
+	:sheet del <name>   Remove sheet (refuses last sheet)
+	:sheet rename <old> <new>   Rename sheet (rewrites formula text)
+	:sheet move <name> <N>      Reorder sheet to zero-based index N
 	:name <n> [range]   Define named range
 	:names          List named ranges
 	:unname <n>     Remove named range
@@ -265,16 +304,18 @@ Loading an `.xlsx` via `:xlsx load` automatically sets mode to `EXCEL`.
 
 ### Limitations
 
-- **Lookups by text key** (`INDEX`, `MATCH`, `VLOOKUP` against text
-  columns) in `EXCEL`/`HYBRID`: ranges currently coerce non-numeric
-  cell values to `0`, so a `MATCH("Q3", A1:A4, 0)` won't match. Numeric
-  lookups work normally.
-- **Multi-sheet xlsx**: only the active sheet is read.
-- **Sheet-qualified refs** (`Sheet1!A1`) and **`INDIRECT`** are not
-  supported (the latter deliberately, to keep recalc ordering tractable).
+- **`INDIRECT`** is deliberately unsupported -- it would defeat static
+  dependency analysis and the topological recalc ordering.
 - **xlsx export writes values, not formulas.** Round-tripping formulas
   through `.xlsx` (level-c interop) is on the roadmap but not yet
-  implemented.
+  implemented. Multi-sheet structure *is* round-tripped; only the
+  formula text is currently lost on save.
+- **xlsx dates and styles** are not yet read or written by the
+  OpenXLSX-backed `_core` shim. Date serials arrive as floats; styles
+  and number formats are dropped.
+- **Cross-sheet ranges** (`Sheet1!A1:Sheet2!B5`) are rejected at parse
+  time -- Excel doesn't support them either; only `Sheet1!A1:B5`
+  works.
 
 ## Formulas
 
@@ -431,15 +472,54 @@ Three import paths:
 	:pd load data.parquet      Import via pandas (Parquet)
 	:pd save results.json      Export via pandas (JSON records)
 
-`:xlsx load` translates Excel formulas into the gridcalc EXCEL grammar.
-Functions outside the auto-loaded library produce `#NAME?`; sheet-qualified
-references (`Sheet1!A1`) and `INDIRECT` are not supported.
+`:xlsx load` translates Excel formulas into the gridcalc EXCEL grammar
+and reads every sheet in the workbook. Functions outside the
+auto-loaded library produce `#NAME?`; `INDIRECT` is not supported
+(deliberate -- it would defeat static dep analysis). Sheet-qualified
+references (`Sheet1!A1`) work. xlsx export currently writes evaluated
+values rather than formulas, but the multi-sheet structure round-trips.
 
 ### Cell references
 
 References adjust automatically on replicate, insert, and delete.
 Use `$` for absolute references: `$A$1` (fixed), `$A1` (fixed column),
 `A$1` (fixed row).
+
+### Multi-sheet workbooks
+
+A workbook holds one or more named sheets. The status bar prefixes
+the cell address with the active sheet name (`Sheet1!A1`) when the
+workbook has more than one sheet; single-sheet workbooks keep the
+original `A1` chrome.
+
+	:sheet                    List all sheets (active marked *)
+	:sheet add Inputs         Append "Inputs" (does not switch)
+	:sheet del Tmp            Remove "Tmp" (refused if it's the last sheet)
+	:sheet rename Old New     Rename + rewrite formula text
+	:sheet move Inputs 0      Reorder "Inputs" to position 0 (first)
+	:sheet Inputs             Switch active sheet by name
+	:sheet 1                  Switch active sheet by zero-based index
+
+Formulas reference cells on other sheets via the `Sheet!cell` syntax:
+
+	=Sheet2!A1                       Cell on another sheet
+	=SUM(Sheet2!A1:A10)              Cross-sheet range
+	=Sheet1!A1 + Sheet2!A1           Mix in arithmetic
+
+The dep graph carries sheet identity (`(sheet, c, r)` keys), so
+changing a source cell on one sheet recalculates dependent formulas
+on any sheet. Cross-sheet ranges (`Sheet1!A1:Sheet2!B5`) are rejected
+at parse time -- Excel doesn't support them either; only same-sheet
+ranges with a shared prefix work.
+
+`:sheet rename OLD NEW` walks every formula on every sheet and
+rewrites `OLD!` prefixes to `NEW!` (skipping matches inside string
+literals like `="OLD!"`). The dep graph is rebuilt afterwards.
+
+Named ranges (`:name`) are workbook-global and **sheet-relative**:
+`revenue = A1:A12` defined on Sheet1 sums whichever sheet is active
+when the formula runs. Use a sheet-qualified range
+(`=SUM(Inputs!A1:A12)`) when you need to pin to a specific sheet.
 
 ## Formatting
 

@@ -67,14 +67,11 @@ CHANGELOG.md.
 
 ## Features
 
-- [ ] **Multiple sheets / tabs within a single file.** Unblocks
-  multi-sheet xlsx import and sheet-qualified references.
-- [ ] **Multi-sheet xlsx interop.** Currently `xlsxload` reads only
-  the active sheet; subsequent sheets are dropped silently. Blocked
-  on multi-sheet support.
-- [ ] **Sheet-qualified references (`Sheet1!A1`).** Parser does not
-  recognise them; they currently produce `#NAME?`. Blocked on
-  multi-sheet support.
+- [ ] **TUI keybindings system.** A separate effort to design the
+  custom-keybinding story (config file? schema? sane defaults? a
+  conflict-detection layer?). Sheet cycling (e.g. PgUp/PgDn in the
+  main grid) is one candidate user; the broader question is how
+  users opt into custom keymaps without forking the source.
 - [ ] **xlsx interop level (c): round-trip formulas, not just values.**
   Requires the EXCEL grammar to be a strict subset of Excel's and the
   `xlsx` library's function semantics to match Excel bug-for-bug for

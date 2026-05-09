@@ -736,7 +736,7 @@ class TestRowColumnFunctions:
         # No cell in A1:B10 should subscribe to (0,5).
         for c in range(2):
             for r in range(10):
-                assert (0, 5) not in g._subscribers.get((c, r), set())
+                assert ("Sheet1", 0, 5) not in g._subscribers.get(("Sheet1", c, r), set())
 
     def test_row_combined_with_arithmetic(self) -> None:
         g = self._excel_grid()
@@ -1077,7 +1077,7 @@ class TestTier3Random:
         g._apply_mode_libs()
         g.setcell(0, 0, "=RAND()")
         # Cell should be flagged as volatile in topo recalc bookkeeping.
-        assert (0, 0) in g._volatile
+        assert ("Sheet1", 0, 0) in g._volatile
 
 
 class TestCriteriaAuditFixes:
@@ -1273,7 +1273,7 @@ class TestArrayFunctions:
         g.mode = Mode.EXCEL
         g._apply_mode_libs()
         g.setcell(0, 0, "=SUM(RANDARRAY(3))")
-        assert (0, 0) in g._volatile
+        assert ("Sheet1", 0, 0) in g._volatile
 
     def test_filter_in_pipeline(self) -> None:
         """FILTER result feeds SUM, exercising Vec consumption."""

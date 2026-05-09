@@ -31,6 +31,7 @@ class CellRef:
     row: int
     abs_col: bool
     abs_row: bool
+    sheet: str | None = None
 
 
 @dataclass(frozen=True)

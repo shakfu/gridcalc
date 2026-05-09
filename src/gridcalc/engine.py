@@ -41,7 +41,7 @@ NROW = 1024
 MAXNAMES = 256
 MAXCODE = 8192
 CW_DEFAULT = 8
-FILE_VERSION = 1
+FILE_VERSION = 2
 
 EMPTY = 0
 NUM = 1
@@ -609,11 +609,12 @@ def _expand_ranges(expr: str) -> str:
     return "".join(result)
 
 
-def _xlsx_read_cells(filename: str) -> list[tuple[int, int, str]] | None:
+def _xlsx_read_cells(filename: str) -> list[tuple[str, int, int, str]] | None:
     """Read xlsx via the OpenXLSX-backed `_core.xlsx_read`.
 
-    Returns the list of (col0, row0, text) tuples, or None if the file cannot
-    be opened.
+    Returns the list of ``(sheet_name, col0, row0, text)`` tuples
+    across every sheet in the workbook (workbook order), or ``None``
+    if the file cannot be opened.
     """
     from gridcalc import _core
 
@@ -623,10 +624,12 @@ def _xlsx_read_cells(filename: str) -> list[tuple[int, int, str]] | None:
         return None
 
 
-def _xlsx_write_cells(filename: str, cells: list[tuple[int, int, str, object]]) -> int:
-    """Write (col0, row0, kind, value) tuples; kind in {'s','n'}.
+def _xlsx_write_cells(filename: str, cells: list[tuple[str, int, int, str, object]]) -> int:
+    """Write ``(sheet_name, col0, row0, kind, value)`` tuples.
 
-    Returns 0 on success, -1 on failure.
+    ``kind`` is in ``{'s','n'}``. Sheets are created in the order
+    they first appear in ``cells``. Returns 0 on success, -1 on
+    failure.
     """
     from gridcalc import _core
 
@@ -723,12 +726,75 @@ class _CellsProxy:
         return _ColProxy(self._cells, c)
 
 
-class Grid:
-    def __init__(self) -> None:
+def _rewrite_sheet_prefix(text: str, old: str, new: str) -> str:
+    """Replace ``<old>!`` sheet prefixes in formula ``text`` with ``<new>!``.
+
+    Skips matches inside double-quoted string literals (gridcalc's only
+    string syntax; ``""`` is the escape for a literal quote). Matches
+    are anchored on a non-identifier boundary before the name, so
+    ``X<old>!`` does not match.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    old_with_bang = f"{old}!"
+    new_with_bang = f"{new}!"
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            # Pass through the entire quoted string verbatim.
+            out.append(ch)
+            i += 1
+            while i < n:
+                if text[i] == '"':
+                    out.append('"')
+                    i += 1
+                    if i < n and text[i] == '"':
+                        # Escaped quote inside the string.
+                        out.append('"')
+                        i += 1
+                        continue
+                    break
+                out.append(text[i])
+                i += 1
+            continue
+        # Try to match `<old>!` here, anchored on a non-identifier
+        # boundary on the left.
+        if text.startswith(old_with_bang, i):
+            prev = text[i - 1] if i > 0 else ""
+            if not (prev.isalnum() or prev == "_"):
+                out.append(new_with_bang)
+                i += len(old_with_bang)
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+class Sheet:
+    """A single named sheet's cell store, cycle set, and cursor.
+
+    Workbook-level state (mode, code, named ranges, dep graph, etc.)
+    lives on ``Grid``; each ``Sheet`` only owns the data that varies
+    per-tab. ``Grid`` exposes ``_cells`` / ``cells`` / ``cc`` / ``cr`` /
+    ``_circular`` as properties that delegate to ``sheets[active]`` so
+    existing single-sheet code keeps working unchanged.
+    """
+
+    __slots__ = ("name", "_cells", "_circular", "cc", "cr")
+
+    def __init__(self, name: str = "Sheet1") -> None:
+        self.name: str = name
         self._cells: dict[tuple[int, int], Cell] = {}
-        self.cells: _CellsProxy = _CellsProxy(self._cells)
+        self._circular: set[tuple[int, int]] = set()
         self.cc: int = 0
         self.cr: int = 0
+
+
+class Grid:
+    def __init__(self) -> None:
+        self.sheets: list[Sheet] = [Sheet()]
+        self.active: int = 0
         self.vc: int = 0
         self.vr: int = 0
         self.tc: int = 0
@@ -746,14 +812,18 @@ class Grid:
         self.libs: list[str] = []
         self._module_errors: list[str] = []
         self.code_error: str | None = None
-        self._circular: set[tuple[int, int]] = set()
         self.mode: Mode = Mode.LEGACY
         # Topological recalc bookkeeping. Off by default; opt-in via
         # `_use_topo_recalc = True`. Maintained alongside the fixed-point
         # path so flipping the flag is safe at any point.
-        self._dep_of: dict[tuple[int, int], set[tuple[int, int]]] = {}
-        self._subscribers: dict[tuple[int, int], set[tuple[int, int]]] = {}
-        self._volatile: set[tuple[int, int]] = set()
+        # Workbook-wide dep graph keyed by (sheet, c, r) 3-tuples;
+        # `sheet` is the sheet name, never None for entries that
+        # _refresh_deps installs (only `extract_refs` may emit None
+        # transiently for unsheeted refs, but `_refresh_deps` always
+        # passes a concrete sheet via formula_sheet).
+        self._dep_of: dict[tuple[str | None, int, int], set[tuple[str | None, int, int]]] = {}
+        self._subscribers: dict[tuple[str | None, int, int], set[tuple[str | None, int, int]]] = {}
+        self._volatile: set[tuple[str | None, int, int]] = set()
         self._use_topo_recalc: bool = True
         # Set True by `_rebuild_dep_graph`; remains True while
         # `_refresh_deps`/`_clear_deps` maintain the graph incrementally.
@@ -761,6 +831,146 @@ class Grid:
         # graph maintenance, so the graph is stale on mode transition).
         # `_recalc_topo` skips its rebuild call when this flag is True.
         self._dep_graph_built: bool = False
+
+    # -- Per-sheet state delegated to the active sheet --
+
+    @property
+    def _active(self) -> Sheet:
+        return self.sheets[self.active]
+
+    @property
+    def _cells(self) -> dict[tuple[int, int], Cell]:
+        return self._active._cells
+
+    @_cells.setter
+    def _cells(self, new_cells: dict[tuple[int, int], Cell]) -> None:
+        self._active._cells = new_cells
+
+    @property
+    def cells(self) -> _CellsProxy:
+        return _CellsProxy(self._active._cells)
+
+    @property
+    def cc(self) -> int:
+        return self._active.cc
+
+    @cc.setter
+    def cc(self, value: int) -> None:
+        self._active.cc = value
+
+    @property
+    def cr(self) -> int:
+        return self._active.cr
+
+    @cr.setter
+    def cr(self, value: int) -> None:
+        self._active.cr = value
+
+    @property
+    def _circular(self) -> set[tuple[int, int]]:
+        return self._active._circular
+
+    @_circular.setter
+    def _circular(self, value: set[tuple[int, int]]) -> None:
+        self._active._circular = value
+
+    # -- Sheet management --
+
+    def sheet_names(self) -> list[str]:
+        return [s.name for s in self.sheets]
+
+    def add_sheet(self, name: str) -> Sheet:
+        """Append a new sheet. Returns the sheet.
+
+        NOTE (phase 1): the dep graph keys are still ``(c, r)`` tuples
+        and do not carry sheet identity. Until phase 2 (sheet-qualified
+        references) lands, formulas on different sheets that touch the
+        same ``(c, r)`` collide in the dep graph. Treat multi-sheet
+        workbooks as preview-only until then.
+        """
+        if any(s.name == name for s in self.sheets):
+            raise ValueError(f"sheet {name!r} already exists")
+        sh = Sheet(name=name)
+        self.sheets.append(sh)
+        return sh
+
+    def remove_sheet(self, name: str) -> None:
+        if len(self.sheets) <= 1:
+            raise ValueError("cannot remove the last sheet")
+        idx = next((i for i, s in enumerate(self.sheets) if s.name == name), -1)
+        if idx < 0:
+            raise KeyError(name)
+        del self.sheets[idx]
+        if self.active >= len(self.sheets):
+            self.active = len(self.sheets) - 1
+        elif self.active > idx:
+            self.active -= 1
+
+    def move_sheet(self, name: str, new_idx: int) -> None:
+        """Reorder ``name`` to ``new_idx`` (zero-based).
+
+        Active-sheet identity is preserved: if the active sheet is the
+        one being moved, it follows; if some other sheet is active, its
+        index is recomputed so the same sheet stays active.
+
+        Dep graph keys carry sheet names rather than indices, so
+        reordering doesn't invalidate the graph -- no rebuild needed.
+        """
+        if not (0 <= new_idx < len(self.sheets)):
+            raise IndexError(new_idx)
+        cur_idx = next((i for i, s in enumerate(self.sheets) if s.name == name), -1)
+        if cur_idx < 0:
+            raise KeyError(name)
+        if cur_idx == new_idx:
+            return
+        active_sheet = self._active
+        sh = self.sheets.pop(cur_idx)
+        self.sheets.insert(new_idx, sh)
+        # Restore active by identity.
+        self.active = self.sheets.index(active_sheet)
+
+    def rename_sheet(self, old: str, new: str) -> None:
+        """Rename a sheet and rewrite formula text that references the old name.
+
+        Walks every formula cell on every sheet and rewrites any
+        ``<old>!`` sheet prefix to ``<new>!``. Skips matches inside
+        double-quoted string literals so a user formula like
+        ``="Other!A1"`` is left untouched. Invalidates the cached AST
+        on each rewritten cell so the next recalc re-parses with the
+        new sheet name.
+
+        Caller is responsible for rebuilding the dep graph and
+        triggering a recalc; ``cmd_sheet`` does both.
+        """
+        if old == new:
+            return
+        if any(s.name == new for s in self.sheets):
+            raise ValueError(f"sheet {new!r} already exists")
+        target = next((s for s in self.sheets if s.name == old), None)
+        if target is None:
+            raise KeyError(old)
+        target.name = new
+        # Rewrite formula text that references the old sheet name.
+        for sh in self.sheets:
+            for cl in sh._cells.values():
+                if cl.type != FORMULA:
+                    continue
+                rewritten = _rewrite_sheet_prefix(cl.text, old, new)
+                if rewritten != cl.text:
+                    cl.text = rewritten
+                    cl.ast = None
+                    cl.ast_text = ""
+
+    def set_active(self, name_or_idx: str | int) -> None:
+        if isinstance(name_or_idx, int):
+            if not (0 <= name_or_idx < len(self.sheets)):
+                raise IndexError(name_or_idx)
+            self.active = name_or_idx
+            return
+        idx = next((i for i, s in enumerate(self.sheets) if s.name == name_or_idx), -1)
+        if idx < 0:
+            raise KeyError(name_or_idx)
+        self.active = idx
 
     def load_lib(self, name: str) -> None:
         """Load a formula lib's builtins into the eval namespace."""
@@ -826,7 +1036,7 @@ class Grid:
         self._subscribers.clear()
         self._volatile.clear()
 
-    def _clear_deps(self, key: tuple[int, int]) -> None:
+    def _clear_deps(self, key: tuple[str | None, int, int]) -> None:
         """Drop `key` from forward + reverse indexes and the volatile set."""
         old = self._dep_of.pop(key, None)
         if old is not None:
@@ -839,7 +1049,10 @@ class Grid:
         self._volatile.discard(key)
 
     def _register_deps(
-        self, key: tuple[int, int], deps: set[tuple[int, int]], volatile: bool
+        self,
+        key: tuple[str | None, int, int],
+        deps: set[tuple[str | None, int, int]],
+        volatile: bool,
     ) -> None:
         """Install forward + reverse edges for `key` from `deps`."""
         if deps:
@@ -855,23 +1068,28 @@ class Grid:
         Used when bulk operations move cells around in the grid (insert/
         delete row or column, swap, replicate) or when entering a mode
         whose recalc consumes the graph (EXCEL/HYBRID from LEGACY).
-        Cost is O(formulas) -- a single AST walk per formula cell.
+        Cost is O(formulas across all sheets) -- a single AST walk per
+        formula cell.
         """
         self._dep_of.clear()
         self._subscribers.clear()
         self._volatile.clear()
-        for (c, r), cl in self._cells.items():
-            if cl.type == FORMULA:
-                self._refresh_deps(c, r, cl)
+        for s in self.sheets:
+            for (c, r), cl in s._cells.items():
+                if cl.type == FORMULA:
+                    self._refresh_deps(c, r, cl, sheet=s.name)
         self._dep_graph_built = True
 
-    def _refresh_deps(self, c: int, r: int, cl: Cell) -> None:
+    def _refresh_deps(self, c: int, r: int, cl: Cell, sheet: str | None = None) -> None:
         """Recompute the dep graph for one cell. Call after writing the cell.
 
         Parses the formula text if the AST cache is stale, extracts the
         static read set, and updates `_dep_of` / `_subscribers` / `_volatile`.
         Non-formula cells get their entries cleared. LEGACY mode skips
         graph maintenance entirely -- it uses fixed-point recalc, not topo.
+
+        ``sheet`` defaults to the active sheet's name. Pass it explicitly
+        from ``_rebuild_dep_graph`` when iterating non-active sheets.
         """
         if self.mode == Mode.LEGACY:
             return
@@ -879,7 +1097,9 @@ class Grid:
         from .formula.deps import extract_refs, has_dynamic_refs
         from .formula.errors import FormulaError
 
-        key = (c, r)
+        if sheet is None:
+            sheet = self._active.name
+        key = (sheet, c, r)
         self._clear_deps(key)
         if cl.type != FORMULA:
             return
@@ -893,7 +1113,7 @@ class Grid:
         if cl.ast is None:
             return
         named = self._build_named_ranges()
-        deps = extract_refs(cl.ast, named)
+        deps = extract_refs(cl.ast, named, formula_sheet=sheet)
         volatile = has_dynamic_refs(cl.ast)
         self._register_deps(key, deps, volatile)
 
@@ -904,7 +1124,7 @@ class Grid:
         if not text:
             if self._cells.pop((c, r), None) is None:
                 return False
-            self._clear_deps((c, r))
+            self._clear_deps((self._active.name, c, r))
             self.dirty = 1
             return True
 
@@ -1190,12 +1410,28 @@ class Grid:
                 named[nr.name] = F_RangeRef(start, end)
         return named
 
-    def _cell_is_formula(self, c: int, r: int) -> bool:
-        cl = self._cells.get((c, r))
+    def _sheet_cells(self, sheet: str | None) -> dict[tuple[int, int], Cell]:
+        """Return the cell store for the named sheet, or active when None.
+
+        Returns an empty dict for unknown sheet names; the caller treats
+        that as "no such cell" via the same path as a missing key. (A
+        formula referencing ``Bogus!A1`` evaluates to 0 / empty, matching
+        what an unset cell would do; ``#REF!`` semantics for unknown
+        sheets are deferred until phase 3 surfaces sheet management.)
+        """
+        if sheet is None:
+            return self._active._cells
+        for s in self.sheets:
+            if s.name == sheet:
+                return s._cells
+        return {}
+
+    def _cell_is_formula(self, c: int, r: int, sheet: str | None = None) -> bool:
+        cl = self._sheet_cells(sheet).get((c, r))
         return cl is not None and cl.type == FORMULA
 
-    def _cell_lookup_value(self, c: int, r: int) -> object:
-        cl = self._cells.get((c, r))
+    def _cell_lookup_value(self, c: int, r: int, sheet: str | None = None) -> object:
+        cl = self._sheet_cells(sheet).get((c, r))
         if cl is None or cl.type == EMPTY:
             return None
         if cl.type == LABEL:
@@ -1383,18 +1619,18 @@ class Grid:
     def _recalc_topo(self, dirty: set[tuple[int, int]] | None) -> None:
         """Topological recalc: evaluate only the closure of dirty cells.
 
-        If `dirty` is None, recompute every formula cell (initial load).
-        Otherwise BFS the reverse-dep index from `dirty` to find affected
-        formulas, then evaluate them in topological order. Volatile cells
-        (PyCall, INDIRECT/OFFSET/INDEX) are unconditionally added to the
-        closure. Cells that remain after the topo sort form structural
-        cycles; they are flagged via `_circular` and set to NaN.
+        Multi-sheet aware: dep keys are ``(sheet, c, r)`` workbook-wide;
+        the closure spans every sheet that has formulas reading the
+        dirty cells.
+
+        ``dirty`` is supplied as ``(c, r)`` 2-tuples relative to the
+        active sheet (the API setcell/setcells_bulk uses today). They
+        are promoted to 3-tuples internally. Pass ``None`` for a full
+        recompute across all sheets.
         """
         from .formula import Env, evaluate, parse
         from .formula.errors import FormulaError
 
-        # `_circular` is updated incrementally below: cells outside the
-        # closure aren't re-examined this recalc, so their flag stays.
         py_registry = self._build_py_registry()
         named = self._build_named_ranges()
         env = Env(
@@ -1405,24 +1641,30 @@ class Grid:
             cell_is_formula=self._cell_is_formula,
         )
 
+        active_name = self._active.name
+        # Promote `dirty` (2-tuples on the active sheet) to 3-tuples.
+        dirty3: set[tuple[str | None, int, int]] | None = (
+            None if dirty is None else {(active_name, c, r) for (c, r) in dirty}
+        )
+
         # Build the closure: BFS over `_subscribers` from the dirty set,
         # plus all volatile cells. If dirty is None, the closure is every
-        # formula cell.
-        if dirty is None:
-            # The graph may be stale after structural edits or a mode
-            # switch from LEGACY; otherwise `_refresh_deps` has been
-            # maintaining it incrementally and the rebuild is wasted.
+        # formula cell across every sheet.
+        if dirty3 is None:
             if not self._dep_graph_built:
                 self._rebuild_dep_graph()
-            closure: set[tuple[int, int]] = {
-                k for k, cl in self._cells.items() if cl.type == FORMULA
-            }
+            closure: set[tuple[str | None, int, int]] = set()
+            for s in self.sheets:
+                for (c, r), cl in s._cells.items():
+                    if cl.type == FORMULA:
+                        closure.add((s.name, c, r))
         else:
-            # Dirty cells that are themselves formulas need evaluation.
-            closure = {
-                k for k in dirty if (cl := self._cells.get(k)) is not None and cl.type == FORMULA
-            }
-            stack = list(dirty)
+            closure = set()
+            for k in dirty3:
+                cl_dirty = self._cell_at(k)
+                if cl_dirty is not None and cl_dirty.type == FORMULA:
+                    closure.add(k)
+            stack = list(dirty3)
             while stack:
                 k = stack.pop()
                 for sub in self._subscribers.get(k, ()):
@@ -1434,8 +1676,8 @@ class Grid:
         # Topological order via Kahn's algorithm. In-edges restricted to
         # cells inside the closure -- deps outside the closure are already
         # up to date and don't gate evaluation order.
-        in_count: dict[tuple[int, int], int] = {}
-        children: dict[tuple[int, int], list[tuple[int, int]]] = {}
+        in_count: dict[tuple[str | None, int, int], int] = {}
+        children: dict[tuple[str | None, int, int], list[tuple[str | None, int, int]]] = {}
         for k in closure:
             deps = self._dep_of.get(k, set())
             in_closure = deps & closure
@@ -1444,7 +1686,7 @@ class Grid:
                 children.setdefault(d, []).append(k)
 
         ready = [k for k, n in in_count.items() if n == 0]
-        order: list[tuple[int, int]] = []
+        order: list[tuple[str | None, int, int]] = []
         while ready:
             k = ready.pop()
             order.append(k)
@@ -1453,51 +1695,88 @@ class Grid:
                 if in_count[child] == 0:
                     ready.append(child)
 
-        # Evaluate in dependency order.
-        for c, r in order:
-            cl = self._cells.get((c, r))
-            if cl is None or cl.type != FORMULA:
-                continue
-            text = cl.text[1:] if cl.text.startswith("=") else cl.text
-            if cl.ast is None or cl.ast_text != text:
-                cl.ast_text = text
+        # Evaluate in dependency order. Switch the active sheet for
+        # each formula so `current_cell` and the active-sheet cell
+        # callback resolve in the right scope -- but capture+restore
+        # so user-visible `g.active` doesn't change.
+        saved_active = self.active
+        try:
+            for key in order:
+                sheet_name, c, r = key
+                fcl = self._cell_at(key)
+                if fcl is None or fcl.type != FORMULA:
+                    continue
+                text = fcl.text[1:] if fcl.text.startswith("=") else fcl.text
+                if fcl.ast is None or fcl.ast_text != text:
+                    fcl.ast_text = text
+                    try:
+                        fcl.ast = parse(text)
+                    except FormulaError:
+                        fcl.ast = None
+                if fcl.ast is None:
+                    fcl.arr = None
+                    fcl.matrix = None
+                    fcl.val = float("nan")
+                    continue
+                # Make this formula's home sheet active during eval so
+                # unsheeted refs in the formula resolve to its own
+                # sheet via the Env callback.
+                if sheet_name is not None:
+                    for i, s in enumerate(self.sheets):
+                        if s.name == sheet_name:
+                            self.active = i
+                            break
+                env.current_cell = (c, r)
                 try:
-                    cl.ast = parse(text)
-                except FormulaError:
-                    cl.ast = None
-            if cl.ast is None:
-                cl.arr = None
-                cl.matrix = None
-                cl.val = float("nan")
-                continue
-            env.current_cell = (c, r)
-            try:
-                result = evaluate(cl.ast, env)
-            except Exception:
-                result = float("nan")
-            self._store_formula_result(cl, result)
+                    result = evaluate(fcl.ast, env)
+                except Exception:
+                    result = float("nan")
+                self._store_formula_result(fcl, result)
+        finally:
+            self.active = saved_active
 
         # Anything left in the closure but not in `order` is in a cycle.
         # Cells that were in the closure get their `_circular` membership
         # rewritten from scratch; cells outside the closure are left alone.
-        # The dirty set is also cleared -- a freshly written non-formula
-        # cell can't be in a cycle even though it's not in the closure.
         unresolved = closure - set(order)
-        self._circular -= closure
-        if dirty is not None:
-            self._circular -= dirty
-        self._circular |= unresolved
+        # Update each affected sheet's `_circular` set (per-sheet 2-tuples).
+        affected_sheets: set[str | None] = {s for (s, _c, _r) in closure}
+        for s_name in affected_sheets:
+            sh: Sheet | None = self._sheet_by_name(s_name) if s_name is not None else self._active
+            if sh is None:
+                continue
+            # Drop closure cells from this sheet's circular set.
+            closure_cr = {(c, r) for (sn, c, r) in closure if sn == s_name}
+            sh._circular -= closure_cr
+            if dirty3 is not None:
+                dirty_cr = {(c, r) for (sn, c, r) in dirty3 if sn == s_name}
+                sh._circular -= dirty_cr
+            unres_cr = {(c, r) for (sn, c, r) in unresolved if sn == s_name}
+            sh._circular |= unres_cr
         if unresolved:
             from .formula.errors import ExcelError as _XE
 
-            for pos in unresolved:
-                cl = self._cells.get(pos)
-                if cl is not None:
-                    cl.arr = None
-                    cl.matrix = None
-                    cl.val = float("nan")
-                    cl.err = _XE.CIRC
-                    cl.err_msg = None
+            for key in unresolved:
+                circ_cl: Cell | None = self._cell_at(key)
+                if circ_cl is not None:
+                    circ_cl.arr = None
+                    circ_cl.matrix = None
+                    circ_cl.val = float("nan")
+                    circ_cl.err = _XE.CIRC
+                    circ_cl.err_msg = None
+
+    def _cell_at(self, key: tuple[str | None, int, int]) -> Cell | None:
+        """Resolve a workbook-level dep key to its Cell, if any."""
+        sheet, c, r = key
+        return self._sheet_cells(sheet).get((c, r))
+
+    def _sheet_by_name(self, name: str | None) -> Sheet | None:
+        if name is None:
+            return self._active
+        for s in self.sheets:
+            if s.name == name:
+                return s
+        return None
 
     def _fixrefs(self, axis: str, a: int, b: int) -> None:
         for cl in self._cells.values():
@@ -1576,7 +1855,6 @@ class Grid:
             else:
                 new_cells[(c, r)] = cl
         self._cells = new_cells
-        self.cells = _CellsProxy(self._cells)
         self._shiftrefs("R", at, +1)
         self._rebuild_dep_graph()
         self.dirty = 1
@@ -1590,7 +1868,6 @@ class Grid:
             else:
                 new_cells[(c, r)] = cl
         self._cells = new_cells
-        self.cells = _CellsProxy(self._cells)
         self._shiftrefs("C", at, +1)
         self._rebuild_dep_graph()
         self.dirty = 1
@@ -1606,7 +1883,6 @@ class Grid:
             else:
                 new_cells[(c, r)] = cl
         self._cells = new_cells
-        self.cells = _CellsProxy(self._cells)
         self._rebuild_dep_graph()
         self.dirty = 1
 
@@ -1621,7 +1897,6 @@ class Grid:
             else:
                 new_cells[(c, r)] = cl
         self._cells = new_cells
-        self.cells = _CellsProxy(self._cells)
         self._rebuild_dep_graph()
         self.dirty = 1
 
@@ -1635,7 +1910,6 @@ class Grid:
             else:
                 new_cells[(c, r)] = cl
         self._cells = new_cells
-        self.cells = _CellsProxy(self._cells)
         self._fixrefs("R", a, b)
         self._rebuild_dep_graph()
 
@@ -1649,7 +1923,6 @@ class Grid:
             else:
                 new_cells[(c, r)] = cl
         self._cells = new_cells
-        self.cells = _CellsProxy(self._cells)
         self._fixrefs("C", a, b)
         self._rebuild_dep_graph()
 
@@ -1661,7 +1934,7 @@ class Grid:
             # Source is empty -- clear destination, including its deps.
             if (dc, dr) in self._cells:
                 self._cells.pop((dc, dr), None)
-                self._clear_deps((dc, dr))
+                self._clear_deps((self._active.name, dc, dr))
             return
         if src.type != FORMULA:
             # Non-formula: copy text and styling, route through bulk-set
@@ -1709,6 +1982,49 @@ class Grid:
             return cellname(c1, r1)
         a = cellname(c1, r1)
         return f"{a}...{col_name(c2)}{r2 + 1}"
+
+    def _load_cells_into_active(self, rows: list[Any]) -> None:
+        """Load a v1/v2 cell-rows array into the currently active sheet."""
+        for r_idx, row in enumerate(rows):
+            if r_idx >= NROW or not isinstance(row, list):
+                continue
+            for c_idx, v in enumerate(row):
+                if c_idx >= NCOL:
+                    break
+                cell_bold = 0
+                cell_underline = 0
+                cell_italic = 0
+                cell_fmt = ""
+                cell_fmtstr = ""
+                if isinstance(v, dict):
+                    cell_bold = 1 if v.get("bold") else 0
+                    cell_underline = 1 if v.get("underline") else 0
+                    cell_italic = 1 if v.get("italic") else 0
+                    fmt_val = v.get("fmt", "")
+                    if fmt_val:
+                        cell_fmt = fmt_val[0]
+                    cell_fmtstr = v.get("fmtstr", "")
+                    v = v.get("v", None)
+                if v is None or (isinstance(v, str) and v == ""):
+                    continue
+                if isinstance(v, str):
+                    text = v
+                elif isinstance(v, (int, float)):
+                    if isinstance(v, int) or (v == int(v) and abs(v) < 1e15):
+                        text = str(int(v))
+                    else:
+                        text = f"{v:g}"
+                else:
+                    continue
+                self._setcell_no_recalc(c_idx, r_idx, text)
+                cl = self._cells.get((c_idx, r_idx))
+                if not cl:
+                    continue
+                cl.bold = cell_bold
+                cl.underline = cell_underline
+                cl.italic = cell_italic
+                cl.fmt = cell_fmt
+                cl.fmtstr = cell_fmtstr
 
     def jsonload(self, filename: str, policy: Any = None) -> int:
         try:
@@ -1776,47 +2092,52 @@ class Grid:
         elif not self.cw:
             self.cw = CW_DEFAULT
 
-        rows = d.get("cells", [])
-        for r_idx, row in enumerate(rows):
-            if r_idx >= NROW or not isinstance(row, list):
-                continue
-            for c_idx, v in enumerate(row):
-                if c_idx >= NCOL:
-                    break
-                cell_bold = 0
-                cell_underline = 0
-                cell_italic = 0
-                cell_fmt = ""
-                cell_fmtstr = ""
-                if isinstance(v, dict):
-                    cell_bold = 1 if v.get("bold") else 0
-                    cell_underline = 1 if v.get("underline") else 0
-                    cell_italic = 1 if v.get("italic") else 0
-                    fmt_val = v.get("fmt", "")
-                    if fmt_val:
-                        cell_fmt = fmt_val[0]
-                    cell_fmtstr = v.get("fmtstr", "")
-                    v = v.get("v", None)
-                if v is None or (isinstance(v, str) and v == ""):
+        # Sheet population. v2 has a `sheets` array of {name, cells};
+        # v1 has top-level `cells` (single sheet).
+        sheets_payload = d.get("sheets")
+        if isinstance(sheets_payload, list) and sheets_payload:
+            # v2: replace the auto-created Sheet1 with the saved sheets.
+            self.sheets = []
+            for entry in sheets_payload:
+                if not isinstance(entry, dict):
                     continue
-                if isinstance(v, str):
-                    text = v
-                elif isinstance(v, (int, float)):
-                    if isinstance(v, int) or (v == int(v) and abs(v) < 1e15):
-                        text = str(int(v))
+                name = entry.get("name")
+                if not isinstance(name, str) or not name:
+                    continue
+                # add_sheet rejects duplicates; if a save somehow has
+                # them, tolerate by appending a numeric suffix.
+                final_name = name
+                suffix = 1
+                while any(s.name == final_name for s in self.sheets):
+                    final_name = f"{name}_{suffix}"
+                    suffix += 1
+                sh = Sheet(name=final_name)
+                self.sheets.append(sh)
+                self.active = len(self.sheets) - 1
+                cells_payload = entry.get("cells", [])
+                if isinstance(cells_payload, list):
+                    self._load_cells_into_active(cells_payload)
+            if not self.sheets:
+                self.sheets = [Sheet()]
+                self.active = 0
+            else:
+                # Pick the requested active sheet (by name); fall back
+                # to the first sheet if absent or unknown.
+                requested = d.get("active")
+                if isinstance(requested, str):
+                    for i, s in enumerate(self.sheets):
+                        if s.name == requested:
+                            self.active = i
+                            break
                     else:
-                        text = f"{v:g}"
+                        self.active = 0
                 else:
-                    continue
-                self._setcell_no_recalc(c_idx, r_idx, text)
-                cl = self._cells.get((c_idx, r_idx))
-                if not cl:
-                    continue
-                cl.bold = cell_bold
-                cl.underline = cell_underline
-                cl.italic = cell_italic
-                cl.fmt = cell_fmt
-                cl.fmtstr = cell_fmtstr
+                    self.active = 0
+        else:
+            # v1: load into the auto-created Sheet1.
+            rows = d.get("cells", [])
+            if isinstance(rows, list):
+                self._load_cells_into_active(rows)
 
         # Single recalc at the end. Per-cell `_refresh_deps` already
         # populated the dep graph during the load loop, so flag it as
@@ -1827,41 +2148,21 @@ class Grid:
         self.recalc()
         return 0
 
-    def jsonsave(self, filename: str) -> int:
+    def _encode_sheet_rows(self, cells: dict[tuple[int, int], Cell]) -> list[list[Any]]:
+        """Encode one sheet's cell store as a v2 ``cells`` rows list."""
         maxr = -1
         maxc = -1
-        for (c, r), cl in self._cells.items():
+        for (c, r), cl in cells.items():
             if cl.type != EMPTY:
                 if r > maxr:
                     maxr = r
                 if c > maxc:
                     maxc = c
-
-        out: dict[str, Any] = {"version": FILE_VERSION, "mode": self.mode.name}
-
-        if self.libs:
-            out["libs"] = self.libs
-
-        if self.requires:
-            out["requires"] = self.requires
-
-        if self.code:
-            out["code"] = self.code
-
-        if self.names:
-            out["names"] = {}
-            for nr in self.names:
-                a = cellname(nr.c1, nr.r1)
-                rng = f"{a}:{col_name(nr.c2)}{nr.r2 + 1}"
-                out["names"][nr.name] = rng
-
-        out["format"] = {"width": self.cw}
-
         rows: list[list[Any]] = []
         for r in range(maxr + 1):
             row: list[Any] = []
             for c in range(maxc + 1):
-                sc = self._cells.get((c, r))
+                sc = cells.get((c, r))
                 if not sc or sc.type == EMPTY:
                     row.append(None)
                     continue
@@ -1889,7 +2190,36 @@ class Grid:
                         styled["fmtstr"] = sc.fmtstr
                     row[-1] = styled
             rows.append(row)
-        out["cells"] = rows
+        return rows
+
+    def jsonsave(self, filename: str) -> int:
+        out: dict[str, Any] = {"version": FILE_VERSION, "mode": self.mode.name}
+
+        if self.libs:
+            out["libs"] = self.libs
+
+        if self.requires:
+            out["requires"] = self.requires
+
+        if self.code:
+            out["code"] = self.code
+
+        if self.names:
+            out["names"] = {}
+            for nr in self.names:
+                a = cellname(nr.c1, nr.r1)
+                rng = f"{a}:{col_name(nr.c2)}{nr.r2 + 1}"
+                out["names"][nr.name] = rng
+
+        out["format"] = {"width": self.cw}
+
+        # v2: per-sheet payload. Active sheet recorded by name so the
+        # round-trip restores the user's view even when sheet order
+        # changes.
+        out["active"] = self._active.name
+        out["sheets"] = [
+            {"name": s.name, "cells": self._encode_sheet_rows(s._cells)} for s in self.sheets
+        ]
 
         try:
             with open(filename, "w") as f:
@@ -1903,33 +2233,72 @@ class Grid:
         cells = _xlsx_read_cells(filename)
         if cells is None:
             return -1
-        self.clear_all()
         self.mode = Mode.EXCEL
+        # Reset the workbook to a single empty sheet, then create
+        # additional sheets as encountered in the payload.
+        self.sheets = [Sheet()]
+        self.active = 0
+        self._dep_of.clear()
+        self._subscribers.clear()
+        self._volatile.clear()
         self._apply_mode_libs()
-        self.setcells_bulk(cells)
+
+        # Group payload by sheet, preserving first-seen order.
+        per_sheet: dict[str, list[tuple[int, int, str]]] = {}
+        sheet_order: list[str] = []
+        for sname, c, r, text in cells:
+            if sname not in per_sheet:
+                per_sheet[sname] = []
+                sheet_order.append(sname)
+            per_sheet[sname].append((c, r, text))
+
+        # Replace the auto-created Sheet1 with the first xlsx sheet
+        # (preserves the source workbook's first-sheet name) and add
+        # the rest.
+        if sheet_order:
+            self.sheets[0].name = sheet_order[0]
+            for extra in sheet_order[1:]:
+                # Tolerate duplicate names by appending a numeric
+                # suffix; OpenXLSX itself rejects duplicates so this
+                # branch is defensive.
+                final_name = extra
+                suffix = 1
+                while any(s.name == final_name for s in self.sheets):
+                    final_name = f"{extra}_{suffix}"
+                    suffix += 1
+                self.sheets.append(Sheet(name=final_name))
+
+        # Bulk-load each sheet's cells via setcells_bulk on the active
+        # sheet, switching active per sheet.
+        for i, sname in enumerate(sheet_order):
+            self.active = i
+            # Use the resolved name rather than `sname` in case the
+            # de-dupe path renamed it.
+            self.setcells_bulk(per_sheet[sname])
+        self.active = 0
+
         self.dirty = 0
         self.filename = filename
         return 0
 
     def xlsxsave(self, filename: str) -> int:
-        maxr = -1
-        for (_c, r), sc in self._cells.items():
-            if sc.type != EMPTY and r > maxr:
-                maxr = r
-        if maxr < 0:
+        # Empty workbook: nothing to write.
+        if all(cl.type == EMPTY for s in self.sheets for cl in s._cells.values()):
             return -1
-        payload: list[tuple[int, int, str, object]] = []
-        for (c, r), cl in self._cells.items():
-            if cl.type == EMPTY:
-                continue
-            if cl.type == LABEL:
-                payload.append((c, r, "s", cl.text))
-            elif cl.type == NUM:
-                payload.append((c, r, "n", float(cl.val)))
-            elif cl.type == FORMULA:
-                if isinstance(cl.val, float) and math.isnan(cl.val):
+
+        payload: list[tuple[str, int, int, str, object]] = []
+        for s in self.sheets:
+            for (c, r), cl in s._cells.items():
+                if cl.type == EMPTY:
                     continue
-                payload.append((c, r, "n", float(cl.val)))
+                if cl.type == LABEL:
+                    payload.append((s.name, c, r, "s", cl.text))
+                elif cl.type == NUM:
+                    payload.append((s.name, c, r, "n", float(cl.val)))
+                elif cl.type == FORMULA:
+                    if isinstance(cl.val, float) and math.isnan(cl.val):
+                        continue
+                    payload.append((s.name, c, r, "n", float(cl.val)))
         return _xlsx_write_cells(filename, payload)
 
     def csvsave(self, filename: str) -> int:

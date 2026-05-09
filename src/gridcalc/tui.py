@@ -389,7 +389,12 @@ def draw(
     stdscr.move(0, 0)
     stdscr.clrtoeol()
     cur = g.cell(g.cc, g.cr)
-    status = f" {col_name(g.cc)}{g.cr + 1}"
+    # Show the active sheet only when the workbook has more than one;
+    # single-sheet workbooks keep the original ` A1 10 ` chrome.
+    if len(g.sheets) > 1:
+        status = f" {g._active.name}!{col_name(g.cc)}{g.cr + 1}"
+    else:
+        status = f" {col_name(g.cc)}{g.cr + 1}"
     if cur and cur.type == NUM:
         if cur.matrix is not None and _is_dataframe(cur.matrix):
             df = cur.matrix
@@ -1520,6 +1525,103 @@ def cmd_mode(stdscr: curses.window, g: Grid, args: str) -> bool:
     return False
 
 
+def cmd_sheet(stdscr: curses.window, g: Grid, args: str) -> bool:
+    """Multi-sheet management.
+
+    Subcommands:
+      :sheet                -> show all sheets (active marked with *)
+      :sheet list           -> same as bare :sheet
+      :sheet add NAME       -> append a new sheet (does not switch)
+      :sheet del NAME       -> remove sheet (refuses last sheet)
+      :sheet rename OLD NEW -> rename sheet (rewrites formula text)
+      :sheet move NAME N    -> reorder sheet to zero-based index N
+      :sheet NAME           -> switch active sheet by name
+      :sheet N              -> switch active sheet by zero-based index
+    """
+    arg = args.strip()
+    if not arg or arg == "list":
+        names = ", ".join(f"*{s.name}" if i == g.active else s.name for i, s in enumerate(g.sheets))
+        show_error(stdscr, f"sheets: {names}")
+        return False
+
+    parts = arg.split(None, 2)
+    sub = parts[0].lower()
+
+    if sub == "add":
+        if len(parts) < 2:
+            show_error(stdscr, "usage: :sheet add NAME")
+            return False
+        try:
+            g.add_sheet(parts[1])
+        except ValueError as exc:
+            show_error(stdscr, f"sheet add: {exc}")
+            return False
+        g.dirty = 1
+        return False
+
+    if sub in ("del", "delete", "remove", "rm"):
+        if len(parts) < 2:
+            show_error(stdscr, "usage: :sheet del NAME")
+            return False
+        try:
+            g.remove_sheet(parts[1])
+        except (ValueError, KeyError) as exc:
+            show_error(stdscr, f"sheet del: {exc}")
+            return False
+        g.recalc()
+        g.dirty = 1
+        return False
+
+    if sub == "move":
+        if len(parts) < 3:
+            show_error(stdscr, "usage: :sheet move NAME INDEX")
+            return False
+        name, idx_str = parts[1], parts[2]
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            show_error(stdscr, f"sheet move: bad index {idx_str!r}")
+            return False
+        try:
+            g.move_sheet(name, idx)
+        except (IndexError, KeyError) as exc:
+            show_error(stdscr, f"sheet move: {exc}")
+            return False
+        g.dirty = 1
+        return False
+
+    if sub == "rename":
+        if len(parts) < 3:
+            show_error(stdscr, "usage: :sheet rename OLD NEW")
+            return False
+        old, new = parts[1], parts[2]
+        try:
+            g.rename_sheet(old, new)
+        except (ValueError, KeyError) as exc:
+            show_error(stdscr, f"sheet rename: {exc}")
+            return False
+        # Sheet identity changed -- dep graph keys carry sheet names,
+        # so any subscriber edges referencing `old` are now stale. The
+        # cheapest correct fix is a full rebuild.
+        g._dep_graph_built = False
+        g._rebuild_dep_graph()
+        g.recalc()
+        g.dirty = 1
+        return False
+
+    # Bare arg: switch active sheet by index (numeric) or name.
+    target: int | str
+    try:
+        target = int(arg)
+    except ValueError:
+        target = arg
+    try:
+        g.set_active(target)
+    except (KeyError, IndexError):
+        show_error(stdscr, f"sheet: no such sheet {arg!r}")
+    return False
+
+
 def cmd_title(g: Grid, args: str) -> bool:
     ch = args[0].upper() if args else ""
     if ch == "V":
@@ -1864,6 +1966,8 @@ def cmdexec(
         return cmd_title(g, args)
     if cmd == "mode":
         return cmd_mode(stdscr, g, args)
+    if cmd in ("sheet", "s"):
+        return cmd_sheet(stdscr, g, args)
 
     stdscr.addnstr(curses.LINES - 1, 0, f"Unknown command: {cmd} (press any key)", curses.COLS - 1)
     stdscr.clrtoeol()

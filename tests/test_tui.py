@@ -487,6 +487,128 @@ class TestCmdexec:
         assert self.g.cells[0][1].val == 20.0
 
 
+class TestCmdSheet:
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = MockStdscr()
+        self.g = Grid()
+        self.undo = UndoManager()
+
+    def test_sheet_add(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "sheet add Data")
+        assert self.g.sheet_names() == ["Sheet1", "Data"]
+        # Active stays on Sheet1 (add does not switch).
+        assert self.g.active == 0
+
+    def test_sheet_switch_by_name(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "sheet add Data")
+        cmdexec(self.stdscr, self.g, self.undo, "sheet Data")
+        assert self.g.active == 1
+
+    def test_sheet_switch_by_index(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "sheet add Two")
+        cmdexec(self.stdscr, self.g, self.undo, "sheet add Three")
+        cmdexec(self.stdscr, self.g, self.undo, "sheet 2")
+        assert self.g.active == 2
+        cmdexec(self.stdscr, self.g, self.undo, "sheet 0")
+        assert self.g.active == 0
+
+    def test_sheet_unknown_name_warns_but_does_not_switch(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "sheet add Data")
+        cmdexec(self.stdscr, self.g, self.undo, "sheet Nope")
+        # Active unchanged (still on Sheet1).
+        assert self.g.active == 0
+
+    def test_sheet_index_out_of_range_does_not_switch(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "sheet 5")
+        assert self.g.active == 0
+
+    def test_sheet_del(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "sheet add Tmp")
+        cmdexec(self.stdscr, self.g, self.undo, "sheet del Tmp")
+        assert self.g.sheet_names() == ["Sheet1"]
+
+    def test_sheet_del_last_refused(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "sheet del Sheet1")
+        # Refused; last sheet remains.
+        assert self.g.sheet_names() == ["Sheet1"]
+
+    def test_sheet_rename(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "sheet rename Sheet1 Data")
+        assert self.g.sheet_names() == ["Data"]
+
+    def test_sheet_move_reorders(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "sheet add B")
+        cmdexec(self.stdscr, self.g, self.undo, "sheet add C")
+        cmdexec(self.stdscr, self.g, self.undo, "sheet move Sheet1 2")
+        assert self.g.sheet_names() == ["B", "C", "Sheet1"]
+
+    def test_sheet_move_bad_index_does_not_reorder(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "sheet add B")
+        cmdexec(self.stdscr, self.g, self.undo, "sheet move Sheet1 99")
+        # Out-of-range index keeps order untouched.
+        assert self.g.sheet_names() == ["Sheet1", "B"]
+
+    def test_sheet_move_non_numeric_index_warns(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "sheet add B")
+        cmdexec(self.stdscr, self.g, self.undo, "sheet move Sheet1 oops")
+        assert self.g.sheet_names() == ["Sheet1", "B"]
+
+    def test_sheet_rename_changes_internal_name(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "sheet add Other")
+        cmdexec(self.stdscr, self.g, self.undo, "sheet rename Other Renamed")
+        assert self.g.sheet_names() == ["Sheet1", "Renamed"]
+
+    def test_sheet_rename_rewrites_formula_text(self):
+        # Phase 4: `:sheet rename` walks every formula and rewrites
+        # `<old>!` prefixes to `<new>!`. After rename, the formula
+        # still resolves to the renamed sheet's data.
+        from gridcalc.engine import Mode
+        from gridcalc.tui import cmdexec
+
+        self.g.mode = Mode.EXCEL
+        self.g._apply_mode_libs()
+        cmdexec(self.stdscr, self.g, self.undo, "sheet add Other")
+        cmdexec(self.stdscr, self.g, self.undo, "sheet Other")
+        self.g.setcell(0, 0, "42")
+        cmdexec(self.stdscr, self.g, self.undo, "sheet Sheet1")
+        self.g.setcell(0, 0, "=Other!A1")
+        assert self.g.cells[0][0].val == 42.0
+        cmdexec(self.stdscr, self.g, self.undo, "sheet rename Other Renamed")
+        # Formula text was rewritten and re-parsed.
+        assert self.g.cells[0][0].text == "=Renamed!A1"
+        assert self.g.cells[0][0].val == 42.0
+        # Editing the source under the new name still propagates.
+        cmdexec(self.stdscr, self.g, self.undo, "sheet Renamed")
+        self.g.setcell(0, 0, "100")
+        cmdexec(self.stdscr, self.g, self.undo, "sheet Sheet1")
+        assert self.g.cells[0][0].val == 100.0
+
+
 class TestVisualSelectFormat:
     """Test range formatting via cmdexec with sel= parameter (visual mode path)."""
 

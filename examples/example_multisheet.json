@@ -1,0 +1,99 @@
+{
+  "version": 2,
+  "mode": "EXCEL",
+  "active": "Summary",
+  "format": {
+    "width": 14
+  },
+  "sheets": [
+    {
+      "name": "Inputs",
+      "cells": [
+        [
+          {"v": "Quarter", "bold": true},
+          {"v": "Revenue",  "bold": true},
+          {"v": "Cost",     "bold": true}
+        ],
+        ["Q1", 12500, 7800],
+        ["Q2",  8300, 6100],
+        ["Q3", 15700, 9200],
+        ["Q4",  9200, 7400]
+      ]
+    },
+    {
+      "name": "Metrics",
+      "cells": [
+        [
+          {"v": "Quarter", "bold": true},
+          {"v": "Profit",  "bold": true},
+          {"v": "Margin",  "bold": true},
+          {"v": "QoQ growth", "bold": true}
+        ],
+        [
+          "=Inputs!A2",
+          "=Inputs!B2-Inputs!C2",
+          "=B2/Inputs!B2",
+          null
+        ],
+        [
+          "=Inputs!A3",
+          "=Inputs!B3-Inputs!C3",
+          "=B3/Inputs!B3",
+          "=(Inputs!B3-Inputs!B2)/Inputs!B2"
+        ],
+        [
+          "=Inputs!A4",
+          "=Inputs!B4-Inputs!C4",
+          "=B4/Inputs!B4",
+          "=(Inputs!B4-Inputs!B3)/Inputs!B3"
+        ],
+        [
+          "=Inputs!A5",
+          "=Inputs!B5-Inputs!C5",
+          "=B5/Inputs!B5",
+          "=(Inputs!B5-Inputs!B4)/Inputs!B4"
+        ]
+      ]
+    },
+    {
+      "name": "Summary",
+      "cells": [
+        [
+          {"v": "Annual KPIs", "bold": true}
+        ],
+        [],
+        [
+          {"v": "Total revenue", "bold": true},
+          "=SUM(Inputs!B2:B5)"
+        ],
+        [
+          {"v": "Total cost",    "bold": true},
+          "=SUM(Inputs!C2:C5)"
+        ],
+        [
+          {"v": "Total profit",  "bold": true},
+          "=SUM(Metrics!B2:B5)"
+        ],
+        [
+          {"v": "Average margin", "bold": true},
+          "=AVERAGE(Metrics!C2:C5)"
+        ],
+        [
+          {"v": "Best quarter",   "bold": true},
+          "=INDEX(Inputs!A2:A5, MATCH(MAX(Metrics!B2:B5), Metrics!B2:B5, 0))"
+        ],
+        [
+          {"v": "Worst quarter",  "bold": true},
+          "=INDEX(Inputs!A2:A5, MATCH(MIN(Metrics!B2:B5), Metrics!B2:B5, 0))"
+        ],
+        [],
+        [
+          {"v": "Notes", "bold": true}
+        ],
+        ["Switch sheets:", ":sheet Inputs   |   :sheet Metrics   |   :sheet Summary"],
+        ["List sheets:",   ":sheet"],
+        ["Cross-sheet:",   "Formulas above pull from Inputs/Metrics via Sheet!cell"]
+      ]
+    }
+  ]
+}

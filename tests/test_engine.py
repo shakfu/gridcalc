@@ -509,6 +509,161 @@ class TestJsonRoundtrip:
         assert g2.cells[1][0].val == 30.0
 
 
+class TestExampleMultiSheet:
+    """Loads the shipped multi-sheet example and validates expected values.
+
+    Doubles as a regression guard: if cross-sheet recalc, dep tracking,
+    or JSON v2 loading regress, this fails.
+    """
+
+    def test_loads_and_computes(self):
+        from pathlib import Path
+
+        path = Path(__file__).parent.parent / "examples" / "example_multisheet.json"
+        g = make_grid()
+        assert g.jsonload(str(path)) == 0
+        assert g.sheet_names() == ["Inputs", "Metrics", "Summary"]
+        assert g._active.name == "Summary"
+
+        # Summary KPIs (all driven by cross-sheet formulas).
+        g.set_active("Summary")
+        assert g.cells[1][2].val == 45700.0  # total revenue
+        assert g.cells[1][3].val == 30500.0  # total cost
+        assert g.cells[1][4].val == 15200.0  # total profit
+        # Best/worst quarter via INDEX+MATCH on Metrics!B2:B5.
+        assert g.cells[1][6].sval == "Q3"
+        assert g.cells[1][7].sval == "Q4"
+
+        # Metrics row 1 (Q1) margin: (Revenue - Cost) / Revenue.
+        g.set_active("Metrics")
+        assert abs(g.cells[2][1].val - (12500 - 7800) / 12500) < 1e-9
+
+
+class TestRewriteSheetPrefix:
+    def _rw(self, text, old, new):
+        from gridcalc.engine import _rewrite_sheet_prefix
+
+        return _rewrite_sheet_prefix(text, old, new)
+
+    def test_basic_prefix(self):
+        assert self._rw("=Other!A1", "Other", "Renamed") == "=Renamed!A1"
+
+    def test_multiple_occurrences(self):
+        assert self._rw("=Other!A1+Other!B2*2", "Other", "X") == "=X!A1+X!B2*2"
+
+    def test_preserves_string_literals(self):
+        # The string contains `Other!` but it's user data; don't rewrite.
+        assert self._rw('="Other!A1 is data"', "Other", "Renamed") == '="Other!A1 is data"'
+
+    def test_does_not_match_inside_identifiers(self):
+        # `MyOther!A1` -- a sheet named `MyOther`, not `Other`.
+        # The rewriter requires a non-identifier boundary on the left,
+        # so this stays unchanged when renaming `Other`.
+        assert self._rw("=MyOther!A1", "Other", "Renamed") == "=MyOther!A1"
+
+    def test_handles_escaped_quotes_in_strings(self):
+        # `""` is the escape for a literal quote inside a string.
+        # Rewriter must not get confused and treat the inner `Other!`
+        # as code.
+        text = '="Has ""Other!"" inside"+Other!A1'
+        assert self._rw(text, "Other", "X") == '="Has ""Other!"" inside"+X!A1'
+
+
+class TestJsonV2MultiSheet:
+    def test_save_writes_v2_with_sheets_array(self, tmp_path):
+        import json
+
+        g = make_grid()
+        g.setcell(0, 0, "10")
+        f = tmp_path / "v2.json"
+        assert g.jsonsave(str(f)) == 0
+        d = json.loads(f.read_text())
+        assert d["version"] == 2
+        assert d["active"] == "Sheet1"
+        assert isinstance(d["sheets"], list) and len(d["sheets"]) == 1
+        assert d["sheets"][0]["name"] == "Sheet1"
+
+    def test_v1_file_still_loads(self, tmp_path):
+        import json
+
+        # A handcrafted v1 payload (no `sheets` key, top-level `cells`).
+        v1 = {
+            "version": 1,
+            "mode": "LEGACY",
+            "format": {"width": 10},
+            "cells": [[10, 20], [None, 30]],
+        }
+        f = tmp_path / "v1.json"
+        f.write_text(json.dumps(v1))
+        g = make_grid()
+        assert g.jsonload(str(f)) == 0
+        # Loaded into the auto-created Sheet1.
+        assert g.sheet_names() == ["Sheet1"]
+        assert g.cells[0][0].val == 10.0
+        assert g.cells[1][0].val == 20.0
+        assert g.cells[1][1].val == 30.0
+
+    def test_multi_sheet_roundtrip(self, tmp_path):
+        from gridcalc.engine import Mode
+
+        g = make_grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, "10")
+        g.add_sheet("Other")
+        g.set_active("Other")
+        g.setcell(0, 0, "200")
+        g.set_active("Sheet1")
+        g.setcell(1, 0, "=Other!A1*2")
+        assert g.cells[1][0].val == 400.0
+
+        f = tmp_path / "multi.json"
+        assert g.jsonsave(str(f)) == 0
+
+        g2 = make_grid()
+        assert g2.jsonload(str(f)) == 0
+        assert g2.sheet_names() == ["Sheet1", "Other"]
+        assert g2.active == 0  # `active` was Sheet1 at save time
+        assert g2.cells[0][0].val == 10.0
+        assert g2.cells[1][0].val == 400.0
+        # Cross-sheet recalc still wired after load.
+        g2.set_active("Other")
+        g2.setcell(0, 0, "5")
+        g2.set_active("Sheet1")
+        assert g2.cells[1][0].val == 10.0  # =Other!A1*2 = 5*2
+
+    def test_active_sheet_preserved_in_roundtrip(self, tmp_path):
+        g = make_grid()
+        g.add_sheet("Two")
+        g.add_sheet("Three")
+        g.set_active("Two")
+
+        f = tmp_path / "active.json"
+        assert g.jsonsave(str(f)) == 0
+
+        g2 = make_grid()
+        assert g2.jsonload(str(f)) == 0
+        assert g2.sheet_names() == ["Sheet1", "Two", "Three"]
+        assert g2._active.name == "Two"
+
+    def test_v2_missing_active_defaults_to_first(self, tmp_path):
+        import json
+
+        v2 = {
+            "version": 2,
+            "mode": "LEGACY",
+            "sheets": [
+                {"name": "Alpha", "cells": [[1]]},
+                {"name": "Beta", "cells": [[2]]},
+            ],
+        }
+        f = tmp_path / "noactive.json"
+        f.write_text(json.dumps(v2))
+        g = make_grid()
+        assert g.jsonload(str(f)) == 0
+        assert g._active.name == "Alpha"
+
+
 class TestSwap:
     def test_swap_rows(self):
         g = make_grid()
@@ -1084,6 +1239,233 @@ class TestCodeBlockError:
         g.code = ""
         g.recalc()
         assert g.code_error is None
+
+
+class TestSheetClass:
+    def test_default_grid_has_one_sheet(self):
+        g = make_grid()
+        assert g.sheet_names() == ["Sheet1"]
+        assert g.active == 0
+
+    def test_active_sheet_delegation(self):
+        g = make_grid()
+        g.setcell(0, 0, "10")
+        assert g.sheets[0]._cells[(0, 0)].val == 10.0
+        assert g._cells is g.sheets[0]._cells
+
+    def test_cursor_delegates_to_active_sheet(self):
+        g = make_grid()
+        g.cc, g.cr = 3, 4
+        assert g.sheets[0].cc == 3
+        assert g.sheets[0].cr == 4
+
+    def test_add_sheet(self):
+        g = make_grid()
+        g.add_sheet("Sheet2")
+        assert g.sheet_names() == ["Sheet1", "Sheet2"]
+        # Active stays on Sheet1.
+        assert g.active == 0
+
+    def test_add_sheet_duplicate_rejected(self):
+        g = make_grid()
+        with pytest.raises(ValueError):
+            g.add_sheet("Sheet1")
+
+    def test_set_active_by_name(self):
+        g = make_grid()
+        g.add_sheet("Sheet2")
+        g.set_active("Sheet2")
+        assert g.active == 1
+        # New sheet starts empty; cursor at origin.
+        assert g.cc == 0 and g.cr == 0
+        assert g._cells == {}
+
+    def test_set_active_by_index(self):
+        g = make_grid()
+        g.add_sheet("Sheet2")
+        g.set_active(1)
+        assert g.active == 1
+
+    def test_set_active_unknown_raises(self):
+        g = make_grid()
+        with pytest.raises(KeyError):
+            g.set_active("Nope")
+
+    def test_per_sheet_cells_are_isolated(self):
+        g = make_grid()
+        g.setcell(0, 0, "A")
+        g.add_sheet("Sheet2")
+        g.set_active("Sheet2")
+        # Sheet2 starts empty
+        assert (0, 0) not in g._cells
+        g.setcell(0, 0, "B")
+        # Sheet2 now has its own cell; Sheet1 unchanged
+        g.set_active("Sheet1")
+        assert g.cells[0][0].sval == "A" or g.cells[0][0].text == "A"
+        g.set_active("Sheet2")
+        assert g.cells[0][0].sval == "B" or g.cells[0][0].text == "B"
+
+    def test_remove_sheet(self):
+        g = make_grid()
+        g.add_sheet("Sheet2")
+        g.remove_sheet("Sheet2")
+        assert g.sheet_names() == ["Sheet1"]
+
+    def test_remove_last_sheet_rejected(self):
+        g = make_grid()
+        with pytest.raises(ValueError):
+            g.remove_sheet("Sheet1")
+
+    def test_remove_active_sheet_shifts_active(self):
+        g = make_grid()
+        g.add_sheet("Sheet2")
+        g.set_active("Sheet2")
+        g.remove_sheet("Sheet2")
+        # Active falls back to the remaining sheet.
+        assert g.active == 0
+        assert g.sheet_names() == ["Sheet1"]
+
+    def test_rename_sheet(self):
+        g = make_grid()
+        g.rename_sheet("Sheet1", "Data")
+        assert g.sheet_names() == ["Data"]
+
+    def test_rename_to_existing_rejected(self):
+        g = make_grid()
+        g.add_sheet("Sheet2")
+        with pytest.raises(ValueError):
+            g.rename_sheet("Sheet1", "Sheet2")
+
+    def test_move_first_to_last(self):
+        g = make_grid()
+        g.add_sheet("B")
+        g.add_sheet("C")
+        g.move_sheet("Sheet1", 2)
+        assert g.sheet_names() == ["B", "C", "Sheet1"]
+
+    def test_move_last_to_first(self):
+        g = make_grid()
+        g.add_sheet("B")
+        g.add_sheet("C")
+        g.move_sheet("C", 0)
+        assert g.sheet_names() == ["C", "Sheet1", "B"]
+
+    def test_move_preserves_active_when_moving_other(self):
+        # Active is "B"; move "Sheet1" past it. Active stays on "B".
+        g = make_grid()
+        g.add_sheet("B")
+        g.add_sheet("C")
+        g.set_active("B")
+        assert g._active.name == "B"
+        g.move_sheet("Sheet1", 2)
+        assert g.sheet_names() == ["B", "C", "Sheet1"]
+        assert g._active.name == "B"
+
+    def test_move_active_sheet_follows(self):
+        g = make_grid()
+        g.add_sheet("B")
+        g.add_sheet("C")
+        g.set_active("B")
+        g.move_sheet("B", 2)
+        assert g.sheet_names() == ["Sheet1", "C", "B"]
+        # Active follows.
+        assert g._active.name == "B"
+        assert g.active == 2
+
+    def test_move_same_position_noop(self):
+        g = make_grid()
+        g.add_sheet("B")
+        before = g.sheet_names()
+        g.move_sheet("Sheet1", 0)
+        assert g.sheet_names() == before
+
+    def test_move_unknown_raises(self):
+        g = make_grid()
+        with pytest.raises(KeyError):
+            g.move_sheet("Nope", 0)
+
+    def test_move_out_of_range_raises(self):
+        g = make_grid()
+        g.add_sheet("B")
+        with pytest.raises(IndexError):
+            g.move_sheet("Sheet1", 5)
+        with pytest.raises(IndexError):
+            g.move_sheet("Sheet1", -1)
+
+
+class TestCrossSheet:
+    def _make(self):
+        g = make_grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.add_sheet("Sheet2")
+        return g
+
+    def test_read_cross_sheet_value(self):
+        g = self._make()
+        g.set_active("Sheet2")
+        g.setcell(0, 0, "42")
+        g.set_active("Sheet1")
+        g.setcell(0, 0, "=Sheet2!A1")
+        assert g.cells[0][0].val == 42.0
+
+    def test_cross_sheet_arithmetic(self):
+        g = self._make()
+        g.setcell(0, 0, "10")
+        g.set_active("Sheet2")
+        g.setcell(0, 0, "20")
+        g.set_active("Sheet1")
+        g.setcell(1, 0, "=Sheet2!A1*2")
+        assert g.cells[1][0].val == 40.0
+
+    def test_cross_sheet_recalc_on_source_change(self):
+        g = self._make()
+        g.set_active("Sheet2")
+        g.setcell(0, 0, "20")
+        g.set_active("Sheet1")
+        g.setcell(1, 0, "=Sheet2!A1*2")
+        assert g.cells[1][0].val == 40.0
+        # Change Sheet2!A1; Sheet1!B1 must recompute via the dep graph.
+        g.set_active("Sheet2")
+        g.setcell(0, 0, "50")
+        g.set_active("Sheet1")
+        assert g.cells[1][0].val == 100.0
+
+    def test_unsheeted_ref_uses_formula_home_sheet(self):
+        # `=A1` on Sheet2 reads Sheet2!A1, not Sheet1!A1.
+        g = self._make()
+        g.setcell(0, 0, "1")  # Sheet1!A1
+        g.set_active("Sheet2")
+        g.setcell(0, 0, "100")  # Sheet2!A1
+        g.setcell(1, 0, "=A1")  # Sheet2!B1 -> Sheet2!A1
+        assert g.cells[1][0].val == 100.0
+
+    def test_cross_sheet_range_sum(self):
+        g = self._make()
+        g.set_active("Sheet2")
+        g.setcell(0, 0, "1")
+        g.setcell(0, 1, "2")
+        g.setcell(0, 2, "3")
+        g.set_active("Sheet1")
+        g.setcell(0, 0, "=SUM(Sheet2!A1:A3)")
+        assert g.cells[0][0].val == 6.0
+
+    def test_cross_sheet_subscribers_independent_of_same_coord_other_sheet(self):
+        # Sheet1!A1 changes must not trigger Sheet2!B1 (which only
+        # subscribes to Sheet2!A1) -- proves dep keys carry sheet
+        # identity.
+        g = self._make()
+        g.setcell(0, 0, "100")  # Sheet1!A1
+        g.set_active("Sheet2")
+        g.setcell(0, 0, "10")  # Sheet2!A1
+        g.setcell(1, 0, "=A1*2")  # Sheet2!B1 -> Sheet2!A1
+        assert g.cells[1][0].val == 20.0
+        # Change Sheet1!A1.
+        g.set_active("Sheet1")
+        g.setcell(0, 0, "999")
+        # Sheet2!B1 stays at 20.
+        g.set_active("Sheet2")
+        assert g.cells[1][0].val == 20.0
 
 
 class TestBuiltinsFrozen:
@@ -1667,7 +2049,7 @@ class TestTopoGraphInvariants:
         g.replicatecell(2, 0, 1, 0)
         self._assert_graph_consistent(g)
         # B1 should no longer subscribe to A1 changes.
-        assert (1, 0) not in g._subscribers.get((0, 0), set())
+        assert ("Sheet1", 1, 0) not in g._subscribers.get(("Sheet1", 0, 0), set())
 
     def test_legacy_to_excel_mode_switch_rebuilds_graph(self):
         """LEGACY mode doesn't populate the graph; switching needs rebuild."""

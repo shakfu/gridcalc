@@ -24,8 +24,9 @@ $ gridcalc budget.json
   `:sheet NAME` or `:sheet N`.
 - **xlsx interop**: `:xlsx load` reads every sheet's formulas and values
   from an `.xlsx` file via the OpenXLSX-backed C++ shim and evaluates
-  them with the EXCEL evaluator; `:xlsx save` writes computed values
-  back, preserving sheet structure.
+  them with the EXCEL evaluator; `:xlsx save` writes formulas *and*
+  cached numeric values in EXCEL mode (other modes write values only),
+  preserving sheet structure.
 - **Curses-based TUI**: runs in any terminal, vim-style command mode
 - **JSON file format**: spreadsheets stored as plain JSON, easy to version control or script
 - **256 columns x 1024 rows**: column-major grid with four cell types (empty, number, label, formula)
@@ -48,7 +49,9 @@ $ gridcalc budget.json
 - **Absolute references**: `$A$1` syntax for references that stay fixed on replicate/insert/delete
 - **Undo/redo**: full undo history with Ctrl-Z / Ctrl-Y
 - **Sandbox**: AST-based validation blocks dangerous code in formulas and code blocks (LEGACY); EXCEL/HYBRID formulas don't use `eval()` at all
-- **Configurable**: TOML config file (`gridcalc.toml`) with XDG lookup
+- **Configurable**: TOML config file (`gridcalc.toml`) with XDG lookup;
+  user-rebindable keys for every TUI context (`grid`, `entry`, `visual`,
+  `cmdline`, `search`) -- see [`docs/keybindings.md`](docs/keybindings.md)
 
 ## Install
 
@@ -206,7 +209,7 @@ Press `:` for the command line (vim-style):
 	:view           View DataFrame/matrix as scrollable table
 	:csv save [file]    Export evaluated values to CSV
 	:csv load [file]    Import cells from CSV
-	:xlsx save [file]   Export to .xlsx (values)
+	:xlsx save [file]   Export to .xlsx (formulas + cached values in EXCEL mode; values only otherwise)
 	:xlsx load [file]   Import from .xlsx (formulas + values, sets mode=EXCEL)
 	:pd save [file]     Export via pandas (CSV, TSV, Excel, JSON, Parquet)
 	:pd load [file]     Import via pandas (auto-detects format)
@@ -245,6 +248,28 @@ Other keys:
 	Ctrl-Z      Undo
 	Ctrl-Y      Redo
 	Ctrl-C      Quit
+
+The keys above are the hardcoded defaults. Every TUI context (`grid`,
+`entry`, `visual`, `cmdline`, `search`) supports user keybindings via
+`gridcalc.toml`:
+
+```toml
+[keys.grid]
+next_sheet = ["Tab", "F4"]
+prev_sheet = ["S-Tab", "F3"]
+cursor_left  = ["Left", "h"]
+cursor_down  = ["Down", "j"]
+cursor_up    = ["Up", "k"]
+cursor_right = ["Right", "l"]
+```
+
+User bindings fire *before* the hardcoded fallback chain, so binding
+e.g. `Tab` to `next_sheet` *replaces* its previous "advance one column"
+meaning. No defaults are shipped -- every binding is opt-in. See
+[`docs/keybindings.md`](docs/keybindings.md) for the full keyspec
+grammar (`Tab`, `S-Tab`, `C-x`, `C-Right`, `F3`, ...), the per-context
+action vocabularies, and the rationale for the parse-time-rejected
+combinations (`C-Tab`, `M-<anything>`, `C-<punctuation>`, ...).
 
 ### Visual selection mode
 
@@ -306,10 +331,18 @@ Loading an `.xlsx` via `:xlsx load` automatically sets mode to `EXCEL`.
 
 - **`INDIRECT`** is deliberately unsupported -- it would defeat static
   dependency analysis and the topological recalc ordering.
-- **xlsx export writes values, not formulas.** Round-tripping formulas
-  through `.xlsx` (level-c interop) is on the roadmap but not yet
-  implemented. Multi-sheet structure *is* round-tripped; only the
-  formula text is currently lost on save.
+- **xlsx export of formulas is EXCEL-mode only.** In EXCEL mode,
+  `:xlsx save` writes the formula text alongside its cached numeric
+  value, so opening the file in Excel shows live formulas and
+  data-only readers see the cached number. In LEGACY/HYBRID mode the
+  formula is *not* emitted -- gridcalc-native syntax (`**`, list
+  comprehensions, `py.*` calls) is not guaranteed-valid Excel, so
+  emitting it would risk producing files Excel can't evaluate.
+  Switch to EXCEL mode (`:mode excel`) before saving if you want
+  formula round-trip.
+- **3D range references** (`=SUM(Sheet1:Sheet3!A1:B2)`) are not yet
+  supported -- the formula evaluates to `nan`. Workaround: expand
+  manually, e.g. `=SUM(Jan!B2:B3) + SUM(Feb!B2:B3)`.
 - **xlsx dates and styles** are not yet read or written by the
   OpenXLSX-backed `_core` shim. Date serials arrive as floats; styles
   and number formats are dropped.
@@ -462,7 +495,7 @@ Three import paths:
 | Command | Reads | Writes | Notes |
 |---------|-------|--------|-------|
 | `:csv` | CSV | CSV | Plain text, fast |
-| `:xlsx` | `.xlsx` formulas + values | `.xlsx` values | Sets mode to `EXCEL` on load; uses openpyxl |
+| `:xlsx` | `.xlsx` formulas + values | `.xlsx` formulas + cached values (EXCEL mode); values only otherwise | Sets mode to `EXCEL` on load |
 | `:pd` | CSV/TSV/Excel/JSON/Parquet | same | Uses pandas; row 1 as headers |
 
 	:csv save data.csv         Export evaluated values to CSV
@@ -476,8 +509,13 @@ Three import paths:
 and reads every sheet in the workbook. Functions outside the
 auto-loaded library produce `#NAME?`; `INDIRECT` is not supported
 (deliberate -- it would defeat static dep analysis). Sheet-qualified
-references (`Sheet1!A1`) work. xlsx export currently writes evaluated
-values rather than formulas, but the multi-sheet structure round-trips.
+references (`Sheet1!A1`) work; 3D ranges (`Sheet1:Sheet3!A1:B2`) do
+not. xlsx *export* in EXCEL mode emits the formula text plus the
+cached numeric value, so the file opens with live formulas in Excel
+and reads back as a number under `data_only=True`. LEGACY/HYBRID
+mode still writes values only -- the gridcalc grammar in those modes
+isn't a strict Excel subset, so emitting formulas would risk
+unevaluable files.
 
 ### Cell references
 

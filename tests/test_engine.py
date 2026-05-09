@@ -1316,6 +1316,53 @@ class TestSheetClass:
         with pytest.raises(ValueError):
             g.remove_sheet("Sheet1")
 
+    def test_next_sheet_wraps(self):
+        g = make_grid()
+        g.add_sheet("Sheet2")
+        g.add_sheet("Sheet3")
+        assert g.active == 0
+        g.next_sheet()
+        assert g.active == 1
+        g.next_sheet()
+        assert g.active == 2
+        g.next_sheet()
+        assert g.active == 0  # wrap
+
+    def test_prev_sheet_wraps(self):
+        g = make_grid()
+        g.add_sheet("Sheet2")
+        g.add_sheet("Sheet3")
+        assert g.active == 0
+        g.prev_sheet()
+        assert g.active == 2  # wrap
+        g.prev_sheet()
+        assert g.active == 1
+        g.prev_sheet()
+        assert g.active == 0
+
+    def test_next_sheet_single_sheet_noop(self):
+        g = make_grid()
+        assert g.active == 0
+        g.next_sheet()
+        assert g.active == 0
+
+    def test_prev_sheet_single_sheet_noop(self):
+        g = make_grid()
+        assert g.active == 0
+        g.prev_sheet()
+        assert g.active == 0
+
+    def test_next_sheet_changes_active_sheet_object(self):
+        g = make_grid()
+        g.add_sheet("Sheet2")
+        g.setcell(0, 0, "on1")
+        g.set_active("Sheet2")
+        g.setcell(0, 0, "on2")
+        g.set_active("Sheet1")
+        g.next_sheet()
+        # Active sheet is now Sheet2; cell (0,0) reflects that.
+        assert g.cells[0][0].text == "on2"
+
     def test_remove_active_sheet_shifts_active(self):
         g = make_grid()
         g.add_sheet("Sheet2")

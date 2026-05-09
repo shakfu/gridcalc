@@ -20,3 +20,73 @@ sandbox = false
 # Side-effect (I/O): matplotlib, pandas, csv, openpyxl
 # Blocked (always): os, sys, subprocess, shutil, pathlib, socket, pickle, etc.
 # allowed_modules = ["numpy", "matplotlib"]
+
+# ---------------------------------------------------------------------------
+# Keybindings
+# ---------------------------------------------------------------------------
+#
+# Bindings are organised by *context*: which keyloop is active when the
+# key is pressed.
+#
+#   grid     main grid (cursor movement, sheet switching, mode entry)
+#   entry    cell-entry buffer
+#   visual   visual selection mode
+#   cmdline  ":" command line
+#   search   "/" search prompt
+#
+# Each action takes a list of key specs. An empty list explicitly
+# *unbinds* the action, even if it has a default.
+#
+# Key spec grammar (emacs-short):
+#
+#   Tab Enter Esc Space Backspace Delete    named keys
+#   Left Right Up Down                       arrows
+#   Home End PgUp PgDn Insert                navigation
+#   F1 .. F12                                function keys
+#   a, Z, >, <, :, /                         literal printable chars
+#   S-Tab                                    Shift+Tab (only Shift combo)
+#   C-<letter>                               Ctrl+a..z
+#   C-Right, C-Left                          Ctrl+arrow
+#
+# Combinations rejected at load time (no portable terminal encoding):
+# C-Tab, M-<anything>, C-<punctuation>, S-<anything-but-Tab>.
+#
+# Defaults: gridcalc ships with no user-bindable defaults in this
+# section -- every binding below is opt-in. Uncomment what you want.
+
+# [keys.grid]
+# # Sheet cycling. Tab/S-Tab is the conventional pairing; F3/F4 is a
+# # function-key alternative for terminals that don't pass Shift-Tab
+# # cleanly (Linux text console, some tmux configs).
+# next_sheet = ["Tab", "F4"]
+# prev_sheet = ["S-Tab", "F3"]
+#
+# # vi-style cursor movement. The arrow keys remain bound; this just
+# # adds h/j/k/l alongside them.
+# cursor_left  = ["Left", "h"]
+# cursor_down  = ["Down", "j"]
+# cursor_up    = ["Up", "k"]
+# cursor_right = ["Right", "l"]
+
+# [keys.entry]
+# # Cell-entry buffer. Printable chars always self-insert; only
+# # non-printable actions are useful here.
+# cancel                 = ["Esc", "C-g"]
+# commit_and_advance_row = ["Enter"]
+# commit_and_advance_col = ["Tab"]
+
+# [keys.visual]
+# # Visual selection. No self-insert -- every key is a command.
+# cancel        = ["Esc"]
+# yank          = ["y"]
+# paste         = ["p"]
+# delete        = ["d"]
+# enter_command = [":"]
+
+# [keys.cmdline]
+# # ":" command line. Printable chars self-insert.
+# cancel = ["Esc", "C-g"]
+
+# [keys.search]
+# # "/" search prompt. Printable chars self-insert.
+# cancel = ["Esc", "C-g"]

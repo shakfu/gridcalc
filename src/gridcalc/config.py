@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from gridcalc.keys import CONTEXTS, KNOWN_ACTIONS, ParsedKey, parse_keyspec
+
 try:
     import tomllib  # type: ignore[import-not-found]
 except ModuleNotFoundError:
@@ -20,7 +22,7 @@ except ModuleNotFoundError:
 
 CONFIG_FILENAME = "gridcalc.toml"
 
-_KNOWN_KEYS = frozenset({"editor", "sandbox", "width", "format", "libs", "allowed_modules"})
+_KNOWN_KEYS = frozenset({"editor", "sandbox", "width", "format", "libs", "allowed_modules", "keys"})
 
 
 @dataclass
@@ -31,6 +33,12 @@ class Config:
     format: str = ""
     libs: list[str] = field(default_factory=list)
     allowed_modules: list[str] = field(default_factory=list)
+    # User keybinding overrides, parsed but not yet resolved against a
+    # live curses runtime. Shape: ``{context: {action: [ParsedKey, ...]}}``.
+    # An empty list for an action explicitly unbinds it. Only contexts
+    # in ``keys.CONTEXTS`` are kept; unknown contexts/actions/specs
+    # produce ``warnings`` entries.
+    keys: dict[str, dict[str, list[ParsedKey]]] = field(default_factory=dict)
     config_path: str = ""
     warnings: list[str] = field(default_factory=list)
 
@@ -108,11 +116,76 @@ def _parse_config(data: dict[str, Any]) -> Config:
                 f"allowed_modules: expected list, got {type(data['allowed_modules']).__name__}"
             )
 
+    if "keys" in data:
+        cfg.keys = _parse_keys_table(data["keys"], cfg.warnings)
+
     unknown = sorted(set(data.keys()) - _KNOWN_KEYS)
     for k in unknown:
         cfg.warnings.append(f"unknown key '{k}'")
 
     return cfg
+
+
+def _parse_keys_table(raw: Any, warnings: list[str]) -> dict[str, dict[str, list[ParsedKey]]]:
+    """Parse the ``[keys.<context>]`` table.
+
+    Shape on disk::
+
+        [keys.grid]
+        next_sheet = ["Tab", "F4"]
+        prev_sheet = ["S-Tab"]
+        cursor_right = []        # explicit unbind
+
+    Out-of-range or wrong-typed entries are dropped with a warning;
+    valid entries pass through. An empty list is preserved verbatim
+    (it is the unbind sentinel, consumed by ``keys.merge_user_keymap``).
+    """
+    out: dict[str, dict[str, list[ParsedKey]]] = {}
+    if not isinstance(raw, dict):
+        warnings.append(f"keys: expected table, got {type(raw).__name__}")
+        return out
+
+    for ctx, table in raw.items():
+        if ctx not in CONTEXTS:
+            warnings.append(f"keys.{ctx}: unknown context (valid: {sorted(CONTEXTS)})")
+            continue
+        if not isinstance(table, dict):
+            warnings.append(f"keys.{ctx}: expected table, got {type(table).__name__}")
+            continue
+        ctx_out: dict[str, list[ParsedKey]] = {}
+        for action, specs in table.items():
+            if action not in KNOWN_ACTIONS[ctx]:
+                warnings.append(
+                    f"keys.{ctx}.{action}: unknown action "
+                    f"(valid: {sorted(KNOWN_ACTIONS[ctx]) or '<none yet>'})"
+                )
+                continue
+            if not isinstance(specs, list):
+                warnings.append(
+                    f"keys.{ctx}.{action}: expected list of key specs, got {type(specs).__name__}"
+                )
+                continue
+            parsed: list[ParsedKey] = []
+            for spec in specs:
+                if not isinstance(spec, str):
+                    warnings.append(
+                        f"keys.{ctx}.{action}: expected string key spec, got {type(spec).__name__}"
+                    )
+                    continue
+                pk, err = parse_keyspec(spec)
+                if pk is None:
+                    warnings.append(f"keys.{ctx}.{action}: {err}")
+                    continue
+                parsed.append(pk)
+            # Preserve explicit empty list (unbind sentinel); skip a
+            # list that became empty only because every entry was
+            # invalid -- those already produced warnings, and
+            # silently treating them as "unbind" would be surprising.
+            if parsed or not specs:
+                ctx_out[action] = parsed
+        if ctx_out:
+            out[ctx] = ctx_out
+    return out
 
 
 def load_config(path: Path | str | None = None) -> Config:

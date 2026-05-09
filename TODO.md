@@ -85,11 +85,26 @@ CHANGELOG.md.
   single-sheet refs; (4) extend dependency tracking so cells in the
   spanned sheets register as subscribers, and a `move_sheet`/`add_sheet`
   between the endpoints invalidates the cached recalc.
-- [ ] **TUI keybindings system.** A separate effort to design the
-  custom-keybinding story (config file? schema? sane defaults? a
-  conflict-detection layer?). Sheet cycling (e.g. PgUp/PgDn in the
-  main grid) is one candidate user; the broader question is how
-  users opt into custom keymaps without forking the source.
+- [ ] **TUI keybindings system -- v2 generalisations.** All five
+  contexts are wired (`grid`, `entry`, `visual`, `cmdline`, `search`)
+  with curated action vocabularies; see `docs/keybindings.md`.
+  Outstanding gaps for a future iteration:
+  (a) **Removing hardcoded defaults.** `[keys.<ctx>] cancel = []`
+      currently does *not* unbind Esc, because the hardcoded
+      fallback chain still matches `ch == 27`. To make unbind work,
+      the hardcoded chain has to migrate fully into
+      `DEFAULT_KEYMAP` and the contexts must dispatch only via the
+      action lookup. Mechanical but tedious.
+  (b) **Bind-to-`:command`.** The action vocabulary is fixed at
+      module load time. If users want `[keys.grid] save = [...]`
+      where "save" runs `:w`, the schema has to grow a way to carry
+      the command text alongside the key spec, and an
+      `exec_command`-style action that takes parameters. Out of
+      scope until someone asks.
+  (c) **Pick-mode actions in entry.** The `KEY_UP`/`KEY_DOWN`
+      cursor-pick sub-mode in `entry` is too tangled with local
+      state to expose as actions today. Refactor it to a small
+      state machine before binding it.
 - [ ] **xlsx interop level (c): round-trip formulas, not just values.**
   Requires the EXCEL grammar to be a strict subset of Excel's and the
   `xlsx` library's function semantics to match Excel bug-for-bug for

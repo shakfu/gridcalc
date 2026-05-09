@@ -974,6 +974,22 @@ class Grid:
             raise KeyError(name_or_idx)
         self.active = idx
 
+    def next_sheet(self) -> None:
+        """Advance the active sheet by one, wrapping at the end. No-op
+        on a single-sheet workbook."""
+        n = len(self.sheets)
+        if n <= 1:
+            return
+        self.active = (self.active + 1) % n
+
+    def prev_sheet(self) -> None:
+        """Retreat the active sheet by one, wrapping at the start.
+        No-op on a single-sheet workbook."""
+        n = len(self.sheets)
+        if n <= 1:
+            return
+        self.active = (self.active - 1) % n
+
     def load_lib(self, name: str) -> None:
         """Load a formula lib's builtins into the eval namespace."""
         if not name:

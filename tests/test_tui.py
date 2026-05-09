@@ -1397,3 +1397,220 @@ class TestBuildFormula:
         assert list(cl.matrix.columns) == ["a", "b"]
         assert cl.matrix["a"].tolist() == [1, 2]
         assert cl.matrix["b"].tolist() == [3, 4]
+
+
+class TestDispatchGridKey:
+    """Unit tests for the grid-context keymap dispatcher.
+
+    Exercises the dispatcher in isolation -- no curses, no
+    ``mainloop``. Builds a resolved keymap from a synthetic
+    ``Config.keys`` and verifies that a hit fires the action and
+    short-circuits the chain.
+    """
+
+    def _resolve(self, user_keys):
+        from gridcalc.keys import build_resolved_keymap
+
+        resolved, _warnings = build_resolved_keymap(user_keys)
+        return resolved.get("grid", {})
+
+    def _parse(self, spec):
+        from gridcalc.keys import parse_keyspec
+
+        pk, err = parse_keyspec(spec)
+        assert err is None, err
+        return pk
+
+    def test_unbound_key_falls_through(self):
+        from gridcalc.tui import _dispatch_grid_key
+
+        g = Grid()
+        # Empty resolved map -- nothing is bound.
+        assert _dispatch_grid_key(g, {}, ord("Z"), 0, 0) is False
+
+    def test_next_sheet_via_tab(self):
+        from gridcalc.tui import _dispatch_grid_key
+
+        g = Grid()
+        g.add_sheet("Sheet2")
+        resolved_grid = self._resolve({"grid": {"next_sheet": [self._parse("Tab")]}})
+        assert _dispatch_grid_key(g, resolved_grid, 9, 0, 0) is True
+        assert g.active == 1
+
+    def test_prev_sheet_via_shift_tab(self):
+        from gridcalc.tui import _dispatch_grid_key
+
+        g = Grid()
+        g.add_sheet("Sheet2")
+        resolved_grid = self._resolve({"grid": {"prev_sheet": [self._parse("S-Tab")]}})
+        assert _dispatch_grid_key(g, resolved_grid, curses.KEY_BTAB, 0, 0) is True
+        # Wraps from Sheet1 -> Sheet2.
+        assert g.active == 1
+
+    def test_cursor_right_respects_clamp(self):
+        from gridcalc.engine import NCOL
+        from gridcalc.tui import _dispatch_grid_key
+
+        g = Grid()
+        g.cc = NCOL - 1
+        resolved_grid = self._resolve({"grid": {"cursor_right": [self._parse("l")]}})
+        assert _dispatch_grid_key(g, resolved_grid, ord("l"), 0, 0) is True
+        # Already at the rightmost column -- stays put.
+        assert g.cc == NCOL - 1
+
+    def test_cursor_right_advances(self):
+        from gridcalc.tui import _dispatch_grid_key
+
+        g = Grid()
+        g.cc = 3
+        resolved_grid = self._resolve({"grid": {"cursor_right": [self._parse("l")]}})
+        assert _dispatch_grid_key(g, resolved_grid, ord("l"), 0, 0) is True
+        assert g.cc == 4
+
+    def test_cursor_left_respects_locked_column(self):
+        from gridcalc.tui import _dispatch_grid_key
+
+        g = Grid()
+        g.cc = 5
+        resolved_grid = self._resolve({"grid": {"cursor_left": [self._parse("h")]}})
+        # Locked column is 5 -- cursor cannot move left of it.
+        assert _dispatch_grid_key(g, resolved_grid, ord("h"), 5, 0) is True
+        assert g.cc == 5
+
+    def test_unknown_action_falls_through(self):
+        """An action name in the resolved map that has no callable in
+        ``_GRID_ACTIONS`` should not crash; the dispatcher returns
+        False so the hardcoded fallback chain handles the key."""
+        from gridcalc.tui import _dispatch_grid_key
+
+        g = Grid()
+        resolved_grid = {ord("x"): "warp_drive"}
+        assert _dispatch_grid_key(g, resolved_grid, ord("x"), 0, 0) is False
+
+
+class TestBuildResolvedKeymap:
+    def test_empty_user_keys(self):
+        from gridcalc.keys import build_resolved_keymap
+
+        resolved, warnings = build_resolved_keymap({})
+        assert warnings == []
+        assert resolved["grid"] == {}
+
+    def test_resolves_named_keys(self):
+        from gridcalc.keys import build_resolved_keymap, parse_keyspec
+
+        pk_tab, _ = parse_keyspec("Tab")
+        pk_btab, _ = parse_keyspec("S-Tab")
+        resolved, warnings = build_resolved_keymap(
+            {"grid": {"next_sheet": [pk_tab], "prev_sheet": [pk_btab]}}
+        )
+        assert warnings == []
+        assert resolved["grid"][9] == "next_sheet"
+        assert resolved["grid"][curses.KEY_BTAB] == "prev_sheet"
+
+    def test_conflict_within_context_warns(self):
+        from gridcalc.keys import build_resolved_keymap, parse_keyspec
+
+        pk_tab, _ = parse_keyspec("Tab")
+        # Same key bound to two actions in the same context.
+        resolved, warnings = build_resolved_keymap(
+            {"grid": {"next_sheet": [pk_tab], "cursor_right": [pk_tab]}}
+        )
+        assert len(warnings) == 1
+        assert "Tab" in warnings[0]
+        # Latest binding wins; which one depends on dict iteration
+        # order, but exactly one action survives at keycode 9.
+        assert resolved["grid"][9] in ("next_sheet", "cursor_right")
+
+
+class TestActionFor:
+    """Per-context lookup with the text-input self-insert override."""
+
+    def setup_method(self):
+        # Snapshot and clear the module-level resolved keymap so
+        # individual tests can install their own without polluting
+        # neighbours.
+        from gridcalc import tui
+
+        self._saved = tui._resolved_keymap
+        tui._resolved_keymap = {}
+
+    def teardown_method(self):
+        from gridcalc import tui
+
+        tui._resolved_keymap = self._saved
+
+    def test_grid_dispatches_printable(self):
+        from gridcalc import tui
+
+        tui._resolved_keymap = {"grid": {ord("h"): "cursor_left"}}
+        assert tui._action_for("grid", ord("h")) == "cursor_left"
+
+    def test_visual_dispatches_printable(self):
+        from gridcalc import tui
+
+        tui._resolved_keymap = {"visual": {ord("h"): "cursor_left"}}
+        assert tui._action_for("visual", ord("h")) == "cursor_left"
+
+    def test_entry_self_inserts_printable(self):
+        """The whole point of option A: a stray
+        ``[keys.entry] cancel = ["a"]`` must NOT lock the user out of
+        typing ``a`` into the cell buffer."""
+        from gridcalc import tui
+
+        tui._resolved_keymap = {"entry": {ord("a"): "cancel"}}
+        assert tui._action_for("entry", ord("a")) is None
+
+    def test_entry_dispatches_non_printable(self):
+        from gridcalc import tui
+
+        tui._resolved_keymap = {"entry": {curses.KEY_F0 + 5: "cancel"}}
+        assert tui._action_for("entry", curses.KEY_F0 + 5) == "cancel"
+
+    def test_cmdline_self_inserts_printable(self):
+        from gridcalc import tui
+
+        tui._resolved_keymap = {"cmdline": {ord(":"): "cancel"}}
+        assert tui._action_for("cmdline", ord(":")) is None
+
+    def test_search_self_inserts_printable(self):
+        from gridcalc import tui
+
+        tui._resolved_keymap = {"search": {ord("/"): "cancel"}}
+        assert tui._action_for("search", ord("/")) is None
+
+    def test_text_input_dispatches_esc(self):
+        # Esc (27) is non-printable, so it dispatches even in entry.
+        from gridcalc import tui
+
+        tui._resolved_keymap = {"entry": {27: "cancel"}}
+        assert tui._action_for("entry", 27) == "cancel"
+
+    def test_text_input_dispatches_ctrl_letter(self):
+        # C-x = 0x18, non-printable -- dispatches in text-input contexts.
+        from gridcalc import tui
+
+        tui._resolved_keymap = {"entry": {0x18: "cancel"}}
+        assert tui._action_for("entry", 0x18) == "cancel"
+
+    def test_unbound_returns_none(self):
+        from gridcalc import tui
+
+        tui._resolved_keymap = {"grid": {}}
+        assert tui._action_for("grid", ord("Z")) is None
+
+    def test_unknown_context_returns_none(self):
+        from gridcalc import tui
+
+        assert tui._action_for("nonexistent", ord("a")) is None
+
+    def test_printable_boundary(self):
+        """``32 <= ch < 127`` is the self-insert range. ``31`` and
+        ``127`` are outside, ``32`` and ``126`` are inside."""
+        from gridcalc import tui
+
+        tui._resolved_keymap = {"entry": {31: "cancel", 32: "cancel", 126: "cancel", 127: "cancel"}}
+        assert tui._action_for("entry", 31) == "cancel"
+        assert tui._action_for("entry", 32) is None
+        assert tui._action_for("entry", 126) is None
+        assert tui._action_for("entry", 127) == "cancel"

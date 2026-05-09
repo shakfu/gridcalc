@@ -5,7 +5,9 @@ import curses
 import math
 import os
 import subprocess
+import sys
 import tempfile
+from collections.abc import Callable
 
 from .config import Config, emit_warnings, load_config
 from .engine import (
@@ -28,6 +30,7 @@ from .engine import (
     col_name,
     ref,
 )
+from .keys import build_resolved_keymap
 from .sandbox import (
     SANDBOX_ENABLED,
     FileInfo,
@@ -41,6 +44,29 @@ GW = 4
 UNDO_MAX = 64
 
 _cfg: Config = Config()
+
+# Resolved keymap (context -> {keycode: action_name}). Populated once
+# by ``mainloop`` after curses initialisation; consumed by the
+# context-specific dispatchers (``entry``, ``visual_mode``, etc.).
+# Empty until ``mainloop`` runs, so unit tests calling those helpers
+# in isolation see no user bindings -- exactly the no-config baseline.
+_resolved_keymap: dict[str, dict[int, str]] = {}
+
+
+def _action_for(context: str, ch: int) -> str | None:
+    """Resolve a keystroke to an action name in the given context.
+
+    Returns ``None`` when the key isn't bound. For text-input
+    contexts (``entry``, ``cmdline``, ``search``), printable bytes
+    (``32 <= ch < 127``) always return ``None`` so they self-insert
+    into the buffer regardless of any binding -- otherwise a stray
+    ``[keys.entry] cancel = ["a"]`` would lock the user out of typing
+    the letter ``a``. ``grid`` and ``visual`` are command-mode and
+    have no self-insert behaviour, so all keys dispatch normally.
+    """
+    if context in ("entry", "cmdline", "search") and 32 <= ch < 127:
+        return None
+    return _resolved_keymap.get(context, {}).get(ch)
 
 
 # -- Cell display formatting --
@@ -1989,13 +2015,14 @@ def cmdline(
         stdscr.clrtoeol()
         stdscr.refresh()
         ch = stdscr.getch()
-        if ch == 27:
+        action = _action_for("cmdline", ch)
+        if action == "cancel" or ch == 27:
             return False
-        if ch in (10, 13, curses.KEY_ENTER):
+        if action == "commit" or ch in (10, 13, curses.KEY_ENTER):
             if buf:
                 return cmdexec(stdscr, g, undo, buf, sel=sel)
             return False
-        elif ch in (curses.KEY_BACKSPACE, 127, 8):
+        elif action == "delete_back" or ch in (curses.KEY_BACKSPACE, 127, 8):
             buf = buf[:-1]
         elif len(buf) < 255 and 32 <= ch < 127:
             buf += chr(ch)
@@ -2057,9 +2084,10 @@ def search_prompt(stdscr: curses.window, g: Grid) -> tuple[str, list[tuple[int, 
         stdscr.clrtoeol()
         stdscr.refresh()
         ch = stdscr.getch()
-        if ch == 27:
+        action = _action_for("search", ch)
+        if action == "cancel" or ch == 27:
             return ("", [])
-        if ch in (10, 13, curses.KEY_ENTER):
+        if action == "commit" or ch in (10, 13, curses.KEY_ENTER):
             if buf:
                 matches = _search_grid(g, buf)
                 if matches:
@@ -2076,7 +2104,7 @@ def search_prompt(stdscr: curses.window, g: Grid) -> tuple[str, list[tuple[int, 
                     stdscr.getch()
                 return (buf, matches)
             return ("", [])
-        elif ch in (curses.KEY_BACKSPACE, 127, 8):
+        elif action == "delete_back" or ch in (curses.KEY_BACKSPACE, 127, 8):
             buf = buf[:-1]
         elif len(buf) < 255 and 32 <= ch < 127:
             buf += chr(ch)
@@ -2397,7 +2425,8 @@ def entry(
         stdscr.refresh()
         ch = stdscr.getch()
 
-        if ch == 27:
+        action = _action_for("entry", ch)
+        if action == "cancel" or ch == 27:
             g.cc = origc
             g.cr = origr
             g.mc = -1
@@ -2436,7 +2465,7 @@ def entry(
             buf += cellname(pc, pr)
             continue
 
-        if ch in (10, 13, curses.KEY_ENTER):
+        if action == "commit_and_advance_row" or ch in (10, 13, curses.KEY_ENTER):
             g.mc = -1
             g.mr = -1
             undo.save_cell(g, origc, origr)
@@ -2446,7 +2475,7 @@ def entry(
             if g.cr < NROW - 1:
                 g.cr += 1
             break
-        elif ch == 9:
+        elif action == "commit_and_advance_col" or ch == 9:
             g.mc = -1
             g.mr = -1
             undo.save_cell(g, origc, origr)
@@ -2456,7 +2485,7 @@ def entry(
             if g.cc < NCOL - 1:
                 g.cc += 1
             break
-        elif ch in (curses.KEY_BACKSPACE, 127, 8):
+        elif action == "delete_back" or ch in (curses.KEY_BACKSPACE, 127, 8):
             buf = buf[:-1]
         elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT):
             pass
@@ -2482,9 +2511,10 @@ def visual_mode(stdscr: curses.window, g: Grid, undo: UndoManager, clipboard: Cl
         stdscr.refresh()
 
         ch = stdscr.getch()
-        if ch == 27:
+        action = _action_for("visual", ch)
+        if action == "cancel" or ch == 27:
             break
-        elif ch == ord("y"):
+        elif action == "yank" or ch == ord("y"):
             count = clipboard.yank(g, c1, r1, c2, r2)
             stdscr.addnstr(
                 curses.LINES - 1,
@@ -2495,11 +2525,11 @@ def visual_mode(stdscr: curses.window, g: Grid, undo: UndoManager, clipboard: Cl
             stdscr.clrtoeol()
             stdscr.refresh()
             break
-        elif ch == ord("p"):
+        elif action == "paste" or ch == ord("p"):
             if not clipboard.empty:
                 clipboard.paste(g, undo, c1, r1)
             break
-        elif ch in (ord("d"), 127, 8, curses.KEY_BACKSPACE):
+        elif action == "delete" or ch in (ord("d"), 127, 8, curses.KEY_BACKSPACE):
             count = 0
             for c in range(c1, c2 + 1):
                 for r in range(r1, r2 + 1):
@@ -2518,23 +2548,102 @@ def visual_mode(stdscr: curses.window, g: Grid, undo: UndoManager, clipboard: Cl
             stdscr.clrtoeol()
             stdscr.refresh()
             break
-        elif ch == ord(":"):
+        elif action == "enter_command" or ch == ord(":"):
             cmdline(stdscr, g, undo, sel=sel)
             break
-        elif ch == curses.KEY_UP and g.cr > 0:
+        elif (action == "cursor_up" or ch == curses.KEY_UP) and g.cr > 0:
             g.cr -= 1
-        elif ch == curses.KEY_DOWN and g.cr < NROW - 1:
+        elif (action == "cursor_down" or ch == curses.KEY_DOWN) and g.cr < NROW - 1:
             g.cr += 1
-        elif ch == curses.KEY_LEFT and g.cc > 0:
+        elif (action == "cursor_left" or ch == curses.KEY_LEFT) and g.cc > 0:
             g.cc -= 1
-        elif ch == curses.KEY_RIGHT and g.cc < NCOL - 1:
+        elif (action == "cursor_right" or ch == curses.KEY_RIGHT) and g.cc < NCOL - 1:
             g.cc += 1
+
+
+def _grid_action_cursor_up(g: Grid, lc: int, lr: int) -> None:
+    if g.cr > lr:
+        g.cr -= 1
+
+
+def _grid_action_cursor_down(g: Grid, lc: int, lr: int) -> None:
+    if g.cr < NROW - 1:
+        g.cr += 1
+
+
+def _grid_action_cursor_left(g: Grid, lc: int, lr: int) -> None:
+    if g.cc > lc:
+        g.cc -= 1
+
+
+def _grid_action_cursor_right(g: Grid, lc: int, lr: int) -> None:
+    if g.cc < NCOL - 1:
+        g.cc += 1
+
+
+def _grid_action_next_sheet(g: Grid, lc: int, lr: int) -> None:
+    g.next_sheet()
+
+
+def _grid_action_prev_sheet(g: Grid, lc: int, lr: int) -> None:
+    g.prev_sheet()
+
+
+# Registry of grid-context actions. Adding an action means: (1) put the
+# name in keys.KNOWN_ACTIONS["grid"], (2) add a callable here. Each
+# callable takes ``(grid, locked_col, locked_row)``.
+_GRID_ACTIONS: dict[str, Callable[[Grid, int, int], None]] = {
+    "cursor_up": _grid_action_cursor_up,
+    "cursor_down": _grid_action_cursor_down,
+    "cursor_left": _grid_action_cursor_left,
+    "cursor_right": _grid_action_cursor_right,
+    "next_sheet": _grid_action_next_sheet,
+    "prev_sheet": _grid_action_prev_sheet,
+}
+
+
+def _dispatch_grid_key(
+    g: Grid,
+    resolved_grid: dict[int, str],
+    ch: int,
+    lc: int,
+    lr: int,
+) -> bool:
+    """Dispatch ``ch`` through the user's grid-context keymap.
+
+    Returns True if the keystroke matched a user binding and was
+    handled; the caller skips its hardcoded fallback chain in that
+    case. Returns False otherwise. Unknown action names (not in
+    ``_GRID_ACTIONS``) silently fall through -- they were already
+    warned about at config-load time.
+    """
+    action = resolved_grid.get(ch)
+    if action is None:
+        return False
+    fn = _GRID_ACTIONS.get(action)
+    if fn is None:
+        return False
+    fn(g, lc, lr)
+    return True
 
 
 def mainloop(stdscr: curses.window, g: Grid) -> None:
     undo = UndoManager()
     clipboard = Clipboard()
     search_matches: list[tuple[int, int]] = []
+
+    # Resolve the user's keybindings against the live curses runtime.
+    # Stash on the module-level ``_resolved_keymap`` so the
+    # context-specific dispatchers (entry, visual_mode, cmdline,
+    # search_prompt) can read it without threading it through every
+    # call site. Warnings (unsupported terminal capabilities,
+    # conflicts) print to stderr like the rest of the config
+    # diagnostics.
+    global _resolved_keymap
+    _resolved_keymap, key_warnings = build_resolved_keymap(_cfg.keys)
+    for w in key_warnings:
+        print(f"gridcalc: keybinding warning: {w}", file=sys.stderr)
+    resolved_grid = _resolved_keymap.get("grid", {})
 
     while True:
         lc = g.tc
@@ -2564,6 +2673,13 @@ def mainloop(stdscr: curses.window, g: Grid) -> None:
         si = search_indicator(g, search_matches)
         draw(stdscr, g, "READY", "", search_info=si)
         ch = stdscr.getch()
+
+        # User-bound keys take precedence over the hardcoded fallback
+        # chain. A binding that fires here short-circuits the rest of
+        # this iteration -- so binding e.g. Tab to next_sheet does
+        # *replace* its previous "advance one column" meaning.
+        if _dispatch_grid_key(g, resolved_grid, ch, lc, lr):
+            continue
 
         if ch == 0x1F & ord("c"):
             break
@@ -2679,8 +2795,6 @@ def startup_trust_prompt(filename: str, info: FileInfo) -> LoadPolicy | None:
 
 
 def main() -> None:
-    import sys
-
     global _cfg
     _cfg = load_config()
     emit_warnings(_cfg)

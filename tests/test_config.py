@@ -1,4 +1,5 @@
 from gridcalc.config import _parse_config, find_config, load_config
+from gridcalc.keys import ParsedKey
 
 
 class TestParseConfig:
@@ -192,3 +193,71 @@ class TestFindConfig:
         assert path is not None
         cfg = load_config(path)
         assert cfg.editor == "custom"
+
+
+class TestParseConfigKeys:
+    def test_no_keys_section_yields_empty(self):
+        cfg = _parse_config({})
+        assert cfg.keys == {}
+
+    def test_grid_next_sheet(self):
+        cfg = _parse_config({"keys": {"grid": {"next_sheet": ["Tab"]}}})
+        assert cfg.keys == {"grid": {"next_sheet": [ParsedKey(frozenset(), "Tab")]}}
+        assert cfg.warnings == []
+
+    def test_multi_binding(self):
+        cfg = _parse_config({"keys": {"grid": {"next_sheet": ["Tab", "F4"]}}})
+        assert cfg.keys["grid"]["next_sheet"] == [
+            ParsedKey(frozenset(), "Tab"),
+            ParsedKey(frozenset(), "F4"),
+        ]
+
+    def test_explicit_unbind_preserved(self):
+        cfg = _parse_config({"keys": {"grid": {"cursor_right": []}}})
+        assert cfg.keys["grid"]["cursor_right"] == []
+        assert cfg.warnings == []
+
+    def test_unknown_context_warns(self):
+        cfg = _parse_config({"keys": {"bogus": {"foo": ["x"]}}})
+        assert "bogus" not in cfg.keys
+        assert any("bogus" in w and "unknown context" in w for w in cfg.warnings)
+
+    def test_unknown_action_warns(self):
+        cfg = _parse_config({"keys": {"grid": {"warp_drive": ["F1"]}}})
+        assert "warp_drive" not in cfg.keys.get("grid", {})
+        assert any("warp_drive" in w and "unknown action" in w for w in cfg.warnings)
+
+    def test_invalid_keyspec_warns_and_drops(self):
+        cfg = _parse_config({"keys": {"grid": {"next_sheet": ["C-Tab", "Tab"]}}})
+        # Tab survives; C-Tab dropped with a warning.
+        assert cfg.keys["grid"]["next_sheet"] == [ParsedKey(frozenset(), "Tab")]
+        assert any("Ctrl-Tab" in w for w in cfg.warnings)
+
+    def test_all_invalid_keyspecs_omits_action(self):
+        # If every spec is invalid we do *not* fall through to "unbind"
+        # -- omitting the action entirely is less surprising.
+        cfg = _parse_config({"keys": {"grid": {"next_sheet": ["C-Tab"]}}})
+        assert "next_sheet" not in cfg.keys.get("grid", {})
+
+    def test_non_table_keys_warns(self):
+        cfg = _parse_config({"keys": "not a table"})
+        assert cfg.keys == {}
+        assert any("expected table" in w for w in cfg.warnings)
+
+    def test_non_table_context_warns(self):
+        cfg = _parse_config({"keys": {"grid": "not a table"}})
+        assert "grid" not in cfg.keys
+        assert any("keys.grid" in w for w in cfg.warnings)
+
+    def test_non_list_action_warns(self):
+        cfg = _parse_config({"keys": {"grid": {"next_sheet": "Tab"}}})
+        assert "next_sheet" not in cfg.keys.get("grid", {})
+        assert any("expected list" in w for w in cfg.warnings)
+
+    def test_non_string_spec_warns(self):
+        cfg = _parse_config({"keys": {"grid": {"next_sheet": [123]}}})
+        assert any("expected string" in w for w in cfg.warnings)
+
+    def test_keys_does_not_appear_as_unknown_top_level(self):
+        cfg = _parse_config({"keys": {"grid": {"next_sheet": ["Tab"]}}})
+        assert not any(w.startswith("unknown key") for w in cfg.warnings)

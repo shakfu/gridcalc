@@ -4,6 +4,62 @@
 
 ### Added
 
+- **User-configurable keybindings.** All five TUI contexts (`grid`,
+  `entry`, `visual`, `cmdline`, `search`) dispatch through a
+  config-driven keymap before falling back to hardcoded defaults.
+  Bindings live in `gridcalc.toml` under `[keys.<context>]`:
+
+  ```toml
+  [keys.grid]
+  next_sheet = ["Tab", "F4"]
+  prev_sheet = ["S-Tab", "F3"]
+  cursor_left  = ["Left", "h"]
+  cursor_down  = ["Down", "j"]
+  cursor_up    = ["Up", "k"]
+  cursor_right = ["Right", "l"]
+  ```
+
+  No defaults are shipped -- every binding is opt-in, so the
+  hardcoded fallback chain (arrow keys, `Tab`-as-cursor-right, etc.)
+  is unaffected for users who don't write a `[keys]` block. New
+  module `src/gridcalc/keys.py` parses an emacs-short grammar
+  (`Tab`, `S-Tab`, `C-x`, `C-Right`, `F3`, literal chars) and
+  rejects combinations with no portable terminal encoding (`C-Tab`,
+  `M-<anything>`, `C-<punctuation>`, `S-<anything-but-Tab>`) at
+  config load with structured warnings on stderr; resolution to a
+  curses keycode is deferred to `mainloop` entry so terminfo-derived
+  caps like `kRIT5` (`C-Right`) can fail soft on terminals that
+  don't define them. Action vocabulary is curated per context (~25
+  actions total) and frozen at module load time. `[keys.entry]`,
+  `[keys.cmdline]`, and `[keys.search]` are text-input contexts:
+  printable bytes (`32 <= ch < 127`) bypass the dispatcher and
+  self-insert into the buffer regardless of any binding -- so a
+  stray `[keys.entry] cancel = ["a"]` cannot lock the user out of
+  typing the letter `a`. `Config.keys: dict[str, dict[str,
+  list[ParsedKey]]]` carries the parsed (but unresolved) bindings;
+  `keys.build_resolved_keymap` does the curses-bound resolution and
+  conflict detection. Reference: `docs/keybindings.md`.
+- **`Grid.next_sheet()` / `Grid.prev_sheet()`.** Engine helpers that
+  advance / retreat the active sheet with wrap-around at the ends
+  and a no-op on a single-sheet workbook. Used by the
+  `next_sheet` / `prev_sheet` actions in the new keybindings system,
+  but standalone-callable as well.
+- **xlsx export now preserves formula text alongside cached values
+  in EXCEL mode.** `Grid.xlsxsave` (engine.py) now emits formula
+  cells with both the formula string and a cached numeric value
+  rather than only the evaluated number. The native writer
+  (`src/gridcalc/_core.cpp`) gained a `kind == "f"` payload that
+  calls `cell.formula() = ...` and (optionally) sets the cached
+  value; the leading `=` is stripped before handing the string to
+  OpenXLSX. Only `Mode.EXCEL` opts in -- gridcalc's LEGACY/HYBRID
+  formula syntax is not guaranteed to be valid Excel, so emitting
+  formula text in those modes risks producing files Excel can't
+  evaluate. The reader path was already capable of preserving
+  formulas; this closes the export-side gap. New
+  `examples/example_multisheet.xlsx` fixture and
+  `test_example_multisheet_xlsx_roundtrip_preserves_formulas`
+  verify a real `.xlsx` file round-trips with formulas intact and a
+  cached value that openpyxl returns under `data_only=True`.
 - **Multi-sheet workbook support.** `Grid` now models a workbook of
   named sheets rather than a single flat cell store. Formulas can
   reference cells on other sheets (`=Sheet2!A1`,

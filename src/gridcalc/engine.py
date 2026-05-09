@@ -624,12 +624,14 @@ def _xlsx_read_cells(filename: str) -> list[tuple[str, int, int, str]] | None:
         return None
 
 
-def _xlsx_write_cells(filename: str, cells: list[tuple[str, int, int, str, object]]) -> int:
-    """Write ``(sheet_name, col0, row0, kind, value)`` tuples.
+def _xlsx_write_cells(filename: str, cells: list[tuple[Any, ...]]) -> int:
+    """Write ``(sheet_name, col0, row0, kind, value[, cached])`` tuples.
 
-    ``kind`` is in ``{'s','n'}``. Sheets are created in the order
-    they first appear in ``cells``. Returns 0 on success, -1 on
-    failure.
+    ``kind`` is in ``{'s','n','f'}``. For ``'f'``, ``value`` is the
+    formula text (with or without leading ``=``) and the optional 6th
+    element is a cached numeric value (or ``None``). Sheets are created
+    in the order they first appear in ``cells``. Returns 0 on success,
+    -1 on failure.
     """
     from gridcalc import _core
 
@@ -2286,7 +2288,12 @@ class Grid:
         if all(cl.type == EMPTY for s in self.sheets for cl in s._cells.values()):
             return -1
 
-        payload: list[tuple[str, int, int, str, object]] = []
+        # In EXCEL mode, formula text is preserved (with cached numeric
+        # value when available). In LEGACY/HYBRID mode, gridcalc formula
+        # syntax is not guaranteed to be valid Excel, so we keep the
+        # historical values-only behavior.
+        preserve_formulas = self.mode == Mode.EXCEL
+        payload: list[tuple[Any, ...]] = []
         for s in self.sheets:
             for (c, r), cl in s._cells.items():
                 if cl.type == EMPTY:
@@ -2296,9 +2303,18 @@ class Grid:
                 elif cl.type == NUM:
                     payload.append((s.name, c, r, "n", float(cl.val)))
                 elif cl.type == FORMULA:
-                    if isinstance(cl.val, float) and math.isnan(cl.val):
-                        continue
-                    payload.append((s.name, c, r, "n", float(cl.val)))
+                    val = cl.val
+                    cached: float | None
+                    if isinstance(val, (int, float)) and not (
+                        isinstance(val, float) and math.isnan(val)
+                    ):
+                        cached = float(val)
+                    else:
+                        cached = None
+                    if preserve_formulas and cl.text:
+                        payload.append((s.name, c, r, "f", cl.text, cached))
+                    elif cached is not None:
+                        payload.append((s.name, c, r, "n", cached))
         return _xlsx_write_cells(filename, payload)
 
     def csvsave(self, filename: str) -> int:

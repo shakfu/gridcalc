@@ -67,6 +67,24 @@ CHANGELOG.md.
 
 ## Features
 
+- [ ] **3D range references (`Sheet1:Sheet3!A1:B2`).** Currently
+  unsupported: `_expand_ranges` (engine.py:582) only recognises the
+  `<ref>:<ref>` shape, so a sheet-span prefix passes through unexpanded
+  and the formula evaluates to `nan`. Workaround in user files is to
+  expand manually, e.g. `=SUM(Jan!B2:B3)+SUM(Feb!B2:B3)` instead of
+  `=SUM(Jan:Feb!B2:B3)` (see `examples/example_multisheet.xlsx`). To
+  implement: (1) extend `ref`/`refabs` (engine.py:529, 552) to recognise
+  the `<sheet>:<sheet>!<cell>[:<cell>]` shape; (2) add a pre-pass (or
+  branch in `_expand_ranges`) that enumerates sheets between the two
+  named endpoints in workbook order and emits a `Vec([...])` over
+  every (sheet, cell) pair; (3) decide rebind semantics on
+  `move_sheet`/`rename_sheet` -- Excel binds 3D refs to sheet
+  *position* between the endpoints, so reordering changes which sheets
+  are summed, while renaming an endpoint should rewrite the formula
+  text the same way `_rewrite_sheet_prefix` (engine.py:731) handles
+  single-sheet refs; (4) extend dependency tracking so cells in the
+  spanned sheets register as subscribers, and a `move_sheet`/`add_sheet`
+  between the endpoints invalidates the cached recalc.
 - [ ] **TUI keybindings system.** A separate effort to design the
   custom-keybinding story (config file? schema? sane defaults? a
   conflict-detection layer?). Sheet cycling (e.g. PgUp/PgDn in the

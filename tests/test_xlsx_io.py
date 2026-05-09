@@ -1,10 +1,13 @@
 import math
+from pathlib import Path
 
 import pytest
 
 openpyxl = pytest.importorskip("openpyxl")
 
 from gridcalc.engine import Grid, Mode  # noqa: E402
+
+EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 
 
 def test_xlsxsave_empty_grid_returns_minus_one(tmp_path):
@@ -73,9 +76,16 @@ def test_xlsx_multisheet_roundtrip_preserves_cross_sheet_formula_value(tmp_path)
     g2.set_active("Source")
     assert g2.cells[0][0].val == 10.0
     g2.set_active("Derived")
-    # xlsx round-trip stores evaluated values (not formulas), so the
-    # loaded Derived!A1 is the saved 50.0 -- not a live formula.
+    # In EXCEL mode the formula text round-trips, and gridcalc
+    # re-evaluates it from the live Source!A1.
+    assert g2.cells[0][0].text == "=Source!A1*5"
     assert g2.cells[0][0].val == 50.0
+    # And the file itself carries the formula (data_only=False) plus
+    # the cached numeric value (data_only=True).
+    wb_f = openpyxl.load_workbook(str(f), data_only=False)
+    assert wb_f["Derived"].cell(row=1, column=1).value == "=Source!A1*5"
+    wb_v = openpyxl.load_workbook(str(f), data_only=True)
+    assert wb_v["Derived"].cell(row=1, column=1).value == 50.0
 
 
 def test_xlsxsave_basic(tmp_path):
@@ -138,11 +148,15 @@ def test_xlsxload_then_save_roundtrip(tmp_path):
     assert g.xlsxload(str(src)) == 0
     dst = tmp_path / "dst.xlsx"
     assert g.xlsxsave(str(dst)) == 0
+    # In EXCEL mode, xlsxsave preserves formula text and writes the
+    # cached numeric value. data_only=False returns the formula string;
+    # data_only=True returns the cached value.
     wb2 = openpyxl.load_workbook(str(dst), data_only=False)
     ws2 = wb2.active
     assert ws2.cell(row=1, column=1).value == 5.0
-    # value, not formula, per phase 2 design
-    assert ws2.cell(row=1, column=2).value == 15.0
+    assert ws2.cell(row=1, column=2).value == "=A1*3"
+    wb2v = openpyxl.load_workbook(str(dst), data_only=True)
+    assert wb2v.active.cell(row=1, column=2).value == 15.0
 
 
 def test_xlsxload_bool(tmp_path):
@@ -189,3 +203,44 @@ def test_xlsxload_xlsx_lib_functions_work(tmp_path):
 def test_xlsxload_missing_file_returns_minus_one(tmp_path):
     g = Grid()
     assert g.xlsxload(str(tmp_path / "nope.xlsx")) == -1
+
+
+def test_example_multisheet_xlsx_roundtrip_preserves_formulas(tmp_path):
+    """Import examples/example_multisheet.xlsx and re-export it; the
+    written file must be a well-formed xlsx that preserves both the
+    formula text and a cached numeric value (where computable)."""
+    src = EXAMPLES / "example_multisheet.xlsx"
+    assert src.is_file(), f"missing example fixture: {src}"
+
+    g = Grid()
+    assert g.xlsxload(str(src)) == 0
+    assert g.mode == Mode.EXCEL
+    assert g.sheet_names() == ["Jan", "Feb", "Summary"]
+
+    # Sanity-check imported content.
+    g.set_active("Jan")
+    assert g.cells[1][1].val == 100.0
+    g.set_active("Feb")
+    assert g.cells[1][2].val == 130.0
+    g.set_active("Summary")
+    assert g.cells[0][1].text == "=SUM(Jan!B2:B3)+SUM(Feb!B2:B3)"
+    expected_total = 100.0 + 150.0 + 120.0 + 130.0
+    assert g.cells[0][1].val == expected_total
+
+    dst = tmp_path / "rt_example.xlsx"
+    assert g.xlsxsave(str(dst)) == 0
+
+    # Well-formed: openpyxl can open it and find every sheet/cell.
+    wb_f = openpyxl.load_workbook(str(dst), data_only=False)
+    assert wb_f.sheetnames == ["Jan", "Feb", "Summary"]
+    assert wb_f["Jan"].cell(row=1, column=1).value == "Item"
+    assert wb_f["Jan"].cell(row=2, column=2).value == 100.0
+    assert wb_f["Feb"].cell(row=3, column=2).value == 130.0
+    # Formula text round-trips as a formula, not as a stringified value.
+    summary_a2 = wb_f["Summary"].cell(row=2, column=1)
+    assert summary_a2.data_type == "f"
+    assert summary_a2.value == "=SUM(Jan!B2:B3)+SUM(Feb!B2:B3)"
+
+    # Cached value is also written so data_only readers see a number.
+    wb_v = openpyxl.load_workbook(str(dst), data_only=True)
+    assert wb_v["Summary"].cell(row=2, column=1).value == expected_total

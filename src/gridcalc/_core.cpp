@@ -119,6 +119,16 @@ void xlsx_write(const std::string& path, nb::list cells) {
         } else if (kind == "n") {
             double v = nb::cast<double>(t[4]);
             if (!std::isnan(v) && !std::isinf(v)) cell.value() = v;
+        } else if (kind == "f") {
+            // Formula: t[4] is the formula text (with or without leading '='),
+            // optional t[5] is the cached numeric value (None or float).
+            std::string formula = nb::cast<std::string>(t[4]);
+            if (!formula.empty() && formula.front() == '=') formula.erase(0, 1);
+            if (!formula.empty()) cell.formula() = formula;
+            if (t.size() > 5 && !t[5].is_none()) {
+                double v = nb::cast<double>(t[5]);
+                if (!std::isnan(v) && !std::isinf(v)) cell.value() = v;
+            }
         }
     }
     // If the payload was empty, the auto-created default sheet is left
@@ -134,5 +144,5 @@ NB_MODULE(_core, m) {
     m.def("xlsx_read", &xlsx_read, nb::arg("path"),
           "Read an .xlsx file. Returns list[(col, row, text)] (zero-indexed).");
     m.def("xlsx_write", &xlsx_write, nb::arg("path"), nb::arg("cells"),
-          "Write cells to an .xlsx file. Each cell is (col, row, kind, value); kind in {'s','n'}.");
+          "Write cells to an .xlsx file. Each cell is (sheet, col, row, kind, value[, cached]); kind in {'s','n','f'} where 'f' uses value as formula text and optional cached numeric.");
 }

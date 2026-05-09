@@ -567,12 +567,40 @@ works.
 ## Development
 
 ```sh
+make build      # rebuild the C++ extension (after _core.cpp / CMakeLists.txt changes)
 make test       # run tests
 make lint       # ruff check
 make format     # ruff format
 make typecheck  # mypy
 make qa         # lint + typecheck + test + format
 ```
+
+### Building wheels
+
+```sh
+make wheel        # per-version wheel for the current Python (cpXX-cpXX)
+make sdist        # source distribution
+make dist         # wheel + sdist + twine check
+```
+
+### Stable-ABI (abi3) wheels
+
+A single `cp312-abi3-<platform>` wheel installs unchanged on every
+Python >= 3.12. Useful for shipping fewer artifacts; the trade-off is
+dropping pre-3.12 support.
+
+```sh
+make wheel-abi3   # build a cp312-abi3 wheel (needs Python>=3.12)
+make build-abi3   # in-place dev install with stable ABI on
+make dist-abi3    # abi3 wheel + sdist + twine check
+```
+
+The abi3 build is controlled by a CMake flag
+(`GRIDCALC_STABLE_ABI=ON`) and scikit-build-core's `wheel.py-api=cp312`
+setting; both are passed via `--config-setting` by the Makefile target.
+The corresponding CI workflow lives at
+`.github/workflows/build-abi3.yml` (build-only; per-version
+`build-publish.yml` remains the publish path).
 
 ### Publishing
 

@@ -493,6 +493,31 @@
 - **`src/gridcalc/_core.pyi`**: type stubs for the nanobind extension so
   mypy resolves `_core.xlsx_read` / `_core.xlsx_write`.
 
+### Infrastructure
+
+- **Stable-ABI (cp312-abi3) wheel build path.** A new
+  `.github/workflows/build-abi3.yml` produces a single
+  `cp312-abi3-<platform>` wheel per OS / arch that installs unchanged
+  on every Python >= 3.12. Driven by an opt-in CMake flag
+  (`GRIDCALC_STABLE_ABI=ON`) plus scikit-build-core's
+  `wheel.py-api=cp312`; both passed via `CIBW_CONFIG_SETTINGS`. The
+  CMake side now also requests the optional
+  `Development.SABIModule` component so nanobind's STABLE_ABI mode
+  actually engages (otherwise nanobind silently downgrades it).
+  Local equivalents in the Makefile: `make wheel-abi3` (build the
+  abi3 wheel), `make build-abi3` (in-place dev install with
+  STABLE_ABI on), `make dist-abi3` (abi3 wheel + sdist + twine
+  check). The default `make wheel` / `make build` paths keep
+  emitting per-version artifacts unchanged.
+
+- **`build-publish.yml` corrections.** Pinned all three OS jobs to
+  `pypa/cibuildwheel@v3.4.1` (was a mix of v3.3.1 and v2.23). Dropped
+  `cp39-*` from `CIBW_BUILD` (mismatched
+  `pyproject.toml:requires-python = ">=3.10"`). Fixed a `cp313-*-*`
+  pattern typo. Added `CIBW_ENVIRONMENT: GRIDCALC_SANDBOX=1` so the
+  test command runs with the same sandbox state the local Makefile
+  uses.
+
 ### Changed
 
 - **`__builtins__` in the LEGACY eval namespace is now read-only.**

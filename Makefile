@@ -1,6 +1,7 @@
 .PHONY: all sync build rebuild test test-stdlib lint format typecheck qa clean  \
-       distclean wheel sdist dist check publish-test publish upgrade \
-       coverage coverage-html docs release bench bench-clean help
+       distclean wheel wheel-abi3 build-abi3 sdist dist dist-abi3 check \
+       publish-test publish upgrade coverage coverage-html docs release \
+       bench bench-clean help
 
 # Default target
 all: build
@@ -44,9 +45,27 @@ typecheck:
 # Run a full quality assurance check
 qa: lint typecheck test format
 
-# Build wheel
+# Build wheel (per-version, current Python)
 wheel:
 	@uv build --wheel
+
+# Build a stable-ABI wheel (cp312-abi3). Installs unchanged on
+# Python 3.12+; requires Python>=3.12 to build. Two config settings
+# are needed: `cmake.define.GRIDCALC_STABLE_ABI=ON` switches the
+# nanobind module to STABLE_ABI mode (Limited API SO); `wheel.py-api=cp312`
+# tells scikit-build-core to tag the wheel as `cp312-abi3-<platform>`
+# instead of the running Python's per-version tag.
+wheel-abi3:
+	@uv build --wheel \
+	    --config-setting=cmake.define.GRIDCALC_STABLE_ABI=ON \
+	    --config-setting=wheel.py-api=cp312
+
+# Rebuild the in-place extension with STABLE_ABI on (for local
+# dev/testing of abi3 behaviour without producing a wheel).
+build-abi3:
+	@uv sync --reinstall-package gridcalc \
+	    --config-setting=cmake.define.GRIDCALC_STABLE_ABI=ON \
+	    --config-setting=wheel.py-api=cp312
 
 # Build source distribution
 sdist:
@@ -58,6 +77,11 @@ check:
 
 # Build both wheel and sdist
 dist: wheel sdist check
+
+# abi3 dist (stable-ABI wheel + sdist). Useful for inspecting the
+# `cp312-abi3` artifact locally before relying on the
+# build-abi3.yml CI workflow.
+dist-abi3: wheel-abi3 sdist check
 
 # Publish to TestPyPI
 publish-test: check
@@ -126,9 +150,12 @@ help:
 	@echo "  format       - Format with ruff"
 	@echo "  typecheck    - Type check with mypy"
 	@echo "  qa           - Run full quality assurance (test, lint, typecheck, format)"
-	@echo "  wheel        - Build wheel distribution"
+	@echo "  wheel        - Build wheel distribution (per-version, current Python)"
+	@echo "  wheel-abi3   - Build stable-ABI wheel (cp312-abi3; needs Python>=3.12)"
+	@echo "  build-abi3   - Rebuild in-place with STABLE_ABI (local dev)"
 	@echo "  sdist        - Build source distribution"
-	@echo "  dist         - Build both wheel and sdist"
+	@echo "  dist         - Build per-version wheel + sdist + check"
+	@echo "  dist-abi3    - Build abi3 wheel + sdist + check"
 	@echo "  check        - Check distributions with twine"
 	@echo "  publish-test - Publish to TestPyPI"
 	@echo "  publish      - Publish to PyPI"

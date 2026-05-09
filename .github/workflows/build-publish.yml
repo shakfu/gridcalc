@@ -17,10 +17,14 @@ on:
         type: boolean
 
 env:
-  CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-*-*"
+  # Per-version wheels for cp310-cp313 (matches pyproject.toml
+  # `requires-python = ">=3.10"`). The abi3 build lives in a separate
+  # workflow (`build-abi3.yml`) for cp312+.
+  CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
   CIBW_SKIP: "*-musllinux_* pp*"
   CIBW_TEST_REQUIRES: pytest
   CIBW_TEST_COMMAND: pytest {project}/tests -v
+  CIBW_ENVIRONMENT: GRIDCALC_SANDBOX=1
 
 jobs:
   build-sdist:
@@ -49,7 +53,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v3.3.1
+        uses: pypa/cibuildwheel@v3.4.1
         env:
           CIBW_ARCHS_LINUX: x86_64 aarch64
 
@@ -67,7 +71,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.23
+        uses: pypa/cibuildwheel@v3.4.1
         env:
           CIBW_ARCHS_MACOS: x86_64 arm64
 
@@ -85,7 +89,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.23
+        uses: pypa/cibuildwheel@v3.4.1
         env:
           CIBW_ARCHS_WINDOWS: AMD64
 

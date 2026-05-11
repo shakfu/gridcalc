@@ -4,6 +4,119 @@
 
 ### Added
 
+- **Linear and mixed-integer programming via `:opt`.** New sheet-level
+  optimizer that builds an LP (or MIP) from cells in the active sheet
+  and solves it via a vendored lp_solve 5.5. The user-facing model is sheet-resident:
+  one objective cell containing a linear formula, a list of decision
+  variable cells holding numeric values, and a list of constraint
+  cells containing comparison formulas (e.g. `=A1+A2<=10`). The
+  constraint cells also evaluate normally during recalc, so the
+  sheet shows live feasibility (`TRUE`/`FALSE`) before and after the
+  solve. Models are **workbook-persistent**: the spec the user types
+  is stored in the JSON file under `"models": {<name>: {...}}` and
+  re-runnable across sessions without retyping. The `:opt` dispatcher
+  has six forms:
+
+  ```
+  :opt                                       # run the saved 'default' model
+  :opt max|min <cell> vars <cells> st <cells> [bounds <spec>] [int <cells>] [bin <cells>]
+                                             # solve inline AND save as 'default'
+  :opt def <name> max|min <cell> ...         # save under <name>; does NOT execute
+  :opt run [<name>]                          # execute saved model (default: 'default')
+  :opt list                                  # show saved model names
+  :opt undef <name>                          # remove a saved model
+  ```
+
+  The optional `int` and `bin` clauses flag decision variables as
+  integer-valued or binary (0/1) respectively, routing the solve
+  through lp_solve's branch-and-bound. `bin` clamps bounds to `[0, 1]`
+  regardless of the `bounds` clause; a variable in both `int` and
+  `bin` is rejected as a programming error. Clauses can appear in any
+  order after `st`.
+
+  Cell lists accept ranges (`A1:A5`) or comma-separated refs
+  (`A1,A3,B5`); bounds are `A1=lo:hi,B2=lo:hi` with `inf`/`-inf`
+  accepted for unbounded sides. On `OPTIMAL`/`SUBOPTIMAL`, the
+  decision cells are overwritten with the optimal values,
+  `Grid.recalc()` propagates through the rest of the sheet, and the
+  status bar shows `opt: OPTIMAL  obj=<value>`. The pre-solve grid
+  snapshot is recorded via `UndoManager.save_grid` so `u` rolls the
+  optimization back; failure paths (infeasible, unbounded, malformed
+  command) pop the undo entry so it isn't a no-op surprise.
+
+  Saved models live on `Grid.models: dict[str, OptModel]`, parallel to
+  `Grid.names` for named ranges. `OptModel` (in `src/gridcalc/opt.py`)
+  stores the *spec strings* the user typed (`"A4:A5"`, `"D4:D6"`,
+  `"A1=-inf:10"`) rather than pre-resolved cell coordinates, so range
+  and list syntax round-trip through save/load verbatim and parse
+  errors surface at `:opt run` time, not silently at load. Malformed
+  `models` entries in a loaded JSON file are skipped (not raised) so
+  one bad entry can't block opening the rest of the workbook.
+
+  The optimizer is built from four layers. (1) Vendored lp_solve 5.5
+  in `thirdparty/lp_solve_5.5/` with a hand-written `CMakeLists.txt`
+  that mirrors the canonical source list from `lpsolve55/ccc`, picks
+  the LUSOL inverse engine (`INVERSE_ACTIVE=INVERSE_LUSOL`), and
+  suppresses lp_solve's own warnings (`-w`) so they don't drown the
+  project's. The static archive `lpsolve_static` is `EXCLUDE_FROM_ALL`
+  and only pulled into the wheel via `_opt`. (2) A minimal nanobind
+  bridge `src/gridcalc/_opt.cpp` exposing one entry point
+  `solve_lp(c, A, sense, rhs, lb, ub, maximize=False) -> Solution`
+  with dense matrices, plus the `LE`/`GE`/`EQ` and status constants
+  (`OPTIMAL`, `INFEASIBLE`, `UNBOUNDED`, etc.). Variable bounds
+  dispatch on infinity-ness to four lp_solve calls
+  (`set_bounds` / `set_lowbo` / `set_upbo` / `set_unbounded`) because
+  `set_bounds(lp, j, -1e30, 1e30)` stores literal-1e30 finite bounds
+  rather than treating them as ±inf, which produces feasible-but-huge
+  optima on otherwise unbounded problems. A post-solve guard
+  normalizes lp_solve's degenerate-presolve case (a free variable
+  unreferenced in any constraint reported as `OPTIMAL` with the
+  objective pinned at 1e30) to `UNBOUNDED`. (3) `src/gridcalc/opt.py`
+  is the Python orchestrator. Its core is a linearity walker over
+  gridcalc's formula AST: cell references that resolve to decision
+  variables become coefficients, every other cell is folded into the
+  constant term using its currently evaluated value, and the
+  whitelisted node set (`Number`, `CellRef`, `BinOp` with `+ - * /`,
+  `UnaryOp`, `Percent`, `Call("SUM", RangeRef|expr)`) rejects
+  everything else with `NotLinear`. The walker is the safety
+  boundary for the optimizer -- nodes that could be a sandbox concern
+  (`Name`, `PyCall`, arbitrary `Call`, ranges outside SUM) never reach
+  any eval path. Constraint extraction splits a comparison-rooted
+  formula into LHS/RHS linear forms and rebalances them into
+  `(coeffs, sense, rhs)`; `<>` is rejected explicitly. Cross-sheet
+  references (`Sheet2!A1`) are rejected up-front via `_check_sheet`
+  rather than silently treated as referring to the active sheet,
+  which would produce wrong coefficients. `solve()` orchestrates the
+  whole pipeline, refusing formula cells as decision variables so
+  the operator never silently destroys live computation, and adding
+  back the objective formula's constant term to the reported
+  objective value. The walker parses cell formulas on-demand when
+  `cell.ast` is `None` (which is the default in LEGACY mode, where
+  the engine evaluates via Python `eval` of transformed text rather
+  than through the AST). (4) The TUI integration in `cmd_opt` is a
+  small dispatcher on subcommands (`def`/`run`/`list`/`undef`/inline);
+  shared parsing lives in `_parse_opt_inline` and shared execution in
+  `_execute_model` so the inline-and-store path and the def/run paths
+  cannot drift apart. The inline form (`:opt max ...`) always stores
+  the model under `default` before running, so the very first
+  invocation captures the LP in the workbook -- a `:w` after that
+  persists it and bare `:opt` re-runs it on reopen.
+  Reference: `examples/example_lp.json` (ships with a pre-saved
+  `default` model so `:open ... :opt` works out of the box).
+- **Headless PTY harness for the curses TUI.** New
+  `tests/integration/` directory with a `TuiSession` fixture that
+  spawns the real `gridcalc` binary attached to a `pty.openpty()`
+  pair, drives it via keystroke bytes written to the master fd, and
+  asserts on ANSI-stripped rendered output. This is the only test
+  layer that exercises curses end-to-end -- input handling,
+  rendering, redraw -- which `MockStdscr`-based unit tests cannot
+  reach. The harness is gated behind a `tty` pytest marker and
+  excluded from the default `make test` run via
+  `addopts = "-m 'not tty'"` in `pyproject.toml`; it is invoked
+  explicitly via the new `make test-tty` target. Auto-skips on
+  platforms without `pty` (Windows) and when the built entry point
+  is missing. Three smoke tests currently cover the `:opt` command's
+  OPTIMAL, malformed-command, and bad-constraint-cell paths.
 - **User-configurable keybindings.** All five TUI contexts (`grid`,
   `entry`, `visual`, `cmdline`, `search`) dispatch through a
   config-driven keymap before falling back to hardcoded defaults.

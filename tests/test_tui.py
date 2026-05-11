@@ -1614,3 +1614,410 @@ class TestActionFor:
         assert tui._action_for("entry", 32) is None
         assert tui._action_for("entry", 126) is None
         assert tui._action_for("entry", 127) == "cancel"
+
+
+# -- :opt command -----------------------------------------------------------
+
+
+class TestParseOptHelpers:
+    def test_parse_cells_range(self):
+        from gridcalc.tui import _parse_cells
+
+        assert _parse_cells("A1:B2") == [(0, 0), (0, 1), (1, 0), (1, 1)]
+
+    def test_parse_cells_list(self):
+        from gridcalc.tui import _parse_cells
+
+        assert _parse_cells("A1, A3, B5") == [(0, 0), (0, 2), (1, 4)]
+
+    def test_parse_cells_mixed(self):
+        from gridcalc.tui import _parse_cells
+
+        assert _parse_cells("A1:A2, C5") == [(0, 0), (0, 1), (2, 4)]
+
+    def test_parse_cells_rejects_garbage(self):
+        from gridcalc.tui import _parse_cells
+
+        with pytest.raises(ValueError):
+            _parse_cells("not_a_ref")
+
+    def test_parse_bounds_basic(self):
+        import math
+
+        from gridcalc.tui import _parse_bounds
+
+        b = _parse_bounds("A1=-inf:10, B2=0:inf")
+        assert b[(0, 0)] == (-math.inf, 10.0)
+        assert b[(1, 1)] == (0.0, math.inf)
+
+    def test_parse_bounds_rejects_missing_eq(self):
+        from gridcalc.tui import _parse_bounds
+
+        with pytest.raises(ValueError, match="="):
+            _parse_bounds("A1:0:10")
+
+
+class TestCmdOpt:
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = MockStdscr()
+        self.g = Grid()
+        self.undo = UndoManager()
+        # Build the textbook 2-var LP as a sheet.
+        self.g.setcell(0, 0, "0")  # A1 (decision)
+        self.g.setcell(0, 1, "0")  # A2 (decision)
+        self.g.setcell(2, 0, "=3*A1+5*A2")  # C1 (objective)
+        self.g.setcell(3, 0, "=A1<=4")  # D1
+        self.g.setcell(3, 1, "=2*A2<=12")  # D2
+        self.g.setcell(3, 2, "=3*A1+2*A2<=18")  # D3
+
+    def test_opt_max_textbook_dispatches_via_cmdexec(self):
+        from gridcalc.tui import cmdexec
+
+        ret = cmdexec(self.stdscr, self.g, self.undo, "opt max C1 vars A1:A2 st D1:D3")
+        assert ret is False
+        assert self.g.cells[0][0].val == pytest.approx(2.0)
+        assert self.g.cells[0][1].val == pytest.approx(6.0)
+        assert self.g.cells[2][0].val == pytest.approx(36.0)
+        assert "OPTIMAL" in self.stdscr._last_addnstr
+        assert "36" in self.stdscr._last_addnstr
+        # Successful run leaves an undo entry the user can roll back.
+        assert len(self.undo.undo_stack) == 1
+
+    def test_opt_undo_restores_decision_cells(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "opt max C1 vars A1:A2 st D1:D3")
+        # Roll back: A1, A2 should return to 0.
+        self.undo._apply(self.g, self.undo.undo_stack, self.undo.redo_stack)
+        self.g.recalc()
+        assert self.g.cells[0][0].val == 0.0
+        assert self.g.cells[0][1].val == 0.0
+
+    def test_opt_infeasible_does_not_mutate_or_leave_undo(self):
+        from gridcalc.tui import cmdexec
+
+        # Add a contradiction
+        self.g.setcell(3, 3, "=A1>=100")
+        ret = cmdexec(self.stdscr, self.g, self.undo, "opt max C1 vars A1:A2 st D1:D4")
+        assert ret is False
+        assert self.g.cells[0][0].val == 0.0
+        assert self.g.cells[0][1].val == 0.0
+        assert "INFEASIBLE" in self.stdscr._last_addnstr
+        # No undo entry should remain since nothing was mutated.
+        assert len(self.undo.undo_stack) == 0
+
+    def test_opt_bad_args_shows_usage_and_no_undo(self):
+        from gridcalc.tui import cmdexec
+
+        ret = cmdexec(self.stdscr, self.g, self.undo, "opt max C1")
+        assert ret is False
+        assert "usage" in self.stdscr._last_addnstr.lower()
+        assert len(self.undo.undo_stack) == 0
+
+    def test_opt_min_with_bounds(self):
+        from gridcalc.tui import cmdexec
+
+        # Force A2 to be at most 5; rest unchanged. Min of -3*A1-5*A2
+        # without bounds would be unbounded; the bound makes it well-posed.
+        self.g.setcell(2, 0, "=-3*A1-5*A2")
+        ret = cmdexec(
+            self.stdscr, self.g, self.undo, "opt min C1 vars A1:A2 st D1:D3 bounds A2=0:5"
+        )
+        assert ret is False
+        assert "OPTIMAL" in self.stdscr._last_addnstr
+        assert self.g.cells[0][1].val == pytest.approx(5.0)
+
+
+# -- cmdline() keypress simulation -----------------------------------------
+
+
+class TestCmdlineKeypath:
+    """Drive the colon-prompt input loop one keystroke at a time.
+
+    These tests are the only place that exercise the full ``:cmd``
+    pipeline: the cmdline buffer accumulation, backspace handling, ENTER
+    dispatch, and ESC cancellation. ``cmdexec`` tests above bypass the
+    keypress loop entirely.
+    """
+
+    @pytest.fixture(autouse=True)
+    def stub_draw(self, monkeypatch):
+        # cmdline() calls draw() which expects a real curses window;
+        # we don't care about rendering for these tests, only the
+        # buffer-and-dispatch behavior.
+        from gridcalc import tui
+
+        monkeypatch.setattr(tui, "draw", lambda *a, **kw: None)
+        monkeypatch.setattr(tui, "_resolved_keymap", {})
+
+    def _load_lp(self):
+        _setup_curses_constants()
+        g = Grid()
+        g.jsonload("examples/example_lp.json")
+        g.recalc()
+        return g
+
+    def test_full_command_via_keypresses_finds_optimum(self):
+        from gridcalc.tui import cmdline
+
+        stdscr = MockStdscr()
+        g = self._load_lp()
+        undo = UndoManager()
+        keys = [ord(c) for c in "opt max B4 vars A4:A5 st D4:D6"] + [10]
+        stdscr.queue_getch(*keys)
+        ret = cmdline(stdscr, g, undo)
+        assert ret is False
+        assert g.cells[0][3].val == pytest.approx(2.0)
+        assert g.cells[0][4].val == pytest.approx(6.0)
+        assert g.cells[1][3].val == pytest.approx(36.0)
+        assert "OPTIMAL" in stdscr._last_addnstr
+        assert len(undo.undo_stack) == 1
+
+    def test_backspace_correction_then_dispatch(self):
+        from gridcalc.tui import cmdline
+
+        stdscr = MockStdscr()
+        g = self._load_lp()
+        undo = UndoManager()
+        # Type "vrs" (typo), backspace 3 chars, type "vars ..." correctly.
+        keys = [ord(c) for c in "opt max B4 vrs"]
+        keys += [127, 127, 127]
+        keys += [ord(c) for c in "vars A4:A5 st D4:D6"]
+        keys += [10]
+        stdscr.queue_getch(*keys)
+        cmdline(stdscr, g, undo)
+        assert g.cells[0][3].val == pytest.approx(2.0)
+        assert g.cells[1][3].val == pytest.approx(36.0)
+
+    def test_esc_cancels_without_dispatch(self):
+        from gridcalc.tui import cmdline
+
+        stdscr = MockStdscr()
+        g = self._load_lp()
+        undo = UndoManager()
+        keys = [ord(c) for c in "opt max B4 vars A4:A5 st D4:D6"] + [27]
+        stdscr.queue_getch(*keys)
+        ret = cmdline(stdscr, g, undo)
+        assert ret is False
+        # No mutation, no undo entry.
+        assert g.cells[0][3].val == 0.0
+        assert g.cells[0][4].val == 0.0
+        assert len(undo.undo_stack) == 0
+
+    def test_enter_on_empty_buffer_is_noop(self):
+        from gridcalc.tui import cmdline
+
+        stdscr = MockStdscr()
+        g = self._load_lp()
+        undo = UndoManager()
+        stdscr.queue_getch(10)
+        ret = cmdline(stdscr, g, undo)
+        assert ret is False
+        assert g.cells[0][3].val == 0.0
+        assert len(undo.undo_stack) == 0
+
+
+class TestCmdOptDispatcher:
+    """Tests for the subcommand dispatch added in the persistent-model rework.
+
+    The inline form ``:opt max ...`` (covered by TestCmdOpt above) still
+    works and additionally writes the model to ``g.models["default"]`` so
+    bare ``:opt`` can re-run it.
+    """
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = MockStdscr()
+        self.g = Grid()
+        self.undo = UndoManager()
+        self.g.setcell(0, 0, "0")
+        self.g.setcell(0, 1, "0")
+        self.g.setcell(2, 0, "=3*A1+5*A2")
+        self.g.setcell(3, 0, "=A1<=4")
+        self.g.setcell(3, 1, "=2*A2<=12")
+        self.g.setcell(3, 2, "=3*A1+2*A2<=18")
+
+    def test_inline_form_captures_default_model(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "opt max C1 vars A1:A2 st D1:D3")
+        # Both: solve worked AND model was captured.
+        assert self.g.cells[0][0].val == pytest.approx(2.0)
+        assert "default" in self.g.models
+        m = self.g.models["default"]
+        assert m.sense == "max"
+        assert m.objective == "C1"
+        assert m.vars == "A1:A2"
+        assert m.constraints == "D1:D3"
+
+    def test_bare_opt_reruns_default_model(self):
+        from gridcalc.tui import cmdexec
+
+        # First, capture a default model via the inline form.
+        cmdexec(self.stdscr, self.g, self.undo, "opt max C1 vars A1:A2 st D1:D3")
+        # Undo to reset cells to 0 (the model itself stays in g.models).
+        self.undo._apply(self.g, self.undo.undo_stack, self.undo.redo_stack)
+        self.g.recalc()
+        assert self.g.cells[0][0].val == 0.0
+        # Bare :opt should re-run the default and reach the optimum again.
+        cmdexec(self.stdscr, self.g, self.undo, "opt")
+        assert self.g.cells[0][0].val == pytest.approx(2.0)
+        assert self.g.cells[0][1].val == pytest.approx(6.0)
+
+    def test_bare_opt_with_no_default_shows_error(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "opt")
+        assert "no 'default' model" in self.stdscr._last_addnstr
+        assert self.g.cells[0][0].val == 0.0
+
+    def test_def_saves_without_executing(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "opt def textbook max C1 vars A1:A2 st D1:D3")
+        assert "defined model 'textbook'" in self.stdscr._last_addnstr
+        # Crucially: no mutation of the decision cells.
+        assert self.g.cells[0][0].val == 0.0
+        assert self.g.cells[0][1].val == 0.0
+        # No undo entry was created (nothing to roll back).
+        assert len(self.undo.undo_stack) == 0
+        # But the model is in the workbook.
+        assert "textbook" in self.g.models
+
+    def test_run_executes_named_model(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "opt def textbook max C1 vars A1:A2 st D1:D3")
+        cmdexec(self.stdscr, self.g, self.undo, "opt run textbook")
+        assert self.g.cells[0][0].val == pytest.approx(2.0)
+        assert self.g.cells[0][1].val == pytest.approx(6.0)
+        assert "OPTIMAL" in self.stdscr._last_addnstr
+
+    def test_run_with_no_args_uses_default(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "opt def default max C1 vars A1:A2 st D1:D3")
+        cmdexec(self.stdscr, self.g, self.undo, "opt run")
+        assert self.g.cells[0][0].val == pytest.approx(2.0)
+
+    def test_run_missing_model_shows_error(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "opt run nonexistent")
+        assert "no model named 'nonexistent'" in self.stdscr._last_addnstr
+
+    def test_list_shows_model_names(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "opt def alpha max C1 vars A1:A2 st D1:D3")
+        cmdexec(self.stdscr, self.g, self.undo, "opt def beta min C1 vars A1:A2 st D1:D3")
+        cmdexec(self.stdscr, self.g, self.undo, "opt list")
+        assert "alpha" in self.stdscr._last_addnstr
+        assert "beta" in self.stdscr._last_addnstr
+
+    def test_list_empty_shows_error(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "opt list")
+        assert "no models defined" in self.stdscr._last_addnstr
+
+    def test_undef_removes_model(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "opt def temp max C1 vars A1:A2 st D1:D3")
+        assert "temp" in self.g.models
+        cmdexec(self.stdscr, self.g, self.undo, "opt undef temp")
+        assert "temp" not in self.g.models
+        assert "removed model 'temp'" in self.stdscr._last_addnstr
+
+    def test_undef_missing_model_shows_error(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "opt undef nope")
+        assert "no model named 'nope'" in self.stdscr._last_addnstr
+
+
+class TestCmdOptMIP:
+    """End-to-end tests of the int / bin clauses through the colon dispatcher."""
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = MockStdscr()
+        self.g = Grid()
+        self.undo = UndoManager()
+        # 2-var problem with a fractional continuous optimum.
+        self.g.setcell(0, 0, "0")
+        self.g.setcell(0, 1, "0")
+        self.g.setcell(2, 0, "=A1+A2")
+        self.g.setcell(3, 0, "=A1+A2<=5.5")
+
+    def test_inline_int_clause_produces_integer_solution(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "opt max C1 vars A1:A2 st D1 int A1:A2")
+        assert "OPTIMAL" in self.stdscr._last_addnstr
+        # Integer optimum is 5, not the continuous 5.5.
+        assert self.g.cells[2][0].val == pytest.approx(5.0)
+        for v in (self.g.cells[0][0].val, self.g.cells[0][1].val):
+            assert v == pytest.approx(round(v))
+        # Model captured with the integers clause for re-runs.
+        m = self.g.models["default"]
+        assert m.integers == "A1:A2"
+        assert m.binaries == ""
+
+    def test_inline_bin_clause_produces_binary_solution(self):
+        from gridcalc.tui import cmdexec
+
+        # max A1 + 2*A2  s.t. A1+A2<=1, both binary -> A1=0, A2=1, obj=2
+        self.g.setcell(2, 0, "=A1+2*A2")
+        self.g.setcell(3, 0, "=A1+A2<=1")
+        cmdexec(self.stdscr, self.g, self.undo, "opt max C1 vars A1:A2 st D1 bin A1:A2")
+        assert "OPTIMAL" in self.stdscr._last_addnstr
+        assert self.g.cells[0][0].val == pytest.approx(0.0)
+        assert self.g.cells[0][1].val == pytest.approx(1.0)
+        assert self.g.cells[2][0].val == pytest.approx(2.0)
+        assert self.g.models["default"].binaries == "A1:A2"
+
+    def test_inline_clauses_in_arbitrary_order(self):
+        """bounds / int / bin can appear in any order after st."""
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "opt max C1 vars A1:A2 st D1 int A1 bounds A2=0:2")
+        m = self.g.models["default"]
+        assert m.integers == "A1"
+        assert m.bounds == "A2=0:2"
+
+    def test_inline_rejects_duplicate_clause(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "opt max C1 vars A1:A2 st D1 int A1 int A2")
+        assert "'int'" in self.stdscr._last_addnstr
+        assert "more than once" in self.stdscr._last_addnstr
+        # No mutation, no undo entry, and no model captured.
+        assert "default" not in self.g.models
+        assert len(self.undo.undo_stack) == 0
+
+    def test_saved_mip_model_roundtrips_through_jsonsave(self, tmp_path):
+        """Define a MIP via the dispatcher, save the workbook, reload, and
+        re-run the saved model from disk."""
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "opt def mip max C1 vars A1:A2 st D1 int A1:A2")
+        assert "mip" in self.g.models
+        path = tmp_path / "mip.json"
+        assert self.g.jsonsave(str(path)) == 0
+
+        # Fresh grid, reload, re-run.
+        g2 = Grid()
+        assert g2.jsonload(str(path)) == 0
+        g2.recalc()
+        assert "mip" in g2.models
+        assert g2.models["mip"].integers == "A1:A2"
+
+        stdscr2 = MockStdscr()
+        undo2 = UndoManager()
+        cmdexec(stdscr2, g2, undo2, "opt run mip")
+        assert "OPTIMAL" in stdscr2._last_addnstr
+        # Integer optimum, not continuous.
+        assert g2.cells[2][0].val == pytest.approx(5.0)

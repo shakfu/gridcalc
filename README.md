@@ -37,6 +37,13 @@ $ gridcalc budget.json
 - **Search**: `/` to search, `n`/`N` to cycle matches with position indicator
 - **Copy/paste**: `y` to yank, `p` to paste (single cell or visual selection)
 - **Sort**: `:sort [col] [desc]` to sort rows by column
+- **Linear and mixed-integer programming**: `:opt max|min <obj_cell> vars
+  <cells> st <cells> [int <cells>] [bin <cells>]` solves an LP or MIP
+  defined by cells in the active sheet (objective formula, decision-variable
+  cells, constraint formulas like `=A1+A2<=10`) via a vendored lp_solve and
+  writes the optimal values back. Models are persisted with the workbook
+  (`:opt def`, `:opt run`, `:opt list`) so a model defined once is reusable
+  across sessions. See [Optimization](#optimization).
 - **Named ranges**: assign names to cell ranges and use them directly in formulas
 - **Custom functions** (HYBRID/LEGACY): edit a Python code block (`:e`) to
   define functions, import modules, set constants
@@ -206,6 +213,14 @@ Press `:` for the command line (vim-style):
 	:m              Move row/column (arrow keys to drag)
 	:r              Replicate (copy with relative refs)
 	:sort [col] [desc]  Sort rows by column (visual mode: sort selection)
+	:opt                Run the saved 'default' LP/MIP model
+	:opt max|min <cell> vars <cells> st <cells> [bounds <spec>] [int <cells>] [bin <cells>]
+	                    Solve a linear/mixed-integer program AND save as 'default'
+	:opt def <name> max|min <cell> vars <cells> st <cells> [bounds <spec>] [int <cells>] [bin <cells>]
+	                    Save a named LP/MIP model (does not execute)
+	:opt run [<name>]   Execute a saved model (default name: 'default')
+	:opt list           List saved model names
+	:opt undef <name>   Remove a saved model
 	:view           View DataFrame/matrix as scrollable table
 	:csv save [file]    Export evaluated values to CSV
 	:csv load [file]    Import cells from CSV
@@ -558,6 +573,192 @@ Named ranges (`:name`) are workbook-global and **sheet-relative**:
 `revenue = A1:A12` defined on Sheet1 sums whichever sheet is active
 when the formula runs. Use a sheet-qualified range
 (`=SUM(Inputs!A1:A12)`) when you need to pin to a specific sheet.
+
+## Optimization
+
+gridcalc can solve continuous linear programs defined directly in the
+sheet, via a vendored copy of [lp_solve 5.5](https://lpsolve.sourceforge.net/)
+(the C library is compiled into the `_opt` nanobind extension; no PyPI
+dependency). The model is **sheet-resident**:
+
+- A single **objective cell** containing a linear formula, e.g.
+  `=3*A1 + 5*A2`.
+- A list of **decision-variable cells** holding numeric values (or
+  empty). Formula cells are refused so the optimizer never silently
+  overwrites a live computation.
+- A list of **constraint cells**, each containing a comparison formula
+  whose root operator is `<=`, `>=`, `=`, `<`, or `>`. Because these
+  are normal formulas, they evaluate to `TRUE`/`FALSE` during recalc
+  and show **live feasibility** in the sheet before and after the solve.
+
+### Invocation
+
+The `:opt` command is a small dispatcher. Models are **stored in the
+workbook**: define the LP once, save the file, and re-run it on reopen
+without retyping.
+
+| Form | Behavior |
+|---|---|
+| `:opt` | Run the model named `default` |
+| `:opt max\|min <cell> vars <cells> st <cells> [bounds <spec>] [int <cells>] [bin <cells>]` | Solve inline, *and* save as `default` |
+| `:opt def <name> max\|min <cell> ...` | Save under `<name>`; does **not** execute |
+| `:opt run [<name>]` | Execute a saved model (default name: `default`) |
+| `:opt list` | List saved model names |
+| `:opt undef <name>` | Remove a saved model |
+
+Argument forms used in any of the above:
+
+| Field | Form | Notes |
+|---|---|---|
+| `<cell>` (objective) | `B4` | A single cell ref. Must contain a formula. |
+| `<cells>` (vars / st / int / bin) | `A1:A5` or `A1,A3,B2` | Range, comma-separated list, or a mix. |
+| `<spec>` (bounds) | `A1=lo:hi,B2=lo:hi` | Per-variable bounds. `lo`/`hi` accept `inf`, `+inf`, `-inf`. |
+
+Synonyms: `subject` works as `st`. Default variable bounds are
+`[0, +inf)` (matching lp_solve and the "amounts" intuition); override
+per-variable via the `bounds` clause.
+
+**Mixed-integer programming:** add an `int <cells>` clause to flag
+decision variables as integer-valued, or `bin <cells>` to flag them as
+binary (`{0, 1}`). Either routes the solve through lp_solve's
+branch-and-bound. `bin` clamps bounds to `[0, 1]` regardless of the
+`bounds` clause; a variable in both `int` and `bin` is rejected. The
+`bounds` / `int` / `bin` clauses may appear in any order after `st`.
+
+Saved models live under a top-level `"models"` key in the JSON file:
+
+```json
+"models": {
+  "default": {
+    "sense": "max",
+    "objective": "B4",
+    "vars": "A4:A5",
+    "constraints": "D4:D6"
+  }
+}
+```
+
+Spec strings are stored verbatim -- `A1:A5` does *not* expand to
+`[A1,A2,A3,A4,A5]` -- so the file reads like what you typed.
+
+### Example: textbook 2-variable LP
+
+```
+maximize  3*x + 5*y
+s.t.        x       <= 4
+              2*y   <= 12
+            3*x + 2*y <= 18
+            x, y >= 0
+```
+
+Lay it out in the sheet (decision vars at `A4`, `A5`; objective at
+`B4`; constraints at `D4:D6`):
+
+| | A | B | C | D |
+|---|---|---|---|---|
+| **3** | Decision | Objective | | Constraints |
+| **4** | `0` | `=3*A4+5*A5` | | `=A4<=4` |
+| **5** | `0` | | | `=2*A5<=12` |
+| **6** | | | | `=3*A4+2*A5<=18` |
+
+The first time, run:
+
+```
+:opt max B4 vars A4:A5 st D4:D6
+```
+
+The status bar shows `opt: OPTIMAL  obj=36`. Cells `A4` and `A5` are
+overwritten with the optimal values (`2.0` and `6.0`), `B4` repaints
+to `36.0`, the constraint cells stay `TRUE`, and the model is
+captured as `default`. Press `u` to roll back the cell writes; the
+saved model survives undo.
+
+After `:w`, reopen the file and just type `:opt` -- it re-runs the
+saved model directly. A ready-to-load version is at
+[`examples/example_lp.json`](examples/example_lp.json), which ships
+with a pre-saved `default` model.
+
+To keep multiple variants in one file, give them names:
+
+```
+:opt def textbook max B4 vars A4:A5 st D4:D6
+:opt def with_caps max B4 vars A4:A5 st D4:D6 bounds A4=0:3,A5=0:5
+:opt def integer max B4 vars A4:A5 st D4:D6 int A4:A5
+:opt list                                  # opt models: default, integer, textbook, with_caps
+:opt run with_caps                         # executes the capped variant
+```
+
+`examples/example_lp.json` ships with three saved models illustrating
+the LP, the bounded LP, and an integer MIP that produces a different
+answer from its continuous relaxation.
+
+### What the optimizer accepts
+
+The linearity walker (`src/gridcalc/opt.py`) accepts a closed set of
+formula-AST node types in both objective and constraint formulas:
+
+- `Number`, `CellRef`
+- `BinOp` with `+`, `-`, `*`, `/` (at least one side of `*` must be
+  constant; the divisor in `/` must be constant)
+- Unary `+` / `-`
+- Percent (`50%`)
+- `SUM(range)` and `SUM(expr, ...)`
+
+Cell references that resolve to decision variables become coefficients;
+every other cell is folded into the constant term using its currently
+evaluated value -- so non-decision cells act as **parameters** you can
+edit and re-solve.
+
+Anything else (other functions, named ranges, ranges outside `SUM`,
+strings, booleans, sheet-qualified refs pointing at non-active sheets,
+the `<>` operator) raises `NotLinear` with a message naming the
+offending node. This is also the safety boundary: nodes that could be a
+sandbox concern (`Name`, `PyCall`, arbitrary `Call`) never reach an
+`eval` path.
+
+### Status codes
+
+The status bar shows one of:
+
+| Status | Meaning |
+|---|---|
+| `OPTIMAL` | Found an optimum. Decision cells were overwritten; `u` rolls back. |
+| `SUBOPTIMAL` | A solution was found but lp_solve couldn't prove optimality. Cells still written. |
+| `INFEASIBLE` | No assignment of decision vars satisfies all constraints. No mutation. |
+| `UNBOUNDED` | The objective can grow without bound under the constraints. No mutation. |
+| `DEGENERATE` / `NUMFAILURE` / `TIMEOUT` | Solver returned an error. No mutation. |
+
+Failure paths leave the sheet untouched and pop the pre-solve undo
+entry, so `u` doesn't no-op afterward.
+
+### Programmatic API
+
+The same machinery is callable from Python (useful for scripts and
+tests):
+
+```python
+import math
+from gridcalc.engine import Grid
+from gridcalc.opt import solve
+
+g = Grid()
+g.jsonload("examples/example_lp.json")
+g.recalc()
+
+result = solve(
+    g,
+    objective_cell=(1, 3),                   # B4
+    decision_vars=[(0, 3), (0, 4)],          # A4, A5
+    constraint_cells=[(3, 3), (3, 4), (3, 5)],  # D4, D5, D6
+    maximize=True,
+    bounds={(0, 3): (-math.inf, math.inf)},  # optional per-var (A4 free)
+    apply=True,                              # write x* back into the sheet
+)
+print(result.status_name, result.objective, result.values)
+```
+
+`apply=False` runs the solve without mutating cells -- useful for
+preview / what-if workflows.
 
 ## Formatting
 

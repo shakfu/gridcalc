@@ -17,9 +17,16 @@ build:
 # Alias for build
 rebuild: build
 
-# Run tests
+# Run tests (excludes PTY/curses integration tests; see test-tty for those)
 test:
 	@GRIDCALC_SANDBOX=1 uv run pytest tests/ -v
+
+# Run only the PTY-driven curses integration tests. These spawn a real
+# gridcalc subprocess on a pseudo-terminal and assert on rendered output,
+# so they require the built binary (run `make build` first) and a usable
+# xterm-256color terminfo entry.
+test-tty:
+	@GRIDCALC_SANDBOX=1 uv run pytest tests/integration/ -v -m tty
 
 # Run tests in an isolated environment without the optional extras
 # (numpy / pandas). Verifies the optional-dep skipif guards work and

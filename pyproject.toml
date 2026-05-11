@@ -97,3 +97,12 @@ python_version = "3.10"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+[tool.pytest.ini_options]
+# Default test run excludes the slow PTY-driven curses integration tests.
+# Run them explicitly with `make test-tty` or `pytest -m tty tests/integration`.
+addopts = "-m 'not tty'"
+markers = [
+    "tty: PTY-driven curses integration test (slow, requires pty + xterm-256color)",
+    "tui_file(path): preload gridcalc with this file on launch",
+]

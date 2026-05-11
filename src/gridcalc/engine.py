@@ -806,6 +806,12 @@ class Grid:
         self.cw: int = CW_DEFAULT
         self.filename: str | None = None
         self.names: list[NamedRange] = []
+        # Workbook-persistent LP model definitions. Maps a user-chosen
+        # name (or "default" for the convention slot) to an OptModel
+        # holding the spec strings the user typed for sense/objective/
+        # vars/constraints/bounds. Loaded from "models" in the JSON;
+        # serialized back on jsonsave; consumed by the `:opt` dispatcher.
+        self.models: dict[str, Any] = {}
         self.code: str = ""
         self.mc: int = -1
         self.mr: int = -1
@@ -2103,6 +2109,26 @@ class Grid:
                     nr.r2 = r1
                 self.names.append(nr)
 
+        # LP model definitions (see `:opt def NAME ...`). Stored as a
+        # mapping `name -> {sense, objective, vars, constraints, bounds?}`
+        # of *spec strings* the user typed -- not pre-resolved cell
+        # coordinates. Parsing is deferred to `:opt run`; an unparseable
+        # entry surfaces there, not silently at load time.
+        models_dict = d.get("models", {})
+        self.models = {}
+        if isinstance(models_dict, dict):
+            from .opt import OptError, OptModel
+
+            for mname, mdata in models_dict.items():
+                if not isinstance(mname, str) or not isinstance(mdata, dict):
+                    continue
+                try:
+                    self.models[mname] = OptModel.from_json(mdata)
+                except OptError:
+                    # Skip malformed entries rather than aborting the load.
+                    # The user can re-define via `:opt def` to overwrite.
+                    continue
+
         fmt_dict = d.get("format", {})
         w = fmt_dict.get("width", 0)
         if 4 <= w <= 40:
@@ -2228,6 +2254,9 @@ class Grid:
                 a = cellname(nr.c1, nr.r1)
                 rng = f"{a}:{col_name(nr.c2)}{nr.r2 + 1}"
                 out["names"][nr.name] = rng
+
+        if self.models:
+            out["models"] = {name: m.to_json() for name, m in self.models.items()}
 
         out["format"] = {"width": self.cw}
 

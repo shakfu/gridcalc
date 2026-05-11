@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "mode": "LEGACY",
+  "format": {
+    "width": 14
+  },
+  "models": {
+    "default": {
+      "sense": "max",
+      "objective": "B4",
+      "vars": "A4:A5",
+      "constraints": "D4:D6"
+    },
+    "with_caps": {
+      "sense": "max",
+      "objective": "B4",
+      "vars": "A4:A5",
+      "constraints": "D4:D6",
+      "bounds": "A4=0:3,A5=0:5"
+    },
+    "integer_mip": {
+      "sense": "max",
+      "objective": "B4",
+      "vars": "A4:A5",
+      "constraints": "D4:D7",
+      "integers": "A4:A5"
+    }
+  },
+  "cells": [
+    [
+      {"v": "LP demo - type  :opt  to solve. Expected: A4=2, A5=6, B4=36.", "bold": true}
+    ],
+    [],
+    [
+      {"v": "Decision", "bold": true},
+      {"v": "Objective", "bold": true},
+      null,
+      {"v": "Constraints (TRUE = feasible)", "bold": true}
+    ],
+    [
+      0,
+      "=3*A4+5*A5",
+      null,
+      "=A4<=4"
+    ],
+    [
+      0,
+      null,
+      null,
+      "=2*A5<=12"
+    ],
+    [
+      null,
+      null,
+      null,
+      "=3*A4+2*A5<=18"
+    ],
+    [
+      null,
+      null,
+      null,
+      "=A4+A5<=7.5"
+    ],
+    [],
+    [
+      {"v": "Saved models in this file:", "bold": true}
+    ],
+    [
+      {"v": "  :opt run default        (max 3*A4+5*A5  s.t. above constraints)", "italic": true}
+    ],
+    [
+      {"v": "  :opt run with_caps      (same problem with bounds A4 in [0,3], A5 in [0,5])", "italic": true}
+    ],
+    [
+      {"v": "  :opt run integer_mip    (adds D7 -> continuous opt is fractional; integer opt rounds)", "italic": true}
+    ],
+    [],
+    [
+      {"v": "Other ops: :opt list  /  :opt undef <name>  /  u to undo a solve", "italic": true}
+    ],
+    [
+      {"v": "Define your own: :opt def myvariant max B4 vars A4:A5 st D4:D6 bounds A4=0:2", "italic": true}
+    ]
+  ]
+}

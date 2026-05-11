@@ -1,0 +1,16 @@
+# clangd configuration. The native build's include paths (nanobind,
+# lp_solve, OpenXLSX) live only in the CMake-generated compile_commands.json.
+# Refresh the database with:
+#
+#   NB_DIR=$(uv run python -m nanobind --cmake_dir) && \
+#       cmake -S . -B build-opt -DGRIDCALC_BUILD_OPT=ON -Dnanobind_DIR="$NB_DIR"
+#
+# scikit-build-core uses an ephemeral build dir for wheel builds, so a stable
+# project-local one (build-opt/) is kept solely for IDE indexing.
+
+CompileFlags:
+  CompilationDatabase: build-opt
+  # Pin clangd to Apple's /usr/bin/c++ (the actual build compiler) so it
+  # picks up the matching libc++ headers. Without this, clangd may fall
+  # back to its own bundled stdlib and emit spurious template errors.
+  Compiler: /usr/bin/c++

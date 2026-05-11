@@ -31,6 +31,8 @@ from .engine import (
     ref,
 )
 from .keys import build_resolved_keymap
+from .opt import OptError, OptModel
+from .opt import solve as opt_solve
 from .sandbox import (
     SANDBOX_ENABLED,
     FileInfo,
@@ -1891,6 +1893,302 @@ def cmd_csv(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> boo
     return False
 
 
+# --- :opt --------------------------------------------------------------------
+
+
+def _parse_cells(spec: str) -> list[tuple[int, int]]:
+    """Expand a cell-list spec like ``A1:B3`` or ``A1,A2,B5`` into (col,row)s.
+
+    Returns the cells in row-major order within each range and in spec order
+    across comma-separated parts. Duplicate-detection is the caller's job.
+    """
+    out: list[tuple[int, int]] = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" in part:
+            a_str, b_str = part.split(":", 1)
+            a = ref(a_str.strip())
+            b = ref(b_str.strip())
+            if not a or not b:
+                raise ValueError(f"bad cell range: {part}")
+            _, c1, r1 = a
+            _, c2, r2 = b
+            c1, c2 = sorted((c1, c2))
+            r1, r2 = sorted((r1, r2))
+            for c in range(c1, c2 + 1):
+                for r in range(r1, r2 + 1):
+                    out.append((c, r))
+        else:
+            m = ref(part)
+            if not m:
+                raise ValueError(f"bad cell ref: {part}")
+            _, c, r = m
+            out.append((c, r))
+    return out
+
+
+def _parse_bound_value(s: str, *, positive: bool) -> float:
+    """Parse a bound endpoint, accepting 'inf' / '-inf' for ±infinity.
+
+    `positive` decides which way a bare 'inf' goes; '+inf'/'-inf' override it.
+    """
+    s = s.strip().lower()
+    if s in ("inf", "+inf", "infinity", "+infinity"):
+        return math.inf
+    if s in ("-inf", "-infinity"):
+        return -math.inf
+    return float(s)
+
+
+def _parse_bounds(spec: str) -> dict[tuple[int, int], tuple[float, float]]:
+    """Parse ``A1=lo:hi,B2=lo:hi`` into a bounds dict."""
+    out: dict[tuple[int, int], tuple[float, float]] = {}
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            raise ValueError(f"bounds entry missing '=': {part}")
+        cellref_str, range_str = part.split("=", 1)
+        m = ref(cellref_str.strip())
+        if not m:
+            raise ValueError(f"bad cell ref in bounds: {cellref_str}")
+        _, c, r = m
+        if ":" not in range_str:
+            raise ValueError(f"bounds range needs 'lo:hi': {range_str}")
+        lo_s, hi_s = range_str.split(":", 1)
+        out[(c, r)] = (
+            _parse_bound_value(lo_s, positive=False),
+            _parse_bound_value(hi_s, positive=True),
+        )
+    return out
+
+
+_OPT_USAGE = (
+    "usage: opt [max|min <cell> vars <cells> st <cells> [bounds <spec>] | "
+    "def <name> max|min ... | run [<name>] | list | undef <name>]"
+)
+
+
+def _parse_opt_inline(parts: list[str]) -> OptModel:
+    """Parse the body after ``max|min`` into an :class:`OptModel`.
+
+    Raises :class:`ValueError` with a human-readable message on syntax errors.
+    The returned model stores the *spec strings* as the user wrote them, not
+    pre-resolved cell coordinates -- resolution happens at run time, which
+    matches how saved models round-trip through the JSON file.
+    """
+    if len(parts) < 5 or parts[0].lower() not in ("max", "min") or parts[2].lower() != "vars":
+        raise ValueError(
+            "usage: max|min <cell> vars <cells> st <cells> "
+            "[bounds <spec>] [int <cells>] [bin <cells>]"
+        )
+
+    sense = parts[0].lower()
+    obj_str = parts[1]
+
+    try:
+        st_idx = next(i for i in range(3, len(parts)) if parts[i].lower() in ("st", "subject"))
+    except StopIteration as e:
+        raise ValueError("expected 'st' keyword for constraints") from e
+
+    # Locate every optional-clause keyword that follows `st`. Order is
+    # flexible: bounds / int / bin may appear in any sequence. Each clause
+    # runs from the keyword to the next keyword (or end of input).
+    _CLAUSE_KEYWORDS = ("bounds", "int", "bin")
+    clause_positions: list[tuple[int, str]] = []
+    for i in range(st_idx + 1, len(parts)):
+        lo = parts[i].lower()
+        if lo in _CLAUSE_KEYWORDS:
+            clause_positions.append((i, lo))
+
+    vars_spec = " ".join(parts[3:st_idx])
+    first_clause = clause_positions[0][0] if clause_positions else len(parts)
+    st_spec = " ".join(parts[st_idx + 1 : first_clause])
+
+    clauses: dict[str, str] = {"bounds": "", "int": "", "bin": ""}
+    for j, (pos, kw) in enumerate(clause_positions):
+        end = clause_positions[j + 1][0] if j + 1 < len(clause_positions) else len(parts)
+        if clauses[kw]:
+            raise ValueError(f"'{kw}' clause appears more than once")
+        clauses[kw] = " ".join(parts[pos + 1 : end])
+
+    if not _looks_like_cellref(obj_str):
+        raise ValueError(f"bad objective cell: {obj_str}")
+
+    return OptModel(
+        sense=sense,
+        objective=obj_str,
+        vars=vars_spec,
+        constraints=st_spec,
+        bounds=clauses["bounds"],
+        integers=clauses["int"],
+        binaries=clauses["bin"],
+    )
+
+
+def _looks_like_cellref(s: str) -> bool:
+    """Quick syntactic check that ``s`` is a single cell ref (no range)."""
+    m = ref(s)
+    return m is not None and m[0] == len(s)
+
+
+def _execute_model(
+    stdscr: curses.window,
+    g: Grid,
+    undo: UndoManager,
+    model: OptModel,
+) -> bool:
+    """Resolve a model's spec strings, run the solver, and report.
+
+    Snapshots the grid before solving so ``u`` rolls back a successful
+    optimization; pops the undo entry on any failure path (parse error,
+    OptError from the solver, non-OPTIMAL status) so undo doesn't no-op
+    afterwards.
+    """
+    try:
+        obj_match = ref(model.objective)
+        if not obj_match or obj_match[0] != len(model.objective):
+            raise ValueError(f"bad objective cell: {model.objective}")
+        _, oc, or_ = obj_match
+        decision_vars = _parse_cells(model.vars)
+        constraint_cells = _parse_cells(model.constraints)
+        bounds = _parse_bounds(model.bounds) if model.bounds else None
+        integer_vars = set(_parse_cells(model.integers)) if model.integers else None
+        binary_vars = set(_parse_cells(model.binaries)) if model.binaries else None
+    except ValueError as e:
+        show_error(stdscr, f"opt: {e}")
+        return False
+
+    undo.save_grid(g)
+    try:
+        result = opt_solve(
+            g,
+            objective_cell=(oc, or_),
+            decision_vars=decision_vars,
+            constraint_cells=constraint_cells,
+            maximize=(model.sense == "max"),
+            bounds=bounds,
+            integer_vars=integer_vars,
+            binary_vars=binary_vars,
+            apply=True,
+        )
+    except OptError as e:
+        undo.undo_stack.pop()
+        show_error(stdscr, f"opt: {e}")
+        return False
+
+    if not result.applied:
+        undo.undo_stack.pop()
+        show_error(stdscr, f"opt: {result.status_name}")
+        return False
+
+    msg = f"opt: {result.status_name}  obj={result.objective:.6g}"
+    stdscr.addnstr(curses.LINES - 1, 0, msg, curses.COLS - 1)
+    stdscr.clrtoeol()
+    stdscr.refresh()
+    return False
+
+
+def cmd_opt(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bool:
+    """Dispatch for ``:opt``.
+
+    Subcommands:
+      * ``:opt``                         - run the model named ``default``
+      * ``:opt max|min <cell> vars ...`` - solve inline, also saves as ``default``
+      * ``:opt def <name> max|min ...``  - save under ``<name>``; does NOT execute
+      * ``:opt run [<name>]``            - execute saved model (default: ``default``)
+      * ``:opt list``                    - show saved model names
+      * ``:opt undef <name>``            - remove a saved model
+
+    Saved models live in ``Grid.models`` and round-trip through the JSON
+    workbook file, so an LP defined once is reusable across sessions.
+    """
+    parts = args.split()
+
+    # `:opt` alone: run the default model if defined.
+    if not parts:
+        model = g.models.get("default")
+        if model is None:
+            show_error(
+                stdscr,
+                "opt: no 'default' model defined "
+                "(define one with :opt max ... or :opt def default ...)",
+            )
+            return False
+        return _execute_model(stdscr, g, undo, model)
+
+    head = parts[0].lower()
+
+    if head == "list":
+        if not g.models:
+            show_error(stdscr, "opt: no models defined")
+            return False
+        msg = "opt models: " + ", ".join(sorted(g.models))
+        stdscr.addnstr(curses.LINES - 1, 0, msg, curses.COLS - 1)
+        stdscr.clrtoeol()
+        stdscr.refresh()
+        return False
+
+    if head == "undef":
+        if len(parts) != 2:
+            show_error(stdscr, "usage: opt undef <name>")
+            return False
+        name = parts[1]
+        if name not in g.models:
+            show_error(stdscr, f"opt: no model named {name!r}")
+            return False
+        del g.models[name]
+        stdscr.addnstr(curses.LINES - 1, 0, f"opt: removed model {name!r}", curses.COLS - 1)
+        stdscr.clrtoeol()
+        stdscr.refresh()
+        return False
+
+    if head == "run":
+        name = parts[1] if len(parts) >= 2 else "default"
+        model = g.models.get(name)
+        if model is None:
+            show_error(stdscr, f"opt: no model named {name!r}")
+            return False
+        return _execute_model(stdscr, g, undo, model)
+
+    if head == "def":
+        if len(parts) < 6:
+            show_error(
+                stdscr,
+                "usage: opt def <name> max|min <cell> vars <cells> st <cells> [bounds <spec>]",
+            )
+            return False
+        name = parts[1]
+        try:
+            model = _parse_opt_inline(parts[2:])
+        except ValueError as e:
+            show_error(stdscr, f"opt: {e}")
+            return False
+        g.models[name] = model
+        stdscr.addnstr(curses.LINES - 1, 0, f"opt: defined model {name!r}", curses.COLS - 1)
+        stdscr.clrtoeol()
+        stdscr.refresh()
+        return False
+
+    if head in ("max", "min"):
+        # Inline form: parse, save as the conventional `default` slot, and run.
+        # Storing the model alongside execution captures the LP in the workbook
+        # so :w persists it and bare :opt re-runs after reopen.
+        try:
+            model = _parse_opt_inline(parts)
+        except ValueError as e:
+            show_error(stdscr, f"opt: {e}")
+            return False
+        g.models["default"] = model
+        return _execute_model(stdscr, g, undo, model)
+
+    show_error(stdscr, _OPT_USAGE)
+    return False
+
+
 def cmdexec(
     stdscr: curses.window,
     g: Grid,
@@ -1938,6 +2236,8 @@ def cmdexec(
         return cmd_pd(stdscr, g, undo, args)
     if cmd == "sort":
         return cmd_sort(stdscr, g, undo, args, sel=sel)
+    if cmd == "opt":
+        return cmd_opt(stdscr, g, undo, args)
     if cmd in ("dr", "delrow"):
         undo.save_grid(g)
         if sel:

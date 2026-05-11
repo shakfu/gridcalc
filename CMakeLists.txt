@@ -27,6 +27,35 @@ set(BUILD_SHARED_LIBS       OFF CACHE BOOL "" FORCE)
 set(CMAKE_POLICY_VERSION_MINIMUM "3.5" CACHE STRING "" FORCE)
 add_subdirectory(thirdparty/OpenXLSX EXCLUDE_FROM_ALL)
 
+# --- lp_solve + _opt extension ----------------------------------------------
+# Vendors lp_solve 5.5 as a static archive and exposes a minimal LP solver
+# entry point through the `_opt` nanobind module. The static lib stays
+# EXCLUDE_FROM_ALL; only `_opt` is installed into the wheel, and the linker
+# pulls in just the LP/MIP code paths it actually references.
+option(GRIDCALC_BUILD_OPT "Build the _opt extension (lp_solve-backed LP solver)" ON)
+if(GRIDCALC_BUILD_OPT)
+    add_subdirectory(thirdparty/lp_solve_5.5 EXCLUDE_FROM_ALL)
+
+    if(GRIDCALC_STABLE_ABI)
+        nanobind_add_module(_opt STABLE_ABI src/gridcalc/_opt.cpp)
+    else()
+        nanobind_add_module(_opt src/gridcalc/_opt.cpp)
+    endif()
+
+    target_link_libraries(_opt PRIVATE lpsolve_static)
+
+    if(MSVC)
+        target_compile_options(_opt PRIVATE /W4)
+    else()
+        target_compile_options(_opt PRIVATE -Wall -Wextra)
+        target_link_options(_opt PRIVATE
+            $<$<PLATFORM_ID:Darwin>:-Wl,-dead_strip>
+            $<$<PLATFORM_ID:Linux>:-Wl,--gc-sections>)
+    endif()
+
+    install(TARGETS _opt DESTINATION gridcalc)
+endif()
+
 # --- _core extension --------------------------------------------------------
 # `GRIDCALC_STABLE_ABI=ON` builds a single wheel that targets nanobind's
 # stable ABI (PEP 384). Such wheels carry the `cp312-abi3` tag and install

@@ -30,6 +30,8 @@ from .engine import (
     col_name,
     ref,
 )
+from .goalseek import GoalSeekError
+from .goalseek import seek as goal_seek
 from .keys import build_resolved_keymap
 from .opt import OptError, OptModel
 from .opt import solve as opt_solve
@@ -2189,6 +2191,115 @@ def cmd_opt(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> boo
     return False
 
 
+# --- :goal -------------------------------------------------------------------
+
+
+def _parse_single_cell(s: str) -> tuple[int, int]:
+    m = ref(s)
+    if not m or m[0] != len(s):
+        raise ValueError(f"bad cell ref: {s}")
+    _, c, r = m
+    return (c, r)
+
+
+def cmd_goal(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bool:
+    """``:goal <formula_cell> = <target> by <var_cell> [in <lo>:<hi>]``.
+
+    Adjusts the variable cell to make the formula cell evaluate to the
+    target value. On success the grid is left in the solved state and the
+    pre-search snapshot is on the undo stack so ``u`` rolls back.
+
+    Compared to ``:opt``, goal-seek doesn't persist a model -- it's a
+    one-shot operation whose entire state is the three short args. Just
+    retype the command to re-run.
+    """
+    parts = args.split()
+    usage = "usage: goal <formula_cell> = <target> by <var_cell> [in <lo>:<hi>]"
+
+    if len(parts) < 5 or parts[1] != "=" or parts[3].lower() != "by":
+        show_error(stdscr, usage)
+        return False
+
+    formula_str = parts[0]
+    target_str = parts[2]
+    var_str = parts[4]
+
+    in_idx: int | None = None
+    for i in range(5, len(parts)):
+        if parts[i].lower() == "in":
+            in_idx = i
+            break
+
+    lo: float | None = None
+    hi: float | None = None
+    if in_idx is not None:
+        bracket_spec = " ".join(parts[in_idx + 1 :]).strip()
+        if ":" not in bracket_spec:
+            show_error(stdscr, "goal: bracket needs 'lo:hi' after 'in'")
+            return False
+        lo_s, hi_s = bracket_spec.split(":", 1)
+        try:
+            lo = _parse_bound_value(lo_s, positive=False)
+            hi = _parse_bound_value(hi_s, positive=True)
+        except ValueError as e:
+            show_error(stdscr, f"goal: bad bracket: {e}")
+            return False
+    elif len(parts) > 5:
+        # Trailing junk that isn't `in ...` is a syntax error rather than
+        # silently ignored, so typos surface immediately.
+        show_error(stdscr, usage)
+        return False
+
+    try:
+        formula_cell = _parse_single_cell(formula_str)
+        var_cell = _parse_single_cell(var_str)
+        target = float(target_str)
+    except ValueError as e:
+        show_error(stdscr, f"goal: {e}")
+        return False
+
+    undo.save_grid(g)
+    try:
+        result = goal_seek(
+            g,
+            formula_cell=formula_cell,
+            target=target,
+            var_cell=var_cell,
+            lo=lo,
+            hi=hi,
+            apply=True,
+        )
+    except GoalSeekError as e:
+        undo.undo_stack.pop()
+        show_error(stdscr, f"goal: {e}")
+        return False
+
+    if not result.applied:
+        # The search ran but didn't converge; no mutation, no undo entry.
+        undo.undo_stack.pop()
+        show_error(
+            stdscr,
+            f"goal: did not converge (residual={result.residual:.3g} "
+            f"after {result.iterations} iterations)",
+        )
+        return False
+
+    msg = (
+        f"goal: converged in {result.iterations} iters  "
+        f"{_cellname_short(*var_cell)}={result.var_value:.6g}  "
+        f"{_cellname_short(*formula_cell)}={result.formula_value:.6g}"
+    )
+    stdscr.addnstr(curses.LINES - 1, 0, msg, curses.COLS - 1)
+    stdscr.clrtoeol()
+    stdscr.refresh()
+    return False
+
+
+def _cellname_short(c: int, r: int) -> str:
+    """Local wrapper around engine.cellname to keep cmd_goal self-contained."""
+    return cellname(c, r)
+
+
 def cmdexec(
     stdscr: curses.window,
     g: Grid,
@@ -2238,6 +2349,8 @@ def cmdexec(
         return cmd_sort(stdscr, g, undo, args, sel=sel)
     if cmd == "opt":
         return cmd_opt(stdscr, g, undo, args)
+    if cmd == "goal":
+        return cmd_goal(stdscr, g, undo, args)
     if cmd in ("dr", "delrow"):
         undo.save_grid(g)
         if sel:

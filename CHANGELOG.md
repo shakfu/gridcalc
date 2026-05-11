@@ -4,6 +4,34 @@
 
 ### Added
 
+- **Goal-seek via `:goal`.** One-dimensional root-find that adjusts a
+  variable cell to make a formula cell evaluate to a target value --
+  the spreadsheet what-if pattern most often used in practice ("what
+  input makes this output equal X?"). Invocation:
+
+  ```
+  :goal <formula_cell> = <target> by <var_cell> [in <lo>:<hi>]
+  ```
+
+  The variable cell must hold a value (not a formula, mirroring the
+  decision-cell rule in `:opt`). When the `in <lo>:<hi>` clause is
+  omitted, `goalseek._auto_bracket` walks geometrically outward from
+  the variable's current value until f changes sign. The search uses
+  plain bisection (`src/gridcalc/goalseek.py`); Brent's method would
+  converge faster but adds edge cases that aren't justified at
+  spreadsheet scale where each iteration is a full `Grid.recalc()`
+  and 30-ish iterations run in milliseconds.
+
+  On success the variable cell holds the solved value and the rest of
+  the sheet recalculates to reflect it; the pre-search snapshot lives
+  on the undo stack so `u` rolls back. Failure paths (non-convergence,
+  no sign change in the bracket, variable doesn't influence target,
+  bad cell selection) restore the variable cell to its original value
+  and pop the undo entry. Unlike `:opt`, goal-seek isn't persisted in
+  the workbook -- it's a one-shot operation whose entire state is the
+  three short args, so retyping is faster than naming.
+  Reference: `examples/example_goal.json` (a 2-cell `=2*A1+3` demo
+  with three try-these one-liners on the sheet).
 - **Linear and mixed-integer programming via `:opt`.** New sheet-level
   optimizer that builds an LP (or MIP) from cells in the active sheet
   and solves it via a vendored lp_solve 5.5. The user-facing model is sheet-resident:
@@ -61,9 +89,12 @@
   project's. The static archive `lpsolve_static` is `EXCLUDE_FROM_ALL`
   and only pulled into the wheel via `_opt`. (2) A minimal nanobind
   bridge `src/gridcalc/_opt.cpp` exposing one entry point
-  `solve_lp(c, A, sense, rhs, lb, ub, maximize=False) -> Solution`
-  with dense matrices, plus the `LE`/`GE`/`EQ` and status constants
-  (`OPTIMAL`, `INFEASIBLE`, `UNBOUNDED`, etc.). Variable bounds
+  `solve_lp(c, A, sense, rhs, lb, ub, maximize=False,
+  integer_vars=[], binary_vars=[]) -> Solution` with dense matrices,
+  plus the `LE`/`GE`/`EQ` and status constants (`OPTIMAL`,
+  `INFEASIBLE`, `UNBOUNDED`, etc.). `set_int` and `set_binary` are
+  applied after the bounds dispatch (binary clamps bounds to [0,1] so
+  order matters); the bridge rejects a column appearing in both sets. Variable bounds
   dispatch on infinity-ness to four lp_solve calls
   (`set_bounds` / `set_lowbo` / `set_upbo` / `set_unbounded`) because
   `set_bounds(lp, j, -1e30, 1e30)` stores literal-1e30 finite bounds
@@ -101,8 +132,10 @@
   the model under `default` before running, so the very first
   invocation captures the LP in the workbook -- a `:w` after that
   persists it and bare `:opt` re-runs it on reopen.
-  Reference: `examples/example_lp.json` (ships with a pre-saved
-  `default` model so `:open ... :opt` works out of the box).
+  Reference: `examples/example_lp.json` (ships with three pre-saved
+  models -- `default`, `with_caps`, `integer_mip` -- so `:open ... :opt`
+  works out of the box and `:opt run integer_mip` demonstrates an
+  integer solution differing from the continuous relaxation).
 - **Headless PTY harness for the curses TUI.** New
   `tests/integration/` directory with a `TuiSession` fixture that
   spawns the real `gridcalc` binary attached to a `pty.openpty()`
@@ -115,8 +148,11 @@
   `addopts = "-m 'not tty'"` in `pyproject.toml`; it is invoked
   explicitly via the new `make test-tty` target. Auto-skips on
   platforms without `pty` (Windows) and when the built entry point
-  is missing. Three smoke tests currently cover the `:opt` command's
-  OPTIMAL, malformed-command, and bad-constraint-cell paths.
+  is missing. Smoke tests currently cover the `:opt` command's
+  OPTIMAL path against `example_lp.json`, bare `:opt` re-running a
+  workbook-saved `default` model, the malformed-command and
+  bad-constraint-cell error paths, and the `:goal` command's full
+  flow against `example_goal.json`.
 - **User-configurable keybindings.** All five TUI contexts (`grid`,
   `entry`, `visual`, `cmdline`, `search`) dispatch through a
   config-driven keymap before falling back to hardcoded defaults.

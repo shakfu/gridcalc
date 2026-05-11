@@ -81,6 +81,18 @@ def test_bare_opt_runs_saved_default_model(tui_session) -> None:
     assert "OPTIMAL" in render
 
 
+@pytest.mark.tui_file("examples/example_goal.json")
+def test_goal_seek_via_real_curses(tui_session) -> None:
+    """End-to-end: load the goal-seek example, run :goal through real
+    curses, and assert the status bar reports the solved values."""
+    tui_session.wait_for("Goal-seek demo", timeout=5.0)
+    tui_session.send(":goal B1 = 11 by A1\n")
+    render = tui_session.wait_for("converged", timeout=4.0)
+    # The status bar embeds the solved values; A1=4, B1=11 for this LP.
+    assert "A1=4" in render
+    assert "B1=11" in render
+
+
 @pytest.mark.tui_file("examples/example_lp.json")
 def test_opt_bad_args_renders_usage(tui_session) -> None:
     """Malformed ``:opt`` should print the usage line, not crash or hang."""

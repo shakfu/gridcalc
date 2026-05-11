@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "mode": "LEGACY",
+  "format": {
+    "width": 14
+  },
+  "cells": [
+    [
+      0,
+      "=2*A1+3"
+    ],
+    [],
+    [
+      {"v": "Goal-seek demo", "bold": true}
+    ],
+    [
+      {"v": "A1 (input)", "bold": true},
+      {"v": "B1 (=2*A1+3)", "bold": true}
+    ],
+    [],
+    [
+      {"v": "Try these:", "bold": true}
+    ],
+    [
+      {"v": "  :goal B1 = 11 by A1        -> A1 becomes 4", "italic": true}
+    ],
+    [
+      {"v": "  :goal B1 = 100 by A1       -> A1 becomes 48.5", "italic": true}
+    ],
+    [
+      {"v": "  :goal B1 = 0 by A1 in -10:10   -> A1 becomes -1.5", "italic": true}
+    ],
+    [
+      {"v": "Press  u  to undo a goal-seek and restore the prior A1 value.", "italic": true}
+    ]
+  ]
+}

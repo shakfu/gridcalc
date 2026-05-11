@@ -44,6 +44,9 @@ $ gridcalc budget.json
   writes the optimal values back. Models are persisted with the workbook
   (`:opt def`, `:opt run`, `:opt list`) so a model defined once is reusable
   across sessions. See [Optimization](#optimization).
+- **Goal-seek**: `:goal <formula_cell> = <target> by <var_cell>` adjusts a
+  variable cell (via bisection) to make a formula cell evaluate to a target
+  value. The most common spreadsheet what-if pattern.
 - **Named ranges**: assign names to cell ranges and use them directly in formulas
 - **Custom functions** (HYBRID/LEGACY): edit a Python code block (`:e`) to
   define functions, import modules, set constants
@@ -221,6 +224,8 @@ Press `:` for the command line (vim-style):
 	:opt run [<name>]   Execute a saved model (default name: 'default')
 	:opt list           List saved model names
 	:opt undef <name>   Remove a saved model
+	:goal <formula_cell> = <target> by <var_cell> [in <lo>:<hi>]
+	                    Adjust var_cell to make formula_cell equal target
 	:view           View DataFrame/matrix as scrollable table
 	:csv save [file]    Export evaluated values to CSV
 	:csv load [file]    Import cells from CSV
@@ -759,6 +764,38 @@ print(result.status_name, result.objective, result.values)
 
 `apply=False` runs the solve without mutating cells -- useful for
 preview / what-if workflows.
+
+### Goal-seek
+
+For 1-D what-if ("what input makes this output equal X?"), use
+`:goal` instead of `:opt`:
+
+```
+:goal <formula_cell> = <target> by <var_cell> [in <lo>:<hi>]
+```
+
+Examples:
+
+```
+:goal B10 = 100 by A1              # find A1 such that B10 = 100
+:goal B10 = 0 by A1 in -50:50      # explicit search bracket
+```
+
+The variable cell must hold a value (not a formula). When no `in`
+bracket is supplied, the search expands geometrically outward from the
+variable's current value until the residual changes sign. The solver
+uses bisection so it's robust on non-smooth or piecewise-linear
+formulas; convergence is microseconds at spreadsheet scale.
+
+On success the variable cell is overwritten with the solved value and
+`Grid.recalc()` propagates through the rest of the sheet. Press `u`
+to roll back. Failure paths (no convergence, variable doesn't
+influence the target, bracket has no sign change) leave the sheet
+untouched and report the reason in the status bar.
+
+Unlike `:opt`, goal-seek isn't persisted in the workbook -- retype
+the command to re-run. Both share the same "decision cells must hold
+values, not formulas" rule.
 
 ## Formatting
 

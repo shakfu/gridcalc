@@ -2021,3 +2021,72 @@ class TestCmdOptMIP:
         assert "OPTIMAL" in stdscr2._last_addnstr
         # Integer optimum, not continuous.
         assert g2.cells[2][0].val == pytest.approx(5.0)
+
+
+class TestCmdGoal:
+    """Dispatcher tests for the :goal command."""
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = MockStdscr()
+        self.g = Grid()
+        self.undo = UndoManager()
+        # f(A1) = 2*A1 + 3; target 11 -> A1 should become 4.
+        self.g.setcell(0, 0, "0")
+        self.g.setcell(1, 0, "=2*A1+3")
+
+    def test_goal_linear_via_dispatcher(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "goal B1 = 11 by A1")
+        assert self.g.cells[0][0].val == pytest.approx(4.0)
+        assert self.g.cells[1][0].val == pytest.approx(11.0)
+        assert "converged" in self.stdscr._last_addnstr
+        # Snapshot present so 'u' can roll back.
+        assert len(self.undo.undo_stack) == 1
+
+    def test_goal_explicit_bracket(self):
+        from gridcalc.tui import cmdexec
+
+        # Quadratic with two roots; bracket picks the negative one.
+        self.g.setcell(1, 0, "=A1*A1")
+        cmdexec(self.stdscr, self.g, self.undo, "goal B1 = 16 by A1 in -10:-0.1")
+        assert self.g.cells[0][0].val == pytest.approx(-4.0)
+
+    def test_goal_undo_restores_cells(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "goal B1 = 11 by A1")
+        self.undo._apply(self.g, self.undo.undo_stack, self.undo.redo_stack)
+        self.g.recalc()
+        assert self.g.cells[0][0].val == 0.0
+        assert self.g.cells[1][0].val == pytest.approx(3.0)
+
+    def test_goal_bad_syntax_shows_usage(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "goal B1 11 A1")  # missing = and by
+        assert "usage" in self.stdscr._last_addnstr.lower()
+        # No mutation, no undo entry.
+        assert self.g.cells[0][0].val == 0.0
+        assert len(self.undo.undo_stack) == 0
+
+    def test_goal_unreachable_target_does_not_mutate(self):
+        """Var doesn't influence target -> error path -> no mutation, no
+        spurious undo entry."""
+        from gridcalc.tui import cmdexec
+
+        self.g.setcell(2, 0, "1")
+        self.g.setcell(1, 0, "=C1*2")  # B1 doesn't depend on A1
+        cmdexec(self.stdscr, self.g, self.undo, "goal B1 = 99 by A1")
+        assert self.g.cells[0][0].val == 0.0
+        assert len(self.undo.undo_stack) == 0
+        assert "goal:" in self.stdscr._last_addnstr
+
+    def test_goal_rejects_trailing_garbage(self):
+        """Tokens after the var cell that aren't `in ...` are a typo, not
+        silently ignored."""
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "goal B1 = 11 by A1 oops")
+        assert "usage" in self.stdscr._last_addnstr.lower()

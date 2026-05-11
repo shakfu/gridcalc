@@ -16,7 +16,7 @@ from .sandbox import load_modules, validate_code, validate_formula
 class Mode(IntEnum):
     EXCEL = 1
     HYBRID = 2
-    LEGACY = 3
+    PYTHON = 3
 
     @classmethod
     def parse(cls, value: object) -> Mode | None:
@@ -30,8 +30,11 @@ class Mode(IntEnum):
                 return cls.EXCEL
             if s in ("2", "hybrid"):
                 return cls.HYBRID
-            if s in ("3", "legacy"):
-                return cls.LEGACY
+            # Accept "legacy" as an alias for "python" so older JSON files
+            # with `"mode": "LEGACY"` still load. The canonical name is
+            # "python" -- jsonsave always writes `Mode.PYTHON.name`.
+            if s in ("3", "python", "legacy"):
+                return cls.PYTHON
         return None
 
 
@@ -820,7 +823,7 @@ class Grid:
         self.libs: list[str] = []
         self._module_errors: list[str] = []
         self.code_error: str | None = None
-        self.mode: Mode = Mode.LEGACY
+        self.mode: Mode = Mode.PYTHON
         # Topological recalc bookkeeping. Off by default; opt-in via
         # `_use_topo_recalc = True`. Maintained alongside the fixed-point
         # path so flipping the flag is safe at any point.
@@ -1010,7 +1013,7 @@ class Grid:
             self.load_lib("xlsx")
 
     def validate_for_mode(self, target: Mode) -> list[str]:
-        if target == Mode.LEGACY:
+        if target == Mode.PYTHON:
             return []
         from .formula import parse
         from .formula.errors import FormulaError
@@ -1115,7 +1118,7 @@ class Grid:
         ``sheet`` defaults to the active sheet's name. Pass it explicitly
         from ``_rebuild_dep_graph`` when iterating non-active sheets.
         """
-        if self.mode == Mode.LEGACY:
+        if self.mode == Mode.PYTHON:
             return
         from .formula import parse
         from .formula.deps import extract_refs, has_dynamic_refs
@@ -1198,15 +1201,15 @@ class Grid:
             self.recalc(changed)
 
     def recalc(self, dirty: set[tuple[int, int]] | None = None) -> None:
-        if self.mode != Mode.LEGACY:
+        if self.mode != Mode.PYTHON:
             if self._use_topo_recalc:
                 self._recalc_topo(dirty)
                 return
             self._recalc_formula()
             return
-        self._recalc_legacy()
+        self._recalc_python()
 
-    def _recalc_legacy(self) -> None:
+    def _recalc_python(self) -> None:
         g = self._eval_globals
         self._circular = set()
 
@@ -2063,9 +2066,9 @@ class Grid:
 
         if "mode" in d:
             parsed = Mode.parse(d.get("mode"))
-            self.mode = parsed if parsed is not None else Mode.LEGACY
+            self.mode = parsed if parsed is not None else Mode.PYTHON
         else:
-            self.mode = Mode.LEGACY
+            self.mode = Mode.PYTHON
 
         code = d.get("code", "")
         if policy is None or policy.load_code:
@@ -2187,7 +2190,7 @@ class Grid:
         # populated the dep graph during the load loop, so flag it as
         # built and skip the redundant rebuild inside `_recalc_topo`.
         # LEGACY mode never built a graph in the first place; no flag.
-        if self.mode != Mode.LEGACY:
+        if self.mode != Mode.PYTHON:
             self._dep_graph_built = True
         self.recalc()
         return 0

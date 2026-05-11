@@ -2090,3 +2090,102 @@ class TestCmdGoal:
 
         cmdexec(self.stdscr, self.g, self.undo, "goal B1 = 11 by A1 oops")
         assert "usage" in self.stdscr._last_addnstr.lower()
+
+
+class _RecordingStdscr(MockStdscr):
+    """Like MockStdscr but records every addnstr call (y, x, text, n)."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls: list[tuple[int, int, str, int]] = []
+
+    def addnstr(self, y, x, s, n, *args):
+        super().addnstr(y, x, s, n, *args)
+        self.calls.append((y, x, s, n))
+
+
+class TestLabelOverflow:
+    """Excel-style spillover: a LABEL whose text exceeds its column width
+    visually overflows into adjacent empty cells to the right.
+
+    Verified by calling the internal helper directly against a populated
+    Grid; the end-to-end integration test in tests/integration/ covers the
+    real-curses path."""
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.g = Grid()
+        self.g.cw = 14  # match the example file
+
+    def _paint(self, sel=None):
+        from gridcalc.tui import _paint_label_overflow
+
+        stdscr = _RecordingStdscr()
+        # Row 0, painted at y=3 (the TUI's first grid row). lc=0, fc=10.
+        _paint_label_overflow(stdscr, self.g, row=0, y=3, lc=0, fc=10, sel=sel)
+        return stdscr.calls
+
+    def test_long_label_overflows_into_empty_neighbors(self):
+        label_with_prefix = '"This is a very long label that should overflow'
+        stripped = label_with_prefix[1:]  # gridcalc strips the leading `"`
+        self.g.setcell(0, 0, label_with_prefix)
+        # B1..D1 are empty -> the spill should happen.
+        calls = self._paint()
+        # Exactly one paint -- the helper paints only the overflow portion.
+        assert len(calls) == 1
+        y, x, text, n = calls[0]
+        assert y == 3
+        # Overflow paints into B1, which starts at GW + 1*cw.
+        from gridcalc.tui import GW
+
+        assert x == GW + self.g.cw
+        # The painted text is the slice [cw : cw+n] of the stripped label.
+        assert text == stripped[self.g.cw : self.g.cw + n]
+
+    def test_short_label_does_not_overflow(self):
+        self.g.setcell(0, 0, '"short')
+        calls = self._paint()
+        assert calls == []  # nothing to overflow
+
+    def test_overflow_stops_at_non_empty_neighbor(self):
+        self.g.setcell(0, 0, '"long label exceeding the cell width by a lot')
+        self.g.setcell(2, 0, "stop")  # C1 has content -> block past B1
+        calls = self._paint()
+        assert len(calls) == 1
+        _, _, _, n = calls[0]
+        # paint_cells = 2 (the label cell + one empty B1); n = avail
+        # = 2*cw - cw = cw = 14 (the width of just B1).
+        assert n == self.g.cw
+
+    def test_overflow_stops_at_cursor_cell(self):
+        """The cursor cell must keep its own visual state; overflow must
+        not paint over it."""
+        self.g.setcell(0, 0, '"long label exceeding the cell width by a lot')
+        self.g.cc = 2  # cursor on C1
+        self.g.cr = 0
+        calls = self._paint()
+        # Spill is allowed into B1 only -> avail = cw
+        assert len(calls) == 1
+        assert calls[0][3] == self.g.cw
+
+    def test_overflow_stops_at_selection(self):
+        self.g.setcell(0, 0, '"long label exceeding the cell width by a lot')
+        sel = (3, 0, 3, 0)  # D1 selected
+        calls = self._paint(sel=sel)
+        # Spill allowed into B1 and C1; clipped at D1.
+        # paint_cells = 3 -> avail = 3*cw - cw = 2*cw
+        assert calls[0][3] == 2 * self.g.cw
+
+    def test_label_with_leading_quote_strips_for_overflow(self):
+        """Labels typed with a leading `"` (gridcalc's label-prefix) have
+        the quote stripped for display; overflow must use the stripped
+        text, not the raw cell.text including the quote."""
+        label_with_prefix = '"a label long enough to spill across cells'
+        stripped = label_with_prefix[1:]
+        self.g.setcell(0, 0, label_with_prefix)
+        calls = self._paint()
+        text = calls[0][2]
+        # The overflow starts at the stripped string's offset cw, so the
+        # quote character must NOT shift the slice -- if it did, this
+        # equality would fail by one position.
+        assert text == stripped[self.g.cw : self.g.cw + len(text)]

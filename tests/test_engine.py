@@ -2595,7 +2595,7 @@ class TestPdSave:
 class TestMode:
     def test_default_is_legacy(self):
         g = make_grid()
-        assert g.mode == Mode.LEGACY
+        assert g.mode == Mode.PYTHON
 
     def test_save_emits_mode(self, tmp_path):
         g = make_grid()
@@ -2605,14 +2605,14 @@ class TestMode:
         import json
 
         d = json.loads(f.read_text())
-        assert d["mode"] == "LEGACY"
+        assert d["mode"] == "PYTHON"
 
     def test_load_without_mode_is_legacy(self, tmp_path):
         g = make_grid()
         f = tmp_path / "legacy.json"
         f.write_text('{"cells": [[1]]}')
         assert g.jsonload(str(f)) == 0
-        assert g.mode == Mode.LEGACY
+        assert g.mode == Mode.PYTHON
 
     def test_load_with_mode_excel(self, tmp_path):
         g = make_grid()
@@ -2621,12 +2621,22 @@ class TestMode:
         assert g.jsonload(str(f)) == 0
         assert g.mode == Mode.EXCEL
 
+    def test_load_legacy_mode_string_aliases_to_python(self, tmp_path):
+        """Files saved by older gridcalc versions used `"mode": "LEGACY"`.
+        That string must still load -- Mode.parse treats "legacy" as an
+        alias for "python" -- so user data survives the rename."""
+        g = make_grid()
+        f = tmp_path / "old.json"
+        f.write_text('{"mode": "LEGACY", "cells": [[1]]}')
+        assert g.jsonload(str(f)) == 0
+        assert g.mode == Mode.PYTHON
+
     def test_load_invalid_mode_falls_back_to_legacy(self, tmp_path):
         g = make_grid()
         f = tmp_path / "bad.json"
         f.write_text('{"mode": "garbage", "cells": [[1]]}')
         assert g.jsonload(str(f)) == 0
-        assert g.mode == Mode.LEGACY
+        assert g.mode == Mode.PYTHON
 
     def test_roundtrip_preserves_mode(self, tmp_path):
         g1 = make_grid()
@@ -2641,7 +2651,7 @@ class TestMode:
     def test_parse_strings(self):
         assert Mode.parse("excel") == Mode.EXCEL
         assert Mode.parse("HYBRID") == Mode.HYBRID
-        assert Mode.parse("3") == Mode.LEGACY
+        assert Mode.parse("3") == Mode.PYTHON
         assert Mode.parse(2) == Mode.HYBRID
         assert Mode.parse("nonsense") is None
         assert Mode.parse(True) is None

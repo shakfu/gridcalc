@@ -4,12 +4,30 @@
 
 ### Added
 
+- **Excel-style label overflow.** A LABEL cell whose text exceeds the
+  column width now visually spills into adjacent empty cells to the
+  right, matching the long-established spreadsheet convention.
+  Implemented as a second rendering pass (`_paint_label_overflow` in
+  `tui.py`) that runs after each row's standard per-cell render and
+  overpaints only the overflow portion -- chars from offset `cw`
+  onward -- into the empty neighbors. The two-pass split keeps the
+  main loop's cursor / selection / mark / lock / style handling
+  unchanged.
+
+  Spillover stops on the first neighbor that holds content (NUM,
+  LABEL, FORMULA) or carries cursor / selection / mark state, so
+  those cells keep their own visual state. The leading `"`
+  label-prefix is stripped before measuring length, so labels typed
+  as `"foo` are sized by their visible content. Off-by-default would
+  not match user expectations on first launch -- the feature is
+  always-on; cells that fit their own column are unaffected.
+
 - **Goal-seek via `:goal`.** One-dimensional root-find that adjusts a
   variable cell to make a formula cell evaluate to a target value --
   the spreadsheet what-if pattern most often used in practice ("what
   input makes this output equal X?"). Invocation:
 
-  ```
+  ```text
   :goal <formula_cell> = <target> by <var_cell> [in <lo>:<hi>]
   ```
 
@@ -32,6 +50,7 @@
   three short args, so retyping is faster than naming.
   Reference: `examples/example_goal.json` (a 2-cell `=2*A1+3` demo
   with three try-these one-liners on the sheet).
+
 - **Linear and mixed-integer programming via `:opt`.** New sheet-level
   optimizer that builds an LP (or MIP) from cells in the active sheet
   and solves it via a vendored lp_solve 5.5. The user-facing model is sheet-resident:
@@ -45,7 +64,7 @@
   re-runnable across sessions without retyping. The `:opt` dispatcher
   has six forms:
 
-  ```
+  ```text
   :opt                                       # run the saved 'default' model
   :opt max|min <cell> vars <cells> st <cells> [bounds <spec>] [int <cells>] [bin <cells>]
                                              # solve inline AND save as 'default'
@@ -136,6 +155,7 @@
   models -- `default`, `with_caps`, `integer_mip` -- so `:open ... :opt`
   works out of the box and `:opt run integer_mip` demonstrates an
   integer solution differing from the continuous relaxation).
+
 - **Headless PTY harness for the curses TUI.** New
   `tests/integration/` directory with a `TuiSession` fixture that
   spawns the real `gridcalc` binary attached to a `pty.openpty()`
@@ -153,6 +173,7 @@
   workbook-saved `default` model, the malformed-command and
   bad-constraint-cell error paths, and the `:goal` command's full
   flow against `example_goal.json`.
+
 - **User-configurable keybindings.** All five TUI contexts (`grid`,
   `entry`, `visual`, `cmdline`, `search`) dispatch through a
   config-driven keymap before falling back to hardcoded defaults.
@@ -188,11 +209,13 @@
   list[ParsedKey]]]` carries the parsed (but unresolved) bindings;
   `keys.build_resolved_keymap` does the curses-bound resolution and
   conflict detection. Reference: `docs/keybindings.md`.
+
 - **`Grid.next_sheet()` / `Grid.prev_sheet()`.** Engine helpers that
   advance / retreat the active sheet with wrap-around at the ends
   and a no-op on a single-sheet workbook. Used by the
   `next_sheet` / `prev_sheet` actions in the new keybindings system,
   but standalone-callable as well.
+
 - **xlsx export now preserves formula text alongside cached values
   in EXCEL mode.** `Grid.xlsxsave` (engine.py) now emits formula
   cells with both the formula string and a cached numeric value
@@ -209,6 +232,7 @@
   `test_example_multisheet_xlsx_roundtrip_preserves_formulas`
   verify a real `.xlsx` file round-trips with formulas intact and a
   cached value that openpyxl returns under `data_only=True`.
+
 - **Multi-sheet workbook support.** `Grid` now models a workbook of
   named sheets rather than a single flat cell store. Formulas can
   reference cells on other sheets (`=Sheet2!A1`,
@@ -270,14 +294,15 @@
       (since dep keys carry sheet names).
     - `:sheet NAME` / `:sheet N` -- switch active sheet by name or
       zero-based index.
-    Known limitation: `:sheet rename` does not yet rewrite formula
-    text that references the old name; that's tracked as a phase 4
-    follow-up. Keybindings (e.g. PgUp/PgDn for sheet cycling) are
-    deferred until a broader keymap-customisation story exists.
-    9 new tests in `TestCmdSheet`.
+  Known limitation: `:sheet rename` does not yet rewrite formula
+  text that references the old name; that's tracked as a phase 4
+  follow-up. Keybindings (e.g. PgUp/PgDn for sheet cycling) are
+  deferred until a broader keymap-customisation story exists.
+  9 new tests in `TestCmdSheet`.
 
   - **Phase 4 — JSON v2 format.** `FILE_VERSION` bumped to 2.
     `jsonsave` now writes a per-sheet payload:
+
     ```json
     {
       "version": 2,
@@ -290,6 +315,7 @@
       "names": {...}, "code": "...", "libs": [...], "requires": [...]
     }
     ```
+
     `jsonload` accepts both: a v1 file (no `sheets` key, top-level
     `cells`) loads into the auto-created Sheet1; a v2 file replaces
     the auto-created sheet with the saved set, restores the
@@ -520,7 +546,7 @@
     observations. 12 new tests in `TestRegressionFamily`.
 
 - **Heavier stat distributions (Tier 4, batch 2; ~25 new dotted names
-  + 17 pre-2010 aliases).** Builds on the regularised incomplete beta
+  - 17 pre-2010 aliases).** Builds on the regularised incomplete beta
   (`_incbeta`) infra from batch 1 plus a new regularised lower
   incomplete gamma (`_gser`/`_gcf`/`_incgamma`, Numerical Recipes).
   Inverses use 200-step bisection on the CDF (1e-12 in p; ~10
@@ -674,8 +700,6 @@
   graph mutation, LEGACY mode), the phased implementation plan, open
   questions, and triggers for when to revisit.
 
-
-
 - **Native xlsx I/O via OpenXLSX** (nanobind `_core` extension): xlsx read
   and write now go through a C++ binding around vendored
   [OpenXLSX](https://github.com/troldal/OpenXLSX). On a 5000-cell grid,
@@ -724,6 +748,24 @@
   uses.
 
 ### Changed
+
+- **Renamed `LEGACY` mode to `PYTHON`.** The mode is the Python-eval
+  flavor (full expressions, code-block functions reachable without
+  the `py.` prefix, ndarray / DataFrame / list-comprehension support);
+  "LEGACY" implied deprecation, which was never the intent. Changes:
+  - `Mode.LEGACY` → `Mode.PYTHON` (integer value unchanged at 3, so
+    `"mode": 3` in JSON keeps working without translation).
+  - JSON files containing `"mode": "LEGACY"` continue to load --
+    `Mode.parse` accepts both `"legacy"` and `"python"` (case-
+    insensitive). New saves always write `"PYTHON"`.
+  - `:mode legacy` continues to work; `:mode python` is the canonical
+    form. The invalid-input error message lists `python`.
+  - Status bar now shows `[PYTHON]` instead of `[LEGACY]`.
+  - Internal renames: `Grid._recalc_legacy` -> `Grid._recalc_python`;
+    docstring and comment references updated across `engine.py`,
+    `opt.py`, `libs/xlsx.py`.
+  - Example files `example_lp.json` and `example_goal.json` rewritten
+    to use the new canonical name.
 
 - **`__builtins__` in the LEGACY eval namespace is now read-only.**
   `_make_eval_globals` wraps the inner allowlisted-builtins dict with

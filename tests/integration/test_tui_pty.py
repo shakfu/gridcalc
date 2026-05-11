@@ -11,6 +11,19 @@ import pytest
 
 
 @pytest.mark.tui_file("examples/example_lp.json")
+def test_long_labels_overflow_into_empty_neighbors(tui_session) -> None:
+    """Excel-style label overflow: row 1 of example_lp.json holds a long
+    title in A1 with B1..H1 empty; the rendered text should appear in full
+    (not truncated at column width)."""
+    render = tui_session.wait_for("Expected: A4=2, A5=6, B4=36", timeout=5.0)
+    # The full title sits past cw=14 chars and would be truncated to just
+    # "LP demo - type" without overflow. The assertion above already passes
+    # only if the overflow renders -- belt-and-suspenders check the
+    # constraint-row header too, which spills "(TRUE = feasible)" from D3.
+    assert "Constraints (TRUE = feasible)" in render
+
+
+@pytest.mark.tui_file("examples/example_lp.json")
 def test_opt_command_renders_optimal_status(tui_session) -> None:
     """The flagship path: load the LP example, type ``:opt ...`` keystroke
     by keystroke, and assert the status bar paints ``opt: OPTIMAL  obj=36``.

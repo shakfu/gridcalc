@@ -32,17 +32,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# numpy: speeds up the regression solver (LINEST/LOGEST/TREND/GROWTH)
-# and matrix-shaped aggregates; required if user formulas use ndarrays.
-numpy = ["numpy>=1.24"]
-# pandas: required for DataFrame-returning formulas and the :pd commands.
-# Pulls numpy via the pandas wheel.
-pandas = ["pandas>=2.0", "numpy>=1.24"]
-# viz: syntax-highlighted code preview in the trust prompt. Without it
-# the preview falls back to plain text.
-viz = ["pygments>=2.15"]
-# Convenience: install everything.
-all = ["numpy>=1.24", "pandas>=2.0", "pygments>=2.15"]
+# A single extras bundle. Either install the core (zero third-party
+# runtime deps) or `gridcalc[extras]` for everything: numpy enables
+# ndarray formulas and LAPACK-backed solvers, pandas enables
+# DataFrame formulas and the `:pd` commands, pygments enables
+# syntax-highlighted code preview in the trust prompt.
+extras = ["numpy>=1.24", "pandas>=2.0", "pygments>=2.15"]
 
 [dependency-groups]
 dev = [

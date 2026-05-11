@@ -358,7 +358,7 @@ CP_CURSOR = 3
 CP_LOCKED = 4
 CP_MARK = 5
 CP_ERROR = 6
-CP_MODE_READY = 7
+CP_MODE_DEFAULT = 7
 CP_MODE_ENTRY = 8
 CP_MODE_CMD = 9
 CP_SELECT = 10
@@ -373,17 +373,19 @@ def init_colors() -> None:
     curses.init_pair(CP_LOCKED, curses.COLOR_YELLOW, -1)
     curses.init_pair(CP_MARK, curses.COLOR_MAGENTA, -1)
     curses.init_pair(CP_ERROR, curses.COLOR_RED, -1)
-    curses.init_pair(CP_MODE_READY, curses.COLOR_GREEN, curses.COLOR_BLACK)
+    curses.init_pair(CP_MODE_DEFAULT, curses.COLOR_GREEN, curses.COLOR_BLACK)
     curses.init_pair(CP_MODE_ENTRY, curses.COLOR_YELLOW, curses.COLOR_BLACK)
     curses.init_pair(CP_MODE_CMD, curses.COLOR_RED, curses.COLOR_BLACK)
     curses.init_pair(CP_SELECT, curses.COLOR_WHITE, curses.COLOR_MAGENTA)
 
 
 def mode_color(mode: str) -> int:
+    # No transient mode -> the right-side label is just the formula-mode
+    # tag (`[PYTHON]` etc.). Paint it in green to keep it visible against
+    # the blue chrome of the status bar; transient modes override with
+    # their own colors below.
     if not mode:
-        return CP_CHROME
-    if mode == "READY":
-        return CP_MODE_READY
+        return CP_MODE_DEFAULT
     if mode in ("CMD", "VISUAL"):
         return CP_MODE_CMD
     return CP_MODE_ENTRY
@@ -591,6 +593,94 @@ def draw(
                 stdscr.addnstr(y, x, fb, min(g.cw, curses.COLS - x))
                 if attr:
                     stdscr.attroff(attr)
+
+        # Pass 2: Excel-style label overflow. After the per-cell loop has
+        # painted the row with each cell clipped to its own column, walk the
+        # row again and overpaint into adjacent empty cells for any LABEL
+        # whose text exceeds the column width. Done as a separate pass so
+        # the primary loop's cursor / selection / mark / lock handling stays
+        # unchanged; overflow respects those by stopping at the first
+        # non-empty or specially-styled cell to the right.
+        _paint_label_overflow(stdscr, g, row, y, lc, fc, sel)
+
+
+def _paint_label_overflow(
+    stdscr: curses.window,
+    g: Grid,
+    row: int,
+    y: int,
+    lc: int,
+    fc: int,
+    sel: tuple[int, int, int, int] | None,
+) -> None:
+    """Overpaint LABEL text into consecutive empty cells to the right.
+
+    Mirrors Excel's behavior: a label that doesn't fit its own column spills
+    into the next empty cells, but is clipped the moment a right-neighbor
+    cell holds content (or is the cursor / a selected / marked cell, since
+    those need to keep their own visual state).
+    """
+    for ci in range(lc + fc):
+        c = ci if ci < lc else g.vc + (ci - lc)
+        if c >= NCOL:
+            break
+        cl = g.cell(c, row)
+        if cl is None or cl.type != LABEL:
+            continue
+
+        text = cl.text
+        if text.startswith('"'):
+            text = text[1:]
+        if len(text) <= g.cw:
+            continue
+
+        # Scan rightward for spillover targets. Stop on first non-empty
+        # cell or on any cell carrying cursor / selection / mark state,
+        # so those keep their normal-pass appearance.
+        paint_cells = 1
+        scan = ci + 1
+        while scan < lc + fc and paint_cells * g.cw < len(text):
+            nc = scan if scan < lc else g.vc + (scan - lc)
+            if nc >= NCOL:
+                break
+            ncl = g.cell(nc, row)
+            if ncl is not None and ncl.type != EMPTY:
+                break
+            is_cursor = nc == g.cc and row == g.cr
+            is_sel = sel is not None and sel[0] <= nc <= sel[2] and sel[1] <= row <= sel[3]
+            is_mark = g.mc >= 0 and nc == g.mc and row == g.mr
+            if is_cursor or is_sel or is_mark:
+                break
+            paint_cells += 1
+            scan += 1
+
+        if paint_cells == 1:
+            continue  # nothing to spill into; pass 1 already rendered fine
+
+        # Only the overflow chars (those past the label's own column) need
+        # painting -- pass 1 already painted the first cw chars in the
+        # label's own cell, with whatever attributes it had.
+        x_overflow = GW + (ci + 1) * g.cw
+        if x_overflow >= curses.COLS:
+            continue
+        avail = min(paint_cells * g.cw, curses.COLS - GW - ci * g.cw) - g.cw
+        if avail <= 0:
+            continue
+        overflow_text = text[g.cw : g.cw + avail]
+
+        style = 0
+        if cl.bold:
+            style |= curses.A_BOLD
+        if cl.underline:
+            style |= curses.A_UNDERLINE
+        if cl.italic:
+            style |= curses.A_ITALIC
+
+        if style:
+            stdscr.attron(style)
+        stdscr.addnstr(y, x_overflow, overflow_text, avail)
+        if style:
+            stdscr.attroff(style)
 
 
 def prompt_filename(stdscr: curses.window, prompt: str, dflt: str | None = None) -> str | None:
@@ -1537,7 +1627,7 @@ def cmd_mode(stdscr: curses.window, g: Grid, args: str) -> bool:
         return False
     parsed = Mode.parse(arg)
     if parsed is None:
-        show_error(stdscr, "Invalid mode. Use: 1|excel, 2|hybrid, 3|legacy")
+        show_error(stdscr, "Invalid mode. Use: 1|excel, 2|hybrid, 3|python")
         return False
     if parsed == g.mode:
         return False
@@ -3084,7 +3174,11 @@ def mainloop(stdscr: curses.window, g: Grid) -> None:
                 g.vr = g.cr - fr + 1
 
         si = search_indicator(g, search_matches)
-        draw(stdscr, g, "READY", "", search_info=si)
+        # Default state -- pass an empty mode string so the top-right shows
+        # only the formula-mode tag (e.g. `[PYTHON]`) without a redundant
+        # `READY`. Transient modes (ENTRY, CMD, VISUAL, ...) still announce
+        # themselves; the absence of one means we're in default.
+        draw(stdscr, g, "", "", search_info=si)
         ch = stdscr.getch()
 
         # User-bound keys take precedence over the hardcoded fallback

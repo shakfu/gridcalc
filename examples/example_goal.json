@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "mode": "LEGACY",
+  "mode": "PYTHON",
   "format": {
     "width": 14
   },

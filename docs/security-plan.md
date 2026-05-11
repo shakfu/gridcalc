@@ -74,6 +74,7 @@ walked to block dangerous patterns:
   `co_consts`, `tb_frame`, `gi_frame`, etc.
 
 What remains allowed:
+
 - Arithmetic, comparisons, boolean logic
 - Function calls (`SUM(A1:A3)`, `np.mean(x)`)
 - Attribute access on non-dunder names (`np.array`, `df.groupby`)
@@ -91,7 +92,8 @@ When loading a `.json` spreadsheet that contains code blocks or module
 requirements, the user is prompted before anything executes:
 
 **Terminal prompt (startup):**
-```
+
+```text
 Loading: budget.json
   Cells: 47 (12 formulas)
   Requires: numpy, matplotlib [side_effect]
@@ -104,6 +106,7 @@ Loading: budget.json
 Same information, rendered in the TUI.
 
 Options:
+
 - **Approve** -- load everything (code block, modules, formulas)
 - **Formulas only** -- load cell data and formulas, skip code block and modules
 - **View code** -- display the code block for review

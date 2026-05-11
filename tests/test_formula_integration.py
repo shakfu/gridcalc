@@ -123,7 +123,7 @@ class TestHybridMode:
 class TestLegacyUnchanged:
     def test_legacy_still_uses_eval(self):
         g = Grid()
-        assert g.mode == Mode.LEGACY
+        assert g.mode == Mode.PYTHON
         g.setcell(0, 0, "=1+2")
         assert g.cells[0][0].val == 3.0
 
@@ -221,7 +221,7 @@ class TestValidateForMode:
     def test_legacy_target_no_errors(self):
         g = Grid()
         g.setcell(0, 0, "=[x for x in range(3)]")
-        assert g.validate_for_mode(Mode.LEGACY) == []
+        assert g.validate_for_mode(Mode.PYTHON) == []
 
     def test_excel_target_rejects_python_only(self):
         g = Grid()

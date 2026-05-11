@@ -101,7 +101,7 @@ most cells.
 
 For a formula cell `D5 = A1 + B2 + SUM(C1:C3)`:
 
-```
+```text
 dep_of[D5]      = {A1, B2, C1, C2, C3}
 subscribers[A1] += {D5}
 subscribers[B2] += {D5}
@@ -247,17 +247,13 @@ Operations that mutate the graph:
   ref-rewriting cost.
 - **Replicate.** Same as multi-cell setcell — call the bulk add.
 
-### 5. LEGACY mode
+### 5. PYTHON mode
 
-`Grid.mode == LEGACY` uses Python `eval()` on raw text. No AST, no
-`refs_used`, no static extraction. Two viable answers:
-
-- Keep the fixed-point loop for LEGACY; only EXCEL/HYBRID get topo
-  recalc.
-- Drop LEGACY entirely (it's already on the deprecation curve per the
-  three-modes design).
-
-The first preserves backward compat without forcing migration.
+`Grid.mode == PYTHON` uses Python `eval()` on raw text. No AST, no
+`refs_used`, no static extraction. Topo recalc therefore can't see
+dependencies and the fixed-point loop has to stay for this mode --
+only EXCEL/HYBRID get the graph-driven traversal. (PYTHON mode was
+previously called `LEGACY`; the rename doesn't change its semantics.)
 
 ## Implementation plan
 

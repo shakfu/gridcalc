@@ -4,9 +4,9 @@
 [![Python](https://img.shields.io/pypi/pyversions/gridcalc)](https://pypi.org/project/gridcalc/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A terminal spreadsheet powered by Python formulas. Vim-style command
-line, curses TUI, JSON file format, zero runtime dependencies in the
-core install. Inspired by Serge Zaitsev's [kalk](https://github.com/zserge/kalk).
+A programmable terminal spreadsheet for developers and technical users, with Excel-ish formulas, Python escape hatches, XLSX interop, goal seek, and LP/MIP solving.
+
+Inspired by Serge Zaitsev's [kalk](https://github.com/zserge/kalk).
 
 ```sh
 pip install gridcalc
@@ -420,6 +420,13 @@ make publish     # upload to PyPI (after make check)
 The abi3 build is gated on `GRIDCALC_STABLE_ABI=ON` (CMake) +
 `wheel.py-api=cp312` (scikit-build-core). Per-version wheels and the
 abi3 wheel have separate CI workflows under `.github/workflows/`.
+
+## Prior Art
+
+- [sc-im](https://github.com/andmarti1424/sc-im): A ncurses spreadsheet program for terminal
+- [sheets](https://github.com/maaslalani/sheets): A terminal based spreadsheet tool
+- [rustxl](https://rustxl.com): A fast, keyboard-driven spreadsheet with vim-style navigation and Excel-compatible formulas.
+
 
 ## License
 

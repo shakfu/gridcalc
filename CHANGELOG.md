@@ -821,6 +821,51 @@
 - **`engine.setcell` refactored**: per-cell parsing/typing extracted to
   `_setcell_no_recalc`; `setcell` composes that helper with `recalc()`.
 
+- **`tui.py` split into a `tui/` package.** The 3364-line single-file TUI
+  was the largest module in the tree and mixed every concern -- cell
+  formatting, undo/clipboard, curses rendering, the full `:`-command set,
+  the opt/goal CLI parsing, and the interactive input modes plus the event
+  loop. It is now a package organized by concern, behavior-preserving and
+  verified against the unchanged suite (1219 passing; the 6 PTY integration
+  tests exercise the real curses render path):
+  - `format.py` (cell display formatting), `undo.py` (`UndoManager` /
+    `Clipboard`), `render.py` (`draw`, colors, label overflow), `widgets.py`
+    (generic curses input/output helpers), `search.py` (grid search),
+    `objedit.py` (the Vec/ndarray/DataFrame sub-editor), `solve.py`
+    (`:opt` / `:goal`), `commands.py` (all `cmd_*`, `cmdexec`, the
+    interactive cursor commands), and `_state.py` (shared `_cfg`).
+  - The public import surface is unchanged: `tui/__init__.py` re-exports
+    every previously module-level name, so `from gridcalc.tui import ...`
+    keeps working.
+  - The interactive controller -- `cmdline`, `entry`, `visual_mode`,
+    `mainloop`, the keymap state `_resolved_keymap`, and `_action_for` --
+    stays in `tui/__init__.py` by design rather than moving to a submodule.
+    The test-suite patches `gridcalc.tui.draw` and rebinds
+    `gridcalc.tui._resolved_keymap` then drives `cmdline`; Python resolves a
+    function's free variables in its *defining* module, so the patched names
+    and their tested callers must share the package namespace for the patches
+    to be observed.
+  - Note for the editable install: scikit-build-core pins a module->file map
+    in `_gridcalc_editable.py`, which still pointed `gridcalc.tui` at the old
+    `tui.py`. `make build` (`uv sync --reinstall-package gridcalc`)
+    regenerates it; a rebuild is required after pulling this change.
+
+- **Deduplicated repeated TUI patterns** (alongside the package split,
+  behavior-preserving):
+  - `widgets._flash` -- the no-wait bottom-line status message (vs the
+    wait-for-key `show_error`), replacing ~5 inline copies in `solve.py`.
+  - `widgets._line_input` -- one single-line edit loop now backs
+    `prompt_filename`, `cmd_width`, `cmd_name`, `cmd_unname`, and the
+    object-editor's mini-input; callers pass an `accept(ch, buf)` predicate
+    to keep their per-field rules (digits-only, identifier rules, ...).
+  - `commands._io_command` -- unifies `:csv`, `:xlsx`, and `:pd`, which
+    differed only in default save extension, whether a load clears the grid
+    first, and whether a load marks it dirty.
+  - `commands._arrow_move` -- the identical clamped arrow-key cursor move
+    shared by `selectrange` and `replcmd`.
+  - `render._fmt_collection` -- the DataFrame / ndarray / Vec status-bar
+    rendering shared by `draw`'s NUM and FORMULA branches.
+
 ### Fixed
 
 - **Text and booleans now survive range materialization.**

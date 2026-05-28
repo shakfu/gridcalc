@@ -729,7 +729,6 @@ class TestRowColumnFunctions:
         """ROWS(A1:B10) at (0,5) must not register A1..B10 as deps,
         which would create a self-cycle since (0,5) is in the range."""
         g = self._excel_grid()
-        g._use_topo_recalc = True
         g.setcell(0, 5, "=ROWS(A1:B10)")
         assert g.cells[0][5].val == 10.0
         assert (0, 5) not in g._circular

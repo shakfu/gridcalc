@@ -865,6 +865,15 @@
     shared by `selectrange` and `replcmd`.
   - `render._fmt_collection` -- the DataFrame / ndarray / Vec status-bar
     rendering shared by `draw`'s NUM and FORMULA branches.
+  - `widgets._line_input` generalized to also back the keybinding-aware
+    prompts. It grew optional hooks -- a `dispatch(ch)` callback (the
+    `_action_for` keymap lookup), a `transform` for typed chars, extra
+    `commit_keys`, and `maxlen` -- so `cmdline()`, `search_prompt()`,
+    `nav()` (live cell-ref validation, Tab-commits, upper-casing), and the
+    `_resolve_fmt()` Python-spec sub-loop now share the one edit loop. The
+    `selectrange()`/`replcmd()` arrow-pick loops are deliberately left
+    standalone: they interleave grid navigation with text entry and aren't a
+    line reader (only the clamped move is shared, as `_arrow_move`).
 
 ### Fixed
 
@@ -910,6 +919,18 @@
   `Scripts/`, `Makefile.GNU`, `vcpkg.json`, and `README.md` from
   `thirdparty/OpenXLSX/`. Retained `CMakeLists.txt`, `cmake/`,
   `OpenXLSX/`, and `LICENSE.md` (BSD-3 attribution).
+
+- **Legacy fixed-point recalc path** (`Grid._recalc_formula`). Topological
+  recalc (`_recalc_topo`) has been the default for EXCEL/HYBRID modes; the
+  old fixed-point loop -- iterate the whole sheet up to 100 times until
+  values stabilize -- was retained one release as a fallback behind the
+  `_use_topo_recalc` flag and the `GRIDCALC_TOPO=0` env override. With the
+  soak period elapsed, the fallback is gone: `recalc()` dispatches straight
+  to `_recalc_topo` (non-PYTHON modes) or `_recalc_python`, and the
+  `_use_topo_recalc` flag, the now-orphaned `_ast_uses_cell` AST helper (the
+  fixed-point path's direct self-reference detector; topo uses the dep
+  graph), and the `tests/conftest.py` env hook were all removed. Behavior is
+  unchanged -- the topo path was already exercised by the full suite.
 
 ## [0.1.3]
 

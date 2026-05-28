@@ -1924,7 +1924,6 @@ class TestTopoCycleDetection:
         g = Grid()
         g.mode = Mode.EXCEL
         g._apply_mode_libs()
-        g._use_topo_recalc = True
         return g
 
     def test_cycle_is_exactly_the_cycle(self):
@@ -2020,7 +2019,6 @@ class TestTopoGraphInvariants:
         g = Grid()
         g.mode = Mode.EXCEL
         g._apply_mode_libs()
-        g._use_topo_recalc = True
         return g
 
     def _assert_graph_consistent(self, g):
@@ -2107,7 +2105,6 @@ class TestTopoGraphInvariants:
         # Switch to EXCEL. Graph was empty in LEGACY.
         g.mode = Mode.EXCEL
         g._apply_mode_libs()
-        g._use_topo_recalc = True
         g.recalc()  # full-recalc path triggers _rebuild_dep_graph
         self._assert_graph_consistent(g)
         # Now incremental edits should propagate.

@@ -84,6 +84,7 @@ from .solve import (
     cmd_opt,
 )
 from .undo import Clipboard, UndoEntry, UndoManager
+from .widgets import _line_input, show_error
 
 # Resolved keymap (context -> {keycode: action_name}). Populated once
 # by ``mainloop`` after curses initialisation; consumed by the
@@ -115,85 +116,68 @@ def cmdline(
     undo: UndoManager,
     sel: tuple[int, int, int, int] | None = None,
 ) -> bool:
-    buf = ""
     draw(stdscr, g, "CMD", "", sel=sel)
-    while True:
-        stdscr.addnstr(curses.LINES - 1, 0, f":{buf}_", curses.COLS - 1)
-        stdscr.clrtoeol()
-        stdscr.refresh()
-        ch = stdscr.getch()
-        action = _action_for("cmdline", ch)
-        if action == "cancel" or ch == 27:
-            return False
-        if action == "commit" or ch in (10, 13, curses.KEY_ENTER):
-            if buf:
-                return cmdexec(stdscr, g, undo, buf, sel=sel)
-            return False
-        elif action == "delete_back" or ch in (curses.KEY_BACKSPACE, 127, 8):
-            buf = buf[:-1]
-        elif len(buf) < 255 and 32 <= ch < 127:
-            buf += chr(ch)
+    buf = _line_input(
+        stdscr,
+        curses.LINES - 1,
+        prefix=":",
+        dispatch=lambda ch: _action_for("cmdline", ch),
+        maxlen=255,
+        allow_empty=False,
+    )
+    if buf is None:
+        return False
+    return cmdexec(stdscr, g, undo, buf, sel=sel)
 
 
 def nav(stdscr: curses.window, g: Grid) -> None:
-    buf = ""
     draw(stdscr, g, "GOTO", "")
-    while True:
-        stdscr.addnstr(1, 0, f"> {buf}_", curses.COLS - 1)
-        stdscr.clrtoeol()
-        ch = stdscr.getch()
-        if ch == 27:
-            break
-        if ch in (10, 13, curses.KEY_ENTER, 9):
-            r = ref(buf)
-            if r:
-                _, c, row = r
-                g.cc = c
-                g.cr = row
-            break
-        elif ch in (curses.KEY_BACKSPACE, 127, 8):
-            buf = buf[:-1]
-        elif 32 <= ch < 127 and len(buf) < MAXIN - 2:
-            test = buf + chr(ch).upper()
-            test2 = test + "1" if chr(ch).isalpha() else test
-            r = ref(test2)
-            if r and r[1] < NCOL and r[2] < NROW:
-                buf += chr(ch).upper()
+
+    def _accept_ref(cand: str, buf: str) -> bool:
+        # Accept a char only if the buffer still parses to an in-bounds ref.
+        # A bare column letter (e.g. "B") is probed as "B1" so it isn't
+        # rejected before a row digit is typed.
+        probe = buf + cand + ("1" if cand.isalpha() else "")
+        r = ref(probe)
+        return r is not None and r[1] < NCOL and r[2] < NROW
+
+    buf = _line_input(
+        stdscr,
+        1,
+        prefix="> ",
+        commit_keys=(10, 13, curses.KEY_ENTER, 9),
+        transform=str.upper,
+        accept=_accept_ref,
+        maxlen=MAXIN - 2,
+    )
+    if buf is None:
+        return
+    r = ref(buf)
+    if r:
+        _, c, row = r
+        g.cc = c
+        g.cr = row
 
 
 def search_prompt(stdscr: curses.window, g: Grid) -> tuple[str, list[tuple[int, int]]]:
     """Prompt for a search pattern and return (pattern, matches)."""
-    buf = ""
     draw(stdscr, g, "SEARCH", "")
-    while True:
-        stdscr.addnstr(curses.LINES - 1, 0, f"/{buf}_", curses.COLS - 1)
-        stdscr.clrtoeol()
-        stdscr.refresh()
-        ch = stdscr.getch()
-        action = _action_for("search", ch)
-        if action == "cancel" or ch == 27:
-            return ("", [])
-        if action == "commit" or ch in (10, 13, curses.KEY_ENTER):
-            if buf:
-                matches = _search_grid(g, buf)
-                if matches:
-                    g.cc, g.cr = matches[0]
-                else:
-                    stdscr.addnstr(
-                        curses.LINES - 1,
-                        0,
-                        f"No matches for: {buf}",
-                        curses.COLS - 1,
-                    )
-                    stdscr.clrtoeol()
-                    stdscr.refresh()
-                    stdscr.getch()
-                return (buf, matches)
-            return ("", [])
-        elif action == "delete_back" or ch in (curses.KEY_BACKSPACE, 127, 8):
-            buf = buf[:-1]
-        elif len(buf) < 255 and 32 <= ch < 127:
-            buf += chr(ch)
+    buf = _line_input(
+        stdscr,
+        curses.LINES - 1,
+        prefix="/",
+        dispatch=lambda ch: _action_for("search", ch),
+        maxlen=255,
+        allow_empty=False,
+    )
+    if buf is None:
+        return ("", [])
+    matches = _search_grid(g, buf)
+    if matches:
+        g.cc, g.cr = matches[0]
+    else:
+        show_error(stdscr, f"No matches for: {buf}")
+    return (buf, matches)
 
 
 def entry(

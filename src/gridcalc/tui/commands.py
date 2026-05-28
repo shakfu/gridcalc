@@ -577,34 +577,15 @@ def _resolve_fmt(stdscr: curses.window, args: str) -> str | None:
             for key, _, _ in _FORMAT_OPTIONS:
                 if pressed == key or pressed == key.lower():
                     return key
-            # Otherwise treat as start of a Python format spec
-            buf = pressed
-            stdscr.addnstr(
+            # Otherwise treat the keypress as the start of a Python format spec.
+            return _line_input(
+                stdscr,
                 curses.LINES - 1,
-                0,
-                f"  Format spec: {buf}_",
-                curses.COLS - 1,
+                prefix="  Format spec: ",
+                initial=pressed,
+                maxlen=31,
+                allow_empty=False,
             )
-            stdscr.clrtoeol()
-            stdscr.refresh()
-            while True:
-                k = stdscr.getch()
-                if k == 27:
-                    return None
-                if k in (10, 13, curses.KEY_ENTER):
-                    return buf if buf else None
-                elif k in (curses.KEY_BACKSPACE, 127, 8):
-                    buf = buf[:-1]
-                elif 32 <= k < 127 and len(buf) < 31:
-                    buf += chr(k)
-                stdscr.addnstr(
-                    curses.LINES - 1,
-                    0,
-                    f"  Format spec: {buf}_   ",
-                    curses.COLS - 1,
-                )
-                stdscr.clrtoeol()
-                stdscr.refresh()
     return None
 
 

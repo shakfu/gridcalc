@@ -665,38 +665,6 @@ def _ast_has_pycall(node: Any) -> bool:
     return False
 
 
-def _ast_uses_cell(node: Any, c: int, r: int) -> bool:
-    from .formula.ast_nodes import (
-        BinOp,
-        Call,
-        CellRef,
-        Percent,
-        PyCall,
-        RangeRef,
-        UnaryOp,
-    )
-
-    if isinstance(node, CellRef):
-        return node.col == c and node.row == r
-    if isinstance(node, RangeRef):
-        c1, c2 = sorted([node.start.col, node.end.col])
-        r1, r2 = sorted([node.start.row, node.end.row])
-        return c1 <= c <= c2 and r1 <= r <= r2
-    if isinstance(node, Call):
-        from .formula.deps import ADDRESS_ONLY_FUNCS
-
-        if node.name.upper() in ADDRESS_ONLY_FUNCS:
-            return False  # ROW/COLUMN/ROWS/COLUMNS use addresses, not values
-        return any(_ast_uses_cell(a, c, r) for a in node.args)
-    if isinstance(node, PyCall):
-        return any(_ast_uses_cell(a, c, r) for a in node.args)
-    if isinstance(node, BinOp):
-        return _ast_uses_cell(node.left, c, r) or _ast_uses_cell(node.right, c, r)
-    if isinstance(node, (UnaryOp, Percent)):
-        return _ast_uses_cell(node.operand, c, r)
-    return False
-
-
 # Shared sentinel for read access to unpopulated cells.
 # Must never be mutated -- all mutation paths go through cells
 # that already exist in the sparse dict (post-setcell).
@@ -824,18 +792,14 @@ class Grid:
         self._module_errors: list[str] = []
         self.code_error: str | None = None
         self.mode: Mode = Mode.PYTHON
-        # Topological recalc bookkeeping. Off by default; opt-in via
-        # `_use_topo_recalc = True`. Maintained alongside the fixed-point
-        # path so flipping the flag is safe at any point.
-        # Workbook-wide dep graph keyed by (sheet, c, r) 3-tuples;
-        # `sheet` is the sheet name, never None for entries that
-        # _refresh_deps installs (only `extract_refs` may emit None
-        # transiently for unsheeted refs, but `_refresh_deps` always
+        # Topological recalc bookkeeping. Workbook-wide dep graph keyed by
+        # (sheet, c, r) 3-tuples; `sheet` is the sheet name, never None for
+        # entries that _refresh_deps installs (only `extract_refs` may emit
+        # None transiently for unsheeted refs, but `_refresh_deps` always
         # passes a concrete sheet via formula_sheet).
         self._dep_of: dict[tuple[str | None, int, int], set[tuple[str | None, int, int]]] = {}
         self._subscribers: dict[tuple[str | None, int, int], set[tuple[str | None, int, int]]] = {}
         self._volatile: set[tuple[str | None, int, int]] = set()
-        self._use_topo_recalc: bool = True
         # Set True by `_rebuild_dep_graph`; remains True while
         # `_refresh_deps`/`_clear_deps` maintain the graph incrementally.
         # Reset to False on mode entry into EXCEL/HYBRID (LEGACY skips
@@ -1202,10 +1166,7 @@ class Grid:
 
     def recalc(self, dirty: set[tuple[int, int]] | None = None) -> None:
         if self.mode != Mode.PYTHON:
-            if self._use_topo_recalc:
-                self._recalc_topo(dirty)
-                return
-            self._recalc_formula()
+            self._recalc_topo(dirty)
             return
         self._recalc_python()
 
@@ -1546,102 +1507,6 @@ class Grid:
             cl.val = float(result)
         except (TypeError, ValueError):
             cl.val = float("nan")
-
-    def _recalc_formula(self) -> None:
-        from .formula import Env, evaluate, parse
-        from .formula.errors import FormulaError
-
-        self._circular = set()
-        py_registry = self._build_py_registry()
-        named = self._build_named_ranges()
-        env = Env(
-            cell_value=self._cell_lookup_value,
-            builtins=self._eval_globals,
-            named_ranges=named,
-            py_registry=py_registry,
-            cell_is_formula=self._cell_is_formula,
-        )
-
-        changed_cells: set[tuple[int, int]] = set()
-        for _ in range(100):
-            changed_cells = set()
-            # Cache materialised ranges for the duration of one
-            # fixed-point iteration only -- next iteration may change
-            # source values.
-            env.clear_range_cache()
-            for (fc, fr), cl in self._cells.items():
-                if cl.type != FORMULA:
-                    continue
-                text = cl.text
-                if text.startswith("="):
-                    text = text[1:]
-                if cl.ast is None or cl.ast_text != text:
-                    cl.ast_text = text
-                    try:
-                        cl.ast = parse(text)
-                    except FormulaError:
-                        cl.ast = None
-                oldval = cl.val
-                old_matrix = cl.matrix
-                if cl.ast is None:
-                    cl.arr = None
-                    cl.matrix = None
-                    cl.val = float("nan")
-                else:
-                    env.current_cell = (fc, fr)
-                    try:
-                        result = evaluate(cl.ast, env)
-                    except Exception:
-                        result = float("nan")
-                    self._store_formula_result(cl, result)
-                both_nan = (
-                    isinstance(cl.val, float)
-                    and math.isnan(cl.val)
-                    and isinstance(oldval, float)
-                    and math.isnan(oldval)
-                )
-                matrix_changed = False
-                if cl.matrix is not None or old_matrix is not None:
-                    if cl.matrix is None or old_matrix is None:
-                        matrix_changed = True
-                    elif _is_dataframe(cl.matrix) and _is_dataframe(old_matrix):
-                        try:
-                            matrix_changed = not cl.matrix.equals(old_matrix)
-                        except Exception:
-                            matrix_changed = cl.matrix is not old_matrix
-                    else:
-                        try:
-                            import numpy as _np  # noqa: I001
-
-                            matrix_changed = not _np.array_equal(cl.matrix, old_matrix)
-                        except ImportError:
-                            matrix_changed = cl.matrix is not old_matrix
-                if (cl.val != oldval and not both_nan) or matrix_changed:
-                    changed_cells.add((fc, fr))
-            if not changed_cells:
-                break
-
-        if changed_cells:
-            self._circular = set(changed_cells)
-
-        for (c, r), cl in self._cells.items():
-            if cl.type != FORMULA or cl.ast is None:
-                continue
-            if _ast_uses_cell(cl.ast, c, r):
-                self._circular.add((c, r))
-
-        if self._circular:
-            from .formula.errors import ExcelError as _XE
-
-            for pos in self._circular:
-                circ = self._cells.get(pos)
-                if circ:
-                    circ.arr = None
-                    circ.arr_cols = None
-                    circ.matrix = None
-                    circ.val = float("nan")
-                    circ.err = _XE.CIRC
-                    circ.err_msg = None
 
     def _recalc_topo(self, dirty: set[tuple[int, int]] | None) -> None:
         """Topological recalc: evaluate only the closure of dirty cells.

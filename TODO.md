@@ -10,11 +10,6 @@ CHANGELOG.md.
   an interval representation (per-column interval tree, or aggregation
   nodes that fan out at change time). Defer until profiling shows
   large-range workloads as a hot spot.
-- [ ] **Delete the legacy fixed-point recalc path** (`Grid._recalc_formula`).
-  Topo recalc is the default; the fixed-point loop is retained one
-  release as a fallback gated by `_use_topo_recalc = False` /
-  `GRIDCALC_TOPO=0`. After a soak period, drop the fallback, the env
-  hook in `tests/conftest.py`, and the `_use_topo_recalc` flag.
 - [ ] **Targeted C++ acceleration for measured hot spots.** A full
   C++ evaluator port (lexer + parser + tree walker + cell store +
   dep graph) is not justified by current benchmarks: topological
@@ -32,11 +27,6 @@ CHANGELOG.md.
 
 ## Refactoring & code quality
 
-- [ ] **`tui.py` is 2,500+ lines.** Split into modules: drawing,
-  commands, entry/navigation, undo, visual mode. Five near-duplicate
-  input loops in `cmdline()`, `nav()`, `selectrange()`, `_resolve_fmt()`,
-  and `replcmd()` should collapse into a single
-  `read_line(prompt, validator)` helper.
 - [ ] **`Cell.ast` cache invalidates by text equality.** For very large
   sheets where many formulas share text, hashing the text would cut
   cache lookups; not a priority but worth measuring.

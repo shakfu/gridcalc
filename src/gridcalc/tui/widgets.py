@@ -18,13 +18,28 @@ def _line_input(
     initial: str = "",
     accept: Callable[[str, str], bool] = _accept_any,
     allow_empty: bool = True,
+    dispatch: Callable[[int], str | None] | None = None,
+    commit_keys: tuple[int, ...] = (10, 13, curses.KEY_ENTER),
+    transform: Callable[[str], str] | None = None,
+    maxlen: int | None = None,
 ) -> str | None:
     """Single-line text input drawn at row ``y`` as ``{prefix}{buf}_``.
 
-    Returns the buffer on Enter (or ``None`` on Enter when ``allow_empty`` is
-    False and the buffer is empty), and ``None`` on Escape. ``accept(ch, buf)``
-    decides whether a printable char is appended -- letting callers restrict
-    input (digits only, identifier rules, ...) while sharing the edit loop.
+    Returns the buffer on commit (or ``None`` on commit when ``allow_empty`` is
+    False and the buffer is empty), and ``None`` on Escape.
+
+    The hooks let the keybinding-aware prompts share this one loop:
+
+    * ``accept(ch, buf)`` -- whether a printable char (after ``transform``) is
+      appended; lets callers restrict input (digits, identifier rules, a live
+      cell-ref probe, ...).
+    * ``transform`` -- map a typed char before it is tested/appended (e.g.
+      upper-casing cell refs in ``nav``).
+    * ``dispatch(ch)`` -- resolve a keycode to ``"cancel"`` / ``"commit"`` /
+      ``"delete_back"`` (the ``_action_for`` keymap), consulted before the
+      hardcoded Esc / Enter / Backspace fallbacks.
+    * ``commit_keys`` -- extra keycodes that commit (e.g. Tab in ``nav``).
+    * ``maxlen`` -- cap the buffer length.
     """
     buf = initial
     while True:
@@ -32,14 +47,17 @@ def _line_input(
         stdscr.clrtoeol()
         stdscr.refresh()
         ch = stdscr.getch()
-        if ch == 27:
+        action = dispatch(ch) if dispatch else None
+        if action == "cancel" or ch == 27:
             return None
-        if ch in (10, 13, curses.KEY_ENTER):
+        if action == "commit" or ch in commit_keys:
             return buf if (buf or allow_empty) else None
-        if ch in (curses.KEY_BACKSPACE, 127, 8):
+        if action == "delete_back" or ch in (curses.KEY_BACKSPACE, 127, 8):
             buf = buf[:-1]
-        elif 32 <= ch < 127 and accept(chr(ch), buf):
-            buf += chr(ch)
+        elif 32 <= ch < 127:
+            cand = transform(chr(ch)) if transform else chr(ch)
+            if (maxlen is None or len(buf) < maxlen) and accept(cand, buf):
+                buf += cand
 
 
 def prompt_filename(stdscr: curses.window, prompt: str, dflt: str | None = None) -> str | None:

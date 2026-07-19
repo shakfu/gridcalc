@@ -5,6 +5,16 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Build every target -- including the static third-party deps that OpenXLSX
+# fetches (miniz, pugixml) and lp_solve -- as position-independent code. They
+# are linked into the `_core` / `_opt` shared modules, and GNU ld on Linux
+# rejects non-PIC static objects in a shared object ("relocation R_X86_64_PC32
+# against symbol ... can not be used when making a shared object; recompile
+# with -fPIC"). macOS links these fine without it, so the failure is
+# Linux-only. Must be set before the add_subdirectory calls that create those
+# targets, since CMake reads it when each target is defined.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 # `Development.SABIModule` is required for nanobind's STABLE_ABI mode
 # (the target `Python::SABIModule` must exist; nanobind silently
 # downgrades STABLE_ABI to OFF when it's missing). Marked optional

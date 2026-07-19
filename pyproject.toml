@@ -17,6 +17,7 @@ classifiers = [
     "Intended Audience :: End Users/Desktop",
     "Operating System :: POSIX",
     "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -29,6 +30,9 @@ classifiers = [
 ]
 dependencies = [
     "tomli>=1.0; python_version < '3.11'",
+    # curses is Unix-only in the stdlib; windows-curses (a PDCurses wrapper)
+    # provides it on Windows so the TUI entry point runs there.
+    "windows-curses>=2.3; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

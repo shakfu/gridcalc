@@ -61,6 +61,14 @@ def _parse_criteria(criteria: Any) -> Any:
     s = str(criteria).strip()
     if s == "":
         return lambda x: x is None or x == ""
+    # Blank / non-blank forms. Excel: "=" (and "") match empty cells,
+    # "<>" matches any non-empty cell. Handle here so an empty operand
+    # does not fall through to the ``^$`` wildcard path, which wrongly
+    # treats a blank (None) cell as non-empty.
+    if s == "=":
+        return lambda x: x is None or x == ""
+    if s == "<>":
+        return lambda x: not (x is None or x == "")
 
     ops: list[tuple[str, Any]] = [
         (">=", operator.ge),
@@ -261,8 +269,12 @@ def COUNTIF(rng: Vec, criteria: str) -> int:
     return sum(1 for x in rng.data if pred(x))
 
 
-def AVERAGEIF(rng: Vec, criteria: str, avg_rng: Vec | None = None) -> float:
-    """=AVERAGEIF(A1:A10, ">5") or =AVERAGEIF(A1:A10, ">5", B1:B10)"""
+def AVERAGEIF(rng: Vec, criteria: str, avg_rng: Vec | None = None) -> float | ExcelError:
+    """=AVERAGEIF(A1:A10, ">5") or =AVERAGEIF(A1:A10, ">5", B1:B10)
+
+    With no matching numeric values Excel returns #DIV/0! (division by a
+    zero count), matching AVERAGEIFS.
+    """
     pred = _parse_criteria(criteria)
     values = avg_rng.data if avg_rng is not None else rng.data
     matches = [
@@ -270,7 +282,7 @@ def AVERAGEIF(rng: Vec, criteria: str, avg_rng: Vec | None = None) -> float:
         for c, v in zip(rng.data, values, strict=False)
         if pred(c) and isinstance(v, (int, float)) and not isinstance(v, bool)
     ]
-    return sum(matches) / len(matches) if matches else 0.0
+    return sum(matches) / len(matches) if matches else ExcelError.DIV0
 
 
 # -- Lookup functions --
@@ -382,7 +394,8 @@ def INDEX(rng: Vec, row: int, col: int = 0) -> Any:
 
     Uses ``rng.cols`` (set by the evaluator on RangeRef materialization)
     to interpret 2D shape. With cols set, ``row=0`` means whole column,
-    ``col=0`` means whole row.
+    ``col=0`` means whole row, and ``row=0, col=0`` means the whole array
+    (Excel returns the entire reference when both indices are 0).
     """
     r = int(row)
     c = int(col)
@@ -390,7 +403,9 @@ def INDEX(rng: Vec, row: int, col: int = 0) -> Any:
     n = len(data)
     cols = rng.cols
     if cols is None or cols <= 0:
-        # Treat as 1D: single positional index.
+        # Treat as 1D: single positional index. row=0, col=0 -> whole array.
+        if r == 0 and c == 0:
+            return Vec(list(data))
         idx = r if r > 0 else c
         if idx <= 0 or idx > n:
             return ExcelError.REF
@@ -399,7 +414,7 @@ def INDEX(rng: Vec, row: int, col: int = 0) -> Any:
     if r < 0 or r > n_rows or c < 0 or c > cols:
         return ExcelError.REF
     if r == 0 and c == 0:
-        return ExcelError.VALUE
+        return Vec(list(data), cols=cols)
     if r == 0:
         # Return entire column c as a 1D Vec.
         return Vec([data[i * cols + (c - 1)] for i in range(n_rows)])
@@ -417,8 +432,11 @@ def MATCH(lookup: Any, rng: Vec, match_type: int = 1) -> int | ExcelError:
     match_type: 0 = exact (with wildcards if lookup is text);
     1 = largest <= lookup (range sorted ascending);
     -1 = smallest >= lookup (range sorted descending).
+    Excel is lenient about the magnitude: any positive value behaves as
+    1 and any negative value as -1, so ``match_type`` is clamped by sign.
     """
-    mt = int(match_type)
+    raw_mt = int(match_type)
+    mt = 1 if raw_mt > 0 else (-1 if raw_mt < 0 else 0)
     data = rng.data
     if mt == 0:
         for i, v in enumerate(data):
@@ -2388,12 +2406,14 @@ def XLOOKUP(
     match_mode: 0=exact (default), -1=exact-or-next-smaller,
                 1=exact-or-next-larger, 2=wildcard.
     search_mode: 1=first-to-last (default), -1=last-to-first.
-    Scalar-return only: ``return_array`` is treated as 1D parallel to
-    ``lookup_array``.
+    ``lookup_array`` is treated as 1D. A 2D ``return_array`` (rows
+    parallel to ``lookup_array``) returns the whole matching row as a
+    Vec, matching Excel's multi-column spill; a 1D ``return_array``
+    returns the single matching value.
     """
     la = lookup_array.data
     ra = return_array.data
-    n = min(len(la), len(ra))
+    n = min(len(la), return_array.rows if return_array.is_2d else len(ra))
     mm = int(match_mode)
     sm = int(search_mode)
     indices = range(n - 1, -1, -1) if sm == -1 else range(n)
@@ -2437,6 +2457,10 @@ def XLOOKUP(
 
     if found < 0:
         return if_not_found if if_not_found is not None else ExcelError.NA
+    if return_array.is_2d:
+        rcols = return_array.cols or 1
+        start = found * rcols
+        return Vec(ra[start : start + rcols])
     return ra[found]
 
 
@@ -2488,48 +2512,135 @@ def XMATCH(
 
 
 def FILTER(rng: Vec, include: Vec, if_empty: Any = None) -> Vec | Any:
-    """=FILTER(rng, include_vec, [if_empty])
+    """=FILTER(rng, include, [if_empty])
 
-    Returns a Vec of values from ``rng`` where the parallel ``include`` value
-    is truthy. With no matches, returns ``if_empty`` (or #N/A).
+    Keeps the elements of ``rng`` whose parallel ``include`` value is truthy.
+    For a 2D ``rng``, ``include`` selects whole rows (when its length matches
+    the row count) or whole columns (when it matches the column count), and
+    the surviving shape is preserved. A length that matches neither dimension
+    yields #VALUE!. With no matches, returns ``if_empty`` (or #N/A).
     """
-    a = rng.data
     b = include.data
+    empty = if_empty if if_empty is not None else ExcelError.NA
+    if rng.is_2d:
+        rows, cols = rng.shape
+        data = rng.data
+        if len(b) == rows:
+            out: list[Any] = []
+            for i in range(rows):
+                if b[i]:
+                    out.extend(data[i * cols : (i + 1) * cols])
+            return Vec(out, cols=cols) if out else empty
+        if len(b) == cols:
+            keep = [j for j in range(cols) if b[j]]
+            if not keep:
+                return empty
+            out = []
+            for i in range(rows):
+                out.extend(data[i * cols + j] for j in keep)
+            return Vec(out, cols=len(keep))
+        return ExcelError.VALUE
+    a = rng.data
     n = min(len(a), len(b))
     out = [a[i] for i in range(n) if b[i]]
-    if not out:
-        return if_empty if if_empty is not None else ExcelError.NA
-    return Vec(out)
+    return Vec(out) if out else empty
 
 
-def SORT(rng: Vec, sort_index: int = 1, sort_order: int = 1, by_col: bool = False) -> Vec:
+def _xl_sort_key(v: Any) -> tuple[int, Any]:
+    """Excel sort rank for a value: numbers < text < logical < errors.
+
+    The leading rank separates types so unlike values never compare
+    directly (Python would raise). Blanks are handled by the caller so
+    they can always sort last regardless of direction.
+    """
+    if isinstance(v, bool):
+        return (2, int(v))
+    if isinstance(v, (int, float)):
+        return (0, float(v))
+    if isinstance(v, ExcelError):
+        return (3, str(v))
+    return (1, str(v).lower())
+
+
+def _sort_order(keys: list[Any], descending: bool) -> list[int]:
+    """Index order that sorts ``keys`` Excel-style: blanks (None) always
+    last, remaining values by type rank then value, stable within ties."""
+    nonblank = [i for i in range(len(keys)) if keys[i] is not None]
+    blank = [i for i in range(len(keys)) if keys[i] is None]
+    nonblank.sort(key=lambda i: _xl_sort_key(keys[i]), reverse=descending)
+    return nonblank + blank
+
+
+def SORT(
+    rng: Vec, sort_index: int = 1, sort_order: int = 1, by_col: bool = False
+) -> Vec | ExcelError:
     """=SORT(rng, [sort_index], [sort_order], [by_col])
 
-    1D sort over ``rng.data``; ``sort_index`` is reserved for 2D and ignored
-    here. ``sort_order``: 1 ascending (default), -1 descending.
-    ``by_col`` is ignored in the 1D path.
+    Sorts a 2D range by the ``sort_index``-th column (or row when ``by_col``
+    is truthy), 1-based, carrying the other cells along and preserving shape.
+    A 1D range sorts its values directly. ``sort_order``: 1 ascending
+    (default), -1 descending. An out-of-range ``sort_index`` gives #VALUE!.
     """
-    _ = sort_index, by_col
-    return Vec(sorted(rng.data, reverse=int(sort_order) == -1))
+    desc = int(sort_order) == -1
+    if not rng.is_2d:
+        order = _sort_order(list(rng.data), desc)
+        return Vec([rng.data[i] for i in order])
+    rows, cols = rng.shape
+    data = rng.data
+    si = int(sort_index)
+    if by_col:
+        if si < 1 or si > rows:
+            return ExcelError.VALUE
+        keys = [data[(si - 1) * cols + j] for j in range(cols)]
+        col_order = _sort_order(keys, desc)
+        out = [data[i * cols + j] for i in range(rows) for j in col_order]
+        return Vec(out, cols=cols)
+    if si < 1 or si > cols:
+        return ExcelError.VALUE
+    keys = [data[i * cols + (si - 1)] for i in range(rows)]
+    row_order = _sort_order(keys, desc)
+    out = [data[i * cols + j] for i in row_order for j in range(cols)]
+    return Vec(out, cols=cols)
 
 
 def UNIQUE(rng: Vec, by_col: bool = False, exactly_once: bool = False) -> Vec:
     """=UNIQUE(rng, [by_col], [exactly_once])
 
-    Preserves first-seen order. If ``exactly_once`` is truthy, returns only
-    values appearing exactly once.
+    Removes duplicates, preserving first-seen order. For a 2D range, whole
+    rows are compared (or whole columns when ``by_col`` is truthy) and the
+    result keeps its 2D shape. If ``exactly_once`` is truthy, only entries
+    appearing exactly once are returned.
     """
-    _ = by_col
-    counts: dict[Any, int] = {}
-    order: list[Any] = []
+    if rng.is_2d:
+        rows, cols = rng.shape
+        data = rng.data
+        if by_col:
+            vectors = [tuple(data[i * cols + j] for i in range(rows)) for j in range(cols)]
+        else:
+            vectors = [tuple(data[i * cols : (i + 1) * cols]) for i in range(rows)]
+        counts: dict[tuple[Any, ...], int] = {}
+        order: list[tuple[Any, ...]] = []
+        for vec in vectors:
+            if vec not in counts:
+                counts[vec] = 0
+                order.append(vec)
+            counts[vec] += 1
+        kept = [v for v in order if counts[v] == 1] if exactly_once else order
+        if by_col:
+            out = [kept[j][i] for i in range(rows) for j in range(len(kept))]
+            return Vec(out, cols=len(kept) if kept else None)
+        flat = [v for row in kept for v in row]
+        return Vec(flat, cols=cols)
+    scounts: dict[Any, int] = {}
+    sorder: list[Any] = []
     for v in rng.data:
-        if v not in counts:
-            counts[v] = 0
-            order.append(v)
-        counts[v] += 1
+        if v not in scounts:
+            scounts[v] = 0
+            sorder.append(v)
+        scounts[v] += 1
     if exactly_once:
-        return Vec([v for v in order if counts[v] == 1])
-    return Vec(order)
+        return Vec([v for v in sorder if scounts[v] == 1])
+    return Vec(sorder)
 
 
 def SEQUENCE(rows: int, columns: int = 1, start: float = 1.0, step: float = 1.0) -> Vec:

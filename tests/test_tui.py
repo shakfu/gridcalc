@@ -1081,6 +1081,153 @@ class TestClipboard:
         assert self.g.cells[0][0].text == "keep"
 
 
+class _FakeSystemClipboard:
+    """In-memory stand-in for the OS clipboard, so tests never shell out."""
+
+    def __init__(self, initial=None):
+        self.buf = initial
+        self.copies = 0
+
+    @property
+    def available(self):
+        return True
+
+    def copy_text(self, text):
+        self.buf = text
+        self.copies += 1
+        return True
+
+    def paste_text(self):
+        return self.buf
+
+
+class TestTsvSerialization:
+    """Pure TSV helpers used by the system-clipboard interchange path."""
+
+    def test_rows_to_tsv_round_trip(self):
+        from gridcalc.tui.osclip import rows_to_tsv, tsv_to_rows
+
+        rows = [["a", "1"], ["b", "2"]]
+        assert rows_to_tsv(rows) == "a\t1\nb\t2"
+        assert tsv_to_rows(rows_to_tsv(rows)) == rows
+
+    def test_rows_to_tsv_sanitizes_delimiters(self):
+        from gridcalc.tui.osclip import rows_to_tsv
+
+        # Embedded tabs/newlines become spaces (TSV has no quoting).
+        assert rows_to_tsv([["x\ty", "a\nb"]]) == "x y\ta b"
+
+    def test_tsv_to_rows_trailing_newline_and_empty(self):
+        from gridcalc.tui.osclip import tsv_to_rows
+
+        assert tsv_to_rows("a\t1\nb\t2\n") == [["a", "1"], ["b", "2"]]
+        assert tsv_to_rows("a\t1\r\nb\t2\r\n") == [["a", "1"], ["b", "2"]]
+        assert tsv_to_rows("") == []
+        assert tsv_to_rows("\n") == []
+
+    def test_cell_clip_value(self):
+        from gridcalc.tui.format import cell_clip_value
+
+        g = Grid()
+        g.setcell(0, 0, "42")
+        g.setcell(1, 0, "hello")
+        g.setcell(2, 0, "=A1+8")  # -> 50
+        g.recalc()
+        assert cell_clip_value(g.cell(0, 0)) == "42"
+        assert cell_clip_value(g.cell(1, 0)) == "hello"
+        assert cell_clip_value(g.cell(2, 0)) == "50"  # value, not formula text
+        assert cell_clip_value(g.cell(9, 9)) == ""  # empty
+
+
+class TestSystemClipboard:
+    """Clipboard <-> OS interchange, driven by an in-memory fake backend."""
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.g = Grid()
+        self.undo = UndoManager()
+
+    def test_yank_pushes_values_to_os(self):
+        from gridcalc.tui import Clipboard
+
+        self.g.setcell(0, 0, "5")
+        self.g.setcell(1, 0, "7")
+        self.g.setcell(2, 0, "=A1+B1")  # 12
+        self.g.recalc()
+        fake = _FakeSystemClipboard()
+        cb = Clipboard(fake)
+        cb.yank(self.g, 0, 0, 2, 0)
+        assert fake.buf == "5\t7\t12"  # display values, tab-separated
+
+    def test_internal_copy_paste_keeps_formula(self):
+        # When the OS clipboard still holds our own push, paste uses the
+        # full-fidelity internal store, preserving formula text.
+        from gridcalc.tui import Clipboard
+
+        self.g.setcell(0, 0, "3")
+        self.g.setcell(1, 0, "=A1*2")
+        self.g.recalc()
+        fake = _FakeSystemClipboard()
+        cb = Clipboard(fake)
+        cb.yank(self.g, 1, 0, 1, 0)
+        cb.paste(self.g, self.undo, 1, 5)  # B6
+        assert self.g.cell(1, 5).text == "=A1*2"
+
+    def test_external_content_pastes_values(self):
+        from gridcalc.tui import Clipboard
+
+        fake = _FakeSystemClipboard("hello\t99\nfoo\t=1+1")
+        cb = Clipboard(fake)
+        cb.paste(self.g, self.undo, 0, 0)
+        assert self.g.cell(0, 0).text == "hello"
+        assert self.g.cell(1, 0).val == 99.0
+        assert self.g.cell(0, 1).text == "foo"
+        assert self.g.cell(1, 1).val == 2.0  # "=1+1" pasted as a live formula
+
+    def test_external_blank_cells_do_not_clobber(self):
+        from gridcalc.tui import Clipboard
+
+        self.g.setcell(1, 0, "keep")  # B1
+        fake = _FakeSystemClipboard("x\t\ny")  # A1="x", B1="", A2="y"
+        cb = Clipboard(fake)
+        cb.paste(self.g, self.undo, 0, 0)
+        assert self.g.cell(0, 0).text == "x"
+        assert self.g.cell(1, 0).text == "keep"  # empty TSV cell left alone
+        assert self.g.cell(0, 1).text == "y"
+
+    def test_external_paste_is_undoable(self):
+        from gridcalc.tui import Clipboard
+
+        self.g.setcell(0, 0, "original")
+        fake = _FakeSystemClipboard("pasted")
+        cb = Clipboard(fake)
+        cb.paste(self.g, self.undo, 0, 0)
+        assert self.g.cell(0, 0).text == "pasted"
+        self.undo.undo(self.g)
+        assert self.g.cell(0, 0).text == "original"
+
+    def test_no_system_backend_is_internal_only(self):
+        from gridcalc.tui import Clipboard
+
+        self.g.setcell(0, 0, "=1+1")
+        self.g.recalc()
+        cb = Clipboard()  # no backend -> never touches the OS
+        cb.yank(self.g, 0, 0, 0, 0)
+        cb.paste(self.g, self.undo, 1, 0)
+        assert self.g.cell(1, 0).text == "=1+1"
+
+    def test_unavailable_backend_degrades(self):
+        # A real SystemClipboard with no tool present: available is False
+        # and reads/writes no-op rather than raising.
+        from gridcalc.tui.osclip import SystemClipboard
+
+        sc = SystemClipboard()
+        sc._cmds = None  # simulate "no clipboard tool on PATH"
+        assert sc.available is False
+        assert sc.copy_text("x") is False
+        assert sc.paste_text() is None
+
+
 class TestSort:
     """Test sort command."""
 

@@ -75,6 +75,7 @@ from .commands import (
 )
 from .format import fmt_float, fmtcell
 from .objedit import _build_formula, _fmt_val, obj_editor
+from .osclip import SystemClipboard
 from .render import GW, _paint_label_overflow, draw, init_colors, vcols, vrows
 from .search import _search_grid, search_indicator, search_next
 from .solve import (
@@ -418,7 +419,7 @@ def _dispatch_grid_key(
 
 def mainloop(stdscr: curses.window, g: Grid) -> None:
     undo = UndoManager()
-    clipboard = Clipboard()
+    clipboard = Clipboard(SystemClipboard())
     search_matches: list[tuple[int, int]] = []
 
     # Resolve the user's keybindings against the live curses runtime.
@@ -652,6 +653,7 @@ def main() -> None:
 __all__ = [
     "GW",
     "Clipboard",
+    "SystemClipboard",
     "UndoEntry",
     "UndoManager",
     "_action_for",

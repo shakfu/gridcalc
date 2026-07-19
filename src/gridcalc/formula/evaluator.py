@@ -53,9 +53,32 @@ class Env:
         # pass -- downstream consumers re-evaluate when sources change,
         # so cache liveness is bounded by the closure pass.
         self._range_cache: dict[tuple[str | None, int, int, int, int], Any] = {}
+        # Lexical scope stack for LET bindings. Each frame maps a
+        # lowercased local name to an already-evaluated value. Searched
+        # top-down so inner LETs shadow outer ones and named ranges.
+        self._local_scopes: list[dict[str, Any]] = []
 
     def clear_range_cache(self) -> None:
         self._range_cache.clear()
+
+    def push_scope(self) -> dict[str, Any]:
+        """Push a fresh local scope and return it so a caller can add
+        bindings incrementally. Must be paired with ``pop_scope``."""
+        scope: dict[str, Any] = {}
+        self._local_scopes.append(scope)
+        return scope
+
+    def pop_scope(self) -> None:
+        self._local_scopes.pop()
+
+    def lookup_local(self, name: str) -> tuple[bool, Any]:
+        """Resolve a LET-bound local. Returns ``(found, value)`` so a
+        legitimately-bound ``None`` is distinguishable from a miss."""
+        key = name.lower()
+        for scope in reversed(self._local_scopes):
+            if key in scope:
+                return True, scope[key]
+        return False, None
 
     def lookup_func(self, name: str) -> Callable[..., Any] | None:
         return self._builtins.get(name.lower())
@@ -400,6 +423,9 @@ def _eval_range(node: RangeRef, env: Env) -> Any:
 
 
 def _eval_name(node: Name, env: Env) -> Any:
+    found, value = env.lookup_local(node.name)
+    if found:
+        return value
     target = env.lookup_name(node.name)
     if target is None:
         return ExcelError.NAME
@@ -415,11 +441,43 @@ _ERROR_AWARE_FUNCS = frozenset({"iferror", "ifna", "iserror", "iserr", "isna"})
 RAW_ARG_FUNCS = frozenset({"row", "column", "rows", "columns", "isref", "isformula"})
 
 
+def _eval_let(node: Call, env: Env) -> Any:
+    """Evaluate LET(name1, value1, [name2, value2, ...], calculation).
+
+    Binding forms cannot go through the eager call-by-value dispatch:
+    the odd arguments are identifiers being *declared*, and the final
+    calculation reads them. So LET is handled here, binding each value
+    into a pushed scope (later pairs may reference earlier ones) before
+    evaluating the calculation. A blank cell used as a value binds 0.0,
+    matching how ranges materialise elsewhere.
+    """
+    args = node.args
+    # Valid shape: an odd count >= 3 (>=1 name/value pair plus the final
+    # calculation). Anything else is a #VALUE! in Excel.
+    if len(args) < 3 or len(args) % 2 == 0:
+        return ExcelError.VALUE
+    scope = env.push_scope()
+    try:
+        for i in range(0, len(args) - 1, 2):
+            name_node = args[i]
+            if not isinstance(name_node, Name):
+                return ExcelError.VALUE
+            value = _eval(args[i + 1], env)
+            if value is None:
+                value = 0.0
+            scope[name_node.name.lower()] = value
+        return _eval(args[-1], env)
+    finally:
+        env.pop_scope()
+
+
 def _eval_call(node: Call, env: Env) -> Any:
+    name_lower = node.name.lower()
+    if name_lower == "let":
+        return _eval_let(node, env)
     fn = env.lookup_func(node.name)
     if fn is None:
         return ExcelError.NAME
-    name_lower = node.name.lower()
     if name_lower in RAW_ARG_FUNCS:
         try:
             return fn(env, *node.args)

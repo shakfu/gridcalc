@@ -20,6 +20,15 @@ extern "C" {
 #include "lp_lib.h"
 }
 
+// lp_lib.h defines `isnan` as a macro (-> `_isnan`) on MSVC, which turns our
+// later `std::isnan(...)` into `std::_isnan(...)` and fails to compile
+// (error C2039: '_isnan' is not a member of 'std'). Drop the macro here so the
+// standard library name resolves; lp_solve's own sources compile separately
+// and keep their macro.
+#ifdef isnan
+#undef isnan
+#endif
+
 namespace nb = nanobind;
 
 namespace {

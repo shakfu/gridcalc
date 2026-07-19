@@ -56,11 +56,12 @@ pip install 'gridcalc[extras]'  # adds numpy, pandas, pygments
 
 Or with [uv](https://docs.astral.sh/uv/): `uv tool install 'gridcalc[extras]'`.
 
-The **core** install has **zero third-party runtime dependencies** --
-the full 300+ Excel function library (statistical distributions,
-financial functions, `LINEST`/`TREND` regression, ...) works on stdlib
-alone. (The 3.10 wheel pulls `tomli` for config-file parsing; 3.11+
-uses stdlib `tomllib`.)
+The **core** install has **zero third-party runtime dependencies on
+Linux and macOS** -- the full 300+ Excel function library (statistical
+distributions, financial functions, `LINEST`/`TREND` regression, ...)
+works on stdlib alone. (The 3.10 wheel pulls `tomli` for config-file
+parsing; 3.11+ uses stdlib `tomllib`. On Windows only, `windows-curses`
+is pulled in because curses is not in the Windows stdlib.)
 
 The `[extras]` bundle enables, all at once:
 

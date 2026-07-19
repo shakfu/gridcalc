@@ -49,6 +49,7 @@ dev = [
     "pandas-stubs>=2.0",
     "pygments>=2.15",
     "pytest",
+    "pytest-cov>=5.0",
     "ruff>=0.15.7",
     "twine>=6.2.0",
     "types-Pygments>=2.15",

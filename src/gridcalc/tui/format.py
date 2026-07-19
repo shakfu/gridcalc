@@ -64,6 +64,35 @@ def fmt_float(val: float, spec: str) -> str | None:
     return raw
 
 
+def _num_str(v: float) -> str:
+    """Compact numeric string: integer form when integral and not huge."""
+    return str(int(v)) if v == int(v) and abs(v) < 1e9 else f"{v:g}"
+
+
+def cell_clip_value(cl: Cell | None) -> str:
+    """Plain, unpadded value of a cell for the system clipboard.
+
+    Interchange with other programs expects *values*, not formula text or
+    width-padded display fields: a label yields its text, a formula yields
+    its computed value (string, number, or error), and a blank yields "".
+    A spilled-array cell yields its first value (TSV cannot nest arrays).
+    """
+    if cl is None or cl.type == EMPTY:
+        return ""
+    if cl.type == LABEL:
+        t = cl.text
+        return t[1:] if t.startswith('"') else t
+    if cl.err is not None:
+        return str(cl.err)
+    if cl.arr is not None and len(cl.arr) > 0:
+        return _num_str(cl.arr[0])
+    if cl.type == FORMULA and cl.sval is not None:
+        return cl.sval
+    if isinstance(cl.val, float) and math.isnan(cl.val):
+        return ""
+    return _num_str(cl.val)
+
+
 def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
     """Format a cell value for display. Returns a string of exactly cw chars."""
     if cl is None or cl.type == EMPTY:

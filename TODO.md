@@ -30,25 +30,31 @@ CHANGELOG.md.
 - [ ] **`Cell.ast` cache invalidates by text equality.** For very large
   sheets where many formulas share text, hashing the text would cut
   cache lookups; not a priority but worth measuring.
-- [ ] **Audit `libs/xlsx.py` against the Excel spec.** Especially
-  `VLOOKUP`/`HLOOKUP` approximate-match, `MATCH` with non-default
-  `match_type`, and `SUMIF`/`COUNTIF` criteria edge cases.
+- [ ] **Remaining `libs/xlsx.py` Excel-fidelity gaps.** The lookup /
+  criteria / conditional-aggregate audit sweep is done (see CHANGELOG).
+  Left open, each gated on a missing primitive or genuinely ambiguous in
+  Excel: numeric-vs-text criteria coercion (`COUNTIF({1,2,"3"}, 3)`);
+  date-string criteria like `">1/1/2020"` (needs date-aware criteria
+  parsing -- gated on the date-type system below); and `SUMIF`/`COUNTIF`
+  with a `sum_range` shorter than the criteria range (Excel resizes from
+  the top-left, which needs reference rather than materialised-`Vec`
+  semantics -- gated on the reference type the `OFFSET` item needs).
 - [ ] **`OFFSET`** -- dynamic-ref function (already in `DYNAMIC_REF_FUNCS`
   for volatile flagging). Needs the evaluator to materialise a reference
   result (not just a value) so chained constructs like
   `SUM(OFFSET(A1, 1, 0, 5, 1))` work. Out of scope without a reference
   type in the value system.
-- [ ] **Excel 365 dynamic arrays -- gaps and spill audit.**
-  `XLOOKUP`, `XMATCH`, `FILTER`, `SORT`, `UNIQUE`, `SEQUENCE`,
-  `RANDARRAY`, `TRANSPOSE` are already implemented in `libs/xlsx.py`
-  (returning `Vec`). Still missing: `LET`, `LAMBDA` (need parser/eval
-  support for local bindings and user-defined inline functions, not
-  just a function entry). Audit the implemented ones for true spill
-  semantics -- e.g. `SORT` docstring notes 2D is "reserved and
-  ignored", so multi-column behaviour likely doesn't match Excel.
-  Spill into adjacent cells (writing results into neighbouring cells
-  rather than packing into one cell's `arr`/`matrix`) is still
-  unimplemented and is the architectural piece.
+- [ ] **`LAMBDA` and dynamic-array spill.** `LET` and 2D-aware
+  `SORT`/`UNIQUE`/`FILTER` are done (see CHANGELOG). Still missing:
+  `LAMBDA` -- needs a first-class function value type and call-on-
+  expression in the grammar (`Call.name` is a string today, so only
+  named calls exist), plus the higher-order helpers (MAP/REDUCE/BYROW/
+  ...) that make it useful. And true spill into adjacent cells (writing
+  array results into neighbouring cells rather than packing them into
+  one cell's `arr`/`matrix`) remains the architectural piece. Minor:
+  `deps` over-approximates when a `LET` name shadows a real named range
+  (the range stays recorded as a dep) -- safe, just an occasional extra
+  recalc; tighten only if it ever matters.
 - [ ] **Date type system in xlsx I/O.** `_core.xlsx_read` collapses
   date serials into `XLValueType::Float`. Need to read the cell's
   number format to distinguish dates from numbers, and a per-cell
@@ -112,8 +118,12 @@ CHANGELOG.md.
 - [ ] **Visual-select operations.** Extend beyond `:f` -- support
   `:b` (blank range), `:dr`/`:dc` (delete selected rows/cols),
   `:r` (replicate into selection), copy/paste within selection.
-- [ ] **System clipboard integration** for copy/paste (currently only
-  internal replicate).
+- [ ] **System clipboard -- follow-ups.** Core integration is done (see
+  CHANGELOG). Remaining: full CSV-style quoting for cells containing
+  tabs/newlines (currently sanitised to spaces), and verifying the
+  Windows/Linux backends (`wl-clipboard`/`xclip`/`xsel`, `clip`/
+  `Get-Clipboard`) on real hardware -- developed on macOS against a fake
+  backend.
 - [ ] **Mouse support** (curses mouse events for cell selection and
   scrolling).
 - [ ] **Plugin interface.** Allow third-party packages to register

@@ -2,7 +2,58 @@
 
 ## Unreleased
 
+## [0.2.0]
+
 ### Added
+
+- **`LET` local bindings in EXCEL/HYBRID formulas.**
+  `LET(name1, value1, [name2, value2, ...], calculation)` binds
+  intermediate results to names, so a subexpression is written (and
+  computed) once and reused: `=LET(x, SUM(A1:A9), x/COUNT(A1:A9))`.
+  Implemented entirely in the AST evaluator (`formula/evaluator.py`),
+  not the flat builtins dict, because the binding form breaks the two
+  assumptions the normal dispatch rests on -- eager call-by-value and a
+  flat, read-only namespace. `Env` grew a lexical scope stack
+  (`push_scope`/`pop_scope`/`lookup_local`); `_eval_name` resolves
+  locals before named ranges; and `_eval_let` binds each `(name, value)`
+  pair into a pushed scope -- later pairs may reference earlier ones --
+  before evaluating the final calculation, popping the scope in a
+  `finally` so the stack stays balanced even on error. Malformed arity
+  (an even argument count) or a non-name binding target yields `#VALUE!`.
+  No parser change was needed: `LET(x, 5, x+1)` already parsed to a
+  `Call` with a `Name` binding target, and dependency extraction already
+  ignores unknown names. `LAMBDA` remains unimplemented -- it needs a
+  first-class function value type and call-on-expression in the grammar.
+  10 new tests in `TestLet`.
+
+- **System clipboard integration.** Copy/paste now exchanges data with
+  other programs, not just within gridcalc. New `tui/osclip.py` provides
+  `SystemClipboard`, which shells out to the platform tool (pbcopy /
+  pbpaste on macOS; wl-clipboard, xclip, or xsel on Linux; clip /
+  `Get-Clipboard` on Windows) and degrades to a no-op when none is on
+  `PATH`, so the TUI never crashes on a headless box. Yanking a region
+  additionally pushes a TSV of display *values* to the OS clipboard
+  (the interchange convention); pasting pulls in content copied from
+  another program -- detected as OS-clipboard text differing from what
+  gridcalc last pushed -- and writes it as values, while gridcalc's own
+  copies still round-trip through the full-fidelity internal store with
+  formulas and formatting intact. OS access is injected into
+  `Clipboard`, so `Clipboard()` with no backend stays internal-only and
+  nothing shells out under test. TSV encode/decode and the new
+  `cell_clip_value` display helper (`tui/format.py`) are pure. 12 new
+  tests (`TestTsvSerialization`, `TestSystemClipboard`). The non-macOS
+  backends are written but unverified on real hardware.
+
+- **2D-aware dynamic arrays (`SORT`, `UNIQUE`, `FILTER`).** These
+  previously flattened a 2D range to a single list; `SORT` additionally
+  raised `TypeError` on any mixed-type column. They now operate on whole
+  rows (or columns) and preserve the result shape: `SORT` orders rows by
+  the `sort_index` column (or columns by row when `by_col` is set) with
+  an Excel type-ordered, blanks-last comparator; `UNIQUE` de-duplicates
+  whole rows/columns; `FILTER` selects whole rows or columns depending
+  on whether `include` matches the row or column count (`#VALUE!` when it
+  matches neither). All carry the result `cols` so downstream `INDEX`
+  and further composition stay correct. New `TestArrayFunctions2D`.
 
 - **Excel-style label overflow.** A LABEL cell whose text exceeds the
   column width now visually spills into adjacent empty cells to the
@@ -876,6 +927,37 @@
     line reader (only the clamped move is shared, as `_arrow_move`).
 
 ### Fixed
+
+- **Excel lookup and criteria audit.** A systematic pass over
+  `libs/xlsx.py` against Excel semantics fixed several divergences:
+  - `SUMIF`/`COUNTIF` with the not-blank criterion `"<>"` counted blank
+    (`None`) cells as non-blank. `"<>"` is now the exact complement of
+    the blank predicate, and `"="` (like `""`) matches blanks -- so a
+    blank cell is consistently either blank or non-blank across the pair.
+  - `AVERAGEIF` with no matching numeric values returned `0.0`; Excel
+    returns `#DIV/0!` (division by a zero count), which already matched
+    `AVERAGEIFS`.
+  - `MATCH` returned `#VALUE!` for an out-of-domain `match_type` such as
+    `2` or `-2`; Excel is lenient and clamps by sign (any positive
+    behaves as `1`, any negative as `-1`). Documented `1/0/-1` usage is
+    unchanged.
+  - `INDEX(rng, 0, 0)` returned `#REF!`/`#VALUE!`; Excel returns the
+    whole reference. It now returns the entire range as a `Vec`
+    (preserving `cols`), consistent with the existing whole-row / whole-
+    column behaviour for a single zero index.
+  - `XLOOKUP` with a 2D `return_array` returned an arbitrary scalar; it
+    now returns the whole matching row as a `Vec`, matching Excel's
+    multi-column spill. A 1D `return_array` still returns a scalar.
+
+  Verified-correct-and-locked with tests (no change needed): `MATCH`
+  `0`/`1`/`-1`, `VLOOKUP`/`HLOOKUP` approximate match, `XLOOKUP`/`XMATCH`
+  next-smaller/next-larger, and bool-vs-number / case-insensitive
+  criteria. Left intentionally (each needs a missing primitive or is
+  genuinely ambiguous in Excel): numeric-vs-text criteria coercion
+  (`COUNTIF({1,2,"3"}, 3)`), date-string criteria, and `SUMIF` with a
+  `sum_range` shorter than the criteria range. New tests across
+  `TestCriteriaAuditFixes`, `TestLookupAuditFixes`, and
+  `TestConditionalAggregates`.
 
 - **Text and booleans now survive range materialization.**
   `formula/evaluator.py:_eval_range` previously called

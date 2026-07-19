@@ -31,7 +31,8 @@ gridcalc budget.json
 - **Goal-seek** -- `:goal B10 = 100 by A1` adjusts a variable so a
   formula hits a target value.
 - **Vim-style command line** (`:w`, `:e`, `:q`, `/search`, `y/p`, visual
-  selection, undo).
+  selection, undo), with **system-clipboard copy/paste** -- yank pushes
+  values as TSV, paste pulls TSV in from other apps.
 
 Try it on the provided examples:
 
@@ -124,6 +125,8 @@ formula doesn't parse in the target mode. Files without an explicit
 =IFERROR(B1/C1, 0)                    error catch -- #DIV/0!, #VALUE!, #N/A, ...
 =SUM(A1:A10)                          range -> 1D array
 =SUM(A1:A3 * B1:B3)                   element-wise array arithmetic
+=LET(x, SUM(A1:A9), x/COUNT(A1:A9))   local bindings -- compute once, reuse
+=FILTER(A1:A9, B1:B9 > 0)             dynamic arrays: FILTER/SORT/UNIQUE
 =SUM(revenue)                         named range
 =py.margin(A1, B1)                    HYBRID: call a code-block function
 ```
@@ -138,9 +141,11 @@ Excel error values (`#DIV/0!`, `#N/A`, `#NAME?`, `#REF!`, `#VALUE!`,
 
 **Excel-compatible library** (auto-loaded in `EXCEL`/`HYBRID`): `IF`,
 `IFERROR`, `AND`, `OR`, `NOT`, `ROUND`, `AVERAGE`, `MEDIAN`, `SUMIF`,
-`COUNTIF`, `AVERAGEIF`, `VLOOKUP`, `HLOOKUP`, `INDEX`, `MATCH`,
-`CONCATENATE`, `LEFT`, `RIGHT`, `MID`, `LEN`, `TRIM`, `UPPER`, `LOWER`,
-`SUBSTITUTE`, and 280+ others.
+`COUNTIF`, `AVERAGEIF`, `LET`, `VLOOKUP`, `HLOOKUP`, `XLOOKUP`, `XMATCH`,
+`INDEX`, `MATCH`, `FILTER`, `SORT`, `UNIQUE`, `SEQUENCE`, `CONCATENATE`,
+`LEFT`, `RIGHT`, `MID`, `LEN`, `TRIM`, `UPPER`, `LOWER`, `SUBSTITUTE`,
+and 280+ others. Dynamic-array functions return whole rows/columns and
+compose (`=INDEX(SORT(A1:B9), 1, 2)`).
 
 **PYTHON-only** extras: the `math` module, Python builtins (`sum`,
 `min`, `max`, `abs`, `len`), list comprehensions, and -- when the
@@ -377,7 +382,8 @@ so `Tab → next_sheet` replaces the default cursor-right meaning. See
 ```text
 File          :w [file]   :wq   :q   :q!   :o file   :e
 Edit          :b   :clear   :dr   :dc   :ir   :ic   :m   :r
-              :sort [col] [desc]   yank/paste: y/p   undo/redo: u / Ctrl-R
+              :sort [col] [desc]   yank/paste: y/p (syncs system clipboard)
+              undo/redo: u / Ctrl-R
 Format        :f <spec>   :gf <spec>   :width <n>   Ctrl-B / Ctrl-U
 Search        /pattern   n   N
 Sheets        :sheet [name|N|add|del|rename|move]
@@ -392,6 +398,9 @@ View          :view   E   :tv/:th/:tb/:tn (lock title rows/cols)
 ## Limitations
 
 - **`INDIRECT`** is unsupported (would defeat the static dep graph).
+- **`LAMBDA`** and its higher-order helpers (`MAP`, `REDUCE`, `BYROW`,
+  ...) are unsupported; `LET` is supported. Dynamic-array results are
+  packed into their origin cell rather than spilling into neighbours.
 - **xlsx export of formulas is EXCEL-mode only** -- PYTHON/HYBRID
   syntax (`**`, list comprehensions, `py.*`) isn't strict Excel.
 - **3D range refs** (`Sheet1:Sheet3!A1:B2`) are unsupported (returns

@@ -167,6 +167,10 @@ class TestConditionalAggregates:
         result = AVERAGEIF(Vec([1, 2, 3]), ">1", Vec([100, 200, 300]))
         assert result == 250.0
 
+    def test_averageif_no_match_is_div0(self) -> None:
+        # No matching numeric values -> #DIV/0!, matching AVERAGEIFS.
+        assert AVERAGEIF(Vec([1, 2, 3]), ">5") is ExcelError.DIV0
+
 
 class TestLookup:
     def test_vlookup_exact(self) -> None:
@@ -1110,6 +1114,19 @@ class TestCriteriaAuditFixes:
 
         assert COUNTIF(Vec([1.0, None, "", 2.0]), "") == 2  # type: ignore[list-item]
 
+    def test_not_blank_criteria(self) -> None:
+        from gridcalc.libs.xlsx import COUNTIF, SUMIF
+
+        rng = Vec([1.0, None, "", 2.0])  # type: ignore[list-item]
+        # "<>" counts non-blank cells; a blank (None) or "" must not match.
+        assert COUNTIF(rng, "<>") == 2
+        # "=" is the blank complement, matching None and "".
+        assert COUNTIF(rng, "=") == 2
+        # SUMIF over a non-blank criterion sums only the numeric non-blanks.
+        assert SUMIF(rng, "<>") == 3.0
+        # A numeric "<>N" still ignores blanks (unchanged behaviour).
+        assert COUNTIF(Vec([1.0, None, 2.0]), "<>1") == 1  # type: ignore[list-item]
+
 
 class TestLookupAuditFixes:
     def test_index_2d_via_range(self) -> None:
@@ -1142,6 +1159,53 @@ class TestLookupAuditFixes:
         assert MATCH("?amma", rng, 0) == 3
         # Tilde escape: literal "*" in pattern.
         assert MATCH("a~*", Vec(["a*", "ab"]), 0) == 1
+
+    def test_match_ascending(self) -> None:
+        # match_type 1: largest value <= lookup over an ascending range.
+        asc = Vec([1, 2, 3, 4])
+        assert MATCH(3, asc, 1) == 3
+        assert MATCH(3.5, asc, 1) == 3
+        # Below the smallest value -> #N/A.
+        assert MATCH(0, asc, 1) is ExcelError.NA
+
+    def test_match_descending(self) -> None:
+        # match_type -1: smallest value >= lookup over a descending range.
+        desc = Vec([5, 4, 3, 2, 1])
+        assert MATCH(3, desc, -1) == 3
+        assert MATCH(3.5, desc, -1) == 2
+        # Everything is >= 0, so the last position wins.
+        assert MATCH(0, desc, -1) == 5
+        # Above the largest value -> #N/A.
+        assert MATCH(9, desc, -1) is ExcelError.NA
+
+    def test_match_type_clamped_by_sign(self) -> None:
+        # Excel is lenient: any positive match_type behaves as 1, any
+        # negative as -1. Documented 1/0/-1 usage is unaffected.
+        assert MATCH(3, Vec([1, 2, 3, 4]), 2) == 3
+        assert MATCH(3, Vec([5, 4, 3, 2, 1]), -2) == 3
+
+    def test_index_whole_array(self) -> None:
+        # INDEX(rng, 0, 0) returns the whole reference (Excel spill), and
+        # a single positional index still returns a scalar.
+        whole1d = INDEX(Vec([10, 20, 30]), 0)
+        assert isinstance(whole1d, Vec)
+        assert whole1d.data == [10, 20, 30]
+        m = Vec([1, 2, 3, 4], cols=2)
+        whole2d = INDEX(m, 0, 0)
+        assert isinstance(whole2d, Vec)
+        assert (whole2d.data, whole2d.cols) == ([1, 2, 3, 4], 2)
+        assert INDEX(Vec([10, 20, 30]), 3) == 30
+
+    def test_xlookup_2d_return_row(self) -> None:
+        from gridcalc.libs.xlsx import XLOOKUP
+
+        la = Vec([1, 2, 3])
+        ra = Vec([10, 11, 20, 21, 30, 31], cols=2)  # 3 rows x 2 cols
+        out = XLOOKUP(2, la, ra)
+        assert isinstance(out, Vec)
+        assert out.data == [20, 21]
+        # A 1D return array still yields a scalar.
+        assert XLOOKUP(2, la, Vec([100, 200, 300])) == 200
 
 
 class TestAddress:
@@ -1285,6 +1349,179 @@ class TestArrayFunctions:
             g.setcell(1, i, str(v))
         g.setcell(2, 0, "=SUM(FILTER(A1:A4, B1:B4))")
         assert g.cells[2][0].val == 40.0
+
+
+class TestArrayFunctions2D:
+    """Spill-shape semantics for SORT/UNIQUE/FILTER over 2D ranges.
+
+    A 2D Vec carries ``cols``; these functions must operate on whole rows
+    (or columns) rather than flattening, and preserve the result shape.
+    """
+
+    def test_sort_2d_rows(self) -> None:
+        from gridcalc.libs.xlsx import SORT
+
+        # 3x2: rows keyed by column 1.
+        m = Vec([3, "c", 1, "a", 2, "b"], cols=2)
+        asc = SORT(m)
+        assert (asc.data, asc.cols) == ([1, "a", 2, "b", 3, "c"], 2)
+        desc = SORT(m, 1, -1)
+        assert (desc.data, desc.cols) == ([3, "c", 2, "b", 1, "a"], 2)
+
+    def test_sort_2d_by_second_column(self) -> None:
+        from gridcalc.libs.xlsx import SORT
+
+        # Sort rows by column 2 (labels), carrying column 1 along.
+        m = Vec([30, "c", 10, "a", 20, "b"], cols=2)
+        out = SORT(m, 2)
+        assert (out.data, out.cols) == ([10, "a", 20, "b", 30, "c"], 2)
+
+    def test_sort_2d_by_col(self) -> None:
+        from gridcalc.libs.xlsx import SORT
+
+        # 2x3, by_col: reorder columns by row 1 values.
+        m = Vec([3, 1, 2, 30, 10, 20], cols=3)
+        out = SORT(m, 1, 1, True)
+        assert (out.data, out.cols) == ([1, 2, 3, 10, 20, 30], 3)
+
+    def test_sort_bad_index(self) -> None:
+        from gridcalc.libs.xlsx import SORT
+
+        m = Vec([1, 2, 3, 4], cols=2)
+        assert SORT(m, 5) is ExcelError.VALUE
+        assert SORT(m, 0) is ExcelError.VALUE
+
+    def test_sort_mixed_types_no_crash(self) -> None:
+        from gridcalc.libs.xlsx import SORT
+
+        # Excel order: numbers before text; no TypeError on mixed 1D data.
+        assert SORT(Vec([2, "a", 1])).data == [1, 2, "a"]
+
+    def test_sort_blanks_last(self) -> None:
+        from gridcalc.libs.xlsx import SORT
+
+        assert SORT(Vec([2, None, 1])).data == [1, 2, None]
+        # Blanks stay last even when descending.
+        assert SORT(Vec([2, None, 1]), 1, -1).data == [2, 1, None]
+
+    def test_unique_2d_rows(self) -> None:
+        from gridcalc.libs.xlsx import UNIQUE
+
+        m = Vec([1, "a", 1, "a", 2, "b"], cols=2)
+        out = UNIQUE(m)
+        assert (out.data, out.cols) == ([1, "a", 2, "b"], 2)
+        once = UNIQUE(m, exactly_once=True)
+        assert (once.data, once.cols) == ([2, "b"], 2)
+
+    def test_unique_2d_by_col(self) -> None:
+        from gridcalc.libs.xlsx import UNIQUE
+
+        # 2x3 with duplicate first/second columns.
+        m = Vec([1, 1, 2, 1, 1, 3], cols=3)
+        out = UNIQUE(m, by_col=True)
+        assert (out.data, out.cols) == ([1, 2, 1, 3], 2)
+
+    def test_filter_2d_rows(self) -> None:
+        from gridcalc.libs.xlsx import FILTER
+
+        m = Vec([3, "c", 1, "a", 2, "b"], cols=2)
+        out = FILTER(m, Vec([1, 0, 1]))
+        assert (out.data, out.cols) == ([3, "c", 2, "b"], 2)
+
+    def test_filter_2d_cols(self) -> None:
+        from gridcalc.libs.xlsx import FILTER
+
+        # 2x3: include length matches the column count -> keep columns.
+        m = Vec([3, 1, 2, 30, 10, 20], cols=3)
+        out = FILTER(m, Vec([1, 0, 1]))
+        assert (out.data, out.cols) == ([3, 2, 30, 20], 2)
+
+    def test_filter_2d_no_match_and_mismatch(self) -> None:
+        from gridcalc.libs.xlsx import FILTER
+
+        m = Vec([3, "c", 1, "a", 2, "b"], cols=2)
+        assert FILTER(m, Vec([0, 0, 0]), "empty") == "empty"
+        # Length matches neither rows (3) nor cols (2) -> #VALUE!.
+        assert FILTER(m, Vec([1, 1, 1, 1])) is ExcelError.VALUE
+
+
+class TestLet:
+    """LET(name1, value1, [name2, value2, ...], calculation).
+
+    Local bindings live in the evaluator (not the flat builtins dict):
+    the odd arguments are declared names and the final argument reads
+    them. Exercised through the EXCEL-mode grid, which drives the AST
+    evaluator that owns the scope stack.
+    """
+
+    @staticmethod
+    def _grid() -> Grid:
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        return g
+
+    def test_single_binding(self) -> None:
+        g = self._grid()
+        g.setcell(0, 0, "=LET(x, 5, x + 1)")
+        assert g.cells[0][0].val == 6.0
+
+    def test_multiple_bindings(self) -> None:
+        g = self._grid()
+        g.setcell(0, 0, "=LET(x, 5, y, 10, x * y)")
+        assert g.cells[0][0].val == 50.0
+
+    def test_later_binding_sees_earlier(self) -> None:
+        g = self._grid()
+        # y is defined in terms of the previously-bound x.
+        g.setcell(0, 0, "=LET(x, 2, y, x + 3, x * y)")
+        assert g.cells[0][0].val == 10.0
+
+    def test_nested_let_shadows(self) -> None:
+        g = self._grid()
+        # Inner x=100 shadows outer x=3 only within the inner calculation.
+        g.setcell(0, 0, "=LET(x, 3, LET(x, 100, x) + x)")
+        assert g.cells[0][0].val == 103.0
+
+    def test_binding_references_cells(self) -> None:
+        g = self._grid()
+        for i, v in enumerate([1.0, 2.0, 3.0]):
+            g.setcell(1, i, str(v))
+        g.setcell(0, 0, "=LET(s, SUM(B1:B3), s * 2)")
+        assert g.cells[0][0].val == 12.0
+
+    def test_recalcs_on_dependency_change(self) -> None:
+        g = self._grid()
+        for i, v in enumerate([1.0, 2.0, 3.0]):
+            g.setcell(1, i, str(v))
+        g.setcell(0, 0, "=LET(s, SUM(B1:B3), s * 2)")
+        assert g.cells[0][0].val == 12.0
+        g.setcell(1, 0, "10")  # B1 -> 10, so SUM becomes 15
+        assert g.cells[0][0].val == 30.0
+
+    def test_error_propagates(self) -> None:
+        g = self._grid()
+        g.setcell(0, 0, "=LET(x, 1/0, x + 1)")
+        assert g.cells[0][0].err is ExcelError.DIV0
+
+    def test_name_out_of_scope(self) -> None:
+        g = self._grid()
+        # The trailing x is outside the LET and unbound -> #NAME?.
+        g.setcell(0, 0, "=LET(x, 10, x) + x")
+        assert g.cells[0][0].err is ExcelError.NAME
+
+    def test_malformed_arity(self) -> None:
+        g = self._grid()
+        # Even argument count: a name/value pair with no calculation.
+        g.setcell(0, 0, "=LET(x, 5)")
+        assert g.cells[0][0].err is ExcelError.VALUE
+
+    def test_returns_vec_shape(self) -> None:
+        g = self._grid()
+        # A LET whose calculation is an array preserves the spill shape.
+        g.setcell(0, 0, "=LET(v, SEQUENCE(1, 3), v)")
+        assert g.cells[0][0].arr == [1.0, 2.0, 3.0]
+        assert g.cells[0][0].arr_cols == 3
 
 
 class TestRangeTextBool:

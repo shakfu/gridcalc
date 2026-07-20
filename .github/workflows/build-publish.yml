@@ -47,7 +47,7 @@ jobs:
           retention-days: 14
 
   build-wheels-linux:
-    name: Build wheels (Linux)
+    name: Build wheels (Linux x86_64)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,12 +55,33 @@ jobs:
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.4.1
         env:
-          CIBW_ARCHS_LINUX: x86_64 aarch64
+          CIBW_ARCHS_LINUX: x86_64
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-linux
+          path: wheelhouse/*.whl
+          retention-days: 14
+
+  build-wheels-linux-arm:
+    name: Build wheels (Linux aarch64)
+    # Native arm64 runner (free for public repos). Building aarch64 via QEMU
+    # emulation on an x86_64 runner compiles OpenXLSX ~10-50x slower and blew
+    # past the 6h job limit; native builds finish in minutes.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v3.4.1
+        env:
+          CIBW_ARCHS_LINUX: aarch64
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-arm
           path: wheelhouse/*.whl
           retention-days: 14
 
@@ -107,7 +128,14 @@ jobs:
 
   collect-artifacts:
     name: Collect all build artifacts
-    needs: [build-sdist, build-wheels-linux, build-wheels-macos, build-wheels-windows]
+    needs:
+      [
+        build-sdist,
+        build-wheels-linux,
+        build-wheels-linux-arm,
+        build-wheels-macos,
+        build-wheels-windows,
+      ]
     runs-on: ubuntu-latest
     steps:
       - name: Download sdist
@@ -120,6 +148,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: wheels-linux
+          path: dist/
+
+      - name: Download Linux arm wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-linux-arm
           path: dist/
 
       - name: Download macOS wheels

@@ -41,7 +41,7 @@ env:
 
 jobs:
   build-abi3-linux:
-    name: Build abi3 wheel (Linux)
+    name: Build abi3 wheel (Linux x86_64)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,12 +49,32 @@ jobs:
       - name: Build wheel
         uses: pypa/cibuildwheel@v3.4.1
         env:
-          CIBW_ARCHS_LINUX: x86_64 aarch64
+          CIBW_ARCHS_LINUX: x86_64
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
           name: abi3-wheels-linux
+          path: wheelhouse/*.whl
+          retention-days: 14
+
+  build-abi3-linux-arm:
+    name: Build abi3 wheel (Linux aarch64)
+    # Native arm64 runner: emulated aarch64 builds of OpenXLSX exceed the 6h
+    # job limit. See build-publish.yml for the same split.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wheel
+        uses: pypa/cibuildwheel@v3.4.1
+        env:
+          CIBW_ARCHS_LINUX: aarch64
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: abi3-wheels-linux-arm
           path: wheelhouse/*.whl
           retention-days: 14
 
@@ -101,13 +121,20 @@ jobs:
 
   collect-abi3:
     name: Collect abi3 artifacts
-    needs: [build-abi3-linux, build-abi3-macos, build-abi3-windows]
+    needs:
+      [build-abi3-linux, build-abi3-linux-arm, build-abi3-macos, build-abi3-windows]
     runs-on: ubuntu-latest
     steps:
       - name: Download Linux wheel
         uses: actions/download-artifact@v4
         with:
           name: abi3-wheels-linux
+          path: dist/
+
+      - name: Download Linux arm wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: abi3-wheels-linux-arm
           path: dist/
 
       - name: Download macOS wheel

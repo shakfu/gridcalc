@@ -68,6 +68,10 @@ jobs:
         uses: pypa/cibuildwheel@v3.4.1
         env:
           CIBW_ARCHS_MACOS: x86_64 arm64
+          # nanobind uses C++17 aligned new/delete (needs macOS 10.13+) and
+          # requires 10.14+; cibuildwheel's default x86_64 target is 10.9,
+          # which fails to compile. arm64 stays at its 11.0 floor regardless.
+          MACOSX_DEPLOYMENT_TARGET: "10.14"
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4

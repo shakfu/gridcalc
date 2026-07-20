@@ -2,6 +2,7 @@
 
 import curses
 import importlib.util
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +11,12 @@ from gridcalc.tui import UndoManager
 
 _HAS_NUMPY = importlib.util.find_spec("numpy") is not None
 _HAS_PANDAS = importlib.util.find_spec("pandas") is not None
+
+# Resolve example fixtures relative to this file, not the process CWD, so the
+# tests pass wherever pytest is invoked from -- e.g. cibuildwheel runs the
+# suite from a temporary directory, where a bare "examples/..." path would
+# silently miss and leave the grid empty.
+EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 
 
 class TestUndoManagerSaveCell:
@@ -1901,7 +1908,9 @@ class TestCmdlineKeypath:
     def _load_lp(self):
         _setup_curses_constants()
         g = Grid()
-        g.jsonload("examples/example_lp.json")
+        lp = EXAMPLES / "example_lp.json"
+        assert lp.is_file(), f"missing example fixture: {lp}"
+        g.jsonload(str(lp))
         g.recalc()
         return g
 

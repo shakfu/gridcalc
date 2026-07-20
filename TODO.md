@@ -132,14 +132,6 @@ CHANGELOG.md.
 
 ## Documentation & infrastructure
 
-- [ ] **Wheel build matrix -- aarch64 / manylinux variants.** Linux
-  (ubuntu-latest), macOS (macos-latest), and Windows (windows-latest)
-  wheels for cp39-cp313 are already built by
-  `.github/workflows/build-publish.yml` via cibuildwheel. Verify the
-  resulting matrix actually covers manylinux x86_64 *and* aarch64,
-  and macOS arm64 (the `runs-on: macos-latest` runner produces arm64
-  but x86_64 may need a separate job). Once confirmed end-to-end,
-  drop the documented build prerequisites note.
 - [ ] **mkdocs documentation site** (mkdocs-material). Publish to
   GitHub Pages via `gh-pages` branch or GitHub Actions.
 - [ ] **EXCEL grammar reference page.** Operators, precedence, error

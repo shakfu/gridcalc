@@ -18,8 +18,12 @@ on:
     branches: [main, master]
     paths:
       - "src/gridcalc/_core.cpp"
+      # `_opt` is built into the abi3 wheels too, so changes to it must
+      # retrigger this workflow.
+      - "src/gridcalc/_opt.cpp"
       - "CMakeLists.txt"
       - "thirdparty/OpenXLSX/**"
+      - "thirdparty/lp_solve_5.5/**"
       - ".github/workflows/build-abi3.yml"
       - "pyproject.toml"
   workflow_dispatch:

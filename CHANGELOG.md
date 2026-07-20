@@ -775,6 +775,45 @@
 
 ### Infrastructure
 
+- **Cross-platform wheel builds and CI fixed end-to-end.** Every target
+  now builds and tests green across `ci.yml`, `build-publish.yml`, and
+  `build-abi3.yml`: manylinux x86_64 + aarch64, macOS x86_64 + arm64,
+  and Windows AMD64. Each failure was platform-specific and had been
+  masked by the one before it:
+  - **Linux link failure.** `CMAKE_POSITION_INDEPENDENT_CODE ON` in
+    `CMakeLists.txt`. The static dependencies OpenXLSX fetches (miniz,
+    pugixml) were compiled without `-fPIC`, so GNU ld refused to link
+    `libminiz.a` into the shared `_core` module (`relocation
+    R_X86_64_PC32 ... recompile with -fPIC`). macOS links non-PIC
+    static objects fine, so the break was Linux-only.
+  - **Windows compile failure.** `lp_lib.h` defines `isnan` as a macro
+    (`-> _isnan`) on MSVC, turning `_opt.cpp`'s `std::isnan(...)` into
+    `std::_isnan(...)` (`error C2039`). `_opt.cpp` now `#undef`s the
+    macro after the lp_solve include; lp_solve's own sources compile
+    separately and keep theirs.
+  - **Windows runtime.** `windows-curses` added as a
+    `sys_platform == 'win32'` dependency -- curses is not in the Windows
+    stdlib and the console entry point is the curses TUI, so the shipped
+    Windows wheel previously crashed on launch.
+  - **macOS build failure.** `MACOSX_DEPLOYMENT_TARGET=10.15` on the
+    macOS wheel jobs. cibuildwheel defaults the x86_64 wheel to 10.9,
+    which lacks both nanobind's C++17 aligned `new`/`delete` (10.13+)
+    and OpenXLSX's `std::filesystem` (10.15+). Local builds never hit
+    this because they target the host SDK, not 10.9.
+  - **aarch64 timeout.** Linux wheels split into an x86_64 job on
+    `ubuntu-latest` and an aarch64 job on the native `ubuntu-24.04-arm`
+    runner. Building aarch64 under QEMU emulation compiled OpenXLSX so
+    slowly that the job hit the 6h limit and was auto-cancelled.
+  - **CI QA job.** mypy now checks `src/gridcalc/` only (it had been
+    checking `tests/` under `strict = true`, emitting 1746 errors); the
+    build matrix moved 3.9 -> 3.10 to match `requires-python`; and
+    `pytest-cov` joined the dev group so the `--cov` test step runs.
+  - **Test portability.** `tests/test_tui.py` resolves its example
+    fixture relative to `__file__` instead of the process CWD, so the
+    suite passes under cibuildwheel, which runs pytest from a temporary
+    directory where the old relative path silently missed and left the
+    grid empty.
+
 - **Stable-ABI (cp312-abi3) wheel build path.** A new
   `.github/workflows/build-abi3.yml` produces a single
   `cp312-abi3-<platform>` wheel per OS / arch that installs unchanged

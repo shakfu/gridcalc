@@ -19,7 +19,7 @@ def _search_grid(g: Grid, pattern: str) -> list[tuple[int, int]]:
             matches.append((c, r))
             continue
         if cl.type in (NUM, FORMULA) and not math.isnan(cl.val):
-            if cl.val == int(cl.val) and abs(cl.val) < 1e15:
+            if abs(cl.val) < 1e15 and cl.val == int(cl.val):
                 valstr = str(int(cl.val))
             else:
                 valstr = f"{cl.val:g}"

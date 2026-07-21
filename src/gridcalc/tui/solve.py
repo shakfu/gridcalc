@@ -5,10 +5,10 @@ from __future__ import annotations
 import curses
 import math
 
-from ..engine import Grid, cellname, ref
+from ..engine import EMPTY, LABEL, NCOL, NROW, NUM, Grid, cellname, ref
 from ..goalseek import GoalSeekError
 from ..goalseek import seek as goal_seek
-from ..opt import OptError, OptModel
+from ..opt import OptError, OptModel, infer_model
 from ..opt import solve as opt_solve
 from ..opt import sweep as opt_sweep
 from .format import (
@@ -16,6 +16,7 @@ from .format import (
     format_sensitivity,
     format_sweep,
     format_unbounded,
+    sensitivity_block,
 )
 from .undo import UndoManager
 from .widgets import _flash, pager, show_error
@@ -191,6 +192,122 @@ def _resolve_model(model: OptModel) -> _ResolvedModel:
     )
 
 
+def _write_sensitivity(
+    g: Grid,
+    undo: UndoManager,
+    block: list[list[str | float]],
+    anchor: tuple[int, int],
+    *,
+    force: bool,
+) -> str | None:
+    """Write a report block into the grid at ``anchor``.
+
+    Returns an error message, or None on success. Refuses to overwrite a
+    non-empty cell unless ``force``: the block is several columns wide and
+    silently flattening a corner of someone's sheet is not recoverable by
+    reading the screen. ``into!`` is the force form, matching ``:q!``.
+    """
+    ac, ar = anchor
+    height = len(block)
+    width = max((len(r) for r in block), default=0)
+    if ac + width > NCOL or ar + height > NROW:
+        return f"report ({width}x{height}) does not fit at {cellname(ac, ar)}"
+
+    # The report owns its whole bounding rectangle, including the short
+    # separator row between the two tables. Checking and clearing only the
+    # populated positions would leave a user's stray value sitting inside the
+    # gap, reading as part of the report.
+    if not force:
+        for dr in range(height):
+            for dc in range(width):
+                cell = g.cells[ac + dc][ar + dr]
+                if cell is not None and cell.type != EMPTY:
+                    return f"{cellname(ac + dc, ar + dr)} is not empty (use 'into!' to overwrite)"
+
+    undo.save_region(g, ac, ar, ac + width - 1, ar + height - 1)
+    for dr in range(height):
+        row = block[dr]
+        for dc in range(width):
+            c, r = ac + dc, ar + dr
+            if dc >= len(row):
+                g._cells.pop((c, r), None)  # gap inside the report: clear it
+                continue
+            value = row[dc]
+            # The report lands on empty cells by design, so this must create
+            # them rather than write through the shared empty placeholder.
+            cell = g._ensure_cell(c, r)
+            cell.ast = None
+            cell.ast_text = ""
+            cell.err = None
+            cell.err_msg = None
+            if isinstance(value, str):
+                cell.type = LABEL
+                cell.text = value
+            else:
+                cell.type = NUM
+                cell.val = float(value)
+                cell.text = ""
+    g.recalc()
+    g.dirty = 1
+    return None
+
+
+def _cells_to_spec(cells: list[tuple[int, int]]) -> str:
+    """Render a cell list as a comma-separated spec string.
+
+    Inferred models are stored as specs, exactly like typed ones, so they
+    round-trip through the workbook JSON and can be re-run with `:opt` after
+    reopening. A contiguous single-column or single-row run collapses to
+    range syntax so the saved model stays readable.
+    """
+    if not cells:
+        return ""
+    cols = {c for c, _ in cells}
+    rows = {r for _, r in cells}
+    if len(cols) == 1:
+        rs = sorted(rows)
+        if rs == list(range(rs[0], rs[-1] + 1)) and len(rs) > 1:
+            c = next(iter(cols))
+            return f"{cellname(c, rs[0])}:{cellname(c, rs[-1])}"
+    if len(rows) == 1:
+        cs = sorted(cols)
+        if cs == list(range(cs[0], cs[-1] + 1)) and len(cs) > 1:
+            r = next(iter(rows))
+            return f"{cellname(cs[0], r)}:{cellname(cs[-1], r)}"
+    return ",".join(cellname(c, r) for c, r in cells)
+
+
+def _execute_selection(
+    stdscr: curses.window,
+    g: Grid,
+    undo: UndoManager,
+    sense: str,
+    sel: tuple[int, int, int, int],
+) -> bool:
+    """``:opt max|min`` over a visual selection: infer the model, then run it.
+
+    The inferred model is stored as ``default`` before running, matching the
+    inline form -- so the block only has to be selected once, and `:opt`
+    re-runs it afterwards without a selection.
+    """
+    c1, r1, c2, r2 = sel
+    try:
+        inferred = infer_model(g, c1, r1, c2, r2)
+    except OptError as e:
+        show_error(stdscr, f"opt: {e}")
+        return False
+
+    model = OptModel(
+        sense=sense,
+        objective=cellname(*inferred.objective),
+        vars=_cells_to_spec(inferred.decision_vars),
+        constraints=_cells_to_spec(inferred.constraint_cells),
+    )
+    g.models["default"] = model
+    g.dirty = 1
+    return _execute_model(stdscr, g, undo, model)
+
+
 _SWEEP_USAGE = "usage: opt sweep <constraint-cell> <lo>:<hi> [steps] [model]"
 
 
@@ -269,6 +386,8 @@ def _execute_model(
     model: OptModel,
     *,
     sensitivity: bool = False,
+    write_to: tuple[int, int] | None = None,
+    force: bool = False,
 ) -> bool:
     """Resolve a model's spec strings, run the solver, and report.
 
@@ -340,6 +459,19 @@ def _execute_model(
             # common case and the reason is not obvious.
             _flash(stdscr, f"{summary}  (no sensitivity: integer/binary model)")
             return False
+        if write_to is not None:
+            err = _write_sensitivity(
+                g,
+                undo,
+                sensitivity_block(result.sensitivity, cellname),
+                write_to,
+                force=force,
+            )
+            if err:
+                _flash(stdscr, f"opt: {err}")
+            else:
+                _flash(stdscr, f"{summary}  sensitivity written at {cellname(*write_to)}")
+            return False
         pager(
             stdscr,
             f"Sensitivity -- {summary}",
@@ -351,11 +483,19 @@ def _execute_model(
     return False
 
 
-def cmd_opt(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bool:
+def cmd_opt(
+    stdscr: curses.window,
+    g: Grid,
+    undo: UndoManager,
+    args: str,
+    sel: tuple[int, int, int, int] | None = None,
+) -> bool:
     """Dispatch for ``:opt``.
 
     Subcommands:
       * ``:opt``                         - run the model named ``default``
+      * ``:opt max|min`` with a visual selection
+                                         - infer the model from the block
       * ``:opt max|min <cell> vars ...`` - solve inline, also saves as ``default``
       * ``:opt def <name> max|min ...``  - save under ``<name>``; does NOT execute
       * ``:opt run [<name>]``            - execute saved model (default: ``default``)
@@ -369,6 +509,12 @@ def cmd_opt(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> boo
     workbook file, so an LP defined once is reusable across sessions.
     """
     parts = args.split()
+
+    # With a visual selection, `:opt max|min` reads the model out of the
+    # selected block instead of requiring `vars ... st ...`. The sheet's
+    # layout already encodes the model; this saves retyping it as ranges.
+    if sel is not None and len(parts) == 1 and parts[0].lower() in ("max", "min"):
+        return _execute_selection(stdscr, g, undo, parts[0].lower(), sel)
 
     # `:opt` alone: run the default model if defined.
     if not parts:
@@ -415,12 +561,34 @@ def cmd_opt(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> boo
         return _execute_sweep(stdscr, g, parts[1:])
 
     if head == "sens":
-        name = parts[1] if len(parts) >= 2 else "default"
+        name = "default"
+        target: tuple[int, int] | None = None
+        force = False
+        rest = parts[1:]
+        i = 0
+        while i < len(rest):
+            tok = rest[i].lower()
+            if tok in ("into", "into!"):
+                if i + 1 >= len(rest):
+                    show_error(stdscr, "usage: opt sens [<name>] into[!] <cell>")
+                    return False
+                m = ref(rest[i + 1])
+                if not m or m[0] != len(rest[i + 1]):
+                    show_error(stdscr, f"opt: bad target cell: {rest[i + 1]}")
+                    return False
+                force = tok.endswith("!")
+                target = (m[1], m[2])
+                i += 2
+            else:
+                name = rest[i]
+                i += 1
         model = g.models.get(name)
         if model is None:
             show_error(stdscr, f"opt: no model named {name!r}")
             return False
-        return _execute_model(stdscr, g, undo, model, sensitivity=True)
+        return _execute_model(
+            stdscr, g, undo, model, sensitivity=True, write_to=target, force=force
+        )
 
     if head == "def":
         if len(parts) < 6:

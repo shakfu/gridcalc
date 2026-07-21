@@ -13,7 +13,7 @@ def _fmt_val(s: str) -> str:
     """Format a string as a Python numeric literal or string repr."""
     try:
         v = float(s)
-        if v == int(v) and abs(v) < 1e15:
+        if abs(v) < 1e15 and v == int(v):
             return str(int(v))
         return repr(v)
     except (ValueError, OverflowError):

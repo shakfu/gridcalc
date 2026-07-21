@@ -724,7 +724,7 @@ def cmd_view(stdscr: curses.window, g: Grid) -> bool:
                 except (TypeError, ValueError):
                     pass
                 if isinstance(val, float):
-                    if val == int(val) and abs(val) < 1e15:
+                    if abs(val) < 1e15 and val == int(val):
                         row.append(str(int(val)))
                     else:
                         row.append(f"{val:g}")
@@ -1247,7 +1247,7 @@ def cmdexec(
     if cmd == "sort":
         return cmd_sort(stdscr, g, undo, args, sel=sel)
     if cmd == "opt":
-        return cmd_opt(stdscr, g, undo, args)
+        return cmd_opt(stdscr, g, undo, args, sel=sel)
     if cmd == "goal":
         return cmd_goal(stdscr, g, undo, args)
     if cmd in ("dr", "delrow"):

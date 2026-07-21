@@ -2,11 +2,12 @@
 
 import curses
 import importlib.util
+import math
 from pathlib import Path
 
 import pytest
 
-from gridcalc.engine import Grid
+from gridcalc.engine import Grid, col_name
 from gridcalc.opt import OptModel
 from gridcalc.tui import UndoManager
 
@@ -2868,3 +2869,263 @@ class TestFormatSweep:
         ]
         text = "\n".join(format_sweep(flat, "D2"))
         assert "constant across this range" in text
+
+
+class TestInfinityDoesNotCrashDisplay:
+    """`=1e308*10` overflows to infinity in any mode, and every place that
+    formatted a cell value used `v == int(v) and abs(v) < N`. Python
+    evaluates `int(v)` before the magnitude guard can short-circuit, so
+    OverflowError propagated out of `draw()` and killed the session. NaN was
+    guarded two lines away; infinity was missed.
+    """
+
+    def _inf_grid(self):
+        g = Grid()
+        g.setcell(0, 0, "=1e308*10")
+        g.setcell(0, 1, "=-1e308*10")
+        g.recalc()
+        return g
+
+    def test_fmtcell_renders_infinity(self):
+        from gridcalc.tui.format import fmtcell
+
+        g = self._inf_grid()
+        assert fmtcell(g.cells[0][0], 10).strip() == "inf"
+        assert fmtcell(g.cells[0][1], 10).strip() == "-inf"
+
+    @pytest.mark.parametrize("spec", ["I", "*", "$", "%", "L", "D", ""])
+    def test_fmtcell_survives_every_format_spec(self, spec):
+        """`I` and `*` call int() unconditionally, so the guard has to come
+        before the format dispatch rather than inside it."""
+        from gridcalc.tui.format import fmtcell
+
+        cl = self._inf_grid().cells[0][0]
+        cl.fmt = spec
+        assert "inf" in fmtcell(cl, 12)
+
+    def test_fmtcell_survives_a_number_format_string(self):
+        from gridcalc.tui.format import fmtcell
+
+        cl = self._inf_grid().cells[0][0]
+        cl.fmtstr = ",.2f"
+        assert "inf" in fmtcell(cl, 12)
+
+    def test_clipboard_value_survives_infinity(self):
+        from gridcalc.tui.format import cell_clip_value
+
+        g = self._inf_grid()
+        assert cell_clip_value(g.cells[0][0]) == "inf"
+        assert cell_clip_value(g.cells[0][1]) == "-inf"
+
+    def test_search_survives_infinity(self):
+        """Search stringifies every numeric cell to match against, so it hit
+        the same idiom."""
+        from gridcalc.tui.search import _search_grid
+
+        g = self._inf_grid()
+        assert _search_grid(g, "zzz") == []
+        assert _search_grid(g, "inf") == [(0, 0), (0, 1)]
+
+    def test_json_roundtrip_survives_infinity(self, tmp_path):
+        g = self._inf_grid()
+        p = tmp_path / "inf.json"
+        assert g.jsonsave(str(p)) == 0
+        g2 = Grid()
+        assert g2.jsonload(str(p)) == 0
+
+    def test_csv_export_survives_infinity(self, tmp_path):
+        g = self._inf_grid()
+        p = tmp_path / "inf.csv"
+        g.csvsave(str(p))  # must not raise
+
+
+class TestSensitivityIntoCells:
+    """`:opt sens [<name>] into[!] <cell>` writes the report into the grid.
+
+    The point is composability: the numbers land as NUM cells so downstream
+    formulas can reference them, which a paged report cannot offer.
+    """
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = TestSensitivityReport.RecordingStdscr()
+        self.g = Grid()
+        self.undo = UndoManager()
+        for c, r, t in [
+            (0, 0, "0"),
+            (0, 1, "0"),
+            (2, 0, "=3*A1+5*A2"),
+            (3, 0, "=A1<=4"),
+            (3, 1, "=2*A2<=12"),
+            (3, 2, "=3*A1+2*A2<=18"),
+        ]:
+            self.g.setcell(c, r, t)
+        self.g.models["default"] = OptModel(
+            sense="max", objective="C1", vars="A1:A2", constraints="D1:D3"
+        )
+
+    def _run(self, args):
+        from gridcalc.tui import cmdexec
+
+        return cmdexec(self.stdscr, self.g, self.undo, args)
+
+    def test_writes_a_block_at_the_anchor(self):
+        self._run("opt sens into F1")
+        assert self.g.cells[5][0].text == "Variables"
+        assert self.g.cells[5][1].text == "A1"
+        assert "written at F1" in self.stdscr.screen
+
+    def test_numbers_are_numeric_not_labels(self):
+        """A LABEL would render the same but break every downstream formula,
+        which is the entire reason for writing into cells."""
+        from gridcalc.engine import NUM
+
+        self._run("opt sens into F1")
+        shadow = self.g.cells[6][6]  # G7: shadow price of D2
+        assert shadow.type == NUM
+        assert shadow.val == pytest.approx(1.5)
+
+    def test_written_values_are_referenceable_from_formulas(self):
+        self._run("opt sens into F1")
+        self.g.setcell(5, 12, "=G7*100")
+        self.g.recalc()
+        assert self.g.cells[5][12].val == pytest.approx(150.0)
+
+    def test_writes_infinities_without_crashing_the_display(self):
+        from gridcalc.tui.format import fmtcell
+
+        self._run("opt sens into F1")
+        # A2's objective-coefficient upper range is unbounded.
+        coef_till = self.g.cells[10][2]
+        assert math.isinf(coef_till.val)
+        assert fmtcell(coef_till, 10).strip() == "inf"
+
+    def test_refuses_to_overwrite_without_force(self):
+        self.g.setcell(6, 3, "precious")
+        self._run("opt sens into F1")
+        assert "not empty" in self.stdscr.screen
+        assert self.g.cells[6][3].text == "precious", "nothing may be written"
+
+    def test_force_overwrites(self):
+        self.g.setcell(6, 3, "precious")
+        self._run("opt sens into! F1")
+        assert self.g.cells[6][3].text != "precious"
+        assert "written at F1" in self.stdscr.screen
+
+    def test_refusal_names_the_blocking_cell(self):
+        self.g.setcell(6, 3, "precious")
+        self._run("opt sens into F1")
+        assert "G4" in self.stdscr.screen
+
+    def test_is_undoable(self):
+        self._run("opt sens into F1")
+        assert self.g.cells[5][0].text == "Variables"
+        self.undo.undo(self.g)
+        assert self.g.cells[5][0].type == 0
+
+    def test_refuses_a_block_that_would_not_fit(self):
+        from gridcalc.engine import NCOL
+
+        col = col_name(NCOL - 2)
+        self._run(f"opt sens into {col}1")
+        assert "does not fit" in self.stdscr.screen
+
+    def test_bad_target_cell_reports(self):
+        self._run("opt sens into notacell")
+        assert "bad target cell" in self.stdscr.screen
+
+    def test_missing_target_shows_usage(self):
+        self._run("opt sens into")
+        assert "usage" in self.stdscr.screen
+
+    def test_named_model_with_target(self):
+        self.g.models["alt"] = OptModel(
+            sense="max", objective="C1", vars="A1:A2", constraints="D1:D3"
+        )
+        self._run("opt sens alt into F1")
+        assert self.g.cells[5][0].text == "Variables"
+
+    def test_without_into_still_pages_the_report(self):
+        self._run("opt sens")
+        assert self.g.cells[5][0].type == 0, "no target means no writing"
+        assert "shadow" in self.stdscr.screen
+
+    def test_clears_the_gap_row_inside_the_block(self):
+        """The separator row between the two tables is part of the report's
+        rectangle. Leaving a user's value there would read as report data."""
+        self.g.setcell(6, 3, "stray")
+        self._run("opt sens into! F1")
+        assert self.g.cells[6][3].type == 0
+
+
+class TestOptOnVisualSelection:
+    """`:opt max|min` with a visual selection infers the model from the block."""
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = TestSensitivityReport.RecordingStdscr()
+        self.g = Grid()
+        self.undo = UndoManager()
+        self.g.setcell(0, 0, '"Product')
+        self.g.setcell(0, 1, "0")
+        self.g.setcell(0, 2, "0")
+        self.g.setcell(1, 1, "=3*A2+5*A3")
+        self.g.setcell(2, 1, "=A2<=4")
+        self.g.setcell(2, 2, "=2*A3<=12")
+        self.g.setcell(2, 3, "=3*A2+2*A3<=18")
+
+    def _run(self, args, sel=(0, 0, 2, 3)):
+        from gridcalc.tui import cmdexec
+
+        return cmdexec(self.stdscr, self.g, self.undo, args, sel=sel)
+
+    def test_solves_from_the_selection(self):
+        self._run("opt max")
+        assert "OPTIMAL" in self.stdscr.screen
+        assert self.g.cells[0][1].val == pytest.approx(2.0)
+        assert self.g.cells[0][2].val == pytest.approx(6.0)
+
+    def test_min_sense_is_honoured(self):
+        self._run("opt min")
+        assert "OPTIMAL" in self.stdscr.screen
+        assert self.g.cells[1][1].val == pytest.approx(0.0)
+
+    def test_saves_the_inferred_model_as_default(self):
+        """The block only has to be selected once; `:opt` re-runs it after."""
+        self._run("opt max")
+        m = self.g.models["default"]
+        assert m.sense == "max"
+        assert m.objective == "B2"
+        assert m.vars == "A2:A3"
+        assert m.constraints == "C2:C4"
+
+    def test_saved_model_reruns_without_a_selection(self):
+        self._run("opt max")
+        self.g.setcell(0, 1, "0")
+        self.g.setcell(0, 2, "0")
+        self._run("opt", sel=None)
+        assert self.g.cells[0][1].val == pytest.approx(2.0)
+
+    def test_is_undoable(self):
+        self._run("opt max")
+        self.undo.undo(self.g)
+        assert self.g.cells[0][1].val == pytest.approx(0.0)
+
+    def test_ambiguous_objective_reports(self):
+        self.g.setcell(1, 2, "=A2+A3")
+        self._run("opt max")
+        assert "candidate objective" in self.stdscr.screen
+
+    def test_selection_without_constraints_reports(self):
+        self._run("opt max", sel=(0, 0, 1, 3))
+        assert "no constraint formulas" in self.stdscr.screen
+
+    def test_explicit_form_still_works_with_a_selection_active(self):
+        """A fully-specified command must not be hijacked by the selection."""
+        self._run("opt max B2 vars A2:A3 st C2:C4")
+        assert "OPTIMAL" in self.stdscr.screen
+        assert self.g.models["default"].vars == "A2:A3"
+
+    def test_no_selection_means_no_inference(self):
+        self._run("opt max", sel=None)
+        assert "usage" in self.stdscr.screen

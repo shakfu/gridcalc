@@ -206,6 +206,179 @@ class LinearForm:
         return not any(self.coeffs.values())
 
 
+class NotQuadratic(NotLinear):
+    """An objective is nonlinear in a way this optimizer cannot express.
+
+    Deliberately a subclass of :class:`NotLinear` rather than a sibling. Both
+    walkers are the safety boundary for the optimizer -- each accepts a closed
+    whitelist of AST nodes and rejects everything else, so nothing that could
+    be a sandbox concern (``Name``, ``PyCall``, attribute-style ``Call``)
+    reaches an evaluation path. Callers written against that guarantee catch
+    ``NotLinear``; widening the objective walker to degree 2 must not quietly
+    slip past those handlers.
+    """
+
+
+@dataclass
+class QuadForm:
+    """A degree-<=2 polynomial over decision variables.
+
+    ``quad`` is keyed by an ordered pair of cells: ``(k, k)`` is a squared
+    term, ``(j, k)`` with ``j != k`` is a cross term. Cross terms are tracked
+    rather than rejected on sight so the error message can name the pair that
+    made the objective non-separable.
+    """
+
+    quad: dict[tuple[CellKey, CellKey], float] = field(default_factory=dict)
+    linear: dict[CellKey, float] = field(default_factory=dict)
+    constant: float = 0.0
+
+    @property
+    def is_constant(self) -> bool:
+        return not any(self.quad.values()) and not any(self.linear.values())
+
+    @property
+    def is_linear(self) -> bool:
+        return not any(self.quad.values())
+
+    def add(self, other: QuadForm) -> QuadForm:
+        out = QuadForm(dict(self.quad), dict(self.linear), self.constant + other.constant)
+        for pair, qv in other.quad.items():
+            out.quad[pair] = out.quad.get(pair, 0.0) + qv
+        for cell, lv in other.linear.items():
+            out.linear[cell] = out.linear.get(cell, 0.0) + lv
+        return out
+
+    def neg(self) -> QuadForm:
+        return QuadForm(
+            {k: -v for k, v in self.quad.items()},
+            {k: -v for k, v in self.linear.items()},
+            -self.constant,
+        )
+
+    def sub(self, other: QuadForm) -> QuadForm:
+        return self.add(other.neg())
+
+    def scale(self, k: float) -> QuadForm:
+        if k == 0.0:
+            return QuadForm()
+        return QuadForm(
+            {c: v * k for c, v in self.quad.items()},
+            {c: v * k for c, v in self.linear.items()},
+            self.constant * k,
+        )
+
+    def mul(self, other: QuadForm) -> QuadForm:
+        """Multiply, refusing anything that would exceed degree 2."""
+        if not self.is_linear and not other.is_constant:
+            raise NotQuadratic("objective is degree 3 or higher")
+        if not other.is_linear and not self.is_constant:
+            raise NotQuadratic("objective is degree 3 or higher")
+
+        out = QuadForm({}, {}, self.constant * other.constant)
+        for pair, qv in self.quad.items():
+            out.quad[pair] = out.quad.get(pair, 0.0) + qv * other.constant
+        for pair, qv in other.quad.items():
+            out.quad[pair] = out.quad.get(pair, 0.0) + qv * self.constant
+        for cell, lv in self.linear.items():
+            out.linear[cell] = out.linear.get(cell, 0.0) + lv * other.constant
+        for cell, lv in other.linear.items():
+            out.linear[cell] = out.linear.get(cell, 0.0) + lv * self.constant
+        # The outer product of the two linear parts is where squares and
+        # cross terms come from.
+        for a, va in self.linear.items():
+            for b, vb in other.linear.items():
+                key = (a, b) if a <= b else (b, a)
+                out.quad[key] = out.quad.get(key, 0.0) + va * vb
+        return out
+
+    def squares(self) -> dict[CellKey, float]:
+        """Diagonal terms, after checking there are no cross terms."""
+        for (a, b), v in self.quad.items():
+            if a != b and v != 0.0:
+                raise NotQuadratic(
+                    f"objective couples {_cellname(*a)} and {_cellname(*b)}; "
+                    "only separable quadratics (no cross terms) are supported"
+                )
+        return {a: v for (a, b), v in self.quad.items() if a == b and v != 0.0}
+
+
+def extract_quadratic(node: Node, decision_vars: set[CellKey], grid: Grid) -> QuadForm:
+    """Reduce ``node`` to a degree-<=2 form over ``decision_vars``.
+
+    The quadratic counterpart of :func:`extract_linear`, and deliberately a
+    separate walker: constraints must stay linear, so widening the shared one
+    would have quietly admitted quadratic constraints the solver cannot take.
+    """
+    if isinstance(node, Number):
+        return QuadForm({}, {}, float(node.value))
+
+    if isinstance(node, CellRef):
+        _check_sheet(node.sheet, _active_sheet_name(grid))
+        key: CellKey = (node.col, node.row)
+        if key in decision_vars:
+            return QuadForm({}, {key: 1.0}, 0.0)
+        return QuadForm({}, {}, _cell_value(grid, node.col, node.row))
+
+    if isinstance(node, UnaryOp):
+        inner = extract_quadratic(node.operand, decision_vars, grid)
+        if node.op == "+":
+            return inner
+        if node.op == "-":
+            return inner.neg()
+        raise NotQuadratic(f"unsupported unary operator '{node.op}'")
+
+    if isinstance(node, Percent):
+        return extract_quadratic(node.operand, decision_vars, grid).scale(0.01)
+
+    if isinstance(node, BinOp):
+        if node.op == "+":
+            return extract_quadratic(node.left, decision_vars, grid).add(
+                extract_quadratic(node.right, decision_vars, grid)
+            )
+        if node.op == "-":
+            return extract_quadratic(node.left, decision_vars, grid).sub(
+                extract_quadratic(node.right, decision_vars, grid)
+            )
+        if node.op == "*":
+            return extract_quadratic(node.left, decision_vars, grid).mul(
+                extract_quadratic(node.right, decision_vars, grid)
+            )
+        if node.op == "^":
+            base = extract_quadratic(node.left, decision_vars, grid)
+            power = extract_quadratic(node.right, decision_vars, grid)
+            if not power.is_constant:
+                raise NotQuadratic("exponent must be a constant")
+            p = power.constant
+            if p == 0.0:
+                return QuadForm({}, {}, 1.0)
+            if p == 1.0:
+                return base
+            if p == 2.0:
+                return base.mul(base)
+            raise NotQuadratic(f"exponent {p:g} is not supported (only 0, 1, 2)")
+        if node.op == "/":
+            lhs = extract_quadratic(node.left, decision_vars, grid)
+            rhs = extract_quadratic(node.right, decision_vars, grid)
+            if not rhs.is_constant:
+                raise NotQuadratic("division by a decision-variable expression")
+            if rhs.constant == 0.0:
+                raise NotQuadratic("division by zero")
+            return lhs.scale(1.0 / rhs.constant)
+        raise NotQuadratic(f"unsupported operator '{node.op}'")
+
+    if isinstance(node, Call):
+        if node.name.upper() == "SUM":
+            total = QuadForm()
+            for arg in node.args:
+                lin = _sum_arg(arg, decision_vars, grid)
+                total = total.add(QuadForm({}, dict(lin.coeffs), lin.constant))
+            return total
+        raise NotQuadratic(f"function '{node.name}' is not allowed")
+
+    raise NotQuadratic(f"{type(node).__name__} is not allowed in an objective")
+
+
 @dataclass
 class VarSensitivity:
     """Sensitivity of the optimum to one decision variable.
@@ -288,6 +461,12 @@ class SolveResult:
     # the decision cells that can grow without limit. Empty if the probe
     # could not identify them (see `_unbounded_variables`).
     unbounded: list[CellKey] | None = None
+    # True when the objective had squared terms and was solved through the
+    # piecewise-linear relaxation, in which case the result is approximate.
+    quadratic: bool = False
+    # Bound on how far `objective` may sit from the true optimum. Zero for a
+    # plain LP, where the answer is exact.
+    quadratic_gap: float = 0.0
 
 
 # --- Linearity walker -------------------------------------------------------
@@ -456,6 +635,7 @@ def solve(
     sensitivity: bool = False,
     diagnose: bool = False,
     rhs_override: dict[CellKey, float] | None = None,
+    quadratic_segments: int = 64,
 ) -> SolveResult:
     """Build an LP (or MIP) from the named cells, solve, and (by default) write back.
 
@@ -515,7 +695,9 @@ def solve(
     obj_ast = _cell_ast(obj_cell) if obj_cell.type == FORMULA else None
     if obj_cell.type != FORMULA or obj_ast is None:
         raise OptError(f"objective cell {_cellname(obj_c, obj_r)} must contain a formula")
-    obj_form = extract_linear(obj_ast, var_set, grid)
+    obj_quad = extract_quadratic(obj_ast, var_set, grid)
+    obj_squares = obj_quad.squares()  # raises NotQuadratic on cross terms
+    obj_form = LinearForm(dict(obj_quad.linear), obj_quad.constant)
     c_vec = [obj_form.coeffs.get(v, 0.0) for v in decision_vars]
     # The objective constant is dropped here: lp_solve's `solve` returns
     # only the linear part. We add it back to the reported objective below.
@@ -591,6 +773,31 @@ def solve(
     int_indices = sorted(var_index[k] for k in int_set)
     bin_indices = sorted(var_index[k] for k in bin_set)
 
+    # A separable quadratic objective is handled by extending the LP with one
+    # auxiliary column per squared term plus a fan of tangent constraints; see
+    # `_add_quadratic_relaxation`. Everything downstream still sees an LP.
+    quad_gap = 0.0
+    if obj_squares:
+        quad_gap = _add_quadratic_relaxation(
+            obj_squares,
+            decision_vars,
+            var_index,
+            c_vec,
+            A,
+            sense,
+            rhs,
+            lb,
+            ub,
+            maximize=maximize,
+            segments=quadratic_segments,
+        )
+        # The relaxation's duals belong to the approximating LP, not to the
+        # quadratic problem, and its extra rows are not user constraints.
+        # Withhold both analyses rather than report numbers about the wrong
+        # model -- the same call made for MIPs.
+        sensitivity = False
+        diagnose = False
+
     # Solve.
     sol = _ext.solve_lp(
         c_vec,
@@ -612,8 +819,17 @@ def solve(
 
     values: dict[CellKey, float] = {}
     if solved_ok:
-        for v, x in zip(decision_vars, sol.x, strict=True):
+        # `sol.x` is longer than `decision_vars` when a quadratic relaxation
+        # appended auxiliary columns; the trailing entries are not cells.
+        for v, x in zip(decision_vars, sol.x[: len(decision_vars)], strict=True):
             values[v] = float(x)
+        if obj_squares:
+            # Report the objective's true value at the solved point rather
+            # than the relaxation's. The point is feasible for the real
+            # problem, so its true objective is achievable; the relaxed value
+            # is an artefact of the approximation and reads slightly better
+            # than reality.
+            objective_total = evaluate_quadratic(obj_squares, obj_form, values)
 
     applied = False
     if apply and values:
@@ -664,6 +880,8 @@ def solve(
         sensitivity=sens,
         conflict=conflict,
         unbounded=runaway,
+        quadratic=bool(obj_squares),
+        quadratic_gap=quad_gap if obj_squares else 0.0,
     )
 
 
@@ -1032,3 +1250,126 @@ def infer_model(grid: Grid, c1: int, r1: int, c2: int, r2: int) -> InferredModel
         decision_vars=decision_vars,
         constraint_cells=constraint_cells,
     )
+
+
+def _add_quadratic_relaxation(
+    squares: dict[CellKey, float],
+    decision_vars: list[CellKey],
+    var_index: dict[CellKey, int],
+    c_vec: list[float],
+    A: list[list[float]],
+    sense: list[int],
+    rhs: list[float],
+    lb: list[float],
+    ub: list[float],
+    *,
+    maximize: bool,
+    segments: int,
+) -> float:
+    """Extend an LP in place so it approximates a separable quadratic objective.
+
+    lp_solve is LP/MIP only. For a *convex* separable quadratic there is a
+    standard exact-in-the-limit reformulation that needs no second solver: a
+    convex function is the upper envelope of its tangents, so
+
+        x^2  ==  max over a of ( 2*a*x - a^2 )
+
+    Introduce one auxiliary column ``z_j`` per squared term and constrain it
+    from below by a fan of tangents:
+
+        z_j - 2*a_k*x_j >= -a_k^2      for tangent points a_k
+
+    The objective then uses ``q_j * z_j``. When the objective pushes ``z_j``
+    downward -- minimising with ``q_j > 0``, or maximising with ``q_j < 0`` --
+    the solver drives each ``z_j`` down onto the envelope, so ``z_j``
+    approaches ``x_j^2`` from below. That is exactly the convex case, and the
+    reason the sign of every coefficient is checked before we get here: with
+    the wrong sign the solver would push ``z_j`` to its bound instead and
+    return a confident answer to a different problem.
+
+    Returns a bound on the objective gap. The tangent envelope understates
+    ``x^2`` by at most ``h^2/4`` between adjacent tangent points spaced ``h``
+    apart, so the bound is ``sum_j |q_j| * h_j^2 / 4``.
+
+    Requires finite bounds on every quadratic variable: tangent points have to
+    be placed across a known interval, and there is no meaningful place to put
+    them on an unbounded one.
+    """
+    if segments < 1:
+        raise OptError("quadratic_segments must be at least 1")
+
+    for cell, q in squares.items():
+        name = _cellname(*cell)
+        # Convexity. Minimising needs a convex objective (q > 0); maximising
+        # needs concave (q < 0). The wrong sign makes the true optimum sit at
+        # a corner of the feasible region and the relaxation unbounded or
+        # simply wrong, so refuse rather than approximate.
+        if maximize and q > 0.0:
+            raise NotQuadratic(
+                f"maximising a convex objective: {name}^2 has a positive "
+                f"coefficient ({q:g}); the maximum is unbounded or at a corner, "
+                "which this solver cannot find reliably"
+            )
+        if not maximize and q < 0.0:
+            raise NotQuadratic(
+                f"minimising a concave objective: {name}^2 has a negative "
+                f"coefficient ({q:g}); the minimum is at a corner, which this "
+                "solver cannot find reliably"
+            )
+
+    gap = 0.0
+    for cell in sorted(squares, key=lambda k: var_index[k]):
+        q = squares[cell]
+        j = var_index[cell]
+        lo, hi = lb[j], ub[j]
+        name = _cellname(*cell)
+        if math.isinf(lo) or math.isinf(hi):
+            raise OptError(
+                f"{name} appears squared in the objective but is unbounded; "
+                "give it finite bounds (e.g. 'bounds " + name + "=0:100')"
+            )
+        if hi <= lo:
+            # Pinned variable: the square is a constant, nothing to model.
+            continue
+
+        z = len(c_vec)  # index of the new auxiliary column
+        c_vec.append(q)
+        lb.append(0.0)
+        ub.append(max(lo * lo, hi * hi))
+        for row in A:
+            row.append(0.0)
+
+        step = (hi - lo) / segments
+        for k in range(segments + 1):
+            a = lo + step * k
+            row = [0.0] * len(c_vec)
+            row[j] = -2.0 * a
+            row[z] = 1.0
+            A.append(row)
+            sense.append(_ext.GE)
+            rhs.append(-a * a)
+
+        gap += abs(q) * step * step / 4.0
+
+    return gap
+
+
+def evaluate_quadratic(
+    squares: dict[CellKey, float],
+    linear: LinearForm,
+    values: dict[CellKey, float],
+) -> float:
+    """The objective's true value at ``values``.
+
+    Reported instead of the relaxation's objective. The solved point is
+    feasible for the real problem, so its true objective is an achievable
+    number the user can trust; the relaxation's value is an artefact of the
+    approximation and would be slightly optimistic.
+    """
+    total = linear.constant
+    for cell, coef in linear.coeffs.items():
+        total += coef * values.get(cell, 0.0)
+    for cell, q in squares.items():
+        x = values.get(cell, 0.0)
+        total += q * x * x
+    return total

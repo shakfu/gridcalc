@@ -11,6 +11,7 @@ from gridcalc.formula.parser import parse
 from gridcalc.opt import (
     LinearForm,
     NotLinear,
+    NotQuadratic,
     OptError,
     extract_constraint,
     extract_linear,
@@ -1424,3 +1425,207 @@ def test_infer_orders_cells_like_a_typed_range():
     g.setcell(3, 0, "=A1<=1")
     m = infer_model(g, 0, 0, 3, 1)
     assert m.decision_vars == [(0, 0), (0, 1), (1, 0), (1, 1)]
+
+
+# --- Quadratic objectives --------------------------------------------------
+
+
+def _quad_solve(cells, dvars, cons, **kw):
+    g = make_grid()
+    for c, r, t in cells:
+        g.setcell(c, r, t)
+    return solve(
+        g, objective_cell=(2, 0), decision_vars=dvars, constraint_cells=cons, apply=False, **kw
+    )
+
+
+def test_quadratic_minimum_matches_the_analytic_optimum():
+    """min (x-3)^2 over x in [0,10] has its optimum at x=3, f=0."""
+    res = _quad_solve(
+        [(0, 0, "0"), (2, 0, "=(A1-3)*(A1-3)"), (3, 0, "=A1<=10")],
+        [(0, 0)],
+        [(3, 0)],
+        maximize=False,
+        bounds={(0, 0): (0.0, 10.0)},
+    )
+    assert res.status_name == "OPTIMAL"
+    assert res.quadratic is True
+    assert res.values[(0, 0)] == pytest.approx(3.0, abs=0.1)
+    assert res.objective == pytest.approx(0.0, abs=res.quadratic_gap)
+
+
+def test_quadratic_two_variables():
+    """min x^2 + y^2 s.t. x + y >= 10 splits evenly: x=y=5, f=50."""
+    res = _quad_solve(
+        [(0, 0, "0"), (0, 1, "0"), (2, 0, "=A1*A1+A2*A2"), (3, 0, "=A1+A2>=10")],
+        [(0, 0), (0, 1)],
+        [(3, 0)],
+        maximize=False,
+        bounds={(0, 0): (0.0, 10.0), (0, 1): (0.0, 10.0)},
+    )
+    assert res.values[(0, 0)] == pytest.approx(5.0, abs=0.2)
+    assert res.values[(0, 1)] == pytest.approx(5.0, abs=0.2)
+    assert res.objective == pytest.approx(50.0, abs=res.quadratic_gap)
+
+
+def test_quadratic_maximum_of_a_concave_objective():
+    res = _quad_solve(
+        [(0, 0, "0"), (2, 0, "=5-(A1-2)^2"), (3, 0, "=A1<=9")],
+        [(0, 0)],
+        [(3, 0)],
+        maximize=True,
+        bounds={(0, 0): (0.0, 9.0)},
+    )
+    assert res.values[(0, 0)] == pytest.approx(2.0, abs=0.1)
+    assert res.objective == pytest.approx(5.0, abs=res.quadratic_gap)
+
+
+def test_reported_objective_is_the_true_value_not_the_relaxations():
+    """The solved point is feasible for the real problem, so its true
+    objective is achievable. The relaxation's own value understates the
+    minimum and would read better than reality."""
+    res = _quad_solve(
+        [(0, 0, "0"), (2, 0, "=(A1-3)*(A1-3)"), (3, 0, "=A1<=10")],
+        [(0, 0)],
+        [(3, 0)],
+        maximize=False,
+        bounds={(0, 0): (0.0, 10.0)},
+    )
+    x = res.values[(0, 0)]
+    assert res.objective == pytest.approx((x - 3.0) ** 2, abs=1e-9)
+    assert res.objective >= 0.0, "a squared term cannot evaluate negative"
+
+
+@pytest.mark.parametrize("segments", [8, 64, 512])
+def test_reported_gap_bounds_the_actual_error(segments):
+    """The gap is a promise, not a decoration: the true optimum is 0, so the
+    reported objective must not exceed the stated bound."""
+    res = _quad_solve(
+        [(0, 0, "0"), (2, 0, "=(A1-3)*(A1-3)"), (3, 0, "=A1<=10")],
+        [(0, 0)],
+        [(3, 0)],
+        maximize=False,
+        bounds={(0, 0): (0.0, 10.0)},
+        quadratic_segments=segments,
+    )
+    assert res.objective <= res.quadratic_gap + 1e-12
+
+
+def test_refining_segments_tightens_the_answer():
+    coarse = _quad_solve(
+        [(0, 0, "0"), (2, 0, "=(A1-3)*(A1-3)"), (3, 0, "=A1<=10")],
+        [(0, 0)],
+        [(3, 0)],
+        maximize=False,
+        bounds={(0, 0): (0.0, 10.0)},
+        quadratic_segments=8,
+    )
+    fine = _quad_solve(
+        [(0, 0, "0"), (2, 0, "=(A1-3)*(A1-3)"), (3, 0, "=A1<=10")],
+        [(0, 0)],
+        [(3, 0)],
+        maximize=False,
+        bounds={(0, 0): (0.0, 10.0)},
+        quadratic_segments=512,
+    )
+    assert fine.quadratic_gap < coarse.quadratic_gap
+    assert fine.objective < coarse.objective
+
+
+def test_linear_objective_is_not_flagged_quadratic():
+    res = _solve_wyndor()
+    assert res.quadratic is False
+    assert res.quadratic_gap == 0.0
+
+
+def test_cross_terms_are_refused_by_name():
+    """Separable only. A covariance-style objective needs a real QP solver,
+    and guessing would be worse than refusing."""
+    with pytest.raises(NotQuadratic, match="couples A1 and A2"):
+        _quad_solve(
+            [(0, 0, "0"), (0, 1, "0"), (2, 0, "=A1*A2"), (3, 0, "=A1+A2<=10")],
+            [(0, 0), (0, 1)],
+            [(3, 0)],
+            maximize=False,
+            bounds={(0, 0): (0.0, 10.0), (0, 1): (0.0, 10.0)},
+        )
+
+
+def test_maximising_a_convex_objective_is_refused():
+    """The relaxation only converges when the objective is convex for a
+    minimisation (or concave for a maximisation). With the wrong sign the
+    solver would return a confident answer to a different problem."""
+    with pytest.raises(NotQuadratic, match="maximising a convex"):
+        _quad_solve(
+            [(0, 0, "0"), (2, 0, "=A1*A1"), (3, 0, "=A1<=10")],
+            [(0, 0)],
+            [(3, 0)],
+            maximize=True,
+            bounds={(0, 0): (0.0, 10.0)},
+        )
+
+
+def test_minimising_a_concave_objective_is_refused():
+    with pytest.raises(NotQuadratic, match="minimising a concave"):
+        _quad_solve(
+            [(0, 0, "0"), (2, 0, "=0-A1*A1"), (3, 0, "=A1<=10")],
+            [(0, 0)],
+            [(3, 0)],
+            maximize=False,
+            bounds={(0, 0): (0.0, 10.0)},
+        )
+
+
+def test_unbounded_quadratic_variable_is_refused_with_advice():
+    """Tangent points need a finite interval to sit on."""
+    with pytest.raises(OptError, match="give it finite bounds"):
+        _quad_solve(
+            [(0, 0, "0"), (2, 0, "=A1*A1"), (3, 0, "=A1>=2")],
+            [(0, 0)],
+            [(3, 0)],
+            maximize=False,
+        )
+
+
+def test_cubic_objective_is_refused():
+    with pytest.raises(NotQuadratic, match="degree 3"):
+        _quad_solve(
+            [(0, 0, "0"), (2, 0, "=A1*A1*A1"), (3, 0, "=A1<=10")],
+            [(0, 0)],
+            [(3, 0)],
+            maximize=False,
+            bounds={(0, 0): (0.0, 10.0)},
+        )
+
+
+def test_quadratic_withholds_sensitivity_and_diagnosis():
+    """The relaxation's duals belong to the approximating LP and its extra
+    rows are not user constraints, so both analyses are suppressed -- the
+    same call made for MIPs."""
+    res = _quad_solve(
+        [(0, 0, "0"), (2, 0, "=(A1-3)*(A1-3)"), (3, 0, "=A1<=10")],
+        [(0, 0)],
+        [(3, 0)],
+        maximize=False,
+        bounds={(0, 0): (0.0, 10.0)},
+        sensitivity=True,
+        diagnose=True,
+    )
+    assert res.sensitivity is None
+    assert res.conflict is None
+
+
+def test_quadratic_applies_to_the_sheet_like_an_lp():
+    g = make_grid()
+    for c, r, t in [(0, 0, "0"), (2, 0, "=(A1-3)*(A1-3)"), (3, 0, "=A1<=10")]:
+        g.setcell(c, r, t)
+    res = solve(
+        g,
+        objective_cell=(2, 0),
+        decision_vars=[(0, 0)],
+        constraint_cells=[(3, 0)],
+        maximize=False,
+        bounds={(0, 0): (0.0, 10.0)},
+    )
+    assert res.applied is True
+    assert g.cells[0][0].val == pytest.approx(3.0, abs=0.1)

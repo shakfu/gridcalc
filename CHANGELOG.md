@@ -2,9 +2,59 @@
 
 ## Unreleased
 
+### Added
+
+- **Infeasibility diagnosis: an infeasible `:opt` now names the contradictory constraints.** Previously the status bar said `opt: INFEASIBLE` and stopped, which tells the user their model is broken without giving them anywhere to look. It now reports an irreducible inconsistent subsystem:
+
+  ```text
+  opt: INFEASIBLE  conflict: D1, D2 (2 of 5 constraints)
+  ```
+
+  The reported set is minimal in both directions: it is still infeasible on its own, and dropping any single member restores feasibility. Both properties are asserted in tests, because "some infeasible subset" is easy and useless -- the value is entirely in the narrowing.
+
+  Implemented as a deletion filter in `opt.py:_irreducible_conflict`: try removing each constraint in turn, and if what remains is still infeasible the constraint was not part of the conflict, so drop it permanently. Costs one solve per constraint, runs only on the failure path, and reuses the already-built matrices rather than re-parsing formulas. Because it tests subsets rather than pairs, a three-way conflict with no contradictory pair (`A1+A2 >= 10`, `A1 <= 2`, `A2 <= 2`) is reported correctly; a pairwise check would find nothing.
+
+  Two subtleties worth recording. The subset test is specifically for `INFEASIBLE`, not for "not `OPTIMAL`" -- dropping a constraint can leave the problem `UNBOUNDED`, which means the feasible region is *non-empty*, so that constraint does belong to the conflict and the looser test would wrongly discard it. And variable bounds are held fixed rather than being candidates for deletion, so a constraint contradicting its variable's bounds is named as the conflict; the bounds are context the user did not type as a cell, the constraint is the thing they can point at. An empty conflict list would mean the bounds alone contradict, which is unreachable today because `lb > ub` is refused before any solve -- the branch is defensive and is documented as such rather than tested as a live path.
+
+  Diagnosis is opt-in at the API (`solve(diagnose=True)`) and always on from the TUI, where the user is already stuck and the extra solves are free at spreadsheet scale. 9 new tests in `test_opt.py`, 8 in `test_tui.py`, and a PTY test that types a contradictory pair into empty cells and asserts the innocent constraints are excluded from the message.
+
+- **Sensitivity analysis via `:opt sens [<name>]`.** The solver already computed dual values and discarded them at the boundary -- `Solution` in `_opt.cpp` carried only `status`, `objective`, and `x`. It now also carries shadow prices, reduced costs, and both ranging arrays, and `:opt sens` renders them as a report. This is the answer to the question a bare optimum cannot address: not "what is the best mix" but "what would change it, and what is a unit of each constraint actually worth".
+
+  ```text
+  Constraints   (* = binding)
+     cell     shadow       rhs  activity     slack  rhs from  rhs till
+     D4            0         4         2         2      -inf       inf
+   * D5          1.5        12        12         0         6        18
+   * D6            1        18        18         0        12        24
+  ```
+
+  Four layers. (1) `_opt.cpp` gained a `sensitivity` parameter, off by default: obtaining duals requires enabling `PRESOLVE_SENSDUALS` *before* the solve, which perturbs lp_solve's presolve, and callers that do not need sensitivity should neither pay for it nor risk the change. After a successful solve it reads `get_ptr_sensitivity_rhs` and `get_ptr_sensitivity_obj`. The `duals` array is one block of length `rows + columns` -- constraint duals first, then per-variable reduced costs -- which is not obvious from the header and was confirmed against lp_solve's own reporting code (`lp_report.c` `REPORT_lp`, which indexes it exactly that way) rather than from documentation.
+
+  (2) `opt.py` assembles the raw arrays into `VarSensitivity` / `ConstraintSensitivity` records keyed by the *sheet cells the user typed*, so a caller can render the report without re-deriving the solver's column ordering. lp_solve's 1e30 infinity sentinel is converted to a real infinity at this boundary; leaking it would render as a meaningless `1e+30`. Bindingness is computed from slack (`|rhs - activity| <= 1e-9`) rather than from a non-zero shadow price, because a degenerate optimum can bind at a price of zero and calling that non-binding would be wrong.
+
+  (3) `tui/format.py:format_sensitivity` renders the two tables as plain lines -- pure and curses-free, so the layout is directly testable. Every line stays under 78 characters: the pager truncates rather than wraps, and a silently clipped number is worse than a narrow column. The binding flag is a leading `*` rather than a trailing word for the same reason -- a trailing label is the first thing lost to truncation.
+
+  (4) `tui/solve.py` dispatches `sens` alongside `run`. The solve still applies its result to the sheet, since the report describes the optimum that was just written; computing it without applying would describe a state the user cannot see. Undo behaves exactly as for `:opt run`.
+
+  **Sensitivity is withheld for integer and binary models.** lp_solve will hand back numbers for a MIP, but a branch-and-bound dual is the dual of one LP relaxation, not of the integer problem -- there is no valid shadow-price reading. `SolveResult.sensitivity` stays `None` and the status line says why, which is better than a report that looks authoritative and is not. 11 new tests in `test_opt.py` (shadow prices checked against the analytically-known duals of the Wyndor Glass LP: 0, 3/2, 1), 11 in `test_tui.py`, and a PTY test driving the report through real curses.
+
+- **Documentation-conformance tests (`tests/test_docs_conformance.py`).** Every `:` command and keybinding the README advertises must exist in the dispatch chain, and every command `cmdexec` accepts must be documented or declared an intentional alias in `UNDOCUMENTED_ALIASES`. This exists because the `u`/`Ctrl-R` bug below was a *documented* behaviour that was simply never implemented, and the curses layer is too thinly covered for a unit test to have caught it. Both chains are read statically via `ast` rather than executed -- dispatching them for real would quit, write files, and spawn `$EDITOR`. The extractors assert on the current `if`/`elif` structure and will need updating if either chain is refactored into a table.
+
+- **Architectural fitness tests (`tests/test_architecture.py`).** The engine is a headless library and the TUI is a view over it; dependencies run one way. That held by habit, and nothing enforced it. Core modules are now checked for imports of `curses` or `gridcalc.tui`, an unclassified new module fails the suite, and a subprocess test asserts that importing the public core does not pull curses into `sys.modules` -- which catches the leak regardless of how it is spelled. `keys.py` is classified as a boundary module: parsing keyspecs is core work `config.py` needs, resolving them to keycodes needs a live curses runtime.
+
+### Changed
+
+- **The trust-prompt pager moved to `tui/widgets.py` as `pager(stdscr, title, lines)`.** It was general code with a hardcoded "Code block" header living in `commands.py`; `:opt sens` needed the same behaviour, and `commands` imports `solve`, so the dependency could not run that direction. `_view_code_block` is now a four-line call.
+
 ### Fixed
 
 - **Trust prompt under-reported cell counts on every v2 workbook.** `sandbox.inspect_file` read cell data from the top-level `"cells"` key only. That key is the v1 layout; since the file format moved to v2 the cells live under `sheets[].cells` (`engine.py:2009`), so the prompt shown before loading an untrusted file reported `Cells: 0 (0 formulas)` for every multi-sheet workbook -- including ones carrying a code block. The code and `requires` detection were unaffected, so the prompt still flagged the actual threat, but a security prompt that displays visibly wrong numbers alongside correct ones erodes the user's reason to read any of it. Counting now walks each entry of `sheets` and falls back to the top-level key only when `sheets` is absent or empty, so v1 files still count correctly. The per-sheet accumulation moved into a `_count_cells` helper; malformed sheet entries (non-dict, or a `cells` value that isn't a list) are skipped rather than raised, matching how the loader itself tolerates partial corruption. Six new tests in `TestJsonInspect` covering v2, v2-with-code-and-requires, v2 styled cells, v1 fallback, an empty `sheets` list, and malformed entries.
+
+- **A reversed or non-numeric `bounds` clause crashed the TUI.** `:opt ... bounds A1=20:10` tore the session down with an uncaught `ValueError` and lost the user's unsaved sheet. Three separate gaps lined up: `_parse_bound_value` ends in a bare `float(s)`, so `nan` parses happily; `solve` passed the bounds straight through to the `_opt` bridge, which rejects `lb > ub` with `ValueError("lb[j] > ub[j]")` -- naming a column index the user never typed, in an exception type this module's callers have no reason to expect; and `_execute_model` caught only `OptError`, so the `ValueError` escaped, killed curses, and left a dangling `save_grid` entry that made the next `u` a silent no-op.
+
+  `solve` now validates bounds itself and raises `OptError` naming the cell and the offending values (`bounds for A1 are reversed: lower 20 exceeds upper 10`). Equal bounds (`lo == hi`, pinning a variable) and infinite bounds remain valid -- only `lo > hi` and NaN are refused. `_execute_model` additionally catches `ValueError` as defence in depth: the bridge enforces further invariants that way, and a TUI should report an unexpected error rather than destroy an unsaved sheet over it. 5 new tests in `test_opt.py`, 3 in `test_tui.py` (including one asserting the undo stack is left clean).
+
+- **Importing `gridcalc.config` no longer requires curses.** `config.py` imports `keys.py` for keyspec parsing, and `keys.py` imported `curses` at module scope -- so `import gridcalc.config`, a core module with no terminal involvement, pulled the view layer's only hard dependency into every library consumer of the engine, including on platforms where curses is not available at all. Only `resolve_key` and `_scan_keyname` actually touch curses, and `keys.py`'s own docstring already stated that parsing is curses-free; the module-level import contradicted the design it documented. The import is now function-local in those two functions. Found by the new architecture tests on their first run, not by inspection.
 
 - **`u` and `Ctrl-R` now actually undo and redo.** The README documented the vi bindings (`README.md:94`) but `mainloop` only bound `Ctrl-Z` / `Ctrl-Y`, and `u` fell through to the `32 <= ch < 127` printable-character branch -- so pressing `u` on the grid silently opened label entry with the letter `u` in the buffer. The grid keyloop now dispatches `u` for undo and `Ctrl-R` for redo, tested before the printable fallthrough (order matters here; placing the case after it is a no-op). `Ctrl-Z` / `Ctrl-Y` are retained as aliases, so no existing muscle memory breaks. The code was changed to match the documentation rather than the reverse: the app is vi-styled throughout, `Ctrl-Z` is conventionally SIGTSTP, and the PTY harness's `drain()` helper was written citing "`u` for undo" as its motivating use case (`tests/integration/conftest.py:104`) -- the test it was built for had never been written.
 

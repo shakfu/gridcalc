@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from gridcalc.engine import Grid
+from gridcalc.opt import OptModel
 from gridcalc.tui import UndoManager
 
 _HAS_NUMPY = importlib.util.find_spec("numpy") is not None
@@ -2345,3 +2346,287 @@ class TestLabelOverflow:
         # quote character must NOT shift the slice -- if it did, this
         # equality would fail by one position.
         assert text == stripped[self.g.cw : self.g.cw + len(text)]
+
+
+class TestSensitivityReport:
+    """`:opt sens` -- the sensitivity report and its formatter.
+
+    `cmd_opt` had no unit coverage before this (only the PTY suite reached
+    it), so these drive the dispatcher directly through a recording stdscr.
+    """
+
+    class RecordingStdscr(MockStdscr):
+        """MockStdscr keeps only the last addnstr; the pager writes a whole
+        screen, so record every line."""
+
+        def __init__(self):
+            super().__init__()
+            self.written = []
+
+        def addnstr(self, y, x, s, n, *args):
+            super().addnstr(y, x, s, n, *args)
+            self.written.append(s)
+
+        @property
+        def screen(self):
+            return "\n".join(self.written)
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = self.RecordingStdscr()
+        self.g = Grid()
+        self.undo = UndoManager()
+        # The Wyndor Glass LP: max 3x+5y, x<=4, 2y<=12, 3x+2y<=18.
+        # Optimum x=2 y=6 obj=36; shadow prices 0, 3/2, 1.
+        for c, r, t in [
+            (0, 0, "0"),
+            (0, 1, "0"),
+            (2, 0, "=3*A1+5*A2"),
+            (3, 0, "=A1<=4"),
+            (3, 1, "=2*A2<=12"),
+            (3, 2, "=3*A1+2*A2<=18"),
+        ]:
+            self.g.setcell(c, r, t)
+        self.g.models["default"] = OptModel(
+            sense="max", objective="C1", vars="A1:A2", constraints="D1:D3"
+        )
+
+    def _run(self, args):
+        from gridcalc.tui import cmdexec
+
+        return cmdexec(self.stdscr, self.g, self.undo, args)
+
+    def test_sens_renders_report_with_shadow_prices(self):
+        self._run("opt sens")
+        screen = self.stdscr.screen
+        assert "Constraints" in screen
+        assert "shadow" in screen
+        # D2's shadow price is 3/2 and D1's is 0.
+        assert "1.5" in screen
+        assert "OPTIMAL" in screen
+
+    def test_sens_marks_binding_constraints(self):
+        self._run("opt sens")
+        rows = [ln for ln in self.stdscr.written if ln.strip().startswith(("*", "D"))]
+        binding = [ln for ln in rows if ln.lstrip().startswith("*")]
+        # D2 and D3 bind; D1 has slack.
+        assert len(binding) == 2
+        assert all("D2" in ln or "D3" in ln for ln in binding)
+
+    def test_sens_applies_the_optimum_like_a_plain_run(self):
+        """The report describes the optimum that was written to the sheet, so
+        the cells must actually be updated."""
+        self._run("opt sens")
+        assert self.g.cells[0][0].val == pytest.approx(2.0)
+        assert self.g.cells[0][1].val == pytest.approx(6.0)
+        assert self.g.cells[2][0].val == pytest.approx(36.0)
+
+    def test_sens_is_undoable(self):
+        self._run("opt sens")
+        self.undo.undo(self.g)
+        assert self.g.cells[0][0].val == pytest.approx(0.0)
+
+    def test_sens_unknown_model_errors(self):
+        self._run("opt sens nosuch")
+        assert "no model named" in self.stdscr.screen
+
+    def test_sens_on_mip_explains_why_no_report(self):
+        self.g.models["mip"] = OptModel(
+            sense="max",
+            objective="C1",
+            vars="A1:A2",
+            constraints="D1:D3",
+            integers="A1:A2",
+        )
+        self._run("opt sens mip")
+        screen = self.stdscr.screen
+        assert "no sensitivity" in screen
+        assert "OPTIMAL" in screen, "the solve itself should still have succeeded"
+
+    def test_plain_run_shows_no_report(self):
+        self._run("opt run")
+        assert "shadow" not in self.stdscr.screen
+
+
+class TestFormatSensitivity:
+    """The formatter is pure, so assert its layout contract directly."""
+
+    def _sens(self):
+        from gridcalc.opt import solve
+
+        g = Grid()
+        for c, r, t in [
+            (0, 0, "0"),
+            (0, 1, "0"),
+            (2, 0, "=3*A1+5*A2"),
+            (3, 0, "=A1<=4"),
+            (3, 1, "=2*A2<=12"),
+            (3, 2, "=3*A1+2*A2<=18"),
+        ]:
+            g.setcell(c, r, t)
+        res = solve(
+            g,
+            objective_cell=(2, 0),
+            decision_vars=[(0, 0), (0, 1)],
+            constraint_cells=[(3, 0), (3, 1), (3, 2)],
+            maximize=True,
+            sensitivity=True,
+        )
+        return res.sensitivity
+
+    def _lines(self):
+        from gridcalc.engine import cellname
+        from gridcalc.tui.format import format_sensitivity
+
+        return format_sensitivity(self._sens(), cellname)
+
+    def test_fits_an_80_column_terminal(self):
+        """The pager indents by two and truncates rather than wraps, so a
+        line over ~78 loses digits off the right edge silently."""
+        widest = max(len(ln) for ln in self._lines())
+        assert widest <= 78, f"widest line is {widest} chars"
+
+    def test_labels_rows_by_cell_name(self):
+        text = "\n".join(self._lines())
+        for name in ("A1", "A2", "D1", "D2", "D3"):
+            assert name in text
+
+    def test_infinite_ranges_render_as_words(self):
+        text = "\n".join(self._lines())
+        assert "inf" in text
+        assert "1e+30" not in text, "lp_solve's infinity sentinel leaked into the report"
+
+    def test_binding_marker_is_leading_not_trailing(self):
+        """A trailing label is the first thing lost to truncation, so the
+        marker has to be on the left."""
+        lines = self._lines()
+        d2 = next(ln for ln in lines if "D2" in ln)
+        d1 = next(ln for ln in lines if "D1" in ln)
+        assert d2.lstrip().startswith("*")
+        assert not d1.lstrip().startswith("*")
+
+
+class TestInfeasibilityDiagnosis:
+    """`:opt` on an infeasible model names the contradictory cells."""
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = TestSensitivityReport.RecordingStdscr()
+        self.g = Grid()
+        self.undo = UndoManager()
+        # D1..D5; only D1 and D2 contradict each other.
+        for c, r, t in [
+            (0, 0, "0"),
+            (0, 1, "0"),
+            (2, 0, "=A1+A2"),
+            (3, 0, "=A1>=10"),
+            (3, 1, "=A1<=5"),
+            (3, 2, "=A2<=100"),
+            (3, 3, "=A2>=1"),
+            (3, 4, "=A1+A2<=1000"),
+        ]:
+            self.g.setcell(c, r, t)
+        self.g.models["default"] = OptModel(
+            sense="max", objective="C1", vars="A1:A2", constraints="D1:D5"
+        )
+
+    def _run(self, args="opt"):
+        from gridcalc.tui import cmdexec
+
+        return cmdexec(self.stdscr, self.g, self.undo, args)
+
+    def test_names_the_conflicting_cells(self):
+        self._run()
+        screen = self.stdscr.screen
+        assert "INFEASIBLE" in screen
+        assert "D1" in screen and "D2" in screen
+
+    def test_omits_constraints_not_in_the_conflict(self):
+        """The value is in the narrowing -- listing all five would be no
+        better than the bare status."""
+        self._run()
+        line = next(ln for ln in self.stdscr.written if "conflict" in ln)
+        for innocent in ("D3", "D4", "D5"):
+            assert innocent not in line
+
+    def test_reports_the_subset_size(self):
+        self._run()
+        line = next(ln for ln in self.stdscr.written if "conflict" in ln)
+        assert "2 of 5" in line
+
+    def test_message_fits_the_status_bar(self):
+        self._run()
+        line = next(ln for ln in self.stdscr.written if "conflict" in ln)
+        assert len(line) <= 79, f"status line is {len(line)} chars: {line!r}"
+
+    def test_failed_solve_leaves_the_sheet_and_undo_stack_alone(self):
+        depth = len(self.undo.undo_stack)
+        self._run()
+        assert self.g.cells[0][0].val == pytest.approx(0.0)
+        assert len(self.undo.undo_stack) == depth
+
+
+class TestFormatConflict:
+    def _names(self, c, r):
+        from gridcalc.engine import cellname
+
+        return cellname(c, r)
+
+    def test_lists_cells_with_counts(self):
+        from gridcalc.tui.format import format_conflict
+
+        out = format_conflict([(3, 0), (3, 1)], 5, self._names)
+        assert out == "conflict: D1, D2 (2 of 5 constraints)"
+
+    def test_truncates_long_lists(self):
+        from gridcalc.tui.format import format_conflict
+
+        cells = [(3, i) for i in range(12)]
+        out = format_conflict(cells, 20, self._names, max_cells=3)
+        assert "D1, D2, D3, +9 more" in out
+        assert "(12 of 20 constraints)" in out
+
+    def test_empty_conflict_points_at_bounds(self):
+        from gridcalc.tui.format import format_conflict
+
+        out = format_conflict([], 3, self._names)
+        assert "bounds" in out
+        assert "conflict:" not in out
+
+
+class TestBadBoundsDoNotCrashTheTui:
+    """A reversed bound used to raise ValueError from the C++ bridge, which
+    `_execute_model` did not catch -- tearing down curses and losing the
+    user's unsaved sheet."""
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = TestSensitivityReport.RecordingStdscr()
+        self.g = Grid()
+        self.undo = UndoManager()
+        for c, r, t in [(0, 0, "0"), (2, 0, "=A1"), (3, 0, "=A1<=5")]:
+            self.g.setcell(c, r, t)
+
+    def _model(self, bounds):
+        return OptModel(sense="max", objective="C1", vars="A1", constraints="D1", bounds=bounds)
+
+    def _run(self, bounds):
+        from gridcalc.tui import cmdexec
+
+        self.g.models["default"] = self._model(bounds)
+        return cmdexec(self.stdscr, self.g, self.undo, "opt")
+
+    def test_reversed_bounds_report_instead_of_raising(self):
+        self._run("A1=20:10")  # must not raise
+        assert "reversed" in self.stdscr.screen
+
+    def test_nan_bounds_report_instead_of_raising(self):
+        self._run("A1=nan:10")
+        assert "not numeric" in self.stdscr.screen
+
+    def test_bad_bounds_leave_no_dangling_undo_entry(self):
+        """`save_grid` runs before the solve, so a failure path that forgets
+        to pop leaves `u` as a silent no-op afterwards."""
+        depth = len(self.undo.undo_stack)
+        self._run("A1=20:10")
+        assert len(self.undo.undo_stack) == depth

@@ -216,6 +216,7 @@ on reopen.
                                                                            Solve inline AND save as 'default'
 :opt def <name> max|min <cell> ...                                         Save under <name>; does not execute
 :opt run [<name>]                                                          Execute a saved model
+:opt sens [<name>]                                                         Execute and show a sensitivity report
 :opt list                                                                  List saved models
 :opt undef <name>                                                          Remove a saved model
 ```
@@ -256,6 +257,67 @@ Cell lists everywhere accept ranges (`A1:A5`), comma-separated refs
 Saved models live under `"models": {<name>: ...}` in the JSON file
 and round-trip verbatim (the spec strings the user typed are stored,
 not pre-resolved coords).
+
+### Sensitivity analysis
+
+`:opt sens [<name>]` solves the model and then opens a report answering
+the question a bare optimum does not: *what would change the answer?*
+
+```text
+Variable cells
+   cell      value   reduced  obj coef coef from coef till
+   A4            2         0         3         0       7.5
+   A5            6         0         5         2       inf
+
+Constraints   (* = binding)
+   cell     shadow       rhs  activity     slack  rhs from  rhs till
+   D4            0         4         2         2      -inf       inf
+ * D5          1.5        12        12         0         6        18
+ * D6            1        18        18         0        12        24
+```
+
+- **shadow price** -- objective gain per extra unit of right-hand side.
+  `D5` is worth 1.5 per unit and `D6` is worth 1, so buying more of the
+  `D5` resource pays better. `D4` has slack and is worth nothing.
+- **rhs from/till** -- the range over which that shadow price holds.
+  Past it the optimal basis changes and the price no longer applies.
+- **reduced cost** -- for a variable stuck at a bound, how much the
+  objective would move per unit if it were forced in. Zero for any
+  variable already active.
+- **coef from/till** -- how far an objective coefficient can move before
+  the optimal mix changes.
+- **`*`** -- the constraint is binding (zero slack). Derived from slack
+  rather than from a non-zero shadow price, since a degenerate optimum
+  can bind at a price of zero.
+
+Sensitivity is **not reported for integer or binary models**: a
+branch-and-bound dual describes one LP relaxation rather than the
+integer problem, so there is no valid shadow-price reading. `:opt sens`
+on such a model still solves it and says why the report is absent.
+
+### Infeasibility diagnosis
+
+An infeasible model reports *which* constraints contradict each other,
+not just that the model failed:
+
+```text
+opt: INFEASIBLE  conflict: D1, D2 (2 of 5 constraints)
+```
+
+The named cells are an **irreducible** conflicting set: together they
+are still infeasible, and dropping any one of them makes the model
+solvable again. Constraints that merely happen to be present are not
+listed, which is the whole point -- narrowing 30 constraints to the 2
+that actually fight is the difference between a dead end and a fix.
+
+Found by a deletion filter (one solve per constraint, on the failure
+path only), so a three-way conflict with no contradictory pair is
+reported correctly where a pairwise check would miss it. Variable
+bounds are held fixed rather than dropped, so a constraint that
+contradicts its variable's bounds is reported as the conflict.
+
+This runs automatically on every infeasible `:opt`; there is no
+separate command.
 
 **Programmatic access:**
 
@@ -391,7 +453,7 @@ Sheets        :sheet [name|N|add|del|rename|move]
 Names         :name <n> [range]   :names   :unname <n>
 Modes         :mode [excel|hybrid|python]
 Import/export :csv save/load   :xlsx save/load   :pd save/load
-Optimization  :opt   :opt def   :opt run   :opt list   :opt undef
+Optimization  :opt   :opt def   :opt run   :opt sens   :opt list   :opt undef
               :goal <cell> = <target> by <cell> [in <lo>:<hi>]
 View          :view   E   :tv/:th/:tb/:tn (lock title rows/cols)
 ```

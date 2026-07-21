@@ -3,6 +3,46 @@
 Open tasks, ordered by priority within each section. Resolved items live in
 CHANGELOG.md.
 
+## Direction
+
+Excel-function parity is a race gridcalc cannot win and does not need to:
+Excel has ~480 functions and every spreadsheet user already owns it. What
+nothing else offers is **optimization with spreadsheet semantics in a
+terminal** -- `:opt` and `:goal` over a live grid, scriptable, workbook-
+persistent. Excel's Solver is a modal dialog with a famously unhelpful
+failure mode; PuLP and pyomo make you write the model in code with no
+spatial view of the data. That gap is the thing worth widening.
+
+So: prefer work under **Optimization** below over work that closes an
+Excel-coverage gap, unless the coverage gap is blocking a real sheet.
+The parity items are kept because they are genuinely useful, not because
+they are the strategy.
+
+## Optimization
+
+- [x] Sensitivity analysis (`:opt sens`) -- shadow prices, reduced costs,
+      RHS and objective ranging. See CHANGELOG.
+- [x] Infeasibility diagnosis -- irreducible conflicting constraint set
+      reported automatically on `INFEASIBLE`. See CHANGELOG.
+- [ ] **Unboundedness diagnosis.** The mirror of the infeasibility work
+      and the other half of "the solve failed, now what". `UNBOUNDED`
+      currently reports as bare status. The useful answer is the ray:
+      which decision variable can grow without limit, and which missing
+      upper bound or constraint would stop it. Cheaper than the IIS
+      filter -- lp_solve can report the unbounded column directly.
+- [ ] **Sensitivity report for a range of RHS values.** Shadow prices are
+      valid only inside `rhs_from..rhs_till`; the natural follow-up
+      question is what happens past that edge. A small parametric sweep
+      re-solving across a RHS range would answer "how much more should I
+      buy" rather than only "what is the next unit worth".
+- [ ] **Quadratic / convex objectives.** lp_solve is LP/MIP only. A
+      second backend would be a large change; worth scoping only if a
+      real sheet needs it.
+- [ ] **`:opt` on a visual selection.** Infer decision cells and
+      constraint cells from a selected block rather than typing ranges.
+- [ ] **Report sensitivity into cells** rather than only to the pager, so
+      shadow prices can feed downstream formulas.
+
 ## Performance
 
 - [ ] **Range subscriber explosion (Phase E from `docs/topological.md`).**

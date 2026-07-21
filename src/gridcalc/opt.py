@@ -26,6 +26,7 @@ SUM, Name) raises NotLinear with a message naming the offending node.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -206,12 +207,65 @@ class LinearForm:
 
 
 @dataclass
+class VarSensitivity:
+    """Sensitivity of the optimum to one decision variable.
+
+    ``reduced_cost`` is the amount the objective would change per unit if the
+    variable were forced away from its bound; it is zero for any variable
+    already in the basis. ``obj_from`` / ``obj_till`` bracket the range over
+    which this variable's objective coefficient can move without changing the
+    optimal basis (the values themselves would change, the choice of which
+    variables are non-zero would not).
+    """
+
+    cell: CellKey
+    value: float
+    reduced_cost: float
+    obj_coef: float
+    obj_from: float
+    obj_till: float
+
+
+@dataclass
+class ConstraintSensitivity:
+    """Sensitivity of the optimum to one constraint.
+
+    ``shadow_price`` is the marginal change in the objective per unit
+    relaxation of the right-hand side -- the value of one more unit of this
+    resource, and the number a user actually wants when deciding what to buy
+    more of. It is valid only within ``rhs_from``..``rhs_till``; past those
+    limits the basis changes and the price no longer applies.
+    """
+
+    cell: CellKey
+    shadow_price: float
+    rhs: float
+    activity: float
+    slack: float
+    binding: bool
+    rhs_from: float
+    rhs_till: float
+
+
+@dataclass
+class Sensitivity:
+    variables: list[VarSensitivity]
+    constraints: list[ConstraintSensitivity]
+
+
+@dataclass
 class SolveResult:
     status: int
     status_name: str
     objective: float
     values: dict[CellKey, float]  # decision cell -> optimal value (empty if not OPTIMAL)
     applied: bool  # True if cells were written
+    # Populated only when solve(sensitivity=True) succeeded on a pure LP.
+    # None for MIPs, where a dual has no valid interpretation.
+    sensitivity: Sensitivity | None = None
+    # Populated only when solve(diagnose=True) and the model was INFEASIBLE:
+    # a minimal set of mutually contradictory constraint cells.
+    conflict: list[CellKey] | None = None
 
 
 # --- Linearity walker -------------------------------------------------------
@@ -377,6 +431,8 @@ def solve(
     integer_vars: set[CellKey] | None = None,
     binary_vars: set[CellKey] | None = None,
     apply: bool = True,
+    sensitivity: bool = False,
+    diagnose: bool = False,
 ) -> SolveResult:
     """Build an LP (or MIP) from the named cells, solve, and (by default) write back.
 
@@ -389,6 +445,17 @@ def solve(
     routes the solve through lp_solve's branch-and-bound. Binary cells have
     their bounds clamped to [0,1] by lp_solve regardless of ``bounds``; a
     cell appearing in both sets raises ``OptError``.
+
+    ``sensitivity=True`` additionally returns shadow prices, reduced costs,
+    and ranging information in ``SolveResult.sensitivity``. It is silently
+    ignored for MIPs (the field stays ``None``): branch-and-bound duals
+    describe one LP relaxation rather than the integer problem, so reporting
+    them would be actively misleading.
+
+    ``diagnose=True`` populates ``SolveResult.conflict`` when the model turns
+    out to be infeasible: a minimal set of constraint cells that contradict
+    each other. It costs one extra solve per constraint and runs only on the
+    infeasible path.
     """
     if not decision_vars:
         raise OptError("at least one decision variable is required")
@@ -450,8 +517,22 @@ def solve(
                 raise OptError(
                     f"bounds reference {_cellname(*cell_key)} which is not a decision variable"
                 )
-            lb[i] = float(lo)
-            ub[i] = float(hi)
+            # Validate here rather than letting the C++ bridge reject it.
+            # The bridge raises ValueError("lb[j] > ub[j]") -- a column index
+            # the user never sees, in an exception type callers of this
+            # module do not expect, from a layer they cannot catch
+            # meaningfully. Both conditions are reachable from a typed
+            # `bounds A1=20:10` or `A1=nan:5`.
+            lo_f, hi_f = float(lo), float(hi)
+            name = _cellname(*cell_key)
+            if math.isnan(lo_f) or math.isnan(hi_f):
+                raise OptError(f"bounds for {name} are not numeric")
+            if lo_f > hi_f:
+                raise OptError(
+                    f"bounds for {name} are reversed: lower {lo_f:g} exceeds upper {hi_f:g}"
+                )
+            lb[i] = lo_f
+            ub[i] = hi_f
 
     # Integer / binary flags. Both must be subsets of decision_vars, and
     # they must be disjoint -- the C++ bridge re-checks for overlap but we
@@ -482,6 +563,7 @@ def solve(
         maximize=maximize,
         integer_vars=int_indices,
         binary_vars=bin_indices,
+        sensitivity=sensitivity,
     )
 
     # Add back the constant term that we dropped from the objective vector
@@ -508,13 +590,159 @@ def solve(
         grid.recalc()
         applied = True
 
+    sens: Sensitivity | None = None
+    if sensitivity and solved_ok and sol.sensitivity_valid:
+        sens = _build_sensitivity(decision_vars, constraint_cells, c_vec, A, rhs, sol, values)
+
+    conflict: list[CellKey] | None = None
+    if diagnose and sol.status == _ext.INFEASIBLE:
+        conflict = [
+            constraint_cells[i]
+            for i in _irreducible_conflict(
+                c_vec, A, sense, rhs, lb, ub, maximize, int_indices, bin_indices
+            )
+        ]
+
     return SolveResult(
         status=sol.status,
         status_name=_STATUS_NAMES.get(sol.status, f"UNKNOWN({sol.status})"),
         objective=objective_total,
         values=values,
         applied=applied,
+        sensitivity=sens,
+        conflict=conflict,
     )
+
+
+def _irreducible_conflict(
+    c_vec: list[float],
+    A: list[list[float]],
+    sense: list[int],
+    rhs: list[float],
+    lb: list[float],
+    ub: list[float],
+    maximize: bool,
+    int_indices: list[int],
+    bin_indices: list[int],
+) -> list[int]:
+    """Row indices of an irreducible inconsistent subsystem (IIS).
+
+    Returns a subset of the constraints that is still infeasible but becomes
+    feasible if any single member is dropped -- i.e. a minimal explanation of
+    *why* the model has no solution, rather than the bare word INFEASIBLE.
+
+    Classic deletion filter: try removing each constraint in turn; if what
+    remains is still infeasible the constraint was not part of the conflict,
+    so drop it permanently. Costs one solve per constraint, which is fine at
+    spreadsheet scale and only runs on the failure path.
+
+    Variable bounds are never dropped -- they are held fixed as part of the
+    background against which the conflict is minimal. A constraint that
+    contradicts the bounds is therefore reported as the conflict, which is
+    the useful answer: the bounds are context, the constraint is the thing
+    the user can point at. An empty result would mean the bounds alone are
+    contradictory; that is unreachable today because ``lb > ub`` is rejected
+    before any solve, so the empty branch below is defensive only.
+
+    Note the test is specifically for INFEASIBLE, not "not OPTIMAL". Dropping
+    a constraint can leave the problem UNBOUNDED, which means the feasible
+    region is non-empty -- so that constraint *is* needed for the conflict
+    and must be kept.
+    """
+
+    def infeasible_without(rows: list[int]) -> bool:
+        if not rows:
+            trial_A: list[list[float]] = []
+            trial_sense: list[int] = []
+            trial_rhs: list[float] = []
+        else:
+            trial_A = [A[i] for i in rows]
+            trial_sense = [sense[i] for i in rows]
+            trial_rhs = [rhs[i] for i in rows]
+        probe = _ext.solve_lp(
+            c_vec,
+            trial_A,
+            trial_sense,
+            trial_rhs,
+            lb,
+            ub,
+            maximize=maximize,
+            integer_vars=int_indices,
+            binary_vars=bin_indices,
+        )
+        return bool(probe.status == _ext.INFEASIBLE)
+
+    keep = list(range(len(A)))
+    for i in range(len(A)):
+        if i not in keep:
+            continue
+        trial = [j for j in keep if j != i]
+        if infeasible_without(trial):
+            keep = trial
+    return keep
+
+
+# lp_solve uses 1e30 as its infinity sentinel in the ranging arrays. Convert
+# to a real infinity so callers can format it as "inf" rather than printing a
+# meaningless 1e+30.
+_LP_INF = 1e30
+
+
+def _from_lp_inf(v: float) -> float:
+    if v >= _LP_INF:
+        return float("inf")
+    if v <= -_LP_INF:
+        return float("-inf")
+    return float(v)
+
+
+def _build_sensitivity(
+    decision_vars: list[CellKey],
+    constraint_cells: list[CellKey],
+    c_vec: list[float],
+    A: list[list[float]],
+    rhs: list[float],
+    sol: Any,
+    values: dict[CellKey, float],
+) -> Sensitivity:
+    """Assemble the solver's raw sensitivity arrays into per-cell records."""
+    variables = [
+        VarSensitivity(
+            cell=cell,
+            value=values.get(cell, 0.0),
+            reduced_cost=float(sol.reduced_costs[j]) if j < len(sol.reduced_costs) else 0.0,
+            obj_coef=c_vec[j],
+            obj_from=_from_lp_inf(sol.obj_from[j]) if j < len(sol.obj_from) else float("-inf"),
+            obj_till=_from_lp_inf(sol.obj_till[j]) if j < len(sol.obj_till) else float("inf"),
+        )
+        for j, cell in enumerate(decision_vars)
+    ]
+
+    x = [values.get(v, 0.0) for v in decision_vars]
+    n_rows = len(sol.duals)
+    constraints = []
+    for i, cell in enumerate(constraint_cells):
+        activity = sum(coef * xj for coef, xj in zip(A[i], x, strict=True))
+        slack = rhs[i] - activity
+        lo = _from_lp_inf(sol.dual_from[i]) if i < len(sol.dual_from) else float("-inf")
+        hi = _from_lp_inf(sol.dual_till[i]) if i < len(sol.dual_till) else float("inf")
+        # Bindingness is derived from slack rather than from a non-zero dual.
+        # A degenerate optimum can leave a binding constraint with a zero
+        # shadow price, and calling that non-binding would be wrong.
+        constraints.append(
+            ConstraintSensitivity(
+                cell=cell,
+                shadow_price=float(sol.duals[i]) if i < n_rows else 0.0,
+                rhs=rhs[i],
+                activity=activity,
+                slack=slack,
+                binding=abs(slack) <= 1e-9,
+                rhs_from=lo,
+                rhs_till=hi,
+            )
+        )
+
+    return Sensitivity(variables=variables, constraints=constraints)
 
 
 def _cellname(c: int, r: int) -> str:

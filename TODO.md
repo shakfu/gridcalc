@@ -31,34 +31,28 @@ they are the strategy.
 - [x] Parametric RHS sweep (`:opt sweep`) -- re-solves across a range and
       flags where the marginal value changes. See CHANGELOG. Built on
       `solve(rhs_override=...)`, which is also usable directly.
-- [ ] **Quadratic / convex objectives.** lp_solve is LP/MIP only, so this
-      needs a second solver backend -- it is not an extension of the
-      existing one. Scoping notes, so the decision is made with the cost
-      visible rather than discovered halfway in:
+- [x] Separable quadratic objectives -- squared decision variables solved
+      via a tangent-envelope relaxation on the existing LP backend, no
+      second solver. See CHANGELOG.
+- [ ] **Non-separable (cross-term) quadratic objectives.** `=A1*A2` and
+      covariance-style objectives are refused today; the tangent
+      relaxation only models separable squares. This is the case that
+      genuinely needs a QP backend:
 
-      * **Vendor a QP solver.** OSQP (Apache-2.0, small C, ADMM-based) is
-        the natural fit and would sit alongside `thirdparty/lp_solve_5.5`
-        with its own CMake target and nanobind wrapper. Note the licence
-        difference: lp_solve is LGPL, OSQP is Apache-2.0 -- check what the
-        combination means for the wheel before starting.
-      * **Extend the AST walker.** `extract_linear` rejects `A1*A2` as
-        `NotLinear`. A QP needs an `extract_quadratic` producing a Q matrix
-        plus a linear term, with convexity checked (a non-convex Q has no
-        tractable global optimum and must be refused, not solved badly).
-      * **Decide the surface.** Whether `:opt` silently routes quadratic
-        objectives to the QP backend or the user opts in explicitly. Silent
-        routing hides which solver produced an answer, which matters
-        because the failure modes differ.
-      * **Cross-platform build risk.** A second vendored C library has to
-        build on macOS, Linux and Windows wheels; this is the part that
-        cannot be validated locally and is the main schedule risk.
+      * **Vendor a QP solver.** OSQP (Apache-2.0, small C, ADMM) alongside
+        `thirdparty/lp_solve_5.5`, with its own CMake target and nanobind
+        wrapper. **Licence decision required first:** lp_solve is LGPL,
+        OSQP is Apache-2.0 -- settle what the combination means for the
+        distributed wheel before writing any code.
+      * **Extend the walker.** `QuadForm.squares()` already collects the
+        full symmetric Q including off-diagonals, so the extraction work is
+        largely done; it raises on cross terms rather than lacking them.
+        Convexity would need a positive-semidefinite check on Q rather than
+        a per-coefficient sign test.
+      * **Cross-platform build risk** is the main schedule cost and the
+        part that cannot be validated locally.
 
-      Still gated on a real sheet needing it. Nothing in the current
-      examples does.
-- [x] `:opt` on a visual selection -- infers objective, decision cells and
-      constraints from the selected block. See CHANGELOG.
-- [x] Report sensitivity into cells (`:opt sens into <cell>`) -- writes
-      NUM cells so shadow prices feed downstream formulas. See CHANGELOG.
+      Still gated on a real sheet needing it.
 
 ## Performance
 

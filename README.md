@@ -245,6 +245,44 @@ A worked example (also at `examples/example_lp.json`):
 Status bar shows `opt: OPTIMAL  obj=36`; `A4` and `A5` become `2.0`
 and `6.0`; `u` rolls back.
 
+### Quadratic objectives
+
+Objectives may contain squared decision variables -- `=(A1-3)*(A1-3)`,
+`=A1^2 + A2^2`, `=2*A1^2 + 3*A1` -- which covers least-squares fitting,
+quadratic cost curves, and target-tracking objectives.
+
+```text
+:opt min C1 vars A1 st D1 bounds A1=0:10
+opt: OPTIMAL  obj=0.00219727  (quadratic, within 0.0061)
+```
+
+There is **no second solver**. A convex function is the upper envelope of
+its tangents, so `x^2` is modelled by an auxiliary variable constrained
+from below by a fan of tangent lines, and the whole thing stays an LP on
+the existing lp_solve backend. This has consequences worth knowing:
+
+- **The answer is approximate**, and the status bar says by how much. The
+  reported bound is a real bound, not an estimate -- the true optimum is
+  guaranteed to be within it.
+- **`quadratic_segments` (default 64) trades accuracy for size.** Error
+  falls with the square of the segment count: 8 segments give ~4e-1 on the
+  example above, 64 give ~6e-3, 512 give ~1e-4.
+- **The reported objective is the true value at the solved point**, not the
+  relaxation's, so it is a number you can actually achieve.
+
+Restrictions, each refused with a message naming the cause:
+
+| Not supported | Why |
+|---|---|
+| cross terms (`=A1*A2`) | only *separable* quadratics; covariance-style objectives need a real QP solver |
+| maximising a convex objective (or minimising a concave one) | the optimum sits at a corner and this method cannot find it reliably |
+| squared variables without finite bounds | tangent points need a finite interval to sit on |
+| degree 3 and higher | out of scope |
+
+Sensitivity analysis and infeasibility diagnosis are **withheld for
+quadratic models**: the duals belong to the approximating LP, and its
+extra rows are not constraints you wrote. Same call as for MIPs.
+
 ### Inferring the model from a selection
 
 The layout above already says what the model is. Select the block with

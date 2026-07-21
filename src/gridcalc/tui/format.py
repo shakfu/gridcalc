@@ -6,7 +6,7 @@ import math
 from collections.abc import Callable
 
 from ..engine import EMPTY, FORMULA, LABEL, Cell, _is_dataframe
-from ..opt import Sensitivity
+from ..opt import Sensitivity, SweepPoint
 
 
 def _insert_commas(s: str) -> str:
@@ -289,3 +289,45 @@ def format_unbounded(
         else "add an upper bound or a constraint"
     )
     return f"unbounded: {names} -- {remedy}"
+
+
+def format_sweep(
+    points: list[SweepPoint],
+    constraint: str,
+    cw: int = 10,
+) -> list[str]:
+    """Render a parametric RHS sweep as plain lines for the pager.
+
+    The column that matters is `shadow`, and the marker beside it: while the
+    marginal value holds steady another unit is worth buying, and where it
+    drops is the point past which it is not. `delta` is shown alongside
+    because it is the same information in absolute terms, which is usually
+    how the question was asked ("what do I get for the next 5 units").
+
+    Failed points are kept rather than dropped -- finding out that a
+    right-hand side is unattainable answers the question too.
+    """
+    lines: list[str] = []
+    span = f" from {_sens_num(points[0].rhs)} to {_sens_num(points[-1].rhs)}" if points else ""
+    lines.append(f"{constraint} right-hand side{span}   (* = marginal value changed)")
+    lines.append(f"   {'rhs':>{cw}}{'objective':>{cw}}{'delta':>{cw}}{'shadow':>{cw}}  status")
+    for p in points:
+        mark = "*" if p.breakpoint else " "
+        solved = p.status_name in ("OPTIMAL", "SUBOPTIMAL")
+        obj = _sens_num(p.objective) if solved else "--"
+        delta = _sens_num(p.delta) if p.delta is not None else "--"
+        shadow = _sens_num(p.shadow_price) if p.shadow_price is not None else "--"
+        status = "" if p.status_name == "OPTIMAL" else f"  {p.status_name}"
+        lines.append(
+            f" {mark} {_sens_num(p.rhs):>{cw}}{obj:>{cw}}{delta:>{cw}}{shadow:>{cw}}{status}"
+        )
+
+    prices = [p.shadow_price for p in points if p.shadow_price is not None]
+    lines.append("")
+    if prices and len(set(prices)) == 1:
+        lines.append("Marginal value is constant across this range -- widen it")
+        lines.append("to find where the value changes.")
+    else:
+        lines.append("Marginal value changes at the starred rows: buying past")
+        lines.append("one is worth less per unit than buying up to it.")
+    return lines

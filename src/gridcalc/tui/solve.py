@@ -10,7 +10,13 @@ from ..goalseek import GoalSeekError
 from ..goalseek import seek as goal_seek
 from ..opt import OptError, OptModel
 from ..opt import solve as opt_solve
-from .format import format_conflict, format_sensitivity, format_unbounded
+from ..opt import sweep as opt_sweep
+from .format import (
+    format_conflict,
+    format_sensitivity,
+    format_sweep,
+    format_unbounded,
+)
 from .undo import UndoManager
 from .widgets import _flash, pager, show_error
 
@@ -154,6 +160,108 @@ def _looks_like_cellref(s: str) -> bool:
     return m is not None and m[0] == len(s)
 
 
+_ResolvedModel = tuple[
+    tuple[int, int],
+    list[tuple[int, int]],
+    list[tuple[int, int]],
+    dict[tuple[int, int], tuple[float, float]] | None,
+    set[tuple[int, int]] | None,
+    set[tuple[int, int]] | None,
+]
+
+
+def _resolve_model(model: OptModel) -> _ResolvedModel:
+    """Turn a saved model's spec strings into cell coordinates.
+
+    Raises ``ValueError`` with a user-facing message; callers report it.
+    Shared by every command that runs a model so the specs cannot be
+    interpreted one way by ``:opt run`` and another by ``:opt sweep``.
+    """
+    obj_match = ref(model.objective)
+    if not obj_match or obj_match[0] != len(model.objective):
+        raise ValueError(f"bad objective cell: {model.objective}")
+    _, oc, or_ = obj_match
+    return (
+        (oc, or_),
+        _parse_cells(model.vars),
+        _parse_cells(model.constraints),
+        _parse_bounds(model.bounds) if model.bounds else None,
+        set(_parse_cells(model.integers)) if model.integers else None,
+        set(_parse_cells(model.binaries)) if model.binaries else None,
+    )
+
+
+_SWEEP_USAGE = "usage: opt sweep <constraint-cell> <lo>:<hi> [steps] [model]"
+
+
+def _execute_sweep(stdscr: curses.window, g: Grid, args: list[str]) -> bool:
+    """``:opt sweep <cell> <lo>:<hi> [steps] [model]``.
+
+    Read-only: the sweep re-solves with substituted right-hand sides and
+    never writes to the sheet, so there is no undo snapshot to take and
+    nothing to roll back.
+    """
+    if len(args) < 2:
+        show_error(stdscr, _SWEEP_USAGE)
+        return False
+
+    cell_str, range_str = args[0], args[1]
+    steps = 10
+    name = "default"
+    for extra in args[2:]:
+        if extra.isdigit():
+            steps = int(extra)
+        else:
+            name = extra
+
+    model = g.models.get(name)
+    if model is None:
+        show_error(stdscr, f"opt: no model named {name!r}")
+        return False
+
+    try:
+        m = ref(cell_str)
+        if not m or m[0] != len(cell_str):
+            raise ValueError(f"bad constraint cell: {cell_str}")
+        _, cc, cr = m
+        if ":" not in range_str:
+            raise ValueError(f"sweep range needs 'lo:hi': {range_str}")
+        lo_s, hi_s = range_str.split(":", 1)
+        lo, hi = float(lo_s), float(hi_s)
+        if math.isnan(lo) or math.isnan(hi):
+            raise ValueError(f"sweep range is not numeric: {range_str}")
+        resolved = _resolve_model(model)
+    except ValueError as e:
+        show_error(stdscr, f"opt: {e}")
+        return False
+
+    (oc, or_), decision_vars, constraint_cells, bounds, integer_vars, binary_vars = resolved
+    try:
+        points = opt_sweep(
+            g,
+            (oc, or_),
+            decision_vars,
+            constraint_cells,
+            constraint=(cc, cr),
+            lo=lo,
+            hi=hi,
+            steps=steps,
+            maximize=(model.sense == "max"),
+            bounds=bounds,
+            integer_vars=integer_vars,
+            binary_vars=binary_vars,
+        )
+    except OptError as e:
+        show_error(stdscr, f"opt: {e}")
+        return False
+    except ValueError as e:
+        show_error(stdscr, f"opt: invalid model ({e})")
+        return False
+
+    pager(stdscr, "Parametric sweep", format_sweep(points, cellname(cc, cr)))
+    return False
+
+
 def _execute_model(
     stdscr: curses.window,
     g: Grid,
@@ -174,18 +282,11 @@ def _execute_model(
     without applying would describe a state the user cannot see.
     """
     try:
-        obj_match = ref(model.objective)
-        if not obj_match or obj_match[0] != len(model.objective):
-            raise ValueError(f"bad objective cell: {model.objective}")
-        _, oc, or_ = obj_match
-        decision_vars = _parse_cells(model.vars)
-        constraint_cells = _parse_cells(model.constraints)
-        bounds = _parse_bounds(model.bounds) if model.bounds else None
-        integer_vars = set(_parse_cells(model.integers)) if model.integers else None
-        binary_vars = set(_parse_cells(model.binaries)) if model.binaries else None
+        resolved = _resolve_model(model)
     except ValueError as e:
         show_error(stdscr, f"opt: {e}")
         return False
+    (oc, or_), decision_vars, constraint_cells, bounds, integer_vars, binary_vars = resolved
 
     undo.save_grid(g)
     try:
@@ -259,6 +360,8 @@ def cmd_opt(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> boo
       * ``:opt def <name> max|min ...``  - save under ``<name>``; does NOT execute
       * ``:opt run [<name>]``            - execute saved model (default: ``default``)
       * ``:opt sens [<name>]``           - execute and show a sensitivity report
+      * ``:opt sweep <cell> <lo>:<hi> [steps] [name]``
+                                         - re-solve across a range of RHS values
       * ``:opt list``                    - show saved model names
       * ``:opt undef <name>``            - remove a saved model
 
@@ -307,6 +410,9 @@ def cmd_opt(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> boo
             show_error(stdscr, f"opt: no model named {name!r}")
             return False
         return _execute_model(stdscr, g, undo, model)
+
+    if head == "sweep":
+        return _execute_sweep(stdscr, g, parts[1:])
 
     if head == "sens":
         name = parts[1] if len(parts) >= 2 else "default"

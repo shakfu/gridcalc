@@ -217,6 +217,7 @@ on reopen.
 :opt def <name> max|min <cell> ...                                         Save under <name>; does not execute
 :opt run [<name>]                                                          Execute a saved model
 :opt sens [<name>]                                                         Execute and show a sensitivity report
+:opt sweep <cell> <lo>:<hi> [steps] [<name>]                               Re-solve across a range of RHS values
 :opt list                                                                  List saved models
 :opt undef <name>                                                          Remove a saved model
 ```
@@ -294,6 +295,46 @@ Sensitivity is **not reported for integer or binary models**: a
 branch-and-bound dual describes one LP relaxation rather than the
 integer problem, so there is no valid shadow-price reading. `:opt sens`
 on such a model still solves it and says why the report is absent.
+
+### Parametric sweep
+
+A shadow price answers *what is the next unit worth*. It cannot answer
+*how much more should I buy*, because it stops being valid at the edge
+of its `rhs from/till` range. `:opt sweep` re-solves across a range and
+shows where the value changes:
+
+```text
+:opt sweep D5 6:24 9
+```
+
+```text
+D5 right-hand side from 6 to 24   (* = marginal value changed)
+            rhs objective     delta    shadow  status
+              6        27        --       2.5
+   *          8        30         3       1.5
+             12        36         3       1.5
+             18        45         3       1.5
+   *         20        45         0         0
+             24        45         0         0
+```
+
+Read that as: capacity is worth 1.5 per unit up to 18, and nothing at
+all beyond it. Buy up to 18.
+
+`steps` is the number of intervals (default 10), so the report has
+`steps + 1` rows spanning the range inclusive. The optional trailing
+name selects a saved model other than `default`.
+
+The sweep is **read-only** -- each point substitutes the right-hand
+side internally rather than editing the constraint formula, so the
+sheet is untouched and there is nothing to undo. Points where the model
+becomes infeasible or unbounded are kept in the series with their
+status, since learning that a level is unattainable answers the
+question too.
+
+Available programmatically as `opt.sweep(...)`, and the underlying
+substitution as `solve(rhs_override={cell: value})` for one-off what-if
+questions.
 
 ### Infeasibility diagnosis
 
@@ -472,7 +513,8 @@ Sheets        :sheet [name|N|add|del|rename|move]
 Names         :name <n> [range]   :names   :unname <n>
 Modes         :mode [excel|hybrid|python]
 Import/export :csv save/load   :xlsx save/load   :pd save/load
-Optimization  :opt   :opt def   :opt run   :opt sens   :opt list   :opt undef
+Optimization  :opt   :opt def   :opt run   :opt sens   :opt sweep
+              :opt list   :opt undef
               :goal <cell> = <target> by <cell> [in <lo>:<hi>]
 View          :view   E   :tv/:th/:tb/:tn (lock title rows/cols)
 ```

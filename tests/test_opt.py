@@ -1136,3 +1136,163 @@ def test_unbounded_ignores_variables_absent_from_the_objective():
     )
     assert res.status_name == "UNBOUNDED"
     assert res.unbounded == [(0, 1)], "A1 has no objective coefficient"
+
+
+# --- Parametric RHS sweep --------------------------------------------------
+
+
+def _sweep_wyndor(**kwargs):
+    from gridcalc.opt import sweep
+
+    defaults = dict(
+        constraint=(3, 1),
+        lo=6.0,
+        hi=24.0,
+        steps=9,
+        maximize=True,
+    )
+    defaults.update(kwargs)
+    return sweep(
+        _wyndor_grid(),
+        (2, 0),
+        [(0, 0), (0, 1)],
+        [(3, 0), (3, 1), (3, 2)],
+        **defaults,
+    )
+
+
+def test_sweep_returns_steps_plus_one_points():
+    """`steps` counts intervals, so the endpoints are both included."""
+    pts = _sweep_wyndor(steps=9)
+    assert len(pts) == 10
+    assert pts[0].rhs == pytest.approx(6.0)
+    assert pts[-1].rhs == pytest.approx(24.0)
+
+
+def test_sweep_tracks_the_objective_across_the_range():
+    """Wyndor: relaxing 2y<=12 is worth 1.5/unit until the 3x+2y<=18
+    constraint takes over at rhs=18, after which extra capacity is free but
+    worthless."""
+    pts = {p.rhs: p for p in _sweep_wyndor()}
+    assert pts[12.0].objective == pytest.approx(36.0)
+    assert pts[18.0].objective == pytest.approx(45.0)
+    assert pts[24.0].objective == pytest.approx(45.0), "objective must plateau"
+
+
+def test_sweep_shadow_price_collapses_past_the_breakpoint():
+    pts = {p.rhs: p for p in _sweep_wyndor()}
+    assert pts[12.0].shadow_price == pytest.approx(1.5)
+    assert pts[20.0].shadow_price == pytest.approx(0.0)
+
+
+def test_sweep_marks_breakpoints_where_the_marginal_value_changes():
+    """The point of sweeping: a single shadow price cannot show where the
+    marginal value stops applying."""
+    pts = _sweep_wyndor()
+    marked = [p.rhs for p in pts if p.breakpoint]
+    assert marked == pytest.approx([8.0, 20.0])
+
+
+def test_sweep_first_point_has_no_delta_or_breakpoint():
+    """Nothing to compare against; reporting 0 would imply a measurement."""
+    first = _sweep_wyndor()[0]
+    assert first.delta is None
+    assert first.breakpoint is False
+
+
+def test_sweep_delta_matches_objective_difference():
+    pts = _sweep_wyndor()
+    for prev, cur in zip(pts, pts[1:], strict=False):
+        if cur.delta is not None:
+            assert cur.delta == pytest.approx(cur.objective - prev.objective)
+
+
+def test_sweep_does_not_modify_the_sheet():
+    """Every point solves with apply=False; a sweep is a question, not an
+    edit, and silently moving the user's decision cells would be a nasty
+    surprise from a read-only-sounding command."""
+    from gridcalc.opt import sweep
+
+    g = _wyndor_grid()
+    sweep(
+        g,
+        (2, 0),
+        [(0, 0), (0, 1)],
+        [(3, 0), (3, 1), (3, 2)],
+        constraint=(3, 1),
+        lo=6.0,
+        hi=24.0,
+        steps=4,
+        maximize=True,
+    )
+    assert g.cells[0][0].val == pytest.approx(0.0)
+    assert g.cells[0][1].val == pytest.approx(0.0)
+
+
+def test_sweep_keeps_infeasible_points_rather_than_dropping_them():
+    """Learning that a resource level is unattainable answers the question
+    too, so failed points stay in the series with their status."""
+    from gridcalc.opt import sweep
+
+    g = make_grid()
+    g.setcell(0, 0, "0")
+    g.setcell(2, 0, "=A1")
+    g.setcell(3, 0, "=A1>=10")
+    g.setcell(3, 1, "=A1<=5")  # swept; below 10 the model is infeasible
+    pts = sweep(
+        g,
+        (2, 0),
+        [(0, 0)],
+        [(3, 0), (3, 1)],
+        constraint=(3, 1),
+        lo=2.0,
+        hi=20.0,
+        steps=2,
+        maximize=True,
+    )
+    assert [p.status_name for p in pts] == ["INFEASIBLE", "OPTIMAL", "OPTIMAL"]
+    assert math.isnan(pts[0].objective)
+
+
+def test_sweep_rejects_a_cell_that_is_not_a_constraint():
+    with pytest.raises(OptError, match="not one of the constraint cells"):
+        _sweep_wyndor(constraint=(0, 0))
+
+
+def test_sweep_rejects_a_reversed_range():
+    with pytest.raises(OptError, match="reversed"):
+        _sweep_wyndor(lo=20.0, hi=5.0)
+
+
+def test_sweep_rejects_zero_steps():
+    with pytest.raises(OptError, match="at least 1 step"):
+        _sweep_wyndor(steps=0)
+
+
+def test_rhs_override_does_not_touch_the_sheet():
+    """The primitive the sweep is built on."""
+    g = _wyndor_grid()
+    res = solve(
+        g,
+        objective_cell=(2, 0),
+        decision_vars=[(0, 0), (0, 1)],
+        constraint_cells=[(3, 0), (3, 1), (3, 2)],
+        maximize=True,
+        apply=False,
+        rhs_override={(3, 1): 24.0},
+    )
+    assert res.objective == pytest.approx(45.0)
+    assert g.cells[3][1].text == "=2*A2<=12", "the constraint formula must be unchanged"
+
+
+def test_rhs_override_rejects_a_non_constraint_cell():
+    with pytest.raises(OptError, match="not a constraint cell"):
+        solve(
+            _wyndor_grid(),
+            objective_cell=(2, 0),
+            decision_vars=[(0, 0), (0, 1)],
+            constraint_cells=[(3, 0), (3, 1), (3, 2)],
+            maximize=True,
+            apply=False,
+            rhs_override={(0, 0): 5.0},
+        )

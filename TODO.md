@@ -28,11 +28,9 @@ they are the strategy.
       `UNBOUNDED`. See CHANGELOG. (Note for future work: lp_solve has no
       extreme-ray accessor; `is_unbounded` reports a *declaration*, not a
       ray. The diagnosis re-solves per variable instead.)
-- [ ] **Sensitivity report for a range of RHS values.** Shadow prices are
-      valid only inside `rhs_from..rhs_till`; the natural follow-up
-      question is what happens past that edge. A small parametric sweep
-      re-solving across a RHS range would answer "how much more should I
-      buy" rather than only "what is the next unit worth".
+- [x] Parametric RHS sweep (`:opt sweep`) -- re-solves across a range and
+      flags where the marginal value changes. See CHANGELOG. Built on
+      `solve(rhs_override=...)`, which is also usable directly.
 - [ ] **Quadratic / convex objectives.** lp_solve is LP/MIP only. A
       second backend would be a large change; worth scoping only if a
       real sheet needs it.

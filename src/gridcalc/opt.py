@@ -254,6 +254,24 @@ class Sensitivity:
 
 
 @dataclass
+class SweepPoint:
+    """One re-solve of the model at a substituted right-hand side."""
+
+    rhs: float
+    status_name: str
+    objective: float
+    # Shadow price of the swept constraint at this point, or None when the
+    # solve failed or the model is a MIP.
+    shadow_price: float | None
+    # Objective change from the previous point, or None for the first.
+    delta: float | None
+    # True when this point's shadow price differs from the previous point's:
+    # the marginal value of the resource just changed, which is the whole
+    # reason to sweep rather than read a single shadow price.
+    breakpoint: bool
+
+
+@dataclass
 class SolveResult:
     status: int
     status_name: str
@@ -437,6 +455,7 @@ def solve(
     apply: bool = True,
     sensitivity: bool = False,
     diagnose: bool = False,
+    rhs_override: dict[CellKey, float] | None = None,
 ) -> SolveResult:
     """Build an LP (or MIP) from the named cells, solve, and (by default) write back.
 
@@ -455,6 +474,12 @@ def solve(
     ignored for MIPs (the field stays ``None``): branch-and-bound duals
     describe one LP relaxation rather than the integer problem, so reporting
     them would be actively misleading.
+
+    ``rhs_override`` replaces the right-hand side of the named constraint
+    cells for this solve only, without touching the sheet. The constraint's
+    coefficients still come from its formula; only the constant moves. This
+    is what makes what-if analysis possible without rewriting cells and
+    recalculating -- see ``sweep``.
 
     ``diagnose=True`` explains a failed solve. On INFEASIBLE it populates
     ``SolveResult.conflict`` with a minimal set of contradictory constraint
@@ -505,10 +530,19 @@ def solve(
         if cell.type != FORMULA or cell_ast is None:
             raise OptError(f"constraint cell {_cellname(c, r)} must contain a comparison formula")
         coeffs, op_code, rhs_val = extract_constraint(cell_ast, var_set, grid)
+        if rhs_override and (c, r) in rhs_override:
+            rhs_val = float(rhs_override[(c, r)])
         row = [coeffs.get(v, 0.0) for v in decision_vars]
         A.append(row)
         sense.append(op_code)
         rhs.append(rhs_val)
+
+    if rhs_override:
+        unknown = sorted(set(rhs_override) - set(constraint_cells))
+        if unknown:
+            raise OptError(
+                f"rhs_override names {_cellname(*unknown[0])} which is not a constraint cell"
+            )
 
     # Bounds: default to [0, +inf) for each decision var, mirroring lp_solve
     # and matching the "amounts" intuition (no negative production levels).
@@ -829,3 +863,92 @@ def _cellname(c: int, r: int) -> str:
     from .engine import cellname
 
     return cellname(c, r)
+
+
+def sweep(
+    grid: Grid,
+    objective_cell: CellKey,
+    decision_vars: list[CellKey],
+    constraint_cells: list[CellKey],
+    *,
+    constraint: CellKey,
+    lo: float,
+    hi: float,
+    steps: int = 10,
+    maximize: bool = True,
+    bounds: dict[CellKey, tuple[float, float]] | None = None,
+    integer_vars: set[CellKey] | None = None,
+    binary_vars: set[CellKey] | None = None,
+) -> list[SweepPoint]:
+    """Re-solve the model across a range of right-hand sides for one constraint.
+
+    A shadow price answers "what is the next unit worth". It is valid only
+    inside its ranging interval, so it cannot answer "how much more should I
+    buy" -- past the interval edge the basis changes and the marginal value
+    drops. Sweeping re-solves at each point and reports where that happens.
+
+    The sheet is never modified: each point substitutes the right-hand side
+    via ``solve(rhs_override=...)`` with ``apply=False``. The constraint's
+    coefficients still come from its formula; only the constant moves.
+
+    ``steps`` is the number of intervals, so the result has ``steps + 1``
+    points spanning ``lo``..``hi`` inclusive. Points where the model becomes
+    infeasible or unbounded are included with their status rather than
+    dropped -- discovering that a resource level is unattainable is a real
+    answer to the question being asked.
+    """
+    if steps < 1:
+        raise OptError("sweep needs at least 1 step")
+    if hi < lo:
+        raise OptError(f"sweep range is reversed: {lo:g} to {hi:g}")
+    if constraint not in constraint_cells:
+        raise OptError(f"{_cellname(*constraint)} is not one of the constraint cells")
+
+    points: list[SweepPoint] = []
+    prev_obj: float | None = None
+    prev_price: float | None = None
+
+    for k in range(steps + 1):
+        value = lo if steps == 0 else lo + (hi - lo) * k / steps
+        result = solve(
+            grid,
+            objective_cell,
+            decision_vars,
+            constraint_cells,
+            maximize=maximize,
+            bounds=bounds,
+            integer_vars=integer_vars,
+            binary_vars=binary_vars,
+            apply=False,
+            sensitivity=True,
+            rhs_override={constraint: value},
+        )
+        solved = result.status_name in ("OPTIMAL", "SUBOPTIMAL")
+
+        price: float | None = None
+        if result.sensitivity is not None:
+            for c in result.sensitivity.constraints:
+                if c.cell == constraint:
+                    price = c.shadow_price
+                    break
+
+        delta = result.objective - prev_obj if (solved and prev_obj is not None) else None
+        # Only call it a breakpoint when both prices are known; a None on
+        # either side means "not comparable", not "changed".
+        changed = price is not None and prev_price is not None and abs(price - prev_price) > 1e-9
+
+        points.append(
+            SweepPoint(
+                rhs=value,
+                status_name=result.status_name,
+                objective=result.objective if solved else float("nan"),
+                shadow_price=price,
+                delta=delta,
+                breakpoint=changed,
+            )
+        )
+        if solved:
+            prev_obj = result.objective
+        prev_price = price
+
+    return points

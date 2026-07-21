@@ -452,10 +452,7 @@ def _execute_model(
 
     summary = f"opt: {result.status_name}  obj={result.objective:.6g}"
     if result.quadratic:
-        # A quadratic objective is solved through a piecewise-linear
-        # relaxation, so the answer is approximate. Saying OPTIMAL without
-        # qualification would overstate it.
-        summary += f"  (quadratic, within {result.quadratic_gap:.3g})"
+        summary += "  (quadratic)"
 
     if sensitivity:
         if result.sensitivity is None:

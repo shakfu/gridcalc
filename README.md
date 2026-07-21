@@ -25,8 +25,9 @@ gridcalc budget.json
   full Python `eval` with numpy/pandas.
 - **xlsx interop** via OpenXLSX C++ -- read every sheet's
   formulas + values; export with cached values.
-- **Linear & mixed-integer programming** built in via lp_solve -- `:opt max B4 vars
-  A4:A5 st D4:D6` solves an LP from cells in the sheet. Models persist
+- **Linear, mixed-integer & quadratic programming** built in via HiGHS --
+  `:opt max B4 vars A4:A5 st D4:D6` solves from cells in the sheet, with
+  shadow prices, infeasibility diagnosis, and RHS sweeps. Models persist
   in the workbook.
 - **Goal-seek** -- `:goal B10 = 100 by A1` adjusts a variable so a
   formula hits a target value.
@@ -206,7 +207,7 @@ not supported (Excel doesn't either).
 ## Optimization
 
 `:opt` solves linear and mixed-integer programs defined by cells in the
-active sheet, via a vendored copy of [lp_solve 5.5](https://lpsolve.sourceforge.net/).
+active sheet, via a vendored copy of [HiGHS](https://highs.dev/) (MIT).
 Models are **workbook-persistent**: define once, save the file, re-run
 on reopen.
 
@@ -247,41 +248,35 @@ and `6.0`; `u` rolls back.
 
 ### Quadratic objectives
 
-Objectives may contain squared decision variables -- `=(A1-3)*(A1-3)`,
-`=A1^2 + A2^2`, `=2*A1^2 + 3*A1` -- which covers least-squares fitting,
-quadratic cost curves, and target-tracking objectives.
+Objectives may contain squared decision variables and cross terms --
+`=(A1-3)*(A1-3)`, `=A1^2 + A2^2`, `=A1*A2`, `=2*A1^2 + 3*A1` -- which
+covers least-squares fitting, quadratic cost curves, target tracking,
+and covariance-style objectives.
 
 ```text
-:opt min C1 vars A1 st D1 bounds A1=0:10
-opt: OPTIMAL  obj=0.00219727  (quadratic, within 0.0061)
+:opt min C1 vars A1:A2 st D1
+opt: OPTIMAL  obj=0  (quadratic)
 ```
 
-There is **no second solver**. A convex function is the upper envelope of
-its tangents, so `x^2` is modelled by an auxiliary variable constrained
-from below by a fan of tangent lines, and the whole thing stays an LP on
-the existing lp_solve backend. This has consequences worth knowing:
+Solved exactly as a QP; there is no approximation and no accuracy knob.
 
-- **The answer is approximate**, and the status bar says by how much. The
-  reported bound is a real bound, not an estimate -- the true optimum is
-  guaranteed to be within it.
-- **`quadratic_segments` (default 64) trades accuracy for size.** Error
-  falls with the square of the segment count: 8 segments give ~4e-1 on the
-  example above, 64 give ~6e-3, 512 give ~1e-4.
-- **The reported objective is the true value at the solved point**, not the
-  relaxation's, so it is a number you can actually achieve.
+The objective must be **convex for a minimisation** (or concave for a
+maximisation). Otherwise the optimum sits at a corner of the feasible
+region, which is a different and much harder problem, and gridcalc
+refuses it rather than returning a plausible wrong answer:
 
-Restrictions, each refused with a message naming the cause:
+```text
+opt: objective is not convex, so it has no interior minimum -- ...
+```
 
-| Not supported | Why |
-|---|---|
-| cross terms (`=A1*A2`) | only *separable* quadratics; covariance-style objectives need a real QP solver |
-| maximising a convex objective (or minimising a concave one) | the optimum sits at a corner and this method cannot find it reliably |
-| squared variables without finite bounds | tangent points need a finite interval to sit on |
-| degree 3 and higher | out of scope |
+Convexity is checked directly on the Hessian (symmetric elimination, no
+numpy required), so the message names the real problem rather than
+surfacing a solver failure.
 
 Sensitivity analysis and infeasibility diagnosis are **withheld for
-quadratic models**: the duals belong to the approximating LP, and its
-extra rows are not constraints you wrote. Same call as for MIPs.
+quadratic models**: their duals do not carry the shadow-price reading
+the report describes. Same call as for MIPs. Integer variables cannot be
+combined with a quadratic objective.
 
 ### Inferring the model from a selection
 

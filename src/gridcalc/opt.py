@@ -618,7 +618,11 @@ def solve(
     applied = False
     if apply and values:
         for (c, r), x in values.items():
-            cell = grid.cells[c][r]
+            # `_ensure_cell`, not `grid.cells[c][r]`: decision cells are
+            # allowed to be empty, and empty coordinates hand back a shared
+            # placeholder rather than a stored Cell. Writing through that
+            # placeholder used to corrupt every empty cell in the process.
+            cell = grid._ensure_cell(c, r)
             cell.type = NUM
             cell.val = x
             cell.text = ""
@@ -952,3 +956,79 @@ def sweep(
         prev_price = price
 
     return points
+
+
+@dataclass
+class InferredModel:
+    """A model deduced from a selected block rather than typed out."""
+
+    objective: CellKey
+    decision_vars: list[CellKey]
+    constraint_cells: list[CellKey]
+
+
+def infer_model(grid: Grid, c1: int, r1: int, c2: int, r2: int) -> InferredModel:
+    """Classify the cells in a rectangular block into an LP model.
+
+    The spatial layout of a sheet already encodes the model; this reads it
+    instead of making the user retype it as ranges:
+
+      * a formula whose root is a comparison is a **constraint**
+      * any other formula is the **objective** (exactly one must be present)
+      * a plain number is a **decision variable**
+      * labels, blanks, and errors are ignored
+
+    Blank cells are deliberately *not* treated as decision variables even
+    though ``solve`` accepts empty ones. A selected rectangle is mostly
+    whitespace, and silently promoting every gap to a variable would build a
+    model the user did not describe.
+
+    Cells are returned in column-major order within the block, matching how
+    ``_parse_cells`` expands a typed range, so an inferred model and a typed
+    one produce the same variable ordering for the same cells.
+
+    Raises ``OptError`` naming what was missing or ambiguous -- the whole
+    point is to fail with something the user can act on.
+    """
+    objective: list[CellKey] = []
+    decision_vars: list[CellKey] = []
+    constraint_cells: list[CellKey] = []
+
+    for c in range(c1, c2 + 1):
+        for r in range(r1, r2 + 1):
+            cell = grid.cells[c][r]
+            if cell is None or cell.type == EMPTY:
+                continue
+            if cell.type == NUM:
+                decision_vars.append((c, r))
+                continue
+            if cell.type != FORMULA:
+                continue  # labels
+            node = _cell_ast(cell)
+            if node is None:
+                continue
+            if isinstance(node, BinOp) and node.op in _SENSE:
+                constraint_cells.append((c, r))
+            elif isinstance(node, BinOp) and node.op == "<>":
+                raise OptError(f"{_cellname(c, r)} uses '<>', which is not a valid LP constraint")
+            else:
+                objective.append((c, r))
+
+    if not objective:
+        raise OptError("no objective formula in the selection")
+    if len(objective) > 1:
+        names = ", ".join(_cellname(*k) for k in objective[:4])
+        raise OptError(
+            f"selection has {len(objective)} candidate objective formulas ({names}); "
+            "narrow it to one"
+        )
+    if not decision_vars:
+        raise OptError("no numeric decision cells in the selection")
+    if not constraint_cells:
+        raise OptError("no constraint formulas in the selection")
+
+    return InferredModel(
+        objective=objective[0],
+        decision_vars=decision_vars,
+        constraint_cells=constraint_cells,
+    )

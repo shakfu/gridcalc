@@ -1296,3 +1296,131 @@ def test_rhs_override_rejects_a_non_constraint_cell():
             apply=False,
             rhs_override={(0, 0): 5.0},
         )
+
+
+# --- Model inference from a selection --------------------------------------
+
+
+def _block_grid() -> Grid:
+    """Wyndor laid out spatially, as a user would type it.
+
+        A          B              C
+    1   "Product"
+    2   0          =3*A2+5*A3     =A2<=4
+    3   0                         =2*A3<=12
+    4                             =3*A2+2*A3<=18
+    """
+    g = make_grid()
+    g.setcell(0, 0, '"Product')
+    g.setcell(0, 1, "0")
+    g.setcell(0, 2, "0")
+    g.setcell(1, 1, "=3*A2+5*A3")
+    g.setcell(2, 1, "=A2<=4")
+    g.setcell(2, 2, "=2*A3<=12")
+    g.setcell(2, 3, "=3*A2+2*A3<=18")
+    return g
+
+
+def test_infer_classifies_the_block():
+    from gridcalc.opt import infer_model
+
+    m = infer_model(_block_grid(), 0, 0, 2, 3)
+    assert m.objective == (1, 1)
+    assert m.decision_vars == [(0, 1), (0, 2)]
+    assert m.constraint_cells == [(2, 1), (2, 2), (2, 3)]
+
+
+def test_infer_ignores_labels_and_blanks():
+    """A selected rectangle is mostly whitespace. Promoting every gap to a
+    decision variable would build a model the user never described."""
+    from gridcalc.opt import infer_model
+
+    g = _block_grid()
+    g.setcell(1, 0, '"Objective')
+    g.setcell(2, 0, '"Limits')
+    m = infer_model(g, 0, 0, 2, 3)
+    assert m.decision_vars == [(0, 1), (0, 2)], "labels and blanks stay out"
+
+
+def test_inferred_model_solves_to_the_same_optimum_as_a_typed_one():
+    from gridcalc.opt import infer_model
+
+    g = _block_grid()
+    m = infer_model(g, 0, 0, 2, 3)
+    res = solve(
+        g,
+        objective_cell=m.objective,
+        decision_vars=m.decision_vars,
+        constraint_cells=m.constraint_cells,
+        maximize=True,
+    )
+    assert res.status_name == "OPTIMAL"
+    assert res.objective == pytest.approx(36.0)
+
+
+def test_infer_requires_exactly_one_objective():
+    from gridcalc.opt import infer_model
+
+    g = _block_grid()
+    g.setcell(1, 2, "=A2+A3")  # a second non-comparison formula
+    with pytest.raises(OptError, match="candidate objective"):
+        infer_model(g, 0, 0, 2, 3)
+
+
+def test_infer_error_names_the_candidates():
+    from gridcalc.opt import infer_model
+
+    g = _block_grid()
+    g.setcell(1, 2, "=A2+A3")
+    with pytest.raises(OptError) as exc:
+        infer_model(g, 0, 0, 2, 3)
+    assert "B2" in str(exc.value) and "B3" in str(exc.value)
+
+
+def test_infer_requires_an_objective():
+    from gridcalc.opt import infer_model
+
+    g = _block_grid()
+    with pytest.raises(OptError, match="no objective"):
+        infer_model(g, 0, 0, 0, 3)  # column A only: numbers, no formula
+
+
+def test_infer_requires_decision_cells():
+    from gridcalc.opt import infer_model
+
+    g = _block_grid()
+    with pytest.raises(OptError, match="no numeric decision cells"):
+        infer_model(g, 1, 0, 2, 3)  # columns B..C: formulas only
+
+
+def test_infer_requires_constraints():
+    from gridcalc.opt import infer_model
+
+    g = _block_grid()
+    with pytest.raises(OptError, match="no constraint formulas"):
+        infer_model(g, 0, 0, 1, 3)  # columns A..B: objective + vars, no comparisons
+
+
+def test_infer_rejects_ne_comparison():
+    from gridcalc.opt import infer_model
+
+    g = _block_grid()
+    g.setcell(2, 0, "=A2<>3")
+    with pytest.raises(OptError, match="<>"):
+        infer_model(g, 0, 0, 2, 3)
+
+
+def test_infer_orders_cells_like_a_typed_range():
+    """Column-major within the block, matching `_parse_cells` expansion, so
+    an inferred model and a typed one give the same variable ordering."""
+    from gridcalc.opt import infer_model
+
+    g = make_grid()
+    g.setcell(0, 0, "0")
+    g.setcell(1, 0, "0")
+    g.setcell(0, 1, "0")
+    g.setcell(1, 1, "0")
+    g.setcell(2, 0, "=A1+B1+A2+B2")
+    g.setcell(3, 0, "=A1<=1")
+    m = infer_model(g, 0, 0, 3, 1)
+    assert m.decision_vars == [(0, 0), (0, 1), (1, 0), (1, 1)]

@@ -67,8 +67,13 @@ def fmt_float(val: float, spec: str) -> str | None:
 
 
 def _num_str(v: float) -> str:
-    """Compact numeric string: integer form when integral and not huge."""
-    return str(int(v)) if v == int(v) and abs(v) < 1e9 else f"{v:g}"
+    """Compact numeric string: integer form when integral and not huge.
+
+    The magnitude test comes first so short-circuiting keeps ``int(v)`` away
+    from an infinity, which raises OverflowError. Same ordering applies
+    everywhere this idiom appears.
+    """
+    return str(int(v)) if abs(v) < 1e9 and v == int(v) else f"{v:g}"
 
 
 def cell_clip_value(cl: Cell | None) -> str:
@@ -122,7 +127,7 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
 
     if cl.arr is not None and len(cl.arr) > 0:
         v = cl.arr[0]
-        numstr = str(int(v)) if v == int(v) and abs(v) < 1e9 else f"{v:g}"
+        numstr = str(int(v)) if abs(v) < 1e9 and v == int(v) else f"{v:g}"
         t = f"{numstr}[{len(cl.arr)}]"
         return f"{t:>{cw}}"[:cw]
 
@@ -136,6 +141,11 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
         return f"{str(cl.err):>{cw}}"[:cw]
     if isinstance(cl.val, float) and math.isnan(cl.val):
         return f"{'ERROR':>{cw}}"
+    # Infinity has to be caught before any format branch: the `I` and `*`
+    # specs call int() unconditionally, and a number format spec applied to
+    # an infinity is meaningless anyway. `=1e308*10` reaches here.
+    if isinstance(cl.val, float) and math.isinf(cl.val):
+        return f"{('inf' if cl.val > 0 else '-inf'):>{cw}}"[:cw]
 
     if cl.fmtstr:
         formatted = fmt_float(cl.val, cl.fmtstr)
@@ -154,7 +164,7 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
         bar_len = min(cw, max(0, int(cl.val)))
         t = "*" * bar_len
         return f"{t:<{cw}}"[:cw]
-    elif fc == "I" or (cl.val == int(cl.val) and abs(cl.val) < 1e9):
+    elif fc == "I" or (abs(cl.val) < 1e9 and cl.val == int(cl.val)):
         t = str(int(cl.val))
     else:
         t = f"{cl.val:g}"
@@ -331,3 +341,60 @@ def format_sweep(
         lines.append("Marginal value changes at the starred rows: buying past")
         lines.append("one is worth less per unit than buying up to it.")
     return lines
+
+
+# Column headers for the written sensitivity block. Kept beside the writer
+# so the layout is documented in one place -- downstream formulas reference
+# these cells by position, so the layout is a compatibility surface.
+SENS_VAR_HEADERS = ("cell", "value", "reduced", "obj coef", "coef from", "coef till")
+SENS_CON_HEADERS = ("cell", "shadow", "rhs", "activity", "slack", "rhs from", "rhs till")
+
+
+def sensitivity_block(
+    sens: Sensitivity,
+    cellname: Callable[[int, int], str],
+) -> list[list[str | float]]:
+    """The sensitivity report as a rectangular block of cell values.
+
+    Rows are lists of label strings or floats, ready to be written into the
+    grid. Numbers stay numbers so downstream formulas can reference them --
+    that is the entire point of writing into cells rather than paging a
+    report. Infinities are written as floats too; the display layer renders
+    them as `inf`.
+
+    Layout (a blank row separates the two tables):
+
+        Variables   cell value reduced "obj coef" "coef from" "coef till"
+        <one row per decision variable>
+        (blank)
+        Constraints cell shadow rhs activity slack "rhs from" "rhs till"
+        <one row per constraint>
+    """
+    rows: list[list[str | float]] = []
+    rows.append(["Variables", *SENS_VAR_HEADERS[1:]])
+    for v in sens.variables:
+        rows.append(
+            [
+                cellname(*v.cell),
+                v.value,
+                v.reduced_cost,
+                v.obj_coef,
+                v.obj_from,
+                v.obj_till,
+            ]
+        )
+    rows.append([])
+    rows.append(["Constraints", *SENS_CON_HEADERS[1:]])
+    for c in sens.constraints:
+        rows.append(
+            [
+                cellname(*c.cell),
+                c.shadow_price,
+                c.rhs,
+                c.activity,
+                c.slack,
+                c.rhs_from,
+                c.rhs_till,
+            ]
+        )
+    return rows

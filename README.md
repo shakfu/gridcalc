@@ -212,11 +212,12 @@ on reopen.
 
 ```text
 :opt                                                                       Run the saved 'default' model
+:opt max|min            (with a visual selection)                          Infer the model from the selected block
 :opt max|min <cell> vars <cells> st <cells> [bounds <spec>] [int <cells>] [bin <cells>]
                                                                            Solve inline AND save as 'default'
 :opt def <name> max|min <cell> ...                                         Save under <name>; does not execute
 :opt run [<name>]                                                          Execute a saved model
-:opt sens [<name>]                                                         Execute and show a sensitivity report
+:opt sens [<name>] [into[!] <cell>]                                        Sensitivity report -- paged, or written into cells
 :opt sweep <cell> <lo>:<hi> [steps] [<name>]                               Re-solve across a range of RHS values
 :opt list                                                                  List saved models
 :opt undef <name>                                                          Remove a saved model
@@ -243,6 +244,30 @@ A worked example (also at `examples/example_lp.json`):
 
 Status bar shows `opt: OPTIMAL  obj=36`; `A4` and `A5` become `2.0`
 and `6.0`; `u` rolls back.
+
+### Inferring the model from a selection
+
+The layout above already says what the model is. Select the block with
+`v`, then type `:opt max` (or `min`) and the components are read off it:
+
+| Cell contents | Read as |
+|---|---|
+| formula rooted in a comparison (`=A4<=4`) | a constraint |
+| any other formula (`=3*A4+5*A5`) | the objective |
+| a plain number | a decision variable |
+| labels, blanks | ignored |
+
+For the sheet above, selecting `A3:D6` and typing `:opt max` is
+equivalent to `:opt max B4 vars A4:A5 st D4:D6`.
+
+Exactly one non-comparison formula must be in the selection; more than
+one is ambiguous and reports the candidates so you can narrow it.
+Blanks are deliberately **not** treated as decision variables -- a
+selected rectangle is mostly whitespace, and promoting every gap to a
+variable would build a model you never described.
+
+The inferred model is saved as `default`, so the block only has to be
+selected once: plain `:opt` re-runs it afterwards, and `:w` persists it.
 
 **Clauses** (any order after `st`):
 
@@ -295,6 +320,46 @@ Sensitivity is **not reported for integer or binary models**: a
 branch-and-bound dual describes one LP relaxation rather than the
 integer problem, so there is no valid shadow-price reading. `:opt sens`
 on such a model still solves it and says why the report is absent.
+
+#### Writing the report into cells
+
+`:opt sens into <cell>` writes the report into the sheet instead of
+paging it, anchored at the given cell:
+
+```text
+:opt sens into F1
+```
+
+The numbers land as **values, not text**, so downstream formulas can
+reference them:
+
+```text
+F13:  =G7*100        -> 150     (G7 holds a shadow price of 1.5)
+```
+
+That is the reason to write into cells rather than read a report: the
+results become part of the sheet's own computation. Re-running the
+command refreshes the block in place.
+
+Layout, anchored at the target cell -- a blank row separates the two
+tables, and positions are stable so formulas keep working across
+re-runs:
+
+```text
+Variables    value  reduced  obj coef  coef from  coef till
+<one row per decision variable>
+
+Constraints  shadow  rhs  activity  slack  rhs from  rhs till
+<one row per constraint>
+```
+
+The write **refuses to overwrite non-empty cells** and names the first
+one blocking it; use `into!` to overwrite anyway. The whole rectangle
+belongs to the report, including the separator row, so stray values
+cannot end up sitting inside it. The write is a single undo step.
+
+Unbounded ranging values are written as infinities and display as
+`inf` / `-inf`.
 
 ### Parametric sweep
 

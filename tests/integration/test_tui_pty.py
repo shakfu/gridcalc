@@ -9,6 +9,13 @@ from __future__ import annotations
 
 import pytest
 
+# Harness limitation: multi-byte escape sequences (arrow keys, "\x1b[C") are
+# not delivered reliably through this pty -- ncurses sees a bare ESC and then
+# the remaining bytes as literal characters. In grid mode that is merely
+# useless; in visual mode the ESC cancels the selection outright. Drive these
+# tests with single-byte keys only. Anything needing arrow navigation belongs
+# in the MockStdscr tests, where keycodes are injected directly.
+
 
 @pytest.mark.tui_file("examples/example_lp.json")
 def test_long_labels_overflow_into_empty_neighbors(tui_session) -> None:
@@ -141,6 +148,29 @@ def test_opt_sens_renders_report_through_real_curses(tui_session) -> None:
     assert "binding" in render
     # The pager is interactive; leave it so the fixture's teardown is clean.
     tui_session.send("q")
+
+
+@pytest.mark.tui_file("examples/example_lp.json")
+def test_opt_sens_into_cells_writes_the_block(tui_session) -> None:
+    """End-to-end check that `:opt sens into` reaches the grid and repaints.
+
+    Scope note: this asserts the block lands and renders. That the numbers
+    are NUM cells rather than labels -- the actual point of the feature --
+    is asserted precisely in `test_tui.py`, where the cell types can be
+    inspected directly. A SUM over the block would not discriminate here,
+    since summing labels yields 0 rather than an error.
+    """
+    tui_session.wait_for("Constraints", timeout=5.0)
+    tui_session.send(":opt sens into H10\n")
+    render = tui_session.wait_for("written at H10", timeout=6.0)
+    assert "OPTIMAL" in render
+    # The status line is painted by `_flash`, which does not repaint the
+    # grid. Nudge the cursor so the next loop iteration redraws, then look
+    # for the block's own header label on the sheet.
+    tui_session._buffer.clear()
+    tui_session.send("!")  # recalc: one byte, forces a full redraw
+    render = tui_session.wait_for("Variables", timeout=4.0)
+    assert "Variables" in render
 
 
 @pytest.mark.tui_file("examples/example_lp.json")

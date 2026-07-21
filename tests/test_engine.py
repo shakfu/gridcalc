@@ -2831,3 +2831,56 @@ class TestVecShapePreservation:
         g.setcell(3, 0, "42")
         assert g.cells[3][0].arr is None
         assert g.cells[3][0].arr_cols is None
+
+
+class TestEmptyCellPlaceholderIsFrozen:
+    """`cells[c][r]` returns a shared placeholder for coordinates that hold
+    no cell. Writing through it mutated a process-wide singleton, so every
+    empty cell in every Grid reported the written value -- silently, and
+    across unrelated Grids. `Grid._ensure_cell` is the correct way in.
+    """
+
+    def test_writing_through_the_placeholder_raises(self):
+        g = Grid()
+        with pytest.raises(AttributeError, match="_ensure_cell"):
+            g.cells[5][5].type = NUM
+
+    def test_the_placeholder_is_shared_across_grids(self):
+        """Documents why the freeze matters: without it, one write leaks
+        into every other Grid in the process."""
+        assert Grid().cells[0][0] is Grid().cells[99][99]
+
+    def test_ensure_cell_creates_a_distinct_writable_cell(self):
+        g = Grid()
+        a = g._ensure_cell(5, 5)
+        b = g._ensure_cell(6, 6)
+        assert a is not b
+        a.type = NUM
+        a.val = 1.0
+        assert g.cells[5][5].val == 1.0
+        assert g.cells[6][6].val != 1.0
+
+    def test_empty_cells_stay_empty_after_a_solve_over_empty_decision_cells(self):
+        """The pre-existing bug this guards. `solve` documents empty decision
+        cells as valid input, and its write-back went through `cells[c][r]`.
+        """
+        from gridcalc.opt import solve
+
+        g = Grid()
+        g.setcell(2, 0, "=3*A1+5*A2")
+        g.setcell(3, 0, "=A1<=4")
+        g.setcell(3, 1, "=2*A2<=12")
+        res = solve(
+            g,
+            objective_cell=(2, 0),
+            decision_vars=[(0, 0), (0, 1)],
+            constraint_cells=[(3, 0), (3, 1)],
+            maximize=True,
+        )
+        assert res.status_name == "OPTIMAL"
+        assert res.values[(0, 1)] == pytest.approx(6.0)
+        # The solved values landed in real cells...
+        assert g.cells[0][1].val == pytest.approx(6.0)
+        # ...and no unrelated empty cell was touched, here or anywhere else.
+        assert g.cells[20][20].type == EMPTY
+        assert Grid().cells[0][0].type == EMPTY

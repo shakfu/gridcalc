@@ -668,7 +668,42 @@ def _ast_has_pycall(node: Any) -> bool:
 # Shared sentinel for read access to unpopulated cells.
 # Must never be mutated -- all mutation paths go through cells
 # that already exist in the sparse dict (post-setcell).
-_EMPTY_CELL = Cell()
+class _FrozenCell(Cell):
+    """The shared placeholder returned for cells that don't exist yet.
+
+    ``_ColProxy`` hands the *same* object back for every empty coordinate, so
+    a caller that writes through ``grid.cells[c][r]`` without checking whether
+    the cell exists mutates a process-wide singleton: every empty cell in
+    every Grid then reports the written value. That failure is silent, global,
+    and survives into unrelated Grids.
+
+    Writing is therefore refused outright. Callers that intend to create a
+    cell must go through ``Grid._ensure_cell`` (or ``setcell``), which stores
+    a real Cell in the sparse dict.
+    """
+
+    __slots__ = ()
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError(
+            f"cannot assign to {name!r} on the shared empty-cell placeholder; "
+            "use Grid._ensure_cell(c, r) to create a real cell first"
+        )
+
+
+def _make_empty_cell() -> Cell:
+    """Build the singleton as a normal Cell, then freeze it.
+
+    Re-classing after construction is what lets ``Cell.__init__`` populate the
+    slots through ordinary assignment; ``_FrozenCell`` adds no slots of its
+    own, so the layouts are compatible.
+    """
+    cl = Cell()
+    cl.__class__ = _FrozenCell
+    return cl
+
+
+_EMPTY_CELL = _make_empty_cell()
 
 
 class _ColProxy:
@@ -1902,7 +1937,7 @@ class Grid:
                 if isinstance(v, str):
                     text = v
                 elif isinstance(v, (int, float)):
-                    if isinstance(v, int) or (v == int(v) and abs(v) < 1e15):
+                    if isinstance(v, int) or (abs(v) < 1e15 and v == int(v)):
                         text = str(int(v))
                     else:
                         text = f"{v:g}"
@@ -2079,7 +2114,7 @@ class Grid:
                     row.append(None)
                     continue
                 elif sc.type == NUM:
-                    if sc.val == int(sc.val) and abs(sc.val) < 1e15:
+                    if abs(sc.val) < 1e15 and sc.val == int(sc.val):
                         val: Any = int(sc.val)
                     else:
                         val = sc.val
@@ -2263,7 +2298,7 @@ class Grid:
                         elif cl.type in (NUM, FORMULA):
                             if isinstance(cl.val, float) and math.isnan(cl.val):
                                 row.append("")
-                            elif cl.val == int(cl.val) and abs(cl.val) < 1e15:
+                            elif abs(cl.val) < 1e15 and cl.val == int(cl.val):
                                 row.append(str(int(cl.val)))
                             else:
                                 row.append(f"{cl.val:g}")

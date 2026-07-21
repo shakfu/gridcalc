@@ -319,6 +319,25 @@ contradicts its variable's bounds is reported as the conflict.
 This runs automatically on every infeasible `:opt`; there is no
 separate command.
 
+### Unboundedness diagnosis
+
+The mirror case. An unbounded model names the variable that can run
+away, rather than only reporting that no optimum exists:
+
+```text
+opt: UNBOUNDED  unbounded: A5 -- add an upper bound or a constraint
+```
+
+A variable is reported when the constraints permit it to move without
+limit in the direction that improves the objective -- established by
+re-solving over the same feasible region with that variable as the
+objective, so it is an exact answer rather than a large-number
+heuristic. Variables with no objective coefficient are never blamed:
+moving them cannot change the objective, so they are not the cause even
+when they are themselves unbounded.
+
+Like the infeasibility case, this runs automatically.
+
 **Programmatic access:**
 
 ```python

@@ -10,7 +10,7 @@ from ..goalseek import GoalSeekError
 from ..goalseek import seek as goal_seek
 from ..opt import OptError, OptModel
 from ..opt import solve as opt_solve
-from .format import format_conflict, format_sensitivity
+from .format import format_conflict, format_sensitivity, format_unbounded
 from .undo import UndoManager
 from .widgets import _flash, pager, show_error
 
@@ -225,6 +225,8 @@ def _execute_model(
         msg = f"opt: {result.status_name}"
         if result.conflict is not None:
             msg += "  " + format_conflict(result.conflict, len(constraint_cells), cellname)
+        elif result.unbounded is not None:
+            msg += "  " + format_unbounded(result.unbounded, cellname)
         show_error(stdscr, msg)
         return False
 

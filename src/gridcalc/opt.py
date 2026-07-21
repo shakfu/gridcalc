@@ -266,6 +266,10 @@ class SolveResult:
     # Populated only when solve(diagnose=True) and the model was INFEASIBLE:
     # a minimal set of mutually contradictory constraint cells.
     conflict: list[CellKey] | None = None
+    # Populated only when solve(diagnose=True) and the model was UNBOUNDED:
+    # the decision cells that can grow without limit. Empty if the probe
+    # could not identify them (see `_unbounded_variables`).
+    unbounded: list[CellKey] | None = None
 
 
 # --- Linearity walker -------------------------------------------------------
@@ -452,10 +456,11 @@ def solve(
     describe one LP relaxation rather than the integer problem, so reporting
     them would be actively misleading.
 
-    ``diagnose=True`` populates ``SolveResult.conflict`` when the model turns
-    out to be infeasible: a minimal set of constraint cells that contradict
-    each other. It costs one extra solve per constraint and runs only on the
-    infeasible path.
+    ``diagnose=True`` explains a failed solve. On INFEASIBLE it populates
+    ``SolveResult.conflict`` with a minimal set of contradictory constraint
+    cells (one extra solve per constraint); on UNBOUNDED it populates
+    ``SolveResult.unbounded`` with the decision cells that can grow without
+    limit (two extra solves). Neither runs on a successful solve.
     """
     if not decision_vars:
         raise OptError("at least one decision variable is required")
@@ -594,6 +599,15 @@ def solve(
     if sensitivity and solved_ok and sol.sensitivity_valid:
         sens = _build_sensitivity(decision_vars, constraint_cells, c_vec, A, rhs, sol, values)
 
+    runaway: list[CellKey] | None = None
+    if diagnose and sol.status == _ext.UNBOUNDED:
+        runaway = [
+            decision_vars[j]
+            for j in _unbounded_variables(
+                c_vec, A, sense, rhs, lb, ub, maximize, int_indices, bin_indices
+            )
+        ]
+
     conflict: list[CellKey] | None = None
     if diagnose and sol.status == _ext.INFEASIBLE:
         conflict = [
@@ -611,7 +625,72 @@ def solve(
         applied=applied,
         sensitivity=sens,
         conflict=conflict,
+        unbounded=runaway,
     )
+
+
+def _unbounded_variables(
+    c_vec: list[float],
+    A: list[list[float]],
+    sense: list[int],
+    rhs: list[float],
+    lb: list[float],
+    ub: list[float],
+    maximize: bool,
+    int_indices: list[int],
+    bin_indices: list[int],
+) -> list[int]:
+    """Column indices of decision variables that can grow without limit.
+
+    lp_solve exposes no extreme ray -- ``is_unbounded(lp, col)`` is the query
+    counterpart to ``set_unbounded`` and reports whether a column was
+    *declared* free, not which column runs away. So this is derived instead
+    of asked for.
+
+    Method: for each variable whose objective coefficient is non-zero,
+    re-solve the *same feasible region* with a throwaway objective of just
+    that variable, pushed in whichever direction improves the real
+    objective. If that sub-problem is itself UNBOUNDED, the variable can run
+    to infinity inside the constraints, which is exactly the claim the report
+    makes. Costs at most one solve per contributing variable and runs only
+    on the unbounded path.
+
+    Variables with a zero objective coefficient are skipped: they cannot be
+    the cause, since moving them does not change the objective at all.
+
+    An earlier version bounded the infinite directions with a large finite
+    box and looked for variables pinned against it. That is the textbook
+    big-M approach and it is *wrong here* -- the box has to be derived from
+    the model's own magnitudes, so a variable whose genuine limit sits far
+    above the largest coefficient in the model (``1e-9*A1 <= 1``, capping A1
+    at 1e9 in a model whose numbers are order 1) pins against the box and is
+    reported as a runaway when it is not. Solving for the actual bound has no
+    such threshold to get wrong.
+    """
+    ok_unbounded = _ext.UNBOUNDED
+    out: list[int] = []
+    for j, cj in enumerate(c_vec):
+        if cj == 0.0:
+            continue
+        # Which way does this variable have to move to improve the objective?
+        # max with c>0 and min with c<0 both improve by increasing it.
+        push_up = (cj > 0) == maximize
+        probe_obj = [0.0] * len(c_vec)
+        probe_obj[j] = 1.0
+        probe = _ext.solve_lp(
+            probe_obj,
+            A,
+            sense,
+            rhs,
+            lb,
+            ub,
+            maximize=push_up,
+            integer_vars=int_indices,
+            binary_vars=bin_indices,
+        )
+        if probe.status == ok_unbounded:
+            out.append(j)
+    return out
 
 
 def _irreducible_conflict(

@@ -44,7 +44,7 @@ from . import _state
 from .render import CP_CHROME, CP_CURSOR, CP_ERROR, CP_GUTTER, CP_LOCKED, draw
 from .solve import cmd_goal, cmd_opt
 from .undo import UndoManager
-from .widgets import _line_input, prompt_filename, show_error
+from .widgets import _line_input, pager, prompt_filename, show_error
 
 
 def _arrow_move(g: Grid, ch: int) -> None:
@@ -286,53 +286,9 @@ def cmd_edit(stdscr: curses.window, g: Grid) -> bool:
 
 
 def _view_code_block(stdscr: curses.window, code: str) -> None:
-    """Pager for the trust-prompt code preview.
-
-    j/down scroll one line; k/up scroll back; space/PgDn page down; b/PgUp
-    page up; g/G jump to top/bottom; any other key returns to the prompt.
-    """
+    """Pager for the trust-prompt code preview."""
     lines = code.splitlines() or [""]
-    offset = 0
-    while True:
-        stdscr.erase()
-        stdscr.attron(curses.A_BOLD)
-        header = f"Code block ({len(lines)} lines):"
-        stdscr.addnstr(0, 0, header, curses.COLS - 1)
-        stdscr.attroff(curses.A_BOLD)
-
-        visible = max(1, curses.LINES - 3)
-        max_offset = max(0, len(lines) - visible)
-        offset = max(0, min(offset, max_offset))
-
-        for i in range(visible):
-            idx = offset + i
-            if idx >= len(lines):
-                break
-            stdscr.addnstr(i + 1, 0, f"  {lines[idx]}", curses.COLS - 1)
-
-        end = min(offset + visible, len(lines))
-        footer = (
-            f"  lines {offset + 1}-{end}/{len(lines)}  "
-            "[j/k]scroll [space/b]page [g/G]top/bot [q]back"
-        )
-        stdscr.addnstr(curses.LINES - 1, 0, footer, curses.COLS - 1, curses.A_DIM)
-        stdscr.refresh()
-
-        ch = stdscr.getch()
-        if ch in (ord("j"), curses.KEY_DOWN):
-            offset += 1
-        elif ch in (ord("k"), curses.KEY_UP):
-            offset -= 1
-        elif ch in (ord(" "), curses.KEY_NPAGE):
-            offset += visible
-        elif ch in (ord("b"), curses.KEY_PPAGE):
-            offset -= visible
-        elif ch == ord("g"):
-            offset = 0
-        elif ch == ord("G"):
-            offset = max_offset
-        else:
-            return
+    pager(stdscr, f"Code block ({len(lines)} lines):", lines)
 
 
 def trust_prompt(stdscr: curses.window, filename: str, info: FileInfo) -> LoadPolicy | None:

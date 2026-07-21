@@ -190,6 +190,153 @@ def test_solve_textbook_max():
     assert g.cells[2][0].val == pytest.approx(36.0)
 
 
+# --- Sensitivity analysis --------------------------------------------------
+
+
+def _wyndor_grid() -> Grid:
+    """The `test_solve_textbook_max` LP, whose duals are known analytically.
+
+    max 3x + 5y  s.t.  x <= 4 (slack), 2y <= 12 (tight), 3x + 2y <= 18 (tight)
+    Optimum x=2, y=6, obj=36; shadow prices 0, 3/2, 1.
+    """
+    g = make_grid()
+    g.setcell(0, 0, "0")
+    g.setcell(0, 1, "0")
+    g.setcell(2, 0, "=3*A1+5*A2")
+    g.setcell(3, 0, "=A1<=4")
+    g.setcell(3, 1, "=2*A2<=12")
+    g.setcell(3, 2, "=3*A1+2*A2<=18")
+    return g
+
+
+def _solve_wyndor(**kwargs):
+    return solve(
+        _wyndor_grid(),
+        objective_cell=(2, 0),
+        decision_vars=[(0, 0), (0, 1)],
+        constraint_cells=[(3, 0), (3, 1), (3, 2)],
+        maximize=True,
+        **kwargs,
+    )
+
+
+def test_sensitivity_off_by_default():
+    assert _solve_wyndor().sensitivity is None
+
+
+def test_sensitivity_shadow_prices_match_analytic_duals():
+    sens = _solve_wyndor(sensitivity=True).sensitivity
+    assert sens is not None
+    prices = [c.shadow_price for c in sens.constraints]
+    assert prices == pytest.approx([0.0, 1.5, 1.0])
+
+
+def test_sensitivity_binding_flags_derive_from_slack():
+    """The first constraint has slack (x=2 against a limit of 4); the other
+    two are tight. Bindingness must come from slack, not from a non-zero
+    dual -- a degenerate optimum can bind at a zero shadow price."""
+    sens = _solve_wyndor(sensitivity=True).sensitivity
+    assert [c.binding for c in sens.constraints] == [False, True, True]
+    assert [c.slack for c in sens.constraints] == pytest.approx([2.0, 0.0, 0.0])
+    assert [c.activity for c in sens.constraints] == pytest.approx([2.0, 12.0, 18.0])
+
+
+def test_sensitivity_reports_cells_not_indices():
+    """The report is keyed by the sheet cells the user typed, so a caller can
+    render it without re-deriving the ordering."""
+    sens = _solve_wyndor(sensitivity=True).sensitivity
+    assert [v.cell for v in sens.variables] == [(0, 0), (0, 1)]
+    assert [c.cell for c in sens.constraints] == [(3, 0), (3, 1), (3, 2)]
+
+
+def test_sensitivity_reduced_costs_zero_for_basic_variables():
+    """Both variables are non-zero at the optimum, so neither is pinned at a
+    bound and both have zero reduced cost."""
+    sens = _solve_wyndor(sensitivity=True).sensitivity
+    assert [v.reduced_cost for v in sens.variables] == pytest.approx([0.0, 0.0])
+    assert [v.value for v in sens.variables] == pytest.approx([2.0, 6.0])
+    assert [v.obj_coef for v in sens.variables] == pytest.approx([3.0, 5.0])
+
+
+def test_sensitivity_reduced_cost_nonzero_for_unattractive_variable():
+    """A third product so unprofitable it stays out of the mix must report a
+    negative reduced cost -- the amount the objective would drop per unit if
+    it were forced in."""
+    g = make_grid()
+    g.setcell(0, 0, "0")
+    g.setcell(0, 1, "0")
+    g.setcell(0, 2, "0")  # the unattractive one
+    g.setcell(2, 0, "=3*A1+5*A2+1*A3")
+    g.setcell(3, 0, "=A1<=4")
+    g.setcell(3, 1, "=2*A2<=12")
+    g.setcell(3, 2, "=3*A1+2*A2+3*A3<=18")
+
+    res = solve(
+        g,
+        objective_cell=(2, 0),
+        decision_vars=[(0, 0), (0, 1), (0, 2)],
+        constraint_cells=[(3, 0), (3, 1), (3, 2)],
+        maximize=True,
+        sensitivity=True,
+    )
+    third = res.sensitivity.variables[2]
+    assert third.value == pytest.approx(0.0), "expected the third product to stay out"
+    assert third.reduced_cost < 0.0
+
+
+def test_sensitivity_rhs_ranging_brackets_the_rhs():
+    """Shadow prices are only valid inside the RHS range, so the range must
+    actually contain the current right-hand side."""
+    sens = _solve_wyndor(sensitivity=True).sensitivity
+    for c in sens.constraints:
+        assert c.rhs_from <= c.rhs <= c.rhs_till, f"rhs outside its own range: {c}"
+
+
+def test_sensitivity_infinite_ranges_are_real_infinities():
+    """lp_solve signals an unbounded range with 1e30; leaking that sentinel
+    into the report would render as a meaningless '1e+30'."""
+    sens = _solve_wyndor(sensitivity=True).sensitivity
+    assert sens.constraints[0].rhs_from == float("-inf")
+    assert sens.constraints[0].rhs_till == float("inf")
+    assert sens.variables[1].obj_till == float("inf")
+    assert all(abs(v.obj_from) < 1e29 or math.isinf(v.obj_from) for v in sens.variables)
+
+
+def test_sensitivity_withheld_for_mip():
+    """Branch-and-bound duals describe one LP relaxation, not the integer
+    problem. Returning them would be worse than returning nothing."""
+    res = _solve_wyndor(sensitivity=True, integer_vars={(0, 0), (0, 1)})
+    assert res.status_name == "OPTIMAL"
+    assert res.sensitivity is None
+
+
+def test_sensitivity_absent_when_infeasible():
+    g = make_grid()
+    g.setcell(0, 0, "0")
+    g.setcell(2, 0, "=A1")
+    g.setcell(3, 0, "=A1>=10")
+    g.setcell(3, 1, "=A1<=5")
+    res = solve(
+        g,
+        objective_cell=(2, 0),
+        decision_vars=[(0, 0)],
+        constraint_cells=[(3, 0), (3, 1)],
+        maximize=True,
+        sensitivity=True,
+    )
+    assert res.status_name == "INFEASIBLE"
+    assert res.sensitivity is None
+
+
+def test_sensitivity_does_not_change_the_optimum():
+    """PRESOLVE_SENSDUALS alters lp_solve's presolve; the primal answer must
+    be identical with and without it."""
+    plain = _solve_wyndor()
+    sens = _solve_wyndor(sensitivity=True)
+    assert sens.objective == pytest.approx(plain.objective)
+    assert sens.values == pytest.approx(plain.values)
+
+
 def test_solve_no_apply_leaves_cells_untouched():
     g = make_grid()
     g.setcell(0, 0, "0")
@@ -624,3 +771,221 @@ def test_optmodel_to_from_json_with_integers_and_binaries():
     assert encoded["binaries"] == "A5"
     restored = OptModel.from_json(encoded)
     assert restored == m
+
+
+# --- Infeasibility diagnosis (IIS) -----------------------------------------
+
+
+def _conflict_grid() -> Grid:
+    """Five constraints, exactly two of which contradict each other.
+
+    D1: A1 >= 10  |  D2: A1 <= 5   <- the conflict
+    D3: A2 <= 100 |  D4: A2 >= 1   |  D5: A1+A2 <= 1000   <- all irrelevant
+    """
+    g = make_grid()
+    g.setcell(0, 0, "0")
+    g.setcell(0, 1, "0")
+    g.setcell(2, 0, "=A1+A2")
+    g.setcell(3, 0, "=A1>=10")
+    g.setcell(3, 1, "=A1<=5")
+    g.setcell(3, 2, "=A2<=100")
+    g.setcell(3, 3, "=A2>=1")
+    g.setcell(3, 4, "=A1+A2<=1000")
+    return g
+
+
+_CONFLICT_CELLS = [(3, 0), (3, 1), (3, 2), (3, 3), (3, 4)]
+
+
+def _solve_conflict(cells=None, **kwargs):
+    return solve(
+        _conflict_grid(),
+        objective_cell=(2, 0),
+        decision_vars=[(0, 0), (0, 1)],
+        constraint_cells=_CONFLICT_CELLS if cells is None else cells,
+        maximize=True,
+        **kwargs,
+    )
+
+
+def test_diagnose_off_by_default():
+    assert _solve_conflict().conflict is None
+
+
+def test_diagnose_isolates_the_contradictory_pair():
+    """The whole point: 5 constraints in, the 2 that actually fight come out."""
+    res = _solve_conflict(diagnose=True)
+    assert res.status_name == "INFEASIBLE"
+    assert res.conflict == [(3, 0), (3, 1)]
+
+
+def test_diagnosed_conflict_is_minimal():
+    """Dropping either member must restore feasibility -- that is what makes
+    the subsystem irreducible rather than merely infeasible."""
+    res = _solve_conflict(diagnose=True)
+    for dropped in res.conflict:
+        rest = [c for c in _CONFLICT_CELLS if c != dropped]
+        assert _solve_conflict(cells=rest).status_name != "INFEASIBLE"
+
+
+def test_diagnosed_conflict_is_still_infeasible_on_its_own():
+    """The other half of irreducibility: the reported subset must actually
+    reproduce the infeasibility by itself."""
+    res = _solve_conflict(diagnose=True)
+    assert _solve_conflict(cells=res.conflict).status_name == "INFEASIBLE"
+
+
+def test_diagnose_absent_when_feasible():
+    g = make_grid()
+    g.setcell(0, 0, "0")
+    g.setcell(2, 0, "=A1")
+    g.setcell(3, 0, "=A1<=5")
+    res = solve(
+        g,
+        objective_cell=(2, 0),
+        decision_vars=[(0, 0)],
+        constraint_cells=[(3, 0)],
+        maximize=True,
+        diagnose=True,
+    )
+    assert res.status_name == "OPTIMAL"
+    assert res.conflict is None
+
+
+def test_diagnose_implicates_a_constraint_that_conflicts_with_bounds():
+    """Bounds are held fixed by the filter, so a constraint that contradicts
+    them is reported as the conflict -- the bounds are the background, the
+    constraint is the thing the user can point at and change."""
+    g = make_grid()
+    g.setcell(0, 0, "0")
+    g.setcell(2, 0, "=A1")
+    g.setcell(3, 0, "=A1<=5")
+    res = solve(
+        g,
+        objective_cell=(2, 0),
+        decision_vars=[(0, 0)],
+        constraint_cells=[(3, 0)],
+        maximize=True,
+        bounds={(0, 0): (10.0, 20.0)},  # A1 in [10,20] cannot also be <= 5
+        diagnose=True,
+    )
+    assert res.status_name == "INFEASIBLE"
+    assert res.conflict == [(3, 0)]
+
+
+def test_contradictory_bounds_are_rejected_before_solving():
+    """Documents why an empty conflict list is unreachable in practice: the
+    only way for a constraint-free model to be infeasible is lb > ub, and
+    that is refused up-front rather than solved. The empty-list branch in
+    `_irreducible_conflict` is therefore defensive, not a live path."""
+    g = make_grid()
+    g.setcell(0, 0, "0")
+    g.setcell(2, 0, "=A1")
+    with pytest.raises(OptError, match="reversed"):
+        solve(
+            g,
+            objective_cell=(2, 0),
+            decision_vars=[(0, 0)],
+            constraint_cells=[],
+            maximize=True,
+            bounds={(0, 0): (20.0, 10.0)},
+            diagnose=True,
+        )
+
+
+def test_diagnose_handles_a_three_way_conflict():
+    """A conflict with no contradictory pair -- only all three together are
+    infeasible. A pairwise check would miss it."""
+    g = make_grid()
+    g.setcell(0, 0, "0")
+    g.setcell(0, 1, "0")
+    g.setcell(2, 0, "=A1+A2")
+    g.setcell(3, 0, "=A1+A2>=10")
+    g.setcell(3, 1, "=A1<=2")
+    g.setcell(3, 2, "=A2<=2")
+    res = solve(
+        g,
+        objective_cell=(2, 0),
+        decision_vars=[(0, 0), (0, 1)],
+        constraint_cells=[(3, 0), (3, 1), (3, 2)],
+        maximize=True,
+        diagnose=True,
+    )
+    assert res.status_name == "INFEASIBLE"
+    assert set(res.conflict) == {(3, 0), (3, 1), (3, 2)}
+
+
+def test_diagnose_keeps_constraints_whose_removal_unbounds():
+    """Dropping a constraint can make the model UNBOUNDED, which means the
+    feasible region is non-empty -- so that constraint belongs to the
+    conflict. Testing 'not OPTIMAL' instead of 'INFEASIBLE' would wrongly
+    discard it."""
+    g = make_grid()
+    g.setcell(0, 0, "0")
+    g.setcell(2, 0, "=A1")
+    g.setcell(3, 0, "=A1>=10")
+    g.setcell(3, 1, "=A1<=5")
+    res = solve(
+        g,
+        objective_cell=(2, 0),
+        decision_vars=[(0, 0)],
+        constraint_cells=[(3, 0), (3, 1)],
+        maximize=True,
+        bounds={(0, 0): (float("-inf"), float("inf"))},
+        diagnose=True,
+    )
+    assert res.status_name == "INFEASIBLE"
+    assert set(res.conflict) == {(3, 0), (3, 1)}
+
+
+# --- Bounds validation -----------------------------------------------------
+
+
+def _bounded_solve(bounds):
+    g = make_grid()
+    g.setcell(0, 0, "0")
+    g.setcell(2, 0, "=A1")
+    g.setcell(3, 0, "=A1<=5")
+    return solve(
+        g,
+        objective_cell=(2, 0),
+        decision_vars=[(0, 0)],
+        constraint_cells=[(3, 0)],
+        maximize=True,
+        bounds=bounds,
+    )
+
+
+def test_reversed_bounds_raise_opterror_not_valueerror():
+    """The `_opt` bridge rejects lb > ub with ValueError("lb[j] > ub[j]") --
+    a column index the user never typed, in a type callers of this module do
+    not expect. Reachable from `:opt ... bounds A1=20:10`."""
+    with pytest.raises(OptError, match="reversed"):
+        _bounded_solve({(0, 0): (20.0, 10.0)})
+
+
+def test_reversed_bounds_message_names_the_cell():
+    with pytest.raises(OptError) as exc:
+        _bounded_solve({(0, 0): (20.0, 10.0)})
+    assert "A1" in str(exc.value)
+    assert "20" in str(exc.value) and "10" in str(exc.value)
+
+
+def test_nan_bounds_raise_opterror():
+    """`_parse_bound_value` ends in `float(s)`, so a typed `nan` parses."""
+    with pytest.raises(OptError, match="not numeric"):
+        _bounded_solve({(0, 0): (float("nan"), 10.0)})
+    with pytest.raises(OptError, match="not numeric"):
+        _bounded_solve({(0, 0): (0.0, float("nan"))})
+
+
+def test_equal_bounds_are_allowed():
+    """lo == hi pins a variable; only lo > hi is an error."""
+    res = _bounded_solve({(0, 0): (3.0, 3.0)})
+    assert res.status_name == "OPTIMAL"
+    assert res.values[(0, 0)] == pytest.approx(3.0)
+
+
+def test_infinite_bounds_still_accepted():
+    res = _bounded_solve({(0, 0): (float("-inf"), float("inf"))})
+    assert res.status_name == "OPTIMAL"

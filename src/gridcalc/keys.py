@@ -27,6 +27,13 @@ Resolution to a curses keycode requires curses to be initialised
 (``resolve_key`` calls ``curses.tigetstr`` and ``curses.keyname`` for
 Ctrl+arrow lookup). Parsing is curses-free and runs at config load.
 
+``curses`` is therefore imported lazily, inside the two functions that
+resolve keycodes, rather than at module scope. ``config.py`` imports this
+module for the parsing half, and ``config`` is part of the headless core --
+a module-level ``import curses`` would drag the whole view layer's only
+hard dependency into every library consumer of the engine, including on
+platforms where curses is not available at all.
+
 Contexts:
 
     grid       main grid keyloop
@@ -42,7 +49,6 @@ empty list unbinds an action.
 
 from __future__ import annotations
 
-import curses
 from dataclasses import dataclass
 
 CONTEXTS: frozenset[str] = frozenset({"grid", "entry", "visual", "cmdline", "search"})
@@ -233,6 +239,8 @@ def resolve_key(pk: ParsedKey) -> int | None:
     combination -- e.g., ``C-Right`` on a TERM whose terminfo lacks
     ``kRIT5``. Callers should warn but continue.
     """
+    import curses
+
     base = pk.base
     if len(base) == 1:
         ch = base
@@ -297,6 +305,8 @@ def _scan_keyname(cap: str) -> int | None:
     Returns ``None`` if the current terminfo entry does not define the
     capability (Terminal.app, Linux text console, etc.).
     """
+    import curses
+
     try:
         seq = curses.tigetstr(cap)
     except curses.error:

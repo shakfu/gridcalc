@@ -1,9 +1,10 @@
 // Minimal nanobind binding around lp_solve's LP entry points.
 //
-// Surface is intentionally narrow: one function, dense matrices, no MIP, no
+// Surface is intentionally narrow: one function, dense matrices, no
 // callbacks, no LP/MPS file I/O. Spreadsheet-scale problems fit comfortably
-// in dense form; sparse / sensitivity / column-generation can be added later
-// if a real workload demands them.
+// in dense form; sparse / column-generation can be added later if a real
+// workload demands them. MIP (via set_int / set_binary) and sensitivity
+// analysis are supported.
 //
 // Status codes pass through lp_solve's values unchanged (OPTIMAL=0,
 // SUBOPTIMAL=1, INFEASIBLE=2, UNBOUNDED=3, DEGENERATE=4, NUMFAILURE=5,
@@ -48,6 +49,17 @@ struct Solution {
     int status;
     double objective;
     std::vector<double> x;
+
+    // Sensitivity analysis. Empty unless `sensitivity=true` was requested
+    // and the solve succeeded. `sensitivity_valid` distinguishes "not asked
+    // for" from "asked for but not meaningful" -- see the MIP note below.
+    bool sensitivity_valid = false;
+    std::vector<double> duals;         // per constraint: shadow price
+    std::vector<double> dual_from;     // per constraint: RHS range lower
+    std::vector<double> dual_till;     // per constraint: RHS range upper
+    std::vector<double> reduced_costs; // per variable
+    std::vector<double> obj_from;      // per variable: obj-coef range lower
+    std::vector<double> obj_till;      // per variable: obj-coef range upper
 };
 
 // Solve a linear program (or mixed-integer LP) in standard form:
@@ -63,6 +75,12 @@ struct Solution {
 // flagged binary has its bounds clamped to [0,1] by lp_solve regardless of
 // what was passed in `lb`/`ub`; mixing the two flags on the same column is
 // rejected as a programming error.
+//
+// `sensitivity` opts into dual values, reduced costs, and RHS / objective
+// ranging. It is off by default because obtaining duals requires enabling
+// PRESOLVE_SENSDUALS before the solve, which changes lp_solve's presolve
+// behaviour; callers that do not need sensitivity should not pay for it or
+// risk the perturbation.
 Solution solve_lp(
     const std::vector<double>& c,
     const std::vector<std::vector<double>>& A,
@@ -72,7 +90,8 @@ Solution solve_lp(
     const std::vector<double>& ub,
     bool maximize,
     const std::vector<int>& integer_vars,
-    const std::vector<int>& binary_vars)
+    const std::vector<int>& binary_vars,
+    bool sensitivity)
 {
     const int n = static_cast<int>(c.size());
     const int m = static_cast<int>(A.size());
@@ -198,6 +217,13 @@ Solution solve_lp(
 
     if (maximize) set_maxim(lp); else set_minim(lp);
 
+    // Duals are only produced when the solver is told to compute them, and
+    // only before solving -- asking afterwards returns nothing.
+    const bool is_mip = !integer_vars.empty() || !binary_vars.empty();
+    if (sensitivity) {
+        set_presolve(lp, PRESOLVE_SENSDUALS, get_presolveloops(lp));
+    }
+
     Solution out;
     out.status = solve(lp);
     out.objective = 0.0;
@@ -220,6 +246,36 @@ Solution solve_lp(
             out.status = UNBOUNDED;
             out.objective = 0.0;
             std::fill(out.x.begin(), out.x.end(), 0.0);
+        }
+
+        // Sensitivity is deliberately withheld for MIPs. lp_solve will hand
+        // back numbers, but the dual of a branch-and-bound node is the dual
+        // of one LP relaxation, not of the integer problem -- there is no
+        // valid shadow-price interpretation. Reporting them anyway would be
+        // worse than reporting nothing.
+        if (sensitivity && !is_mip && out.status != UNBOUNDED) {
+            REAL* duals = nullptr;
+            REAL* dfrom = nullptr;
+            REAL* dtill = nullptr;
+            REAL* ofrom = nullptr;
+            REAL* otill = nullptr;
+            const bool got_rhs = get_ptr_sensitivity_rhs(lp, &duals, &dfrom, &dtill);
+            const bool got_obj = get_ptr_sensitivity_obj(lp, &ofrom, &otill);
+
+            if (got_rhs && duals != nullptr) {
+                // One array of length rows+columns: constraint duals first,
+                // then per-variable reduced costs. lp_solve's own reporting
+                // (lp_report.c REPORT_lp) indexes it exactly this way.
+                out.duals.assign(duals, duals + m);
+                out.reduced_costs.assign(duals + m, duals + m + n);
+                if (dfrom != nullptr) out.dual_from.assign(dfrom, dfrom + m);
+                if (dtill != nullptr) out.dual_till.assign(dtill, dtill + m);
+                out.sensitivity_valid = true;
+            }
+            if (got_obj && ofrom != nullptr && otill != nullptr) {
+                out.obj_from.assign(ofrom, ofrom + n);
+                out.obj_till.assign(otill, otill + n);
+            }
         }
     }
     return out;
@@ -245,9 +301,16 @@ NB_MODULE(_opt, m) {
     m.attr("TIMEOUT")     = TIMEOUT;
 
     nb::class_<Solution>(m, "Solution")
-        .def_ro("status",    &Solution::status)
-        .def_ro("objective", &Solution::objective)
-        .def_ro("x",         &Solution::x);
+        .def_ro("status",            &Solution::status)
+        .def_ro("objective",         &Solution::objective)
+        .def_ro("x",                 &Solution::x)
+        .def_ro("sensitivity_valid", &Solution::sensitivity_valid)
+        .def_ro("duals",             &Solution::duals)
+        .def_ro("dual_from",         &Solution::dual_from)
+        .def_ro("dual_till",         &Solution::dual_till)
+        .def_ro("reduced_costs",     &Solution::reduced_costs)
+        .def_ro("obj_from",          &Solution::obj_from)
+        .def_ro("obj_till",          &Solution::obj_till);
 
     m.def("solve_lp", &solve_lp,
         nb::arg("c"),
@@ -259,7 +322,13 @@ NB_MODULE(_opt, m) {
         nb::arg("maximize") = false,
         nb::arg("integer_vars") = std::vector<int>{},
         nb::arg("binary_vars")  = std::vector<int>{},
+        nb::arg("sensitivity")  = false,
         "Solve an LP or MIP. Returns a Solution with .status, .objective, .x. "
         "integer_vars / binary_vars are 0-based column indices flagged "
-        "integer or binary; binary variables are clamped to [0,1] by lp_solve.");
+        "integer or binary; binary variables are clamped to [0,1] by lp_solve. "
+        "sensitivity=True additionally populates .duals (shadow price per "
+        "constraint), .reduced_costs (per variable), and the .dual_from / "
+        ".dual_till / .obj_from / .obj_till ranging arrays; it is ignored for "
+        "MIPs, where duals have no valid interpretation -- check "
+        ".sensitivity_valid.");
 }

@@ -10,8 +10,9 @@ from ..goalseek import GoalSeekError
 from ..goalseek import seek as goal_seek
 from ..opt import OptError, OptModel
 from ..opt import solve as opt_solve
+from .format import format_conflict, format_sensitivity
 from .undo import UndoManager
-from .widgets import _flash, show_error
+from .widgets import _flash, pager, show_error
 
 
 def _parse_cells(spec: str) -> list[tuple[int, int]]:
@@ -158,6 +159,8 @@ def _execute_model(
     g: Grid,
     undo: UndoManager,
     model: OptModel,
+    *,
+    sensitivity: bool = False,
 ) -> bool:
     """Resolve a model's spec strings, run the solver, and report.
 
@@ -165,6 +168,10 @@ def _execute_model(
     optimization; pops the undo entry on any failure path (parse error,
     OptError from the solver, non-OPTIMAL status) so undo doesn't no-op
     afterwards.
+
+    With ``sensitivity`` the solve still applies its result to the sheet --
+    the report is about the optimum that was just written, so computing it
+    without applying would describe a state the user cannot see.
     """
     try:
         obj_match = ref(model.objective)
@@ -192,18 +199,52 @@ def _execute_model(
             integer_vars=integer_vars,
             binary_vars=binary_vars,
             apply=True,
+            sensitivity=sensitivity,
+            # Always diagnose from the TUI. The extra solves only run when
+            # the model is infeasible, and at that point the user is stuck
+            # with a one-word error -- naming the contradictory cells is the
+            # whole difference between a dead end and a next step.
+            diagnose=True,
         )
     except OptError as e:
         undo.undo_stack.pop()
         show_error(stdscr, f"opt: {e}")
         return False
+    except ValueError as e:
+        # Defence in depth. `solve` validates the user-reachable cases and
+        # raises OptError, but the `_opt` bridge enforces further invariants
+        # with ValueError. If one ever escapes, report it and keep the
+        # session alive -- an uncaught exception here tears down curses and
+        # takes the user's unsaved sheet with it.
+        undo.undo_stack.pop()
+        show_error(stdscr, f"opt: invalid model ({e})")
+        return False
 
     if not result.applied:
         undo.undo_stack.pop()
-        show_error(stdscr, f"opt: {result.status_name}")
+        msg = f"opt: {result.status_name}"
+        if result.conflict is not None:
+            msg += "  " + format_conflict(result.conflict, len(constraint_cells), cellname)
+        show_error(stdscr, msg)
         return False
 
-    _flash(stdscr, f"opt: {result.status_name}  obj={result.objective:.6g}")
+    summary = f"opt: {result.status_name}  obj={result.objective:.6g}"
+
+    if sensitivity:
+        if result.sensitivity is None:
+            # The solve succeeded; only the sensitivity half is unavailable.
+            # Say why rather than showing an empty report -- a MIP is the
+            # common case and the reason is not obvious.
+            _flash(stdscr, f"{summary}  (no sensitivity: integer/binary model)")
+            return False
+        pager(
+            stdscr,
+            f"Sensitivity -- {summary}",
+            format_sensitivity(result.sensitivity, cellname),
+        )
+        return False
+
+    _flash(stdscr, summary)
     return False
 
 
@@ -215,6 +256,7 @@ def cmd_opt(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> boo
       * ``:opt max|min <cell> vars ...`` - solve inline, also saves as ``default``
       * ``:opt def <name> max|min ...``  - save under ``<name>``; does NOT execute
       * ``:opt run [<name>]``            - execute saved model (default: ``default``)
+      * ``:opt sens [<name>]``           - execute and show a sensitivity report
       * ``:opt list``                    - show saved model names
       * ``:opt undef <name>``            - remove a saved model
 
@@ -263,6 +305,14 @@ def cmd_opt(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> boo
             show_error(stdscr, f"opt: no model named {name!r}")
             return False
         return _execute_model(stdscr, g, undo, model)
+
+    if head == "sens":
+        name = parts[1] if len(parts) >= 2 else "default"
+        model = g.models.get(name)
+        if model is None:
+            show_error(stdscr, f"opt: no model named {name!r}")
+            return False
+        return _execute_model(stdscr, g, undo, model, sensitivity=True)
 
     if head == "def":
         if len(parts) < 6:

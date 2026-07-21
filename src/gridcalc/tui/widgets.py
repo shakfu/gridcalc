@@ -81,3 +81,56 @@ def show_error(stdscr: curses.window, msg: str) -> None:
     stdscr.clrtoeol()
     stdscr.refresh()
     stdscr.getch()
+
+
+def pager(stdscr: curses.window, title: str, lines: list[str]) -> None:
+    """Full-screen scrollable view of ``lines`` under a bold ``title``.
+
+    j/down scroll one line; k/up scroll back; space/PgDn page down; b/PgUp
+    page up; g/G jump to top/bottom; any other key returns to the caller.
+
+    Lives here rather than in ``commands`` so both the trust prompt and the
+    optimizer reports can use it -- ``commands`` imports ``solve``, so the
+    dependency could not run the other way.
+    """
+    body = lines or [""]
+    offset = 0
+    while True:
+        stdscr.erase()
+        stdscr.attron(curses.A_BOLD)
+        stdscr.addnstr(0, 0, title, curses.COLS - 1)
+        stdscr.attroff(curses.A_BOLD)
+
+        visible = max(1, curses.LINES - 3)
+        max_offset = max(0, len(body) - visible)
+        offset = max(0, min(offset, max_offset))
+
+        for i in range(visible):
+            idx = offset + i
+            if idx >= len(body):
+                break
+            stdscr.addnstr(i + 1, 0, f"  {body[idx]}", curses.COLS - 1)
+
+        end = min(offset + visible, len(body))
+        footer = (
+            f"  lines {offset + 1}-{end}/{len(body)}  "
+            "[j/k]scroll [space/b]page [g/G]top/bot [q]back"
+        )
+        stdscr.addnstr(curses.LINES - 1, 0, footer, curses.COLS - 1, curses.A_DIM)
+        stdscr.refresh()
+
+        ch = stdscr.getch()
+        if ch in (ord("j"), curses.KEY_DOWN):
+            offset += 1
+        elif ch in (ord("k"), curses.KEY_UP):
+            offset -= 1
+        elif ch in (ord(" "), curses.KEY_NPAGE):
+            offset += visible
+        elif ch in (ord("b"), curses.KEY_PPAGE):
+            offset -= visible
+        elif ch == ord("g"):
+            offset = 0
+        elif ch == ord("G"):
+            offset = max_offset
+        else:
+            return

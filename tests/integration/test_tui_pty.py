@@ -79,6 +79,26 @@ def test_opt_infeasible_renders_status(tui_session) -> None:
 
 
 @pytest.mark.tui_file("examples/example_lp.json")
+def test_infeasible_model_names_the_conflicting_cells(tui_session) -> None:
+    """An infeasible solve must say *which* constraints fight, not just
+    INFEASIBLE. Types two contradictory constraints into empty cells, then
+    runs a model over them plus the example's existing consistent ones."""
+    tui_session.wait_for("Constraints", timeout=5.0)
+    # F1 and F2 are empty in the example file. Navigate there via `>` and
+    # enter the contradictory pair.
+    tui_session.send("> F1\n")
+    tui_session.send("=A4>=10\n")
+    tui_session.send("> F2\n")
+    tui_session.send("=A4<=5\n")
+    tui_session.send(":opt max B4 vars A4:A5 st D4:D6,F1:F2\n")
+    render = tui_session.wait_for("conflict", timeout=6.0)
+    assert "INFEASIBLE" in render
+    assert "F1" in render and "F2" in render
+    # The consistent constraints must not be implicated.
+    assert "D4" not in render.split("conflict")[-1]
+
+
+@pytest.mark.tui_file("examples/example_lp.json")
 def test_bare_opt_runs_saved_default_model(tui_session) -> None:
     """Proves the persisted-model UX through real curses: the example file
     ships a 'default' model on disk; bare ``:opt`` re-runs it without the
@@ -104,6 +124,23 @@ def test_goal_seek_via_real_curses(tui_session) -> None:
     # The status bar embeds the solved values; A1=4, B1=11 for this LP.
     assert "A1=4" in render
     assert "B1=11" in render
+
+
+@pytest.mark.tui_file("examples/example_lp.json")
+def test_opt_sens_renders_report_through_real_curses(tui_session) -> None:
+    """`:opt sens` runs the workbook's saved model and opens the sensitivity
+    pager. Asserts on the shadow price of a binding constraint, which is the
+    number the whole feature exists to produce."""
+    tui_session.wait_for("Constraints", timeout=5.0)
+    tui_session.send(":opt sens\n")
+    render = tui_session.wait_for("shadow", timeout=4.0)
+    assert "OPTIMAL" in render
+    assert "obj=36" in render
+    # D5 (2*A5 <= 12) binds with a shadow price of 1.5 in this model.
+    assert "1.5" in render
+    assert "binding" in render
+    # The pager is interactive; leave it so the fixture's teardown is clean.
+    tui_session.send("q")
 
 
 @pytest.mark.tui_file("examples/example_lp.json")

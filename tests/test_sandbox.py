@@ -665,6 +665,64 @@ class TestJsonInspect:
         info = inspect_file(str(f))
         assert info.cell_count == 2
 
+    def test_v2_sheets_counted(self, tmp_path):
+        """v2 stores cells under `sheets[].cells`. Counting only the
+        top-level `cells` key reported 0 for every v2 file, which made the
+        trust prompt lie about what it was about to load."""
+        f = tmp_path / "v2.json"
+        f.write_text(
+            '{"version": 2, "sheets": ['
+            '{"name": "Sheet1", "cells": [[1, "=A1+1"]]},'
+            '{"name": "Sheet2", "cells": [[2, 3, "=B1*2"]]}'
+            "]}"
+        )
+        info = inspect_file(str(f))
+        assert info is not None
+        assert info.cell_count == 5
+        assert info.formula_count == 2
+
+    def test_v2_sheets_with_code_and_requires(self, tmp_path):
+        f = tmp_path / "v2_code.json"
+        f.write_text(
+            '{"version": 2, "code": "x = 1", "requires": ["os"], '
+            '"sheets": [{"name": "Sheet1", "cells": [[1, "=A1"]]}]}'
+        )
+        info = inspect_file(str(f))
+        assert info.has_code
+        assert info.blocked_modules == ["os"]
+        assert info.cell_count == 2
+        assert info.formula_count == 1
+
+    def test_v2_styled_cells_counted(self, tmp_path):
+        f = tmp_path / "v2_styled.json"
+        f.write_text(
+            '{"version": 2, "sheets": [{"name": "Sheet1", '
+            '"cells": [[{"v": 42, "bold": true}, {"v": "=A1"}, null]]}]}'
+        )
+        info = inspect_file(str(f))
+        assert info.cell_count == 2
+        assert info.formula_count == 1
+
+    def test_v1_still_counted_when_sheets_absent(self, tmp_path):
+        f = tmp_path / "v1.json"
+        f.write_text('{"version": 1, "cells": [[1, "=A1+1", 3]]}')
+        info = inspect_file(str(f))
+        assert info.cell_count == 3
+        assert info.formula_count == 1
+
+    def test_empty_sheets_list_falls_back_to_top_level(self, tmp_path):
+        f = tmp_path / "empty_sheets.json"
+        f.write_text('{"sheets": [], "cells": [[1, 2]]}')
+        info = inspect_file(str(f))
+        assert info.cell_count == 2
+
+    def test_malformed_sheet_entries_skipped(self, tmp_path):
+        f = tmp_path / "malformed.json"
+        f.write_text('{"sheets": ["not a dict", {"name": "S", "cells": [[1]]}, {"cells": "bad"}]}')
+        info = inspect_file(str(f))
+        assert info is not None
+        assert info.cell_count == 1
+
 
 # -- jsonload with policy --
 

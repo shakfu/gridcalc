@@ -107,6 +107,34 @@ def test_goal_seek_via_real_curses(tui_session) -> None:
 
 
 @pytest.mark.tui_file("examples/example_lp.json")
+def test_undo_redo_via_vi_keys(tui_session) -> None:
+    """``u`` and ``Ctrl-R`` are the documented undo/redo bindings. ``u`` has
+    to be dispatched before the printable-character fallthrough in the grid
+    keyloop, or it silently starts label entry instead of undoing.
+    """
+    tui_session.wait_for("Constraints", timeout=5.0)
+
+    # Overwrite A1 (the title label) with a unique marker. `"` opens label
+    # entry, Enter commits and advances a row.
+    tui_session.send('"QQMARKERQQ\n')
+    tui_session.wait_for("QQMARKERQQ", timeout=4.0)
+
+    # Reset the capture buffer so the next assertion sees only the repaint
+    # caused by the undo, not the accumulated scrollback.
+    tui_session._buffer.clear()
+    tui_session.send("u")
+    render = tui_session.drain()
+    assert "QQMARKERQQ" not in render
+    assert "LP demo" in render
+
+    # Ctrl-R redoes it.
+    tui_session._buffer.clear()
+    tui_session.send("\x12")
+    render = tui_session.drain()
+    assert "QQMARKERQQ" in render
+
+
+@pytest.mark.tui_file("examples/example_lp.json")
 def test_opt_bad_args_renders_usage(tui_session) -> None:
     """Malformed ``:opt`` should print the usage line, not crash or hang."""
     # Wait for first render. Cells display their values, not their

@@ -384,7 +384,7 @@ so `Tab → next_sheet` replaces the default cursor-right meaning. See
 File          :w [file]   :wq   :q   :q!   :o file   :e
 Edit          :b   :clear   :dr   :dc   :ir   :ic   :m   :r
               :sort [col] [desc]   yank/paste: y/p (syncs system clipboard)
-              undo/redo: u / Ctrl-R
+              undo/redo: u / Ctrl-R   (aliases: Ctrl-Z / Ctrl-Y)
 Format        :f <spec>   :gf <spec>   :width <n>   Ctrl-B / Ctrl-U
 Search        /pattern   n   N
 Sheets        :sheet [name|N|add|del|rename|move]

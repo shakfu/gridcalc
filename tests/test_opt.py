@@ -357,8 +357,9 @@ def test_sensitivity_absent_when_infeasible():
 
 
 def test_sensitivity_does_not_change_the_optimum():
-    """PRESOLVE_SENSDUALS alters lp_solve's presolve; the primal answer must
-    be identical with and without it."""
+    """Asking for sensitivity may change how the solver presolves, so the
+    primal answer must be identical with and without it. (This mattered
+    concretely under lp_solve, where duals required PRESOLVE_SENSDUALS.)"""
     plain = _solve_wyndor()
     sens = _solve_wyndor(sensitivity=True)
     assert sens.objective == pytest.approx(plain.objective)
@@ -427,7 +428,8 @@ def test_solve_with_negative_bounds():
 
 def test_solve_objective_with_constant_term():
     """Constant terms in the objective formula must be reflected in the
-    reported objective even though lp_solve never sees them."""
+    reported objective even though the solver never sees them -- only the
+    linear part is passed down."""
     g = make_grid()
     g.setcell(0, 0, "0")
     g.setcell(2, 0, "=A1+100")  # objective has +100 constant
@@ -700,8 +702,8 @@ def test_grid_jsonload_skips_malformed_model_entries(tmp_path):
 
 
 def test_solve_mip_integer_var_snaps_to_integer():
-    """Continuous LP optimum is fractional; integer flag forces an integer
-    solution from lp_solve's branch-and-bound."""
+    """Continuous LP optimum is fractional; the integer flag forces an
+    integer solution out of branch-and-bound."""
     g = make_grid()
     g.setcell(0, 0, "0")
     g.setcell(0, 1, "0")
@@ -732,7 +734,7 @@ def test_solve_mip_integer_var_snaps_to_integer():
 
 
 def test_solve_mip_binary_var_clamped_to_zero_one():
-    """Binary flag implies bounds [0,1]; lp_solve does the clamping."""
+    """Binary flag implies bounds [0,1], whatever `bounds` said."""
     g = make_grid()
     g.setcell(0, 0, "0")
     g.setcell(0, 1, "0")

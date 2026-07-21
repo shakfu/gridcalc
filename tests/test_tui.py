@@ -2495,7 +2495,7 @@ class TestFormatSensitivity:
     def test_infinite_ranges_render_as_words(self):
         text = "\n".join(self._lines())
         assert "inf" in text
-        assert "1e+30" not in text, "lp_solve's infinity sentinel leaked into the report"
+        assert "1e+30" not in text, "a solver infinity sentinel leaked into the report"
 
     def test_binding_marker_is_leading_not_trailing(self):
         """A trailing label is the first thing lost to truncation, so the

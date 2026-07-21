@@ -98,6 +98,12 @@
 
 ### Changed
 
+- **Third-party licence texts now ship with the wheel.** gridcalc is MIT but statically links vendored lp_solve (LGPL-2.1) and OpenXLSX (BSD-3-Clause), so the binary contains their code. The wheel previously carried only gridcalc's own `LICENSE`, and the lp_solve tree had no licence text at all -- only `License terms: LGPL.` in per-file source headers. Added `thirdparty/lp_solve_5.5/LICENSE.LGPL-2.1.txt`, a `THIRD-PARTY-NOTICES.md` inventory, and extended `license-files` in `pyproject.toml` so all four travel in `dist-info/licenses/`. Verified against a built wheel rather than assumed.
+
+  Also checked and cleared: `thirdparty/lp_solve_5.5/lp_rlp.c` carries a GPL notice, which looked alarming for an MIT project that compiles it into `lpsolve_static`. It is GNU Bison 2.3 output and carries Bison's **special exception** (added in Bison 2.2) permitting distribution of a larger work under terms of your choice. It imposes no GPL obligation on gridcalc. Recorded in `THIRD-PARTY-NOTICES.md` so the next person to notice it does not have to re-derive that.
+
+  The static-linking question under LGPL section 6 is noted but not resolved -- it is a question for the project owner, and one that disappears entirely under the HiGHS migration now scoped in `TODO.md`.
+
 - **The trust-prompt pager moved to `tui/widgets.py` as `pager(stdscr, title, lines)`.** It was general code with a hardcoded "Code block" header living in `commands.py`; `:opt sens` needed the same behaviour, and `commands` imports `solve`, so the dependency could not run that direction. `_view_code_block` is now a four-line call.
 
 ### Fixed

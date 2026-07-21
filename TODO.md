@@ -25,34 +25,28 @@ they are the strategy.
 - [x] Infeasibility diagnosis -- irreducible conflicting constraint set
       reported automatically on `INFEASIBLE`. See CHANGELOG.
 - [x] Unboundedness diagnosis -- names the runaway variable on
-      `UNBOUNDED`. See CHANGELOG. (Note for future work: lp_solve has no
-      extreme-ray accessor; `is_unbounded` reports a *declaration*, not a
-      ray. The diagnosis re-solves per variable instead.)
+      `UNBOUNDED`. See CHANGELOG. (The diagnosis re-solves per variable
+      rather than reading an extreme ray, which no backend has exposed.)
 - [x] Parametric RHS sweep (`:opt sweep`) -- re-solves across a range and
       flags where the marginal value changes. See CHANGELOG. Built on
       `solve(rhs_override=...)`, which is also usable directly.
 - [x] Separable quadratic objectives -- squared decision variables solved
       via a tangent-envelope relaxation on the existing LP backend, no
       second solver. See CHANGELOG.
-- [ ] **Non-separable (cross-term) quadratic objectives.** `=A1*A2` and
-      covariance-style objectives are refused today; the tangent
-      relaxation only models separable squares. This is the case that
-      genuinely needs a QP backend:
-
-      * **Vendor a QP solver.** OSQP (Apache-2.0, small C, ADMM) alongside
-        `thirdparty/lp_solve_5.5`, with its own CMake target and nanobind
-        wrapper. **Licence decision required first:** lp_solve is LGPL,
-        OSQP is Apache-2.0 -- settle what the combination means for the
-        distributed wheel before writing any code.
-      * **Extend the walker.** `QuadForm.squares()` already collects the
-        full symmetric Q including off-diagonals, so the extraction work is
-        largely done; it raises on cross terms rather than lacking them.
-        Convexity would need a positive-semidefinite check on Q rather than
-        a per-coefficient sign test.
-      * **Cross-platform build risk** is the main schedule cost and the
-        part that cannot be validated locally.
-
-      Still gated on a real sheet needing it.
+- [x] Migrated the solver backend from lp_solve to HiGHS -- MIT instead of
+      LGPL, native convex QP (including cross terms), and a real infinity
+      instead of a 1e30 sentinel. See CHANGELOG.
+- [ ] **Verify the HiGHS build on Linux and Windows CI.** Validated on
+      macOS/arm64 only. HiGHS is a much larger C++ tree than lp_solve;
+      watch build time and wheel size. `highs_extras` must stay a static
+      lib -- the shared build dlopens it at runtime, which will not work
+      from inside a wheel.
+- [ ] **Sensitivity for quadratic models.** Withheld today: a QP's duals do
+      not carry the shadow-price reading the report describes. HiGHS does
+      return them, so this is a question of deciding what they mean to a
+      spreadsheet user, not of plumbing.
+- [ ] **Integer + quadratic together.** HiGHS does not support integrality
+      with a Hessian. Currently the combination is simply refused.
 
 ## Performance
 

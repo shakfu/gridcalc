@@ -5,7 +5,16 @@ description = "A terminal spreadsheet powered by Python formulas"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-license-files = ["LICENSE"]
+# The wheel statically links vendored HiGHS (MIT) and OpenXLSX
+# (BSD-3-Clause), so their licence texts have to travel with the binary, not
+# just live in the source tree. THIRD-PARTY-NOTICES.md is the inventory.
+license-files = [
+    "LICENSE",
+    "THIRD-PARTY-NOTICES.md",
+    "thirdparty/HiGHS/LICENSE.txt",
+    "thirdparty/HiGHS/THIRD_PARTY_NOTICES.md",
+    "thirdparty/OpenXLSX/LICENSE.md",
+]
 authors = [
     { name = "Shakeeb Alireza", email = "shakfu@users.noreply.github.com" }
 ]

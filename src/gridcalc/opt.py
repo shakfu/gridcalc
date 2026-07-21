@@ -293,14 +293,39 @@ class QuadForm:
         return out
 
     def squares(self) -> dict[CellKey, float]:
-        """Diagonal terms, after checking there are no cross terms."""
+        """Diagonal terms only. Raises if the objective has cross terms."""
         for (a, b), v in self.quad.items():
             if a != b and v != 0.0:
-                raise NotQuadratic(
-                    f"objective couples {_cellname(*a)} and {_cellname(*b)}; "
-                    "only separable quadratics (no cross terms) are supported"
-                )
+                raise NotQuadratic(f"objective couples {_cellname(*a)} and {_cellname(*b)}")
         return {a: v for (a, b), v in self.quad.items() if a == b and v != 0.0}
+
+    def has_quadratic(self) -> bool:
+        return any(v != 0.0 for v in self.quad.values())
+
+    def hessian(self, order: list[CellKey]) -> list[list[float]]:
+        """Dense lower triangle of Q for the ``0.5 * x' Q x`` objective form.
+
+        Returned ragged and row-major: row ``i`` holds columns ``0..i``. The
+        solver takes cross terms directly, so this no longer has to reject
+        them -- ``q[(a, b)] * x_a * x_b`` with ``a != b`` contributes ``q`` to
+        both symmetric halves, which in the ``0.5 x'Qx`` convention means
+        ``Q[a][b] = Q[b][a] = q``. A squared term ``q * x_a^2`` needs
+        ``Q[a][a] = 2q`` for the same reason.
+        """
+        index = {cell: i for i, cell in enumerate(order)}
+        tri: list[list[float]] = [[0.0] * (i + 1) for i in range(len(order))]
+        for (a, b), v in self.quad.items():
+            if v == 0.0:
+                continue
+            if a not in index or b not in index:
+                continue
+            ia, ib = index[a], index[b]
+            if ia == ib:
+                tri[ia][ia] += 2.0 * v
+            else:
+                lo, hi = (ia, ib) if ia < ib else (ib, ia)
+                tri[hi][lo] += v
+        return tri
 
 
 def extract_quadratic(node: Node, decision_vars: set[CellKey], grid: Grid) -> QuadForm:
@@ -461,12 +486,9 @@ class SolveResult:
     # the decision cells that can grow without limit. Empty if the probe
     # could not identify them (see `_unbounded_variables`).
     unbounded: list[CellKey] | None = None
-    # True when the objective had squared terms and was solved through the
-    # piecewise-linear relaxation, in which case the result is approximate.
+    # True when the objective contained quadratic terms and was solved as a
+    # QP. The answer is exact; the flag is informational.
     quadratic: bool = False
-    # Bound on how far `objective` may sit from the true optimum. Zero for a
-    # plain LP, where the answer is exact.
-    quadratic_gap: float = 0.0
 
 
 # --- Linearity walker -------------------------------------------------------
@@ -635,7 +657,6 @@ def solve(
     sensitivity: bool = False,
     diagnose: bool = False,
     rhs_override: dict[CellKey, float] | None = None,
-    quadratic_segments: int = 64,
 ) -> SolveResult:
     """Build an LP (or MIP) from the named cells, solve, and (by default) write back.
 
@@ -696,7 +717,7 @@ def solve(
     if obj_cell.type != FORMULA or obj_ast is None:
         raise OptError(f"objective cell {_cellname(obj_c, obj_r)} must contain a formula")
     obj_quad = extract_quadratic(obj_ast, var_set, grid)
-    obj_squares = obj_quad.squares()  # raises NotQuadratic on cross terms
+    obj_is_quadratic = obj_quad.has_quadratic()
     obj_form = LinearForm(dict(obj_quad.linear), obj_quad.constant)
     c_vec = [obj_form.coeffs.get(v, 0.0) for v in decision_vars]
     # The objective constant is dropped here: lp_solve's `solve` returns
@@ -773,28 +794,16 @@ def solve(
     int_indices = sorted(var_index[k] for k in int_set)
     bin_indices = sorted(var_index[k] for k in bin_set)
 
-    # A separable quadratic objective is handled by extending the LP with one
-    # auxiliary column per squared term plus a fan of tangent constraints; see
-    # `_add_quadratic_relaxation`. Everything downstream still sees an LP.
-    quad_gap = 0.0
-    if obj_squares:
-        quad_gap = _add_quadratic_relaxation(
-            obj_squares,
-            decision_vars,
-            var_index,
-            c_vec,
-            A,
-            sense,
-            rhs,
-            lb,
-            ub,
-            maximize=maximize,
-            segments=quadratic_segments,
-        )
-        # The relaxation's duals belong to the approximating LP, not to the
-        # quadratic problem, and its extra rows are not user constraints.
-        # Withhold both analyses rather than report numbers about the wrong
-        # model -- the same call made for MIPs.
+    # A quadratic objective goes to the solver as a Hessian. Cross terms are
+    # supported; convexity is the solver's to check, and it rejects an
+    # indefinite Hessian rather than returning a plausible wrong answer.
+    hessian: list[list[float]] = []
+    if obj_is_quadratic:
+        hessian = obj_quad.hessian(decision_vars)
+        check_convexity(hessian, maximize=maximize)
+        # A quadratic model's duals do not carry the shadow-price reading the
+        # sensitivity report describes, and branch-and-bound over a Hessian is
+        # not supported at all. Withhold both, as for MIPs.
         sensitivity = False
         diagnose = False
 
@@ -810,6 +819,7 @@ def solve(
         integer_vars=int_indices,
         binary_vars=bin_indices,
         sensitivity=sensitivity,
+        hessian=hessian,
     )
 
     # Add back the constant term that we dropped from the objective vector
@@ -823,13 +833,11 @@ def solve(
         # appended auxiliary columns; the trailing entries are not cells.
         for v, x in zip(decision_vars, sol.x[: len(decision_vars)], strict=True):
             values[v] = float(x)
-        if obj_squares:
-            # Report the objective's true value at the solved point rather
-            # than the relaxation's. The point is feasible for the real
-            # problem, so its true objective is achievable; the relaxed value
-            # is an artefact of the approximation and reads slightly better
-            # than reality.
-            objective_total = evaluate_quadratic(obj_squares, obj_form, values)
+        if obj_is_quadratic:
+            # Recompute from the formula rather than trusting the solver's
+            # objective: it is cheap, and it keeps the reported number tied to
+            # what the user's cell actually says.
+            objective_total = evaluate_quadratic(obj_quad, values)
 
     applied = False
     if apply and values:
@@ -851,7 +859,9 @@ def solve(
 
     sens: Sensitivity | None = None
     if sensitivity and solved_ok and sol.sensitivity_valid:
-        sens = _build_sensitivity(decision_vars, constraint_cells, c_vec, A, rhs, sol, values)
+        sens = _build_sensitivity(
+            decision_vars, constraint_cells, c_vec, A, rhs, sense, sol, values
+        )
 
     runaway: list[CellKey] | None = None
     if diagnose and sol.status == _ext.UNBOUNDED:
@@ -880,8 +890,7 @@ def solve(
         sensitivity=sens,
         conflict=conflict,
         unbounded=runaway,
-        quadratic=bool(obj_squares),
-        quadratic_gap=quad_gap if obj_squares else 0.0,
+        quadratic=obj_is_quadratic,
     )
 
 
@@ -1037,10 +1046,21 @@ def _build_sensitivity(
     c_vec: list[float],
     A: list[list[float]],
     rhs: list[float],
+    sense: list[int],
     sol: Any,
     values: dict[CellKey, float],
 ) -> Sensitivity:
-    """Assemble the solver's raw sensitivity arrays into per-cell records."""
+    """Assemble the solver's raw sensitivity arrays into per-cell records.
+
+    RHS ranging is taken from the solver only for *binding* constraints,
+    where it was validated against an independent re-solve sweep. For a
+    constraint with slack the shadow price is zero and stays zero until the
+    bound tightens onto the current activity, so the exact range follows from
+    the activity and the sense and is computed here rather than read from the
+    solver. That is both cheaper and more accurate: the previous backend
+    reported an unbounded range for slack rows, which was simply wrong -- the
+    dual does change once the bound crosses the activity.
+    """
     variables = [
         VarSensitivity(
             cell=cell,
@@ -1059,8 +1079,17 @@ def _build_sensitivity(
     for i, cell in enumerate(constraint_cells):
         activity = sum(coef * xj for coef, xj in zip(A[i], x, strict=True))
         slack = rhs[i] - activity
-        lo = _from_lp_inf(sol.dual_from[i]) if i < len(sol.dual_from) else float("-inf")
-        hi = _from_lp_inf(sol.dual_till[i]) if i < len(sol.dual_till) else float("inf")
+        binding = abs(slack) <= 1e-9
+        if binding:
+            lo = _from_lp_inf(sol.dual_from[i]) if i < len(sol.dual_from) else float("-inf")
+            hi = _from_lp_inf(sol.dual_till[i]) if i < len(sol.dual_till) else float("inf")
+        elif sense[i] == _ext.GE:
+            # `a.x >= b` with slack: tightening b up to the activity keeps the
+            # zero dual; past it the row binds.
+            lo, hi = float("-inf"), activity
+        else:
+            # `a.x <= b` (or `==`, which cannot have slack) with slack.
+            lo, hi = activity, float("inf")
         # Bindingness is derived from slack rather than from a non-zero dual.
         # A degenerate optimum can leave a binding constraint with a zero
         # shadow price, and calling that non-binding would be wrong.
@@ -1071,7 +1100,7 @@ def _build_sensitivity(
                 rhs=rhs[i],
                 activity=activity,
                 slack=slack,
-                binding=abs(slack) <= 1e-9,
+                binding=binding,
                 rhs_from=lo,
                 rhs_till=hi,
             )
@@ -1252,124 +1281,83 @@ def infer_model(grid: Grid, c1: int, r1: int, c2: int, r2: int) -> InferredModel
     )
 
 
-def _add_quadratic_relaxation(
-    squares: dict[CellKey, float],
-    decision_vars: list[CellKey],
-    var_index: dict[CellKey, int],
-    c_vec: list[float],
-    A: list[list[float]],
-    sense: list[int],
-    rhs: list[float],
-    lb: list[float],
-    ub: list[float],
-    *,
-    maximize: bool,
-    segments: int,
-) -> float:
-    """Extend an LP in place so it approximates a separable quadratic objective.
+def _is_semidefinite(tri: list[list[float]], tol: float = 1e-9) -> bool:
+    """Whether the symmetric matrix given by its lower triangle is PSD.
 
-    lp_solve is LP/MIP only. For a *convex* separable quadratic there is a
-    standard exact-in-the-limit reformulation that needs no second solver: a
-    convex function is the upper envelope of its tangents, so
+    Symmetric Gaussian elimination (an LDL^T without the square roots): the
+    matrix is positive semi-definite exactly when no pivot goes negative. A
+    zero pivot is allowed -- that is the *semi* in semi-definite, and it
+    happens whenever a decision variable does not appear in the quadratic
+    part -- but then the rest of its row must vanish too, otherwise the
+    matrix is indefinite.
 
-        x^2  ==  max over a of ( 2*a*x - a^2 )
+    Plain Cholesky would be shorter but fails on singular PSD matrices, which
+    are the common case here rather than an edge case.
 
-    Introduce one auxiliary column ``z_j`` per squared term and constrain it
-    from below by a fan of tangents:
-
-        z_j - 2*a_k*x_j >= -a_k^2      for tangent points a_k
-
-    The objective then uses ``q_j * z_j``. When the objective pushes ``z_j``
-    downward -- minimising with ``q_j > 0``, or maximising with ``q_j < 0`` --
-    the solver drives each ``z_j`` down onto the envelope, so ``z_j``
-    approaches ``x_j^2`` from below. That is exactly the convex case, and the
-    reason the sign of every coefficient is checked before we get here: with
-    the wrong sign the solver would push ``z_j`` to its bound instead and
-    return a confident answer to a different problem.
-
-    Returns a bound on the objective gap. The tangent envelope understates
-    ``x^2`` by at most ``h^2/4`` between adjacent tangent points spaced ``h``
-    apart, so the bound is ``sum_j |q_j| * h_j^2 / 4``.
-
-    Requires finite bounds on every quadratic variable: tangent points have to
-    be placed across a known interval, and there is no meaningful place to put
-    them on an unbounded one.
+    Done in pure Python: numpy is an optional extra, and the optimizer must
+    not silently change behaviour based on whether it is installed. Decision
+    variables number in the handful, so the cubic cost is irrelevant.
     """
-    if segments < 1:
-        raise OptError("quadratic_segments must be at least 1")
+    n = len(tri)
+    a = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1):
+            a[i][j] = a[j][i] = tri[i][j]
 
-    for cell, q in squares.items():
-        name = _cellname(*cell)
-        # Convexity. Minimising needs a convex objective (q > 0); maximising
-        # needs concave (q < 0). The wrong sign makes the true optimum sit at
-        # a corner of the feasible region and the relaxation unbounded or
-        # simply wrong, so refuse rather than approximate.
-        if maximize and q > 0.0:
-            raise NotQuadratic(
-                f"maximising a convex objective: {name}^2 has a positive "
-                f"coefficient ({q:g}); the maximum is unbounded or at a corner, "
-                "which this solver cannot find reliably"
-            )
-        if not maximize and q < 0.0:
-            raise NotQuadratic(
-                f"minimising a concave objective: {name}^2 has a negative "
-                f"coefficient ({q:g}); the minimum is at a corner, which this "
-                "solver cannot find reliably"
-            )
-
-    gap = 0.0
-    for cell in sorted(squares, key=lambda k: var_index[k]):
-        q = squares[cell]
-        j = var_index[cell]
-        lo, hi = lb[j], ub[j]
-        name = _cellname(*cell)
-        if math.isinf(lo) or math.isinf(hi):
-            raise OptError(
-                f"{name} appears squared in the objective but is unbounded; "
-                "give it finite bounds (e.g. 'bounds " + name + "=0:100')"
-            )
-        if hi <= lo:
-            # Pinned variable: the square is a constant, nothing to model.
+    for k in range(n):
+        if a[k][k] < -tol:
+            return False
+        if a[k][k] <= tol:
+            if any(abs(a[k][j]) > tol for j in range(k + 1, n)):
+                return False
             continue
-
-        z = len(c_vec)  # index of the new auxiliary column
-        c_vec.append(q)
-        lb.append(0.0)
-        ub.append(max(lo * lo, hi * hi))
-        for row in A:
-            row.append(0.0)
-
-        step = (hi - lo) / segments
-        for k in range(segments + 1):
-            a = lo + step * k
-            row = [0.0] * len(c_vec)
-            row[j] = -2.0 * a
-            row[z] = 1.0
-            A.append(row)
-            sense.append(_ext.GE)
-            rhs.append(-a * a)
-
-        gap += abs(q) * step * step / 4.0
-
-    return gap
+        piv = a[k][k]
+        for i in range(k + 1, n):
+            f = a[i][k] / piv
+            if f == 0.0:
+                continue
+            for j in range(k + 1, n):
+                a[i][j] -= f * a[k][j]
+    return True
 
 
-def evaluate_quadratic(
-    squares: dict[CellKey, float],
-    linear: LinearForm,
-    values: dict[CellKey, float],
-) -> float:
-    """The objective's true value at ``values``.
+def check_convexity(tri: list[list[float]], *, maximize: bool) -> None:
+    """Refuse an objective the solver cannot optimise globally.
 
-    Reported instead of the relaxation's objective. The solved point is
-    feasible for the real problem, so its true objective is an achievable
-    number the user can trust; the relaxation's value is an artefact of the
-    approximation and would be slightly optimistic.
+    A quadratic program has a tractable global optimum only when minimising a
+    convex objective (Q positive semi-definite) or maximising a concave one
+    (Q negative semi-definite). Otherwise the optimum sits at a corner of the
+    feasible region and finding it is a different, much harder problem.
+
+    The solver does reject these -- but as a numerical failure, which tells
+    the user nothing about what they typed. Checking here buys a message that
+    names the actual problem.
     """
-    total = linear.constant
-    for cell, coef in linear.coeffs.items():
+    probe = tri if not maximize else [[-v for v in row] for row in tri]
+    if _is_semidefinite(probe):
+        return
+    if maximize:
+        raise NotQuadratic(
+            "objective is not concave, so it has no interior maximum -- "
+            "maximising it would put the optimum at a corner of the feasible "
+            "region, which this solver cannot find"
+        )
+    raise NotQuadratic(
+        "objective is not convex, so it has no interior minimum -- minimising "
+        "it would put the optimum at a corner of the feasible region, which "
+        "this solver cannot find"
+    )
+
+
+def evaluate_quadratic(form: QuadForm, values: dict[CellKey, float]) -> float:
+    """Evaluate a QuadForm at ``values``.
+
+    Used to report the objective from the user's own formula rather than from
+    the solver, which keeps the reported number tied to what the cell says.
+    """
+    total = form.constant
+    for cell, coef in form.linear.items():
         total += coef * values.get(cell, 0.0)
-    for cell, q in squares.items():
-        x = values.get(cell, 0.0)
-        total += q * x * x
+    for (a, b), q in form.quad.items():
+        total += q * values.get(a, 0.0) * values.get(b, 0.0)
     return total

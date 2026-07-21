@@ -144,6 +144,20 @@ def test_opt_sens_renders_report_through_real_curses(tui_session) -> None:
 
 
 @pytest.mark.tui_file("examples/example_lp.json")
+def test_opt_sweep_renders_the_series(tui_session) -> None:
+    """`:opt sweep` re-solves across a range of right-hand sides and pages
+    the result. Asserts the marginal value plateaus, which is the answer the
+    command exists to give."""
+    tui_session.wait_for("Constraints", timeout=5.0)
+    tui_session.send(":opt sweep D5 6:24 9\n")
+    render = tui_session.wait_for("right-hand side", timeout=6.0)
+    assert "shadow" in render
+    assert "1.5" in render
+    assert "marginal value" in render
+    tui_session.send("q")
+
+
+@pytest.mark.tui_file("examples/example_lp.json")
 def test_unbounded_model_names_the_runaway_variable(tui_session) -> None:
     """Drop the constraint that caps A5 and maximise; A5 then runs away and
     the status bar must name it rather than only saying UNBOUNDED."""

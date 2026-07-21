@@ -4,6 +4,26 @@
 
 ### Added
 
+- **Parametric right-hand-side sweep via `:opt sweep <cell> <lo>:<hi> [steps] [name]`.** A shadow price answers "what is the next unit worth" and nothing more -- it is valid only inside its ranging interval, so it cannot answer the question users actually have, which is "how much more should I buy". The sweep re-solves across a range and shows where the marginal value changes:
+
+  ```text
+  D5 right-hand side from 6 to 24   (* = marginal value changed)
+              rhs objective     delta    shadow  status
+                6        27        --       2.5
+     *          8        30         3       1.5
+               18        45         3       1.5
+     *         20        45         0         0
+               24        45         0         0
+  ```
+
+  Read as: capacity is worth 1.5 per unit up to 18 and nothing beyond it.
+
+  Built on a new public `solve(rhs_override={cell: value})`, which substitutes the constant of a constraint for one solve without touching the sheet. That is a useful primitive on its own for one-off what-if questions, and it is what keeps the sweep read-only: each point solves with `apply=False`, so a command that sounds like a question never silently moves the user's decision cells. Only the constant moves -- the constraint's coefficients still come from its formula.
+
+  Points that fail are kept in the series with their status rather than dropped: discovering that a right-hand side is unattainable is a real answer. Breakpoints are flagged only where both the current and previous shadow prices are known, so a gap in the series reads as "not comparable" rather than "changed". `steps` counts intervals, giving `steps + 1` rows spanning the range inclusive.
+
+  Model-spec resolution moved into a shared `_resolve_model` helper so `:opt run`, `:opt sens`, and `:opt sweep` cannot interpret the same saved model differently. 15 new tests in `test_opt.py`, 11 in `test_tui.py`, and a PTY test.
+
 - **Unboundedness diagnosis: an unbounded `:opt` now names the runaway variable.** The mirror of the infeasibility work below, and the last of the three solver outcomes to report only a bare status:
 
   ```text

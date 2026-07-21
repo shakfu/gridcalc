@@ -2727,3 +2727,144 @@ class TestFormatUnbounded:
         out = format_unbounded([], self._names)
         assert "could not identify" in out
         assert "unbounded:" not in out
+
+
+class TestSweepCommand:
+    """`:opt sweep <cell> <lo>:<hi> [steps] [model]`."""
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = TestSensitivityReport.RecordingStdscr()
+        self.g = Grid()
+        self.undo = UndoManager()
+        for c, r, t in [
+            (0, 0, "0"),
+            (0, 1, "0"),
+            (2, 0, "=3*A1+5*A2"),
+            (3, 0, "=A1<=4"),
+            (3, 1, "=2*A2<=12"),
+            (3, 2, "=3*A1+2*A2<=18"),
+        ]:
+            self.g.setcell(c, r, t)
+        self.g.models["default"] = OptModel(
+            sense="max", objective="C1", vars="A1:A2", constraints="D1:D3"
+        )
+
+    def _run(self, args):
+        from gridcalc.tui import cmdexec
+
+        return cmdexec(self.stdscr, self.g, self.undo, args)
+
+    def test_renders_the_series(self):
+        self._run("opt sweep D2 6:24 9")
+        screen = self.stdscr.screen
+        assert "right-hand side" in screen
+        assert "shadow" in screen
+        assert "1.5" in screen
+
+    def test_is_read_only(self):
+        """A sweep is a question, not an edit. It must not move the decision
+        cells or push an undo entry the user would have to unwind."""
+        depth = len(self.undo.undo_stack)
+        self._run("opt sweep D2 6:24 4")
+        assert self.g.cells[0][0].val == pytest.approx(0.0)
+        assert self.g.cells[0][1].val == pytest.approx(0.0)
+        assert len(self.undo.undo_stack) == depth
+
+    def test_missing_arguments_show_usage(self):
+        self._run("opt sweep D2")
+        assert "usage" in self.stdscr.screen
+
+    def test_bad_range_reports(self):
+        self._run("opt sweep D2 notarange")
+        assert "lo:hi" in self.stdscr.screen
+
+    def test_non_constraint_cell_reports(self):
+        self._run("opt sweep A1 1:10")
+        assert "not one of the constraint cells" in self.stdscr.screen
+
+    def test_unknown_model_reports(self):
+        self._run("opt sweep D2 6:24 5 nosuch")
+        assert "no model named" in self.stdscr.screen
+
+    def test_steps_argument_controls_the_sampled_points(self):
+        """steps=3 spans 6..24 in three intervals, so four rows at 6/12/18/24.
+
+        Data rows are matched on "optional marker then a number", because a
+        starred breakpoint row does not begin with its rhs value and the
+        pager indents everything by two.
+        """
+        import re
+
+        self._run("opt sweep D2 6:24 3")
+        rows = [ln for ln in self.stdscr.written if re.match(r"^\s+\*?\s*-?\d", ln)]
+        sampled = []
+        for ln in rows:
+            toks = ln.split()
+            sampled.append(float(toks[1] if toks[0] == "*" else toks[0]))
+        assert sampled == [6.0, 12.0, 18.0, 24.0]
+
+
+class TestFormatSweep:
+    def _points(self):
+        from gridcalc.opt import sweep
+
+        g = Grid()
+        for c, r, t in [
+            (0, 0, "0"),
+            (0, 1, "0"),
+            (2, 0, "=3*A1+5*A2"),
+            (3, 0, "=A1<=4"),
+            (3, 1, "=2*A2<=12"),
+            (3, 2, "=3*A1+2*A2<=18"),
+        ]:
+            g.setcell(c, r, t)
+        return sweep(
+            g,
+            (2, 0),
+            [(0, 0), (0, 1)],
+            [(3, 0), (3, 1), (3, 2)],
+            constraint=(3, 1),
+            lo=6.0,
+            hi=24.0,
+            steps=9,
+            maximize=True,
+        )
+
+    def _lines(self):
+        from gridcalc.tui.format import format_sweep
+
+        return format_sweep(self._points(), "D2")
+
+    def test_fits_an_80_column_terminal(self):
+        widest = max(len(ln) for ln in self._lines())
+        assert widest <= 78, f"widest line is {widest} chars"
+
+    def test_header_states_the_range_once(self):
+        header = self._lines()[0]
+        assert "D2" in header and "from 6 to 24" in header
+
+    def test_marks_breakpoints(self):
+        marked = [ln for ln in self._lines() if ln.lstrip().startswith("*")]
+        assert len(marked) == 2
+
+    def test_constant_marginal_value_says_so(self):
+        """A sweep entirely inside one ranging interval has nothing to show;
+        saying 'widen the range' beats an unmarked table the user has to
+        squint at."""
+        from gridcalc.opt import SweepPoint
+        from gridcalc.tui.format import format_sweep
+
+        flat = [
+            SweepPoint(
+                rhs=float(i),
+                status_name="OPTIMAL",
+                objective=float(i),
+                shadow_price=1.0,
+                delta=1.0 if i else None,
+                breakpoint=False,
+            )
+            for i in range(3)
+        ]
+        text = "\n".join(format_sweep(flat, "D2"))
+        assert "constant across this range" in text

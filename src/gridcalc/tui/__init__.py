@@ -477,9 +477,12 @@ def mainloop(stdscr: curses.window, g: Grid) -> None:
 
         if ch == 0x1F & ord("c"):
             break
-        elif ch == 0x1F & ord("z"):
+        elif ch == ord("u") or ch == 0x1F & ord("z"):
+            # vi-style u / Ctrl-R are the documented bindings; Ctrl-Z and
+            # Ctrl-Y stay as aliases. `u` must be tested before the
+            # printable-char fallthrough below, or it starts label entry.
             undo.undo(g)
-        elif ch == 0x1F & ord("y"):
+        elif ch == 0x1F & ord("r") or ch == 0x1F & ord("y"):
             undo.redo(g)
         elif ch in (0x1F & ord("b"), 0x1F & ord("u")):
             cl = g.cell(g.cc, g.cr)

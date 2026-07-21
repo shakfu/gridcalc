@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Trust prompt under-reported cell counts on every v2 workbook.** `sandbox.inspect_file` read cell data from the top-level `"cells"` key only. That key is the v1 layout; since the file format moved to v2 the cells live under `sheets[].cells` (`engine.py:2009`), so the prompt shown before loading an untrusted file reported `Cells: 0 (0 formulas)` for every multi-sheet workbook -- including ones carrying a code block. The code and `requires` detection were unaffected, so the prompt still flagged the actual threat, but a security prompt that displays visibly wrong numbers alongside correct ones erodes the user's reason to read any of it. Counting now walks each entry of `sheets` and falls back to the top-level key only when `sheets` is absent or empty, so v1 files still count correctly. The per-sheet accumulation moved into a `_count_cells` helper; malformed sheet entries (non-dict, or a `cells` value that isn't a list) are skipped rather than raised, matching how the loader itself tolerates partial corruption. Six new tests in `TestJsonInspect` covering v2, v2-with-code-and-requires, v2 styled cells, v1 fallback, an empty `sheets` list, and malformed entries.
+
+- **`u` and `Ctrl-R` now actually undo and redo.** The README documented the vi bindings (`README.md:94`) but `mainloop` only bound `Ctrl-Z` / `Ctrl-Y`, and `u` fell through to the `32 <= ch < 127` printable-character branch -- so pressing `u` on the grid silently opened label entry with the letter `u` in the buffer. The grid keyloop now dispatches `u` for undo and `Ctrl-R` for redo, tested before the printable fallthrough (order matters here; placing the case after it is a no-op). `Ctrl-Z` / `Ctrl-Y` are retained as aliases, so no existing muscle memory breaks. The code was changed to match the documentation rather than the reverse: the app is vi-styled throughout, `Ctrl-Z` is conventionally SIGTSTP, and the PTY harness's `drain()` helper was written citing "`u` for undo" as its motivating use case (`tests/integration/conftest.py:104`) -- the test it was built for had never been written.
+
+  **Behaviour change:** `u` is no longer available to begin a label. This matches `y`, `p`, `v`, `e`, `E`, `n`, and `N`, which are already consumed the same way; use the `"` label prefix to type a label starting with any of them.
+
+  New `test_undo_redo_via_vi_keys` in the PTY suite, which is the only layer that can reach grid key dispatch (`tui/__init__.py` sits at ~15% line coverage). Verified to fail against the pre-fix binding with the bug visible in the render snapshot as `ENTRY  [PYTHON]\n> u_`.
+
 ## [0.2.0]
 
 ### Added

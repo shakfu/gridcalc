@@ -9,6 +9,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 # Sandbox is on by default. Set GRIDCALC_SANDBOX=0 to disable.
 # Can also be controlled via sandbox = true/false in gridcalc.toml.
@@ -409,7 +410,24 @@ def inspect_file(filename: str) -> FileInfo | None:
             m for m in requires if classify_module(_parse_requirement(m)[0]) == "side_effect"
         ]
 
-    rows = d.get("cells", [])
+    # v2 nests cells under `sheets[].cells`; v1 has them at top level.
+    # Count across every sheet -- a prompt that under-reports cells on
+    # multi-sheet files trains the user to ignore it.
+    sheets = d.get("sheets")
+    if isinstance(sheets, list) and sheets:
+        for entry in sheets:
+            if isinstance(entry, dict):
+                _count_cells(entry.get("cells", []), info)
+    else:
+        _count_cells(d.get("cells", []), info)
+
+    return info
+
+
+def _count_cells(rows: Any, info: FileInfo) -> None:
+    """Accumulate cell and formula counts from one sheet's rows list."""
+    if not isinstance(rows, list):
+        return
     for row in rows:
         if not isinstance(row, list):
             continue
@@ -422,5 +440,3 @@ def inspect_file(filename: str) -> FileInfo | None:
             info.cell_count += 1
             if isinstance(cell_val, str) and cell_val.startswith("="):
                 info.formula_count += 1
-
-    return info

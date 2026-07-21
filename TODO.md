@@ -24,12 +24,10 @@ they are the strategy.
       RHS and objective ranging. See CHANGELOG.
 - [x] Infeasibility diagnosis -- irreducible conflicting constraint set
       reported automatically on `INFEASIBLE`. See CHANGELOG.
-- [ ] **Unboundedness diagnosis.** The mirror of the infeasibility work
-      and the other half of "the solve failed, now what". `UNBOUNDED`
-      currently reports as bare status. The useful answer is the ray:
-      which decision variable can grow without limit, and which missing
-      upper bound or constraint would stop it. Cheaper than the IIS
-      filter -- lp_solve can report the unbounded column directly.
+- [x] Unboundedness diagnosis -- names the runaway variable on
+      `UNBOUNDED`. See CHANGELOG. (Note for future work: lp_solve has no
+      extreme-ray accessor; `is_unbounded` reports a *declaration*, not a
+      ray. The diagnosis re-solves per variable instead.)
 - [ ] **Sensitivity report for a range of RHS values.** Shadow prices are
       valid only inside `rhs_from..rhs_till`; the natural follow-up
       question is what happens past that edge. A small parametric sweep

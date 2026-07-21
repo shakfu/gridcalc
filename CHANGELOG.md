@@ -4,6 +4,20 @@
 
 ### Added
 
+- **Unboundedness diagnosis: an unbounded `:opt` now names the runaway variable.** The mirror of the infeasibility work below, and the last of the three solver outcomes to report only a bare status:
+
+  ```text
+  opt: UNBOUNDED  unbounded: A5 -- add an upper bound or a constraint
+  ```
+
+  A variable is reported when the constraints allow it to move without limit in whichever direction improves the objective. That is established exactly, by re-solving over the same feasible region with a throwaway objective of just that variable and checking whether *that* problem is unbounded -- at most one solve per contributing variable, on the failure path only. Variables with a zero objective coefficient are skipped: moving them cannot change the objective, so they are not the cause even when they are themselves unbounded, and naming them would send the user to the wrong cell.
+
+  lp_solve offers no help here: `is_unbounded(lp, col)` is the query counterpart to `set_unbounded` and reports whether a column was *declared* free, not which column carries the ray. There is no extreme-ray accessor.
+
+  The first implementation was the textbook big-M approach -- bound the infinite directions with a large artificial box and look for variables pinned against it, at two box sizes to filter out legitimately large optima. It was **wrong**, and is recorded here because the failure mode is not obvious: the box has to be derived from the model's own magnitudes, so a variable whose genuine limit sits far above the largest number in the model (`1e-9*A1 <= 1`, capping A1 at 1e9 among coefficients of order 1) pins against the box and gets reported as a runaway when it is not. The two-scale check does not save it, because the box binds at both scales. Solving for the actual bound has no threshold to misjudge. Both behaviours are pinned by `test_unbounded_ignores_a_variable_capped_far_above_the_model_scale`.
+
+  9 new tests in `test_opt.py`, 10 in `test_tui.py`, and a PTY test.
+
 - **Infeasibility diagnosis: an infeasible `:opt` now names the contradictory constraints.** Previously the status bar said `opt: INFEASIBLE` and stopped, which tells the user their model is broken without giving them anywhere to look. It now reports an irreducible inconsistent subsystem:
 
   ```text

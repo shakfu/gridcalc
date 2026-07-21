@@ -989,3 +989,150 @@ def test_equal_bounds_are_allowed():
 def test_infinite_bounds_still_accepted():
     res = _bounded_solve({(0, 0): (float("-inf"), float("inf"))})
     assert res.status_name == "OPTIMAL"
+
+
+# --- Unboundedness diagnosis -----------------------------------------------
+
+
+def _unbounded_solve(cells, dvars, constraints, **kwargs):
+    g = make_grid()
+    for c, r, t in cells:
+        g.setcell(c, r, t)
+    return solve(
+        g,
+        objective_cell=(2, 0),
+        decision_vars=dvars,
+        constraint_cells=constraints,
+        **kwargs,
+    )
+
+
+_FREE_A2 = [(0, 0, "0"), (0, 1, "0"), (2, 0, "=A1+A2"), (3, 0, "=A1<=4")]
+
+
+def test_unbounded_diagnosis_off_by_default():
+    res = _unbounded_solve(_FREE_A2, [(0, 0), (0, 1)], [(3, 0)], maximize=True)
+    assert res.status_name == "UNBOUNDED"
+    assert res.unbounded is None
+
+
+def test_unbounded_names_only_the_runaway_variable():
+    """A1 is capped by its constraint; A2 has no upper bound. Naming both
+    would be no more useful than the bare status."""
+    res = _unbounded_solve(_FREE_A2, [(0, 0), (0, 1)], [(3, 0)], maximize=True, diagnose=True)
+    assert res.status_name == "UNBOUNDED"
+    assert res.unbounded == [(0, 1)]
+
+
+def test_unbounded_reports_every_runaway():
+    cells = [(0, 0, "0"), (0, 1, "0"), (2, 0, "=A1+A2"), (3, 0, "=A1>=0")]
+    res = _unbounded_solve(cells, [(0, 0), (0, 1)], [(3, 0)], maximize=True, diagnose=True)
+    assert set(res.unbounded) == {(0, 0), (0, 1)}
+
+
+def test_unbounded_detects_downward_runaway():
+    """Minimising with a free lower bound runs to -inf; the probe must test
+    the direction the variable actually moved, not assume growth upward."""
+    cells = [(0, 0, "0"), (2, 0, "=A1"), (3, 0, "=A1<=100")]
+    res = _unbounded_solve(
+        cells,
+        [(0, 0)],
+        [(3, 0)],
+        maximize=False,
+        bounds={(0, 0): (float("-inf"), float("inf"))},
+        diagnose=True,
+    )
+    assert res.status_name == "UNBOUNDED"
+    assert res.unbounded == [(0, 0)]
+
+
+def test_large_but_finite_optimum_is_not_called_unbounded():
+    """The false-positive guard. A legitimate optimum of 1e9 must not be
+    mistaken for a runaway just because it is large -- which is exactly what
+    a single-probe implementation with a fixed big-M would do."""
+    cells = [(0, 0, "0"), (2, 0, "=A1"), (3, 0, "=A1<=1000000000")]
+    res = _unbounded_solve(cells, [(0, 0)], [(3, 0)], maximize=True, diagnose=True)
+    assert res.status_name == "OPTIMAL"
+    assert res.values[(0, 0)] == pytest.approx(1e9)
+    assert res.unbounded is None
+
+
+def test_finite_user_bound_is_not_a_runaway():
+    """A variable pinned at a large bound the user typed is at a deliberate
+    limit, not running away, however big the number."""
+    cells = [(0, 0, "0"), (0, 1, "0"), (2, 0, "=A1+A2"), (3, 0, "=A1<=4")]
+    res = _unbounded_solve(
+        cells,
+        [(0, 0), (0, 1)],
+        [(3, 0)],
+        maximize=True,
+        bounds={(0, 1): (0.0, 1e12)},
+        diagnose=True,
+    )
+    # With A2 capped the model is bounded, so there is nothing to diagnose.
+    assert res.status_name == "OPTIMAL"
+    assert res.unbounded is None
+
+
+def test_unbounded_diagnosis_absent_on_success():
+    res = _unbounded_solve(
+        [(0, 0, "0"), (2, 0, "=A1"), (3, 0, "=A1<=5")],
+        [(0, 0)],
+        [(3, 0)],
+        maximize=True,
+        diagnose=True,
+    )
+    assert res.status_name == "OPTIMAL"
+    assert res.unbounded is None
+
+
+def test_infeasible_model_gets_conflict_not_unbounded_field():
+    """The two diagnoses are mutually exclusive; a failed solve is one or the
+    other, never both."""
+    cells = [(0, 0, "0"), (2, 0, "=A1"), (3, 0, "=A1>=10"), (3, 1, "=A1<=5")]
+    res = _unbounded_solve(cells, [(0, 0)], [(3, 0), (3, 1)], maximize=True, diagnose=True)
+    assert res.status_name == "INFEASIBLE"
+    assert res.conflict is not None
+    assert res.unbounded is None
+
+
+def test_unbounded_ignores_a_variable_capped_far_above_the_model_scale():
+    """Regression for a big-M implementation that was replaced.
+
+    A1 is capped at 1e9 by `1e-9*A1 <= 1`, in a model whose other numbers are
+    order 1. Any artificial box derived from the model's own magnitudes is
+    smaller than A1's real limit, so a pinned-against-the-box test reports A1
+    as a runaway. Solving for A1's actual bound has no threshold to misjudge.
+    """
+    cells = [
+        (0, 0, "0"),
+        (0, 1, "0"),
+        (2, 0, "=A1+A2"),
+        (3, 0, "=0.000000001*A1<=1"),
+    ]
+    res = _unbounded_solve(cells, [(0, 0), (0, 1)], [(3, 0)], maximize=True, diagnose=True)
+    assert res.status_name == "UNBOUNDED"
+    assert res.unbounded == [(0, 1)], "only A2 is unbounded; A1 is capped at 1e9"
+
+
+def test_unbounded_ignores_variables_absent_from_the_objective():
+    """A variable with a zero objective coefficient cannot be the cause --
+    moving it does not change the objective -- so blaming it would send the
+    user to the wrong cell.
+
+    A1 is deliberately given free bounds so that the direction the probe
+    would push it in *is* unbounded: without the zero-coefficient skip it
+    would be reported, so this test actually exercises the rule rather than
+    passing for an unrelated reason.
+    """
+    cells = [(0, 0, "0"), (0, 1, "0"), (2, 0, "=A2"), (3, 0, "=A1<=1000")]
+    res = _unbounded_solve(
+        cells,
+        [(0, 0), (0, 1)],
+        [(3, 0)],
+        maximize=True,
+        bounds={(0, 0): (float("-inf"), float("inf"))},
+        diagnose=True,
+    )
+    assert res.status_name == "UNBOUNDED"
+    assert res.unbounded == [(0, 1)], "A1 has no objective coefficient"

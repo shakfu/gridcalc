@@ -2630,3 +2630,100 @@ class TestBadBoundsDoNotCrashTheTui:
         depth = len(self.undo.undo_stack)
         self._run("A1=20:10")
         assert len(self.undo.undo_stack) == depth
+
+
+class TestUnboundedDiagnosis:
+    """`:opt` on an unbounded model names the runaway variable."""
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = TestSensitivityReport.RecordingStdscr()
+        self.g = Grid()
+        self.undo = UndoManager()
+        # A1 capped by D1; A2 free above -> A2 runs away.
+        for c, r, t in [
+            (0, 0, "0"),
+            (0, 1, "0"),
+            (2, 0, "=A1+A2"),
+            (3, 0, "=A1<=4"),
+        ]:
+            self.g.setcell(c, r, t)
+        self.g.models["default"] = OptModel(
+            sense="max", objective="C1", vars="A1:A2", constraints="D1"
+        )
+
+    def _run(self):
+        from gridcalc.tui import cmdexec
+
+        return cmdexec(self.stdscr, self.g, self.undo, "opt")
+
+    def test_names_the_runaway_variable(self):
+        self._run()
+        screen = self.stdscr.screen
+        assert "UNBOUNDED" in screen
+        assert "A2" in screen
+
+    def test_omits_the_bounded_variable(self):
+        self._run()
+        line = next(ln for ln in self.stdscr.written if "unbounded:" in ln)
+        assert "A1" not in line
+
+    def test_suggests_a_remedy(self):
+        self._run()
+        line = next(ln for ln in self.stdscr.written if "unbounded:" in ln)
+        assert "upper bound" in line or "constraint" in line
+
+    def test_message_fits_the_status_bar(self):
+        self._run()
+        line = next(ln for ln in self.stdscr.written if "unbounded:" in ln)
+        assert len(line) <= 79, f"status line is {len(line)} chars: {line!r}"
+
+    def test_leaves_the_sheet_and_undo_stack_alone(self):
+        depth = len(self.undo.undo_stack)
+        self._run()
+        assert self.g.cells[0][0].val == pytest.approx(0.0)
+        assert len(self.undo.undo_stack) == depth
+
+
+class TestFormatUnbounded:
+    def _names(self, c, r):
+        from gridcalc.engine import cellname
+
+        return cellname(c, r)
+
+    def test_single_variable(self):
+        from gridcalc.tui.format import format_unbounded
+
+        out = format_unbounded([(0, 1)], self._names)
+        assert out.startswith("unbounded: A2")
+        assert "upper bound" in out
+
+    def test_multiple_variables_pluralise(self):
+        from gridcalc.tui.format import format_unbounded
+
+        out = format_unbounded([(0, 0), (0, 1)], self._names)
+        assert "A1, A2" in out
+        assert out.endswith("add upper bounds or constraints")
+
+    def test_single_variable_remedy_is_singular(self):
+        """Guards the grammar in both directions -- a naive `+ "s"` produces
+        'add an upper bound or a constraints'."""
+        from gridcalc.tui.format import format_unbounded
+
+        out = format_unbounded([(0, 1)], self._names)
+        assert out.endswith("add an upper bound or a constraint")
+
+    def test_truncates_long_lists(self):
+        from gridcalc.tui.format import format_unbounded
+
+        out = format_unbounded([(0, i) for i in range(12)], self._names, max_cells=3)
+        assert "A1, A2, A3, +9 more" in out
+
+    def test_empty_declines_to_guess(self):
+        """The probe returns nothing when its bounded re-solves do not
+        converge; saying so beats naming an arbitrary variable."""
+        from gridcalc.tui.format import format_unbounded
+
+        out = format_unbounded([], self._names)
+        assert "could not identify" in out
+        assert "unbounded:" not in out

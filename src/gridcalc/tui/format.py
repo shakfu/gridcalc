@@ -248,10 +248,44 @@ def format_conflict(
     """
     if not conflict:
         return "no constraint conflict -- check variable bounds"
-    names = [cellname(c, r) for c, r in conflict]
-    if len(names) > max_cells:
-        shown = ", ".join(names[:max_cells])
-        body = f"{shown}, +{len(names) - max_cells} more"
-    else:
-        body = ", ".join(names)
-    return f"conflict: {body} ({len(names)} of {total} constraints)"
+    names = _cell_list(conflict, cellname, max_cells)
+    return f"conflict: {names} ({len(conflict)} of {total} constraints)"
+
+
+def _cell_list(
+    cells: list[tuple[int, int]],
+    cellname: Callable[[int, int], str],
+    max_cells: int,
+) -> str:
+    """Comma-joined cell names, truncated with a count past `max_cells`.
+
+    The status bar is one line; the leading cells are the useful part and a
+    silent cut would misrepresent how many were found.
+    """
+    names = [cellname(c, r) for c, r in cells]
+    if len(names) <= max_cells:
+        return ", ".join(names)
+    return f"{', '.join(names[:max_cells])}, +{len(names) - max_cells} more"
+
+
+def format_unbounded(
+    unbounded: list[tuple[int, int]],
+    cellname: Callable[[int, int], str],
+    max_cells: int = 8,
+) -> str:
+    """One-line summary of an unboundedness diagnosis for the status bar.
+
+    An empty list is a real outcome here, unlike in `format_conflict`: the
+    probe declines to guess when its bounded re-solves do not converge, so
+    the message says the model is unbounded without naming a culprit rather
+    than inventing one.
+    """
+    if not unbounded:
+        return "could not identify the unbounded variable"
+    names = _cell_list(unbounded, cellname, max_cells)
+    remedy = (
+        "add upper bounds or constraints"
+        if len(unbounded) > 1
+        else "add an upper bound or a constraint"
+    )
+    return f"unbounded: {names} -- {remedy}"

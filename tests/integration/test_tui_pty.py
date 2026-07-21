@@ -144,6 +144,18 @@ def test_opt_sens_renders_report_through_real_curses(tui_session) -> None:
 
 
 @pytest.mark.tui_file("examples/example_lp.json")
+def test_unbounded_model_names_the_runaway_variable(tui_session) -> None:
+    """Drop the constraint that caps A5 and maximise; A5 then runs away and
+    the status bar must name it rather than only saying UNBOUNDED."""
+    tui_session.wait_for("Constraints", timeout=5.0)
+    # Constrain only A4, leaving A5 free above.
+    tui_session.send(":opt max B4 vars A4:A5 st D4\n")
+    render = tui_session.wait_for("unbounded:", timeout=6.0)
+    assert "UNBOUNDED" in render
+    assert "A5" in render.split("unbounded:")[-1]
+
+
+@pytest.mark.tui_file("examples/example_lp.json")
 def test_undo_redo_via_vi_keys(tui_session) -> None:
     """``u`` and ``Ctrl-R`` are the documented undo/redo bindings. ``u`` has
     to be dispatched before the printable-character fallthrough in the grid

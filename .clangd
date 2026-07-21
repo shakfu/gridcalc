@@ -1,5 +1,5 @@
 # clangd configuration. The native build's include paths (nanobind,
-# lp_solve, OpenXLSX) live only in the CMake-generated compile_commands.json.
+# HiGHS, OpenXLSX) live only in the CMake-generated compile_commands.json.
 # Refresh the database with:
 #
 #   NB_DIR=$(uv run python -m nanobind --cmake_dir) && \

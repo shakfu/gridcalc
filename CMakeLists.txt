@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Build every target -- including the static third-party deps that OpenXLSX
-# fetches (miniz, pugixml) and lp_solve -- as position-independent code. They
+# fetches (miniz, pugixml) and HiGHS -- as position-independent code. They
 # are linked into the `_core` / `_opt` shared modules, and GNU ld on Linux
 # rejects non-PIC static objects in a shared object ("relocation R_X86_64_PC32
 # against symbol ... can not be used when making a shared object; recompile

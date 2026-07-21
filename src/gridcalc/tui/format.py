@@ -177,8 +177,8 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
 def _sens_num(v: float) -> str:
     """Render a sensitivity number, showing infinities as words.
 
-    lp_solve's ranging arrays are unbounded on at least one side for any
-    non-binding constraint, and `1e+30` in a report column is noise.
+    A ranging value is unbounded on at least one side for any non-binding
+    constraint, and a raw `1e+30` in a report column is noise.
     """
     if math.isinf(v):
         return "inf" if v > 0 else "-inf"

@@ -23,7 +23,10 @@ on:
       - "src/gridcalc/_opt.cpp"
       - "CMakeLists.txt"
       - "thirdparty/OpenXLSX/**"
-      - "thirdparty/lp_solve_5.5/**"
+      # The vendored solver. A stale entry here fails silently -- the
+      # workflow simply stops running on the changes that most need it --
+      # so this must track whatever `_opt` links against.
+      - "thirdparty/HiGHS/**"
       - ".github/workflows/build-abi3.yml"
       - "pyproject.toml"
   workflow_dispatch:

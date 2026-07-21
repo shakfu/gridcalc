@@ -1,7 +1,8 @@
-"""Sheet-level linear optimization.
+"""Sheet-level optimization.
 
-Builds a linear program from cells in a Grid and solves it via the lp_solve-
-backed `_opt` extension. The user-facing model is sheet-resident:
+Builds a linear, mixed-integer, or convex quadratic program from cells in a
+Grid and solves it via the HiGHS-backed `_opt` extension. The user-facing
+model is sheet-resident:
 
   - One **objective** cell containing a linear formula (e.g. ``=3*A1+5*A2``).
   - A list of **decision variable** cells. They must hold numeric values
@@ -666,9 +667,9 @@ def solve(
 
     ``integer_vars`` and ``binary_vars`` are subsets of ``decision_vars``;
     cells in either set are flagged as integer or binary respectively, which
-    routes the solve through lp_solve's branch-and-bound. Binary cells have
-    their bounds clamped to [0,1] by lp_solve regardless of ``bounds``; a
-    cell appearing in both sets raises ``OptError``.
+    routes the solve through branch-and-bound. Binary cells have their bounds
+    clamped to [0,1] regardless of ``bounds``; a cell appearing in both sets
+    raises ``OptError``.
 
     ``sensitivity=True`` additionally returns shadow prices, reduced costs,
     and ranging information in ``SolveResult.sensitivity``. It is silently
@@ -720,8 +721,8 @@ def solve(
     obj_is_quadratic = obj_quad.has_quadratic()
     obj_form = LinearForm(dict(obj_quad.linear), obj_quad.constant)
     c_vec = [obj_form.coeffs.get(v, 0.0) for v in decision_vars]
-    # The objective constant is dropped here: lp_solve's `solve` returns
-    # only the linear part. We add it back to the reported objective below.
+    # The objective constant is dropped here: the solver is given only the
+    # linear part. We add it back to the reported objective below.
 
     # Constraints.
     A: list[list[float]] = []
@@ -747,8 +748,8 @@ def solve(
                 f"rhs_override names {_cellname(*unknown[0])} which is not a constraint cell"
             )
 
-    # Bounds: default to [0, +inf) for each decision var, mirroring lp_solve
-    # and matching the "amounts" intuition (no negative production levels).
+    # Bounds: default to [0, +inf) for each decision var, matching the
+    # "amounts" intuition (no negative production levels).
     inf = float("inf")
     lb = [0.0] * n
     ub = [inf] * n
@@ -907,10 +908,11 @@ def _unbounded_variables(
 ) -> list[int]:
     """Column indices of decision variables that can grow without limit.
 
-    lp_solve exposes no extreme ray -- ``is_unbounded(lp, col)`` is the query
-    counterpart to ``set_unbounded`` and reports whether a column was
-    *declared* free, not which column runs away. So this is derived instead
-    of asked for.
+    No backend has exposed an extreme ray to ask for this directly -- neither
+    the current HiGHS C API nor the lp_solve one before it, whose
+    ``is_unbounded(lp, col)`` was the query counterpart to ``set_unbounded``
+    and reported whether a column was *declared* free rather than which
+    column runs away. So it is derived instead of asked for.
 
     Method: for each variable whose objective coefficient is non-zero,
     re-solve the *same feasible region* with a throwaway objective of just
@@ -1026,16 +1028,18 @@ def _irreducible_conflict(
     return keep
 
 
-# lp_solve uses 1e30 as its infinity sentinel in the ranging arrays. Convert
-# to a real infinity so callers can format it as "inf" rather than printing a
-# meaningless 1e+30.
-_LP_INF = 1e30
+# A solver may report an unbounded range as a large sentinel rather than a
+# true infinity. HiGHS uses a real infinity, so this is now defensive; the
+# previous lp_solve backend used 1e30 and needed it. Kept so a sentinel can
+# never reach the report and render as a meaningless "1e+30".
+_INF_SENTINEL = 1e30
 
 
-def _from_lp_inf(v: float) -> float:
-    if v >= _LP_INF:
+def _normalize_infinity(v: float) -> float:
+    """Map a solver's large-magnitude infinity sentinel to a real infinity."""
+    if v >= _INF_SENTINEL:
         return float("inf")
-    if v <= -_LP_INF:
+    if v <= -_INF_SENTINEL:
         return float("-inf")
     return float(v)
 
@@ -1061,14 +1065,19 @@ def _build_sensitivity(
     reported an unbounded range for slack rows, which was simply wrong -- the
     dual does change once the bound crosses the activity.
     """
+
+    def _ranged(arr: Any, j: int, fallback: float) -> float:
+        """One ranging entry, or ``fallback`` when the solver omitted it."""
+        return _normalize_infinity(arr[j]) if j < len(arr) else fallback
+
     variables = [
         VarSensitivity(
             cell=cell,
             value=values.get(cell, 0.0),
             reduced_cost=float(sol.reduced_costs[j]) if j < len(sol.reduced_costs) else 0.0,
             obj_coef=c_vec[j],
-            obj_from=_from_lp_inf(sol.obj_from[j]) if j < len(sol.obj_from) else float("-inf"),
-            obj_till=_from_lp_inf(sol.obj_till[j]) if j < len(sol.obj_till) else float("inf"),
+            obj_from=_ranged(sol.obj_from, j, float("-inf")),
+            obj_till=_ranged(sol.obj_till, j, float("inf")),
         )
         for j, cell in enumerate(decision_vars)
     ]
@@ -1081,8 +1090,8 @@ def _build_sensitivity(
         slack = rhs[i] - activity
         binding = abs(slack) <= 1e-9
         if binding:
-            lo = _from_lp_inf(sol.dual_from[i]) if i < len(sol.dual_from) else float("-inf")
-            hi = _from_lp_inf(sol.dual_till[i]) if i < len(sol.dual_till) else float("inf")
+            lo = _ranged(sol.dual_from, i, float("-inf"))
+            hi = _ranged(sol.dual_till, i, float("inf"))
         elif sense[i] == _ext.GE:
             # `a.x >= b` with slack: tightening b up to the activity keeps the
             # zero dual; past it the row binds.

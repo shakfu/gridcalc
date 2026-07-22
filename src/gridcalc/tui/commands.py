@@ -44,7 +44,7 @@ from . import _state
 from .render import CP_CHROME, CP_CURSOR, CP_ERROR, CP_GUTTER, CP_LOCKED, draw
 from .solve import cmd_goal, cmd_opt
 from .undo import UndoManager
-from .widgets import _line_input, pager, prompt_filename, show_error
+from .widgets import _line_input, pager, prompt_filename, select_from_list, show_error
 
 
 def _arrow_move(g: Grid, ch: int) -> None:
@@ -979,6 +979,23 @@ def cmd_sheet(stdscr: curses.window, g: Grid, args: str) -> bool:
     return False
 
 
+def cmd_sheets(stdscr: curses.window, g: Grid) -> bool:
+    """Interactive sheet picker: list every sheet and switch to the chosen one.
+
+    A single-sheet workbook has nothing to choose, so it just reports the lone
+    sheet. Otherwise it opens a full-screen list positioned on the active
+    sheet; selecting a row switches to it, Esc leaves the active sheet as is.
+    """
+    if len(g.sheets) <= 1:
+        show_error(stdscr, f"sheets: {g._active.name} (only sheet)")
+        return False
+    items = [f"{i}: {s.name}" for i, s in enumerate(g.sheets)]
+    choice = select_from_list(stdscr, "Select sheet", items, initial=g.active)
+    if choice is not None and choice != g.active:
+        g.set_active(choice)
+    return False
+
+
 def cmd_title(g: Grid, args: str) -> bool:
     ch = args[0].upper() if args else ""
     if ch == "V":
@@ -1306,6 +1323,8 @@ def cmdexec(
         return cmd_mode(stdscr, g, args)
     if cmd in ("sheet", "s"):
         return cmd_sheet(stdscr, g, args)
+    if cmd == "sheets":
+        return cmd_sheets(stdscr, g)
 
     stdscr.addnstr(curses.LINES - 1, 0, f"Unknown command: {cmd} (press any key)", curses.COLS - 1)
     stdscr.clrtoeol()

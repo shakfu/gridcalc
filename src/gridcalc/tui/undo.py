@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from ..display import cell_clip_value
 from ..engine import EMPTY, NCOL, NROW, Cell, Grid
-from .format import cell_clip_value
 from .osclip import SystemClipboard, rows_to_tsv, tsv_to_rows
 
 UNDO_MAX = 64

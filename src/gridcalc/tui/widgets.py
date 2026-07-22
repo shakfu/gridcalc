@@ -83,6 +83,63 @@ def show_error(stdscr: curses.window, msg: str) -> None:
     stdscr.getch()
 
 
+def select_from_list(
+    stdscr: curses.window,
+    title: str,
+    items: list[str],
+    *,
+    initial: int = 0,
+) -> int | None:
+    """Interactive single-choice picker over ``items``.
+
+    Draws ``title`` at the top and one row per item, highlighting the current
+    row. j/down and k/up move; g/G jump to first/last; Enter selects and
+    returns its zero-based index; Esc or q cancels and returns ``None``. The
+    view scrolls when the list is taller than the terminal.
+    """
+    if not items:
+        return None
+    sel = max(0, min(initial, len(items) - 1))
+    offset = 0
+    while True:
+        stdscr.erase()
+        stdscr.attron(curses.A_BOLD)
+        stdscr.addnstr(0, 0, title, curses.COLS - 1)
+        stdscr.attroff(curses.A_BOLD)
+
+        visible = max(1, curses.LINES - 3)
+        if sel < offset:
+            offset = sel
+        elif sel >= offset + visible:
+            offset = sel - visible + 1
+
+        for i in range(visible):
+            idx = offset + i
+            if idx >= len(items):
+                break
+            marker = ">" if idx == sel else " "
+            attr = curses.A_REVERSE if idx == sel else 0
+            stdscr.addnstr(i + 1, 0, f"{marker} {items[idx]}", curses.COLS - 1, attr)
+
+        footer = "  [j/k]move [enter]select [g/G]top/bot [q/esc]cancel"
+        stdscr.addnstr(curses.LINES - 1, 0, footer, curses.COLS - 1, curses.A_DIM)
+        stdscr.refresh()
+
+        ch = stdscr.getch()
+        if ch in (ord("j"), curses.KEY_DOWN):
+            sel = min(sel + 1, len(items) - 1)
+        elif ch in (ord("k"), curses.KEY_UP):
+            sel = max(sel - 1, 0)
+        elif ch == ord("g"):
+            sel = 0
+        elif ch == ord("G"):
+            sel = len(items) - 1
+        elif ch in (10, 13, curses.KEY_ENTER):
+            return sel
+        elif ch in (27, ord("q")):
+            return None
+
+
 def pager(stdscr: curses.window, title: str, lines: list[str]) -> None:
     """Full-screen scrollable view of ``lines`` under a bold ``title``.
 

@@ -183,7 +183,8 @@ References adjust automatically on insert/delete/replicate.
 ## Multi-sheet workbooks
 
 ```text
-:sheet                     List sheets (active marked *)
+:sheets                    Interactive picker: list sheets, select one to switch
+:sheet                     List sheets inline (active marked *)
 :sheet Inputs              Switch by name
 :sheet 1                   Switch by zero-based index
 :sheet add Outputs         Append (does not switch)
@@ -191,6 +192,11 @@ References adjust automatically on insert/delete/replicate.
 :sheet rename Old New      Rename, rewriting `Old!` prefixes in formulas
 :sheet move Inputs 0       Reorder
 ```
+
+A workbook with more than one sheet shows a tab strip on the bottom line
+(active tab highlighted, with an `i/n` position counter); single-sheet
+workbooks leave that line clear. The status bar also prefixes the active
+sheet name (`Inputs!A1`) whenever a workbook has multiple sheets.
 
 Reference cells on other sheets with `Sheet!cell`:
 
@@ -607,7 +613,7 @@ Edit          :b   :clear   :dr   :dc   :ir   :ic   :m   :r
               undo/redo: u / Ctrl-R   (aliases: Ctrl-Z / Ctrl-Y)
 Format        :f <spec>   :gf <spec>   :width <n>   Ctrl-B / Ctrl-U
 Search        /pattern   n   N
-Sheets        :sheet [name|N|add|del|rename|move]
+Sheets        :sheets (picker)   :sheet [name|N|add|del|rename|move]
 Names         :name <n> [range]   :names   :unname <n>
 Modes         :mode [excel|hybrid|python]
 Import/export :csv save/load   :xlsx save/load   :pd save/load

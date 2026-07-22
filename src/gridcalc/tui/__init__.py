@@ -22,6 +22,7 @@ import sys
 from collections.abc import Callable
 
 from ..config import emit_warnings, load_config
+from ..display import fmt_float, fmtcell
 from ..engine import (
     CW_DEFAULT,
     EMPTY,
@@ -73,7 +74,6 @@ from .commands import (
     selectrange,
     trust_prompt,
 )
-from .format import fmt_float, fmtcell
 from .objedit import _build_formula, _fmt_val, obj_editor
 from .osclip import SystemClipboard
 from .render import GW, _paint_label_overflow, draw, init_colors, vcols, vrows

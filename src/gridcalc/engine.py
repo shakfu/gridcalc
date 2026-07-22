@@ -530,14 +530,26 @@ class Cell:
 
 
 class NamedRange:
-    __slots__ = ("name", "c1", "r1", "c2", "r2")
+    __slots__ = ("name", "c1", "r1", "c2", "r2", "sheet")
 
-    def __init__(self, name: str = "", c1: int = 0, r1: int = 0, c2: int = 0, r2: int = 0) -> None:
+    def __init__(
+        self,
+        name: str = "",
+        c1: int = 0,
+        r1: int = 0,
+        c2: int = 0,
+        r2: int = 0,
+        sheet: str | None = None,
+    ) -> None:
         self.name = name
         self.c1 = c1
         self.r1 = r1
         self.c2 = c2
         self.r2 = r2
+        # Sheet the range lives on, or None for a sheet-agnostic name that
+        # resolves against whichever sheet the referencing formula is on
+        # (the historical gridcalc behaviour; xlsx imports set it explicitly).
+        self.sheet = sheet
 
 
 _REF_RE = re.compile(r"(\$?)([A-Za-z]{1,2})(\$?)(\d+)")
@@ -647,6 +659,66 @@ def _xlsx_read_cells(filename: str) -> list[tuple[str, int, int, str]] | None:
         return list(_core.xlsx_read(filename))
     except Exception:
         return None
+
+
+def _parse_defined_ref(text: str) -> tuple[str, int, int, int, int] | None:
+    """Parse a defined-name target like ``Data!$B$2:$B$4`` or
+    ``'My Sheet'!$A$1`` into ``(sheet, c1, r1, c2, r2)`` (0-based inclusive).
+
+    Returns None for anything that is not a single-area cell/range on one
+    sheet -- constants, formulas, and multi-area unions are skipped, since
+    gridcalc's named ranges model only a rectangle on a sheet.
+    """
+    if "!" not in text or "," in text or "(" in text:
+        return None
+    sheet_part, _, ref_part = text.rpartition("!")
+    sheet = sheet_part.strip()
+    if len(sheet) >= 2 and sheet[0] == "'" and sheet[-1] == "'":
+        sheet = sheet[1:-1].replace("''", "'")
+    if not sheet:
+        return None
+    ref_part = ref_part.replace("$", "")
+    lo, _, hi = ref_part.partition(":")
+    hi = hi or lo
+    a = ref(lo)
+    b = ref(hi)
+    if a is None or b is None:
+        return None
+    _, c1, r1 = a
+    _, c2, r2 = b
+    return sheet, min(c1, c2), min(r1, r2), max(c1, c2), max(r1, r2)
+
+
+def _xlsx_read_defined_names(filename: str) -> list[tuple[str, str, int, int, int, int]]:
+    """Read simple cell/range defined names straight from the xlsx zip
+    (``xl/workbook.xml``), which OpenXLSX does not expose. Returns
+    ``(name, sheet, c1, r1, c2, r2)`` tuples. Built-in names (``_xlnm.*``)
+    and non-reference names are skipped. Never raises -- a malformed or
+    name-less workbook yields an empty list."""
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    out: list[tuple[str, str, int, int, int, int]] = []
+    try:
+        with zipfile.ZipFile(filename) as z, z.open("xl/workbook.xml") as f:
+            # noqa justification: `filename` is an xlsx the user explicitly
+            # chose to open; the C++ reader already parses all of its XML, so
+            # reading one more member here adds no attack surface.
+            root = ET.parse(f).getroot()  # noqa: S314
+    except (KeyError, zipfile.BadZipFile, OSError, ET.ParseError):
+        return out
+    container = root.find(f"{ns}definedNames")
+    if container is None:
+        return out
+    for el in container.findall(f"{ns}definedName"):
+        name = el.get("name", "")
+        if not name or name.startswith("_xlnm."):
+            continue
+        parsed = _parse_defined_ref((el.text or "").strip())
+        if parsed is not None:
+            out.append((name, *parsed))
+    return out
 
 
 def _xlsx_write_cells(filename: str, cells: list[tuple[Any, ...]]) -> int:
@@ -1320,12 +1392,14 @@ class Grid:
                 else:
                     g[name] = cl.val
 
-            # Inject named ranges
+            # Inject named ranges (PYTHON mode). A sheet-qualified name reads
+            # from that sheet; a sheet-agnostic one from the active sheet.
             for nr in self.names:
+                nr_cells = self._sheet_cells(nr.sheet) if nr.sheet else self._cells
                 data = []
                 for r in range(nr.r1, nr.r2 + 1):
                     for c in range(nr.c1, nr.c2 + 1):
-                        cl2 = self._cells.get((c, r))
+                        cl2 = nr_cells.get((c, r))
                         if cl2 and cl2.type not in (EMPTY, LABEL):
                             data.append(cl2.val)
                         else:
@@ -1507,11 +1581,11 @@ class Grid:
 
         named: dict[str, Any] = {}
         for nr in self.names:
-            start = F_CellRef(nr.c1, nr.r1, False, False)
+            start = F_CellRef(nr.c1, nr.r1, False, False, sheet=nr.sheet)
             if nr.c1 == nr.c2 and nr.r1 == nr.r2:
                 named[nr.name] = start
             else:
-                end = F_CellRef(nr.c2, nr.r2, False, False)
+                end = F_CellRef(nr.c2, nr.r2, False, False, sheet=nr.sheet)
                 named[nr.name] = F_RangeRef(start, end)
         return named
 
@@ -2294,6 +2368,11 @@ class Grid:
         self.names = []
         for name, rng in names_dict.items():
             nr = NamedRange(name=name)
+            # A ``Sheet!A1:B3`` name carries an explicit sheet; a bare
+            # ``A1:B3`` stays sheet-agnostic.
+            if "!" in rng:
+                sheet_part, _, rng = rng.rpartition("!")
+                nr.sheet = sheet_part or None
             r = ref(rng)
             if r:
                 n, c1, r1 = r
@@ -2460,6 +2539,11 @@ class Grid:
             for nr in self.names:
                 a = cellname(nr.c1, nr.r1)
                 rng = f"{a}:{col_name(nr.c2)}{nr.r2 + 1}"
+                # A sheet-qualified name serialises as ``Sheet!A1:B3`` so the
+                # sheet survives the round-trip; sheet-agnostic names keep the
+                # bare ``A1:B3`` form (backward compatible with v1/v2 files).
+                if nr.sheet:
+                    rng = f"{nr.sheet}!{rng}"
                 out["names"][nr.name] = rng
 
         if self.models:
@@ -2523,6 +2607,15 @@ class Grid:
                     suffix += 1
                 self.sheets.append(Sheet(name=final_name))
 
+        # Import simple defined names as sheet-qualified named ranges, so
+        # formulas like `=SUM(SalesData)` resolve. Done before loading cells
+        # so the dep graph picks them up; the final recalc settles any
+        # cross-sheet name that pointed at a not-yet-loaded sheet.
+        self.names = [
+            NamedRange(name=nm, c1=c1, r1=r1, c2=c2, r2=r2, sheet=sh)
+            for (nm, sh, c1, r1, c2, r2) in _xlsx_read_defined_names(filename)
+        ]
+
         # Bulk-load each sheet's cells via setcells_bulk on the active
         # sheet, switching active per sheet.
         for i, sname in enumerate(sheet_order):
@@ -2531,6 +2624,12 @@ class Grid:
             # de-dupe path renamed it.
             self.setcells_bulk(per_sheet[sname])
         self.active = 0
+
+        # A single full recalc so every formula sees the final workbook,
+        # including cross-sheet named ranges loaded out of order.
+        if self.names:
+            self._rebuild_dep_graph()
+            self.recalc()
 
         self.dirty = 0
         self.filename = filename

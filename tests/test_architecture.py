@@ -30,6 +30,7 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "gridcalc"
 # terminal, no curses, and no TUI installed.
 CORE_MODULES = (
     "engine.py",
+    "display.py",
     "opt.py",
     "goalseek.py",
     "config.py",
@@ -59,6 +60,7 @@ FORBIDDEN_IN_CORE = ("curses", "gridcalc.tui")
 # CORE_MODULES because this is what the import-time test actually exercises.
 CORE_IMPORTS = (
     "gridcalc.engine",
+    "gridcalc.display",
     "gridcalc.config",
     "gridcalc.opt",
     "gridcalc.goalseek",

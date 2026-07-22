@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- **A sheet-tab strip and an interactive `:sheets` picker.** A multi-sheet workbook previously advertised itself only through the status bar's `Sheet!A1` cell-reference prefix -- easy to miss, and it named just the active sheet. The bottom line (already reserved for transient messages, since the grid only ever draws rows `3..LINES-2`) now carries a tab strip whenever a workbook has more than one sheet: every sheet name in order, the active one reverse-highlighted against the blue chrome, and a right-aligned `i/n` position counter. The strip's mere presence is the "this is a multi-sheet workbook" signal -- a single-sheet workbook leaves that line clear, so its chrome is byte-for-byte unchanged. When the names overflow the terminal width the strip scrolls to keep the active tab visible. Drawn by `_draw_sheet_tabs` at the tail of `render.draw`; the existing status-bar prefix is retained, not replaced.
+
+  `:sheets` (distinct from the existing `:sheet`) opens a full-screen picker positioned on the active sheet: `j`/`k` or the arrow keys move, `g`/`G` jump to first/last, Enter switches via `set_active`, and Esc/`q` cancels leaving the active sheet untouched. A single-sheet workbook has nothing to choose, so it just reports the lone sheet. The picker is backed by a new generic `select_from_list` helper in `tui/widgets.py` (a single-choice sibling of the existing `pager`), so later commands can reuse it. 4 new tests in `test_tui.py` (picker switch/cancel/single-sheet, and a `draw` assertion that the strip is absent for one sheet and shows both names plus `1/2` for two).
+
+### Changed
+
+- **Cell display formatting extracted to a frontend-neutral `gridcalc/display.py`.** Groundwork for a future non-curses frontend, per the prerequisite in `docs/gui.md`: `fmtcell`, `cell_clip_value`, and the number-format helpers (`fmt_float` and friends) moved out of `tui/format.py` into a package-level `display.py` that imports only the engine. The functions were pure and curses-free already, but living under `tui/` meant importing them ran `tui/__init__.py`, which imports `curses` -- so no non-terminal view could reuse them. They now sit below the view boundary; a GUI (ImGui/Qt/web) can format cells without a terminal dependency. No behaviour change -- the code moved verbatim, the public `from gridcalc.tui import fmtcell` re-export still works, and internal callers (`render`, `undo`) now source it from `..display`.
+
+  `tests/test_architecture.py` was extended to hold the new module to the same layering contract as the rest of the core: `display.py` is added to the static curses-free check (`CORE_MODULES`), to the "importing the core loads no curses" subprocess check (`CORE_IMPORTS`), and is required by the meta-test that every non-view module be classified -- so the guarantee can't silently regress. The solver-report formatters (`format_sensitivity`, `format_conflict`, `format_unbounded`, `format_sweep`, `sensitivity_block`) deliberately stayed in `tui/format.py`: they emit `list[str]` and status-bar strings shaped for the pager, which is TUI presentation a GUI would render differently. Undo and selection likewise stay put for now -- reusable in principle, but moving them is a larger separate step the prerequisite does not require.
+
 ## [0.3.0]
 
 ### Added

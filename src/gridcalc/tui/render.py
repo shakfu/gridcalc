@@ -5,6 +5,7 @@ from __future__ import annotations
 import curses
 import math
 
+from ..display import fmtcell
 from ..engine import (
     EMPTY,
     FORMULA,
@@ -20,7 +21,6 @@ from ..engine import (
 )
 from ..formula.errors import ExcelError
 from ..sandbox import SANDBOX_ENABLED
-from .format import fmtcell
 
 GW = 4
 
@@ -295,6 +295,50 @@ def draw(
         # unchanged; overflow respects those by stopping at the first
         # non-empty or specially-styled cell to the right.
         _paint_label_overflow(stdscr, g, row, y, lc, fc, sel)
+
+    _draw_sheet_tabs(stdscr, g)
+
+
+def _draw_sheet_tabs(stdscr: curses.window, g: Grid) -> None:
+    """Bottom-line sheet-tab strip, drawn only for multi-sheet workbooks.
+
+    Single-sheet workbooks leave the last line for transient messages, so the
+    strip doubles as the "this is a multi-sheet workbook" cue: its mere
+    presence signals more than one sheet, and the right-aligned ``i/n`` counter
+    makes the position explicit. The active tab is reverse-highlighted, and the
+    strip scrolls so the active tab is always visible when the names overflow
+    the terminal width.
+    """
+    n = len(g.sheets)
+    if n <= 1:
+        return
+
+    y = curses.LINES - 1
+    stdscr.move(y, 0)
+    stdscr.clrtoeol()
+
+    active = g.active
+    labels = [f" {s.name} " for s in g.sheets]
+    counter = f" {active + 1}/{n} "
+    avail = max(0, curses.COLS - 1 - len(counter))
+
+    # Scroll: advance the first drawn tab until the active tab fits in `avail`.
+    start = 0
+    while start < active and sum(len(labels[i]) for i in range(start, active + 1)) > avail:
+        start += 1
+
+    base = curses.color_pair(CP_CHROME) | curses.A_BOLD
+    x = 0
+    for i in range(start, n):
+        lab = labels[i]
+        if x + len(lab) > avail:
+            break
+        stdscr.addnstr(y, x, lab, len(lab), base | (curses.A_REVERSE if i == active else 0))
+        x += len(lab)
+
+    cx = curses.COLS - 1 - len(counter)
+    if cx >= x:
+        stdscr.addnstr(y, cx, counter, len(counter), base)
 
 
 def _paint_label_overflow(

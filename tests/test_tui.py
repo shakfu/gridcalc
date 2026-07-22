@@ -617,6 +617,35 @@ class TestCmdSheet:
         cmdexec(self.stdscr, self.g, self.undo, "sheet Sheet1")
         assert self.g.cells[0][0].val == 100.0
 
+    def test_sheets_picker_switches_to_selection(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "sheet add Data")
+        cmdexec(self.stdscr, self.g, self.undo, "sheet add More")
+        assert self.g.active == 0
+        # Move down twice from the active row, then Enter -> index 2.
+        self.stdscr.queue_getch(ord("j"), ord("j"), 10)
+        cmdexec(self.stdscr, self.g, self.undo, "sheets")
+        assert self.g.active == 2
+
+    def test_sheets_picker_escape_keeps_active(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "sheet add Data")
+        cmdexec(self.stdscr, self.g, self.undo, "sheet Data")
+        assert self.g.active == 1
+        self.stdscr.queue_getch(ord("j"), 27)  # move but cancel
+        cmdexec(self.stdscr, self.g, self.undo, "sheets")
+        assert self.g.active == 1
+
+    def test_sheets_picker_single_sheet_is_noop(self):
+        from gridcalc.tui import cmdexec
+
+        # One sheet: nothing to pick; reports and stays put.
+        self.stdscr.queue_getch(27)  # dismiss the info message
+        cmdexec(self.stdscr, self.g, self.undo, "sheets")
+        assert self.g.active == 0
+
 
 class TestVisualSelectFormat:
     """Test range formatting via cmdexec with sel= parameter (visual mode path)."""
@@ -1135,7 +1164,7 @@ class TestTsvSerialization:
         assert tsv_to_rows("\n") == []
 
     def test_cell_clip_value(self):
-        from gridcalc.tui.format import cell_clip_value
+        from gridcalc.display import cell_clip_value
 
         g = Grid()
         g.setcell(0, 0, "42")
@@ -2887,7 +2916,7 @@ class TestInfinityDoesNotCrashDisplay:
         return g
 
     def test_fmtcell_renders_infinity(self):
-        from gridcalc.tui.format import fmtcell
+        from gridcalc.display import fmtcell
 
         g = self._inf_grid()
         assert fmtcell(g.cells[0][0], 10).strip() == "inf"
@@ -2897,21 +2926,21 @@ class TestInfinityDoesNotCrashDisplay:
     def test_fmtcell_survives_every_format_spec(self, spec):
         """`I` and `*` call int() unconditionally, so the guard has to come
         before the format dispatch rather than inside it."""
-        from gridcalc.tui.format import fmtcell
+        from gridcalc.display import fmtcell
 
         cl = self._inf_grid().cells[0][0]
         cl.fmt = spec
         assert "inf" in fmtcell(cl, 12)
 
     def test_fmtcell_survives_a_number_format_string(self):
-        from gridcalc.tui.format import fmtcell
+        from gridcalc.display import fmtcell
 
         cl = self._inf_grid().cells[0][0]
         cl.fmtstr = ",.2f"
         assert "inf" in fmtcell(cl, 12)
 
     def test_clipboard_value_survives_infinity(self):
-        from gridcalc.tui.format import cell_clip_value
+        from gridcalc.display import cell_clip_value
 
         g = self._inf_grid()
         assert cell_clip_value(g.cells[0][0]) == "inf"
@@ -2992,7 +3021,7 @@ class TestSensitivityIntoCells:
         assert self.g.cells[5][12].val == pytest.approx(150.0)
 
     def test_writes_infinities_without_crashing_the_display(self):
-        from gridcalc.tui.format import fmtcell
+        from gridcalc.display import fmtcell
 
         self._run("opt sens into F1")
         # A2's objective-coefficient upper range is unbounded.
@@ -3182,6 +3211,27 @@ class TestSpillRendering:
         draw(stdscr, g, mode="", buf="")
         status = next(s for (y, x, s, n) in stdscr.calls if y == 0)
         assert "spill from A1" in status
+
+    def test_sheet_tabs_drawn_only_when_multisheet(self):
+        from gridcalc.tui import cmdexec, draw
+
+        _setup_curses_constants()
+        g = Grid()
+        y_last = curses.LINES - 1
+
+        # Single sheet: no tab strip on the bottom line.
+        stdscr = _RecordingStdscr()
+        draw(stdscr, g, mode="", buf="")
+        assert not [s for (yy, x, s, n) in stdscr.calls if yy == y_last and s.strip()]
+
+        # Add a second sheet: strip appears with both names and an i/n counter.
+        cmdexec(stdscr, g, UndoManager(), "sheet add Data")
+        stdscr = _RecordingStdscr()
+        draw(stdscr, g, mode="", buf="")
+        bottom = "".join(s for (yy, x, s, n) in stdscr.calls if yy == y_last)
+        assert "Sheet1" in bottom
+        assert "Data" in bottom
+        assert "1/2" in bottom
 
     def test_status_bar_explains_spill_error(self):
         from gridcalc.tui import draw

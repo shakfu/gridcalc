@@ -1,19 +1,10 @@
 # Keybindings
 
-Gridcalc's TUI key handling is split into a config-driven dispatch
-layer (this document) and a hardcoded fallback chain that runs when
-no user binding fires. All five contexts are wired: **grid**,
-**entry**, **visual**, **cmdline**, **search**. User bindings fire
-*before* the hardcoded fallback in each, so a binding *replaces* the
-default meaning for that key rather than racing it.
+Gridcalc's TUI key handling is split into a config-driven dispatch layer (this document) and a hardcoded fallback chain that runs when no user binding fires. All five contexts are wired: **grid**, **entry**, **visual**, **cmdline**, **search**. User bindings fire *before* the hardcoded fallback in each, so a binding *replaces* the default meaning for that key rather than racing it.
 
 ## Where to put bindings
 
-Edit `gridcalc.toml` -- either project-local at `./gridcalc.toml` or
-user-level at `$XDG_CONFIG_HOME/gridcalc/gridcalc.toml`
-(default: `~/.config/gridcalc/gridcalc.toml`). Project-local wins
-when both exist. A working sample lives at `gridcalc.toml.example`
-in the repository root.
+Edit `gridcalc.toml` -- either project-local at `./gridcalc.toml` or user-level at `$XDG_CONFIG_HOME/gridcalc/gridcalc.toml` (default: `~/.config/gridcalc/gridcalc.toml`). Project-local wins when both exist. A working sample lives at `gridcalc.toml.example` in the repository root.
 
 ```toml
 [keys.grid]
@@ -25,10 +16,7 @@ cursor_up    = ["Up", "k"]
 cursor_right = ["Right", "l"]
 ```
 
-Gridcalc ships with **no** user-bindable defaults. Every binding above
-is opt-in -- the hardcoded fallback chain still runs when a user
-binding doesn't match, so the unmodified arrow keys, Tab-as-cursor-right,
-and so on continue to work out of the box.
+Gridcalc ships with **no** user-bindable defaults. Every binding above is opt-in -- the hardcoded fallback chain still runs when a user binding doesn't match, so the unmodified arrow keys, Tab-as-cursor-right, and so on continue to work out of the box.
 
 ## Contexts
 
@@ -40,19 +28,11 @@ and so on continue to work out of the box.
 | `cmdline` | `:` command line (`cmdline`)                  | Yes          |
 | `search`  | `/` search prompt (`search_prompt`)           | Yes          |
 
-**Self-insert** marks the three text-input contexts. In those, a
-printable byte (`32 <= ch < 127`) **bypasses the dispatcher and
-self-inserts into the buffer**, regardless of any user binding. This
-is intentional: a stray `[keys.entry] cancel = ["a"]` must not lock
-you out of typing the letter `a` into a cell. Non-printable keys
-(`Esc`, `Tab`, `F-keys`, `C-<letter>`, arrow keys, etc.) dispatch
-normally in every context.
+**Self-insert** marks the three text-input contexts. In those, a printable byte (`32 <= ch < 127`) **bypasses the dispatcher and self-inserts into the buffer**, regardless of any user binding. This is intentional: a stray `[keys.entry] cancel = ["a"]` must not lock you out of typing the letter `a` into a cell. Non-printable keys (`Esc`, `Tab`, `F-keys`, `C-<letter>`, arrow keys, etc.) dispatch normally in every context.
 
 ## Actions
 
-Action vocabulary is curated -- you cannot bind a key to an arbitrary
-`:command` in v1; that's a v2 generalisation tracked in TODO.md. The
-currently bindable actions:
+Action vocabulary is curated -- you cannot bind a key to an arbitrary `:command` in v1; that's a v2 generalisation tracked in TODO.md. The currently bindable actions:
 
 ### `[keys.grid]`
 
@@ -65,14 +45,11 @@ currently bindable actions:
 | `next_sheet`   | Activate the next sheet, wrapping at the end.                |
 | `prev_sheet`   | Activate the previous sheet, wrapping at the start.          |
 
-A binding fires *before* the hardcoded fallback chain, so binding
-e.g. `Tab` to `next_sheet` *replaces* its previous "advance one
-column" meaning -- the hardcoded fallback never sees the keystroke.
+A binding fires *before* the hardcoded fallback chain, so binding e.g. `Tab` to `next_sheet` *replaces* its previous "advance one column" meaning -- the hardcoded fallback never sees the keystroke.
 
 ### `[keys.entry]`
 
-Cell entry buffer. Printable chars always self-insert; only the
-non-printable actions are useful here.
+Cell entry buffer. Printable chars always self-insert; only the non-printable actions are useful here.
 
 | Action                   | Effect                                                                |
 |--------------------------|-----------------------------------------------------------------------|
@@ -83,9 +60,7 @@ non-printable actions are useful here.
 
 ### `[keys.visual]`
 
-Visual selection mode. No self-insert -- every key is a command, so
-printable bindings (`y`, `p`, `d`, `:`, `h`/`j`/`k`/`l`, etc.) fire
-normally.
+Visual selection mode. No self-insert -- every key is a command, so printable bindings (`y`, `p`, `d`, `:`, `h`/`j`/`k`/`l`, etc.) fire normally.
 
 | Action          | Effect                                                          |
 |-----------------|-----------------------------------------------------------------|
@@ -142,8 +117,7 @@ Emacs-short. Modifiers go first, separated by `-`:
 
 ### Combinations rejected at parse time
 
-These are flagged with a warning at config load and the binding is
-dropped -- they have no portable terminal encoding:
+These are flagged with a warning at config load and the binding is dropped -- they have no portable terminal encoding:
 
 | Combo                    | Why                                              |
 |--------------------------|--------------------------------------------------|
@@ -152,58 +126,32 @@ dropped -- they have no portable terminal encoding:
 | `C-<punctuation>`        | Requires `modifyOtherKeys` or kitty keyboard protocol; not transmitted by default |
 | `S-<anything-but-Tab>`   | Shift+arrow / Shift+letter are ambiguous or non-portable in v1 |
 
-If you genuinely need one of these, the path is to either negotiate
-the kitty keyboard protocol on startup and parse escape sequences
-(out of scope for v1) or pick a different key.
+If you genuinely need one of these, the path is to either negotiate the kitty keyboard protocol on startup and parse escape sequences (out of scope for v1) or pick a different key.
 
 ### Combinations whose support is terminal-dependent
 
-`C-Right` and `C-Left` are recognised at parse time, but resolution
-to a curses keycode requires terminfo to define `kRIT5` / `kLFT5`.
-Most modern emulators do; macOS Terminal.app by default does not
-(user must add a key mapping in *Settings -> Profiles -> Keyboard*),
-and the Linux text console has no encoding for them. When the
-current terminal cannot resolve the binding, gridcalc emits a warning
-to stderr at startup and skips it.
+`C-Right` and `C-Left` are recognised at parse time, but resolution to a curses keycode requires terminfo to define `kRIT5` / `kLFT5`. Most modern emulators do; macOS Terminal.app by default does not (user must add a key mapping in *Settings -> Profiles -> Keyboard*), and the Linux text console has no encoding for them. When the current terminal cannot resolve the binding, gridcalc emits a warning to stderr at startup and skips it.
 
 ## Diagnostics
 
 Two warning surfaces, both written to stderr at startup:
 
-1. **Config-load warnings** -- printed by `emit_warnings(cfg)`. These
-   come from `_parse_keys_table` and cover unknown contexts, unknown
-   actions, wrong types, and parse-time-rejected key specs.
-2. **Resolution warnings** -- printed once at `mainloop` entry. These
-   come from `build_resolved_keymap` and cover bindings whose keycode
-   isn't available on the current terminal, plus same-key-two-actions
-   conflicts within a context (the latest binding wins).
+1. **Config-load warnings** -- printed by `emit_warnings(cfg)`. These come from `_parse_keys_table` and cover unknown contexts, unknown actions, wrong types, and parse-time-rejected key specs.
 
-A warning never aborts startup -- a misconfigured binding is simply
-dropped from the resolved keymap.
+2. **Resolution warnings** -- printed once at `mainloop` entry. These come from `build_resolved_keymap` and cover bindings whose keycode isn't available on the current terminal, plus same-key-two-actions conflicts within a context (the latest binding wins).
+
+A warning never aborts startup -- a misconfigured binding is simply dropped from the resolved keymap.
 
 ## Internals (for code spelunkers)
 
-- Parsing: `parse_keyspec` in `src/gridcalc/keys.py`. Runs at config
-  load (no curses dependency).
-- Resolution: `resolve_key` in the same module. Calls `curses.tigetstr`
-  / `curses.keyname` for `C-Right`/`C-Left`, so it must run after
-  `curses.initscr()`.
-- Grid action registry: `_GRID_ACTIONS` in `src/gridcalc/tui.py`.
-  Adding a grid action means: add it to `keys.KNOWN_ACTIONS["grid"]`,
-  add a callable here, and document it in this file's table.
-- Grid dispatcher: `_dispatch_grid_key` in `src/gridcalc/tui.py`.
-  Pure function -- testable without a curses session (see
-  `tests/test_tui.py::TestDispatchGridKey`).
-- The other four contexts (`entry`, `visual`, `cmdline`, `search`)
-  use a different shape: `_action_for(context, ch)` returns the
-  bound action name (or `None`), and each context's existing
-  if/elif chain matches on `action == "<name>" or ch == <hardcoded>`.
-  This lets the actions read closed-over locals (`buf`, `origc`,
-  `picking`, etc.) without lifting them into module scope. The
-  dispatcher's `context in ("entry", "cmdline", "search")` branch is
-  the self-insert override -- printable bytes return `None` so they
-  always fall through to the hardcoded `32 <= ch < 127` branch.
-- Module-level state: `_resolved_keymap` in `tui.py` is populated
-  once by `mainloop` after curses init. The `_action_for` helper
-  reads from it. Tests that exercise the helpers in isolation
-  snapshot and restore this global per test.
+- Parsing: `parse_keyspec` in `src/gridcalc/keys.py`. Runs at config load (no curses dependency).
+
+- Resolution: `resolve_key` in the same module. Calls `curses.tigetstr` / `curses.keyname` for `C-Right`/`C-Left`, so it must run after `curses.initscr()`.
+
+- Grid action registry: `_GRID_ACTIONS` in `src/gridcalc/tui.py`. Adding a grid action means: add it to `keys.KNOWN_ACTIONS["grid"]`, add a callable here, and document it in this file's table.
+
+- Grid dispatcher: `_dispatch_grid_key` in `src/gridcalc/tui.py`. Pure function -- testable without a curses session (see `tests/test_tui.py::TestDispatchGridKey`).
+
+- The other four contexts (`entry`, `visual`, `cmdline`, `search`) use a different shape: `_action_for(context, ch)` returns the bound action name (or `None`), and each context's existing if/elif chain matches on `action == "<name>" or ch == <hardcoded>`. This lets the actions read closed-over locals (`buf`, `origc`, `picking`, etc.) without lifting them into module scope. The dispatcher's `context in ("entry", "cmdline", "search")` branch is the self-insert override -- printable bytes return `None` so they always fall through to the hardcoded `32 <= ch < 127` branch.
+
+- Module-level state: `_resolved_keymap` in `tui.py` is populated once by `mainloop` after curses init. The `_action_for` helper reads from it. Tests that exercise the helpers in isolation snapshot and restore this global per test.

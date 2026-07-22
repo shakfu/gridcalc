@@ -50,6 +50,16 @@ EMPTY = 0
 NUM = 1
 LABEL = 2
 FORMULA = 3
+# A cell painted by a neighbouring formula's spilled array. It holds the
+# spilled value but no formula of its own; its anchor owns and recomputes
+# it. Not persisted -- rebuilt on load by recomputing the anchor.
+SPILL = 4
+
+# Spill shapes are only known after a formula evaluates, so a spill can
+# create/destroy cells whose consumers were not in the current topo pass.
+# `recalc` re-runs the pass over the changed spill positions until the
+# spill topology stabilises, bounded like the PYTHON fixpoint engine.
+_MAX_SPILL_PASSES = 64
 
 
 def _is_ndarray(obj: object) -> bool:
@@ -443,6 +453,8 @@ class Cell:
         "ast_text",
         "err",
         "err_msg",
+        "spill_parent",
+        "spill_shape",
     )
 
     def __init__(self) -> None:
@@ -454,6 +466,12 @@ class Cell:
         # None means 1D (or no array).
         self.arr_cols: int | None = None
         self.matrix: Any = None
+        # Spill bookkeeping. `spill_parent` is the (col, row) anchor of a
+        # SPILL cell; None for every other cell. `spill_shape` is the
+        # (rows, cols) rectangle a spilling anchor currently occupies;
+        # None when the cell is not an anchor or is not spilling.
+        self.spill_parent: tuple[int, int] | None = None
+        self.spill_shape: tuple[int, int] | None = None
         self.text: str = ""
         self.fmt: str = ""
         self.bold: int = 0
@@ -482,6 +500,8 @@ class Cell:
         self.ast_text = ""
         self.err = None
         self.err_msg = None
+        self.spill_parent = None
+        self.spill_shape = None
 
     def copy_from(self, src: Cell) -> None:
         self.type = src.type
@@ -500,6 +520,8 @@ class Cell:
         self.ast_text = ""
         self.err = src.err
         self.err_msg = src.err_msg
+        self.spill_parent = src.spill_parent
+        self.spill_shape = src.spill_shape
 
     def snapshot(self) -> Cell:
         c = Cell()
@@ -647,6 +669,7 @@ def _xlsx_write_cells(filename: str, cells: list[tuple[Any, ...]]) -> int:
 
 def _ast_has_pycall(node: Any) -> bool:
     from .formula.ast_nodes import (
+        Apply,
         BinOp,
         Call,
         Percent,
@@ -658,6 +681,8 @@ def _ast_has_pycall(node: Any) -> bool:
         return True
     if isinstance(node, Call):
         return any(_ast_has_pycall(a) for a in node.args)
+    if isinstance(node, Apply):
+        return _ast_has_pycall(node.func) or any(_ast_has_pycall(a) for a in node.args)
     if isinstance(node, BinOp):
         return _ast_has_pycall(node.left) or _ast_has_pycall(node.right)
     if isinstance(node, (UnaryOp, Percent)):
@@ -835,6 +860,10 @@ class Grid:
         self._dep_of: dict[tuple[str | None, int, int], set[tuple[str | None, int, int]]] = {}
         self._subscribers: dict[tuple[str | None, int, int], set[tuple[str | None, int, int]]] = {}
         self._volatile: set[tuple[str | None, int, int]] = set()
+        # Anchors currently rejected with #SPILL!. A blocked anchor has no
+        # dependency on the cell blocking it, so any edit re-attempts every
+        # blocked anchor -- cheap, since the set is normally empty.
+        self._spill_blocked: set[tuple[str | None, int, int]] = set()
         # Set True by `_rebuild_dep_graph`; remains True while
         # `_refresh_deps`/`_clear_deps` maintain the graph incrementally.
         # Reset to False on mode entry into EXCEL/HYBRID (LEGACY skips
@@ -1061,6 +1090,7 @@ class Grid:
         self._dep_of.clear()
         self._subscribers.clear()
         self._volatile.clear()
+        self._spill_blocked.clear()
 
     def _clear_deps(self, key: tuple[str | None, int, int]) -> None:
         """Drop `key` from forward + reverse indexes and the volatile set."""
@@ -1100,6 +1130,7 @@ class Grid:
         self._dep_of.clear()
         self._subscribers.clear()
         self._volatile.clear()
+        self._spill_blocked.clear()
         for s in self.sheets:
             for (c, r), cl in s._cells.items():
                 if cl.type == FORMULA:
@@ -1159,6 +1190,8 @@ class Grid:
         cl.arr_cols = None
         cl.matrix = None
         cl.sval = None
+        cl.spill_parent = None
+        cl.spill_shape = None
         cl.text = text
         self.dirty = 1
 
@@ -1181,9 +1214,46 @@ class Grid:
         self._refresh_deps(c, r, cl)
         return True
 
+    def _spill_predirty(self, c: int, r: int) -> set[tuple[int, int]]:
+        """Handle the spill side-effects of overwriting the active-sheet
+        cell (c, r), *before* it is written.
+
+        If (c, r) is a spill cell, its anchor must recompute (to notice the
+        blockage and go #SPILL!). If (c, r) is a spilling anchor, its spill
+        is torn down here -- the write is about to clear ``spill_shape``, so
+        ``_apply_spill`` could not do it later -- and the consumers of the
+        removed cells are returned so recalc recomputes them.
+        """
+        if self.mode == Mode.PYTHON:
+            return set()
+        sheet = self._active.name
+        cells = self._active._cells
+        cl = cells.get((c, r))
+        if cl is None:
+            return set()
+        extra: set[tuple[int, int]] = set()
+        if cl.type == SPILL and cl.spill_parent is not None:
+            extra.add(cl.spill_parent)
+        if cl.spill_shape is not None:
+            for sc_c, sc_r in self._spill_positions(c, r, cl.spill_shape):
+                for sub_s, sub_c, sub_r in self._subscribers.get((sheet, sc_c, sc_r), ()):
+                    if sub_s == sheet:
+                        extra.add((sub_c, sub_r))
+            self._clear_spill(sheet, c, r, cl)
+        return extra
+
+    def _blocked_anchors_active(self) -> set[tuple[int, int]]:
+        """Blocked anchors on the active sheet, as (c, r) -- re-attempted on
+        every edit since an edit may have cleared what blocked them."""
+        name = self._active.name
+        return {(c, r) for (s, c, r) in self._spill_blocked if s == name}
+
     def setcell(self, c: int, r: int, text: str) -> None:
+        extra = self._spill_predirty(c, r) | self._blocked_anchors_active()
         if self._setcell_no_recalc(c, r, text) or not text:
-            self.recalc({(c, r)})
+            self.recalc({(c, r)} | extra)
+        elif extra:
+            self.recalc(extra)
 
     def setcells_bulk(self, cells: Iterable[tuple[int, int, str]]) -> None:
         """Set many cells, deferring recalc until all are written.
@@ -1194,16 +1264,28 @@ class Grid:
         """
         changed: set[tuple[int, int]] = set()
         for c, r, text in cells:
+            changed |= self._spill_predirty(c, r)
             if self._setcell_no_recalc(c, r, text):
                 changed.add((c, r))
         if changed:
-            self.recalc(changed)
+            self.recalc(changed | self._blocked_anchors_active())
 
     def recalc(self, dirty: set[tuple[int, int]] | None = None) -> None:
-        if self.mode != Mode.PYTHON:
-            self._recalc_topo(dirty)
+        if self.mode == Mode.PYTHON:
+            self._recalc_python()
             return
-        self._recalc_python()
+        # `dirty` arrives as (c, r) 2-tuples on the active sheet; promote to
+        # workbook keys once, then run the topo pass in a bounded fixpoint so
+        # spills whose shape changed can recompute their new/old consumers.
+        active_name = self._active.name
+        dirty3: set[tuple[str | None, int, int]] | None = (
+            None if dirty is None else {(active_name, c, r) for (c, r) in dirty}
+        )
+        for _ in range(_MAX_SPILL_PASSES):
+            spill_changed = self._recalc_topo(dirty3)
+            if not spill_changed:
+                break
+            dirty3 = spill_changed
 
     def _recalc_python(self) -> None:
         g = self._eval_globals
@@ -1453,6 +1535,14 @@ class Grid:
         cl = self._sheet_cells(sheet).get((c, r))
         return cl is not None and cl.type == FORMULA
 
+    def _cell_formula_text(self, c: int, r: int, sheet: str | None = None) -> object:
+        """Formula text (leading '=' included) of a formula cell, else None.
+        Backs FORMULATEXT."""
+        cl = self._sheet_cells(sheet).get((c, r))
+        if cl is None or cl.type != FORMULA:
+            return None
+        return cl.text if cl.text.startswith("=") else f"={cl.text}"
+
     def _cell_lookup_value(self, c: int, r: int, sheet: str | None = None) -> object:
         cl = self._sheet_cells(sheet).get((c, r))
         if cl is None or cl.type == EMPTY:
@@ -1461,8 +1551,29 @@ class Grid:
             return cl.text
         if cl.matrix is not None:
             return cl.matrix
+        # A bare reference to a spilling anchor reads only its top-left
+        # scalar (Excel semantics); the whole array is reached via `A1#`
+        # (see `_cell_spill_value`). This is what lets a range that
+        # overlaps a spill -- `=SUM(A1:A3)` -- avoid double-counting the
+        # anchor's array against the materialised spill cells.
+        if cl.sval is not None:
+            return cl.sval
+        return cl.val
+
+    def _cell_spill_value(self, c: int, r: int, sheet: str | None = None) -> object:
+        """Value of the `A1#` operator: the whole array a formula spilled,
+        or the plain scalar for a non-array cell."""
+        cl = self._sheet_cells(sheet).get((c, r))
+        if cl is None or cl.type == EMPTY:
+            return None
         if cl.arr is not None and cl.arr:
             return Vec(cl.arr, cols=cl.arr_cols)
+        if cl.matrix is not None:
+            return cl.matrix
+        if cl.type == LABEL:
+            return cl.text
+        if cl.sval is not None:
+            return cl.sval
         return cl.val
 
     def _store_formula_result(self, cl: Cell, result: Any) -> None:
@@ -1533,7 +1644,24 @@ class Grid:
             cl.matrix = None
             cl.arr = list(result.data)
             cl.arr_cols = result.cols
-            cl.val = result.data[0] if result.data else float("nan")
+            # The anchor's own displayed value is the top-left element; keep
+            # `val`/`sval`/`err` consistent with a spill cell's so a string-
+            # or bool-first array renders correctly (the array itself stays
+            # in `arr`, reachable via `A1#`).
+            first = result.data[0] if result.data else float("nan")
+            if isinstance(first, ExcelError):
+                cl.val = float("nan")
+                cl.err = first
+            elif isinstance(first, bool):
+                cl.val = 1.0 if first else 0.0
+                cl.sval = "TRUE" if first else "FALSE"
+            elif isinstance(first, str):
+                cl.val = 0.0
+                cl.sval = first
+            elif isinstance(first, (int, float)):
+                cl.val = float(first)
+            else:
+                cl.val = float("nan")
             return
         cl.matrix = None
         cl.arr = None
@@ -1543,17 +1671,182 @@ class Grid:
         except (TypeError, ValueError):
             cl.val = float("nan")
 
-    def _recalc_topo(self, dirty: set[tuple[int, int]] | None) -> None:
+    # -- Spill support --
+
+    def _drop_all_spills(self) -> None:
+        """Remove every SPILL cell and reset anchors so the next recalc
+        rebuilds all spills from scratch. Called before structural edits
+        (row/col insert/delete/swap) that relocate cells -- rebuilding is
+        both simpler and safer than shifting spill ownership in place."""
+        for s in self.sheets:
+            for k in [k for k, cl in s._cells.items() if cl.type == SPILL]:
+                del s._cells[k]
+            for cl in s._cells.values():
+                cl.spill_shape = None
+        self._spill_blocked.clear()
+
+    def _spill_anchor_at(self, c: int, r: int, sheet: str | None = None) -> tuple[int, int] | None:
+        """If (c, r) is a spill cell, return its anchor (c, r); else None."""
+        cl = self._sheet_cells(sheet).get((c, r))
+        if cl is not None and cl.type == SPILL and cl.spill_parent is not None:
+            return cl.spill_parent
+        return None
+
+    @staticmethod
+    def _spill_positions(ac: int, ar: int, shape: tuple[int, int]) -> Iterator[tuple[int, int]]:
+        """Non-anchor (c, r) positions of a spill rectangle."""
+        rows, cols = shape
+        for dr in range(rows):
+            for dc in range(cols):
+                if dr == 0 and dc == 0:
+                    continue
+                yield ac + dc, ar + dr
+
+    def _clear_spill(
+        self, sheet: str | None, ac: int, ar: int, anchor_cl: Cell
+    ) -> set[tuple[str | None, int, int]]:
+        """Remove the SPILL cells owned by the anchor at (ac, ar). Returns
+        the workbook keys whose value was cleared."""
+        changed: set[tuple[str | None, int, int]] = set()
+        if anchor_cl.spill_shape is None:
+            return changed
+        cells = self._sheet_cells(sheet)
+        for c, r in self._spill_positions(ac, ar, anchor_cl.spill_shape):
+            sc = cells.get((c, r))
+            if sc is not None and sc.type == SPILL and sc.spill_parent == (ac, ar):
+                del cells[(c, r)]
+                self._clear_deps((sheet, c, r))
+                changed.add((sheet, c, r))
+        anchor_cl.spill_shape = None
+        return changed
+
+    def _store_scalar_into(self, sc: Cell, val: Any) -> None:
+        """Write one spilled element into a SPILL cell's value fields."""
+        from .formula.errors import ExcelError
+
+        sc.arr = None
+        sc.arr_cols = None
+        sc.matrix = None
+        sc.sval = None
+        sc.err = None
+        sc.err_msg = None
+        if isinstance(val, ExcelError):
+            sc.val = float("nan")
+            sc.err = val
+        elif isinstance(val, bool):
+            sc.val = 1.0 if val else 0.0
+            sc.sval = "TRUE" if val else "FALSE"
+        elif isinstance(val, str):
+            sc.val = 0.0
+            sc.sval = val
+        elif isinstance(val, (int, float)):
+            sc.val = float(val)
+        elif val is None:
+            sc.val = 0.0
+        else:
+            try:
+                sc.val = float(val)
+            except (TypeError, ValueError):
+                sc.val = float("nan")
+
+    def _set_spill_error(self, cl: Cell) -> None:
+        from .formula.errors import ExcelError
+
+        cl.arr = None
+        cl.arr_cols = None
+        cl.matrix = None
+        cl.sval = None
+        cl.val = float("nan")
+        cl.err = ExcelError.SPILL
+        cl.err_msg = None
+        cl.spill_shape = None
+
+    def _apply_spill(
+        self, sheet: str | None, ac: int, ar: int, anchor_cl: Cell
+    ) -> set[tuple[str | None, int, int]]:
+        """Materialise (or tear down) the spill for the anchor at (ac, ar).
+
+        Returns the set of workbook keys whose value changed -- spill cells
+        created, removed, or updated -- so the caller can recompute their
+        consumers in a follow-up pass.
+        """
+        changed: set[tuple[str | None, int, int]] = set()
+        self._spill_blocked.discard((sheet, ac, ar))
+        arr = anchor_cl.arr
+        cols = anchor_cl.arr_cols if anchor_cl.arr_cols else 1
+        # No array, or a single element: not a spill. Tear down any prior.
+        if anchor_cl.type != FORMULA or not arr or len(arr) <= 1:
+            return self._clear_spill(sheet, ac, ar, anchor_cl)
+        rows = len(arr) // cols
+        if rows * cols <= 1:
+            return self._clear_spill(sheet, ac, ar, anchor_cl)
+        new_shape = (rows, cols)
+        cells = self._sheet_cells(sheet)
+        old_positions = (
+            set(self._spill_positions(ac, ar, anchor_cl.spill_shape))
+            if anchor_cl.spill_shape is not None
+            else set()
+        )
+        # Off-sheet, or blocked by a foreign non-empty cell -> #SPILL!.
+        if ac + cols > NCOL or ar + rows > NROW:
+            changed |= self._clear_spill(sheet, ac, ar, anchor_cl)
+            self._set_spill_error(anchor_cl)
+            self._spill_blocked.add((sheet, ac, ar))
+            return changed
+        for c, r in self._spill_positions(ac, ar, new_shape):
+            other = cells.get((c, r))
+            if other is None or other.type == EMPTY:
+                continue
+            if other.type == SPILL and other.spill_parent == (ac, ar):
+                continue
+            changed |= self._clear_spill(sheet, ac, ar, anchor_cl)
+            self._set_spill_error(anchor_cl)
+            self._spill_blocked.add((sheet, ac, ar))
+            return changed
+        # Materialise each non-anchor element (arr is row-major).
+        new_positions: set[tuple[int, int]] = set()
+        for dr in range(rows):
+            for dc in range(cols):
+                if dr == 0 and dc == 0:
+                    continue
+                c, r = ac + dc, ar + dr
+                sc = cells.get((c, r))
+                if sc is None:
+                    sc = Cell()
+                    cells[(c, r)] = sc
+                prev = (sc.type, sc.val, sc.sval, sc.err)
+                sc.clear()
+                sc.type = SPILL
+                sc.spill_parent = (ac, ar)
+                self._store_scalar_into(sc, arr[dr * cols + dc])
+                new_positions.add((c, r))
+                self._clear_deps((sheet, c, r))
+                self._register_deps((sheet, c, r), {(sheet, ac, ar)}, False)
+                if (sc.type, sc.val, sc.sval, sc.err) != prev:
+                    changed.add((sheet, c, r))
+        # Remove cells that were in the old rectangle but not the new one.
+        for c, r in old_positions - new_positions:
+            sc = cells.get((c, r))
+            if sc is not None and sc.type == SPILL and sc.spill_parent == (ac, ar):
+                del cells[(c, r)]
+                self._clear_deps((sheet, c, r))
+                changed.add((sheet, c, r))
+        anchor_cl.spill_shape = new_shape
+        return changed
+
+    def _recalc_topo(
+        self, dirty3: set[tuple[str | None, int, int]] | None
+    ) -> set[tuple[str | None, int, int]]:
         """Topological recalc: evaluate only the closure of dirty cells.
 
         Multi-sheet aware: dep keys are ``(sheet, c, r)`` workbook-wide;
         the closure spans every sheet that has formulas reading the
         dirty cells.
 
-        ``dirty`` is supplied as ``(c, r)`` 2-tuples relative to the
-        active sheet (the API setcell/setcells_bulk uses today). They
-        are promoted to 3-tuples internally. Pass ``None`` for a full
-        recompute across all sheets.
+        ``dirty3`` is a set of workbook ``(sheet, c, r)`` keys, or ``None``
+        for a full recompute across all sheets. Returns the set of spill
+        positions whose value changed this pass, so ``recalc`` can drive a
+        follow-up pass over their consumers.
         """
         from .formula import Env, evaluate, parse
         from .formula.errors import FormulaError
@@ -1566,13 +1859,11 @@ class Grid:
             named_ranges=named,
             py_registry=py_registry,
             cell_is_formula=self._cell_is_formula,
+            cell_spill_value=self._cell_spill_value,
+            cell_formula_text=self._cell_formula_text,
         )
 
-        active_name = self._active.name
-        # Promote `dirty` (2-tuples on the active sheet) to 3-tuples.
-        dirty3: set[tuple[str | None, int, int]] | None = (
-            None if dirty is None else {(active_name, c, r) for (c, r) in dirty}
-        )
+        spill_changed: set[tuple[str | None, int, int]] = set()
 
         # Build the closure: BFS over `_subscribers` from the dirty set,
         # plus all volatile cells. If dirty is None, the closure is every
@@ -1659,6 +1950,7 @@ class Grid:
                 except Exception:
                     result = float("nan")
                 self._store_formula_result(fcl, result)
+                spill_changed |= self._apply_spill(sheet_name, c, r, fcl)
         finally:
             self.active = saved_active
 
@@ -1686,11 +1978,15 @@ class Grid:
             for key in unresolved:
                 circ_cl: Cell | None = self._cell_at(key)
                 if circ_cl is not None:
+                    if circ_cl.spill_shape is not None:
+                        spill_changed |= self._clear_spill(key[0], key[1], key[2], circ_cl)
                     circ_cl.arr = None
                     circ_cl.matrix = None
                     circ_cl.val = float("nan")
                     circ_cl.err = _XE.CIRC
                     circ_cl.err_msg = None
+
+        return spill_changed
 
     def _cell_at(self, key: tuple[str | None, int, int]) -> Cell | None:
         """Resolve a workbook-level dep key to its Cell, if any."""
@@ -1774,6 +2070,7 @@ class Grid:
                 cl.text = "".join(out)
 
     def insertrow(self, at: int) -> None:
+        self._drop_all_spills()
         new_cells: dict[tuple[int, int], Cell] = {}
         for (c, r), cl in self._cells.items():
             if r >= at:
@@ -1787,6 +2084,7 @@ class Grid:
         self.dirty = 1
 
     def insertcol(self, at: int) -> None:
+        self._drop_all_spills()
         new_cells: dict[tuple[int, int], Cell] = {}
         for (c, r), cl in self._cells.items():
             if c >= at:
@@ -1800,6 +2098,7 @@ class Grid:
         self.dirty = 1
 
     def deleterow(self, at: int) -> None:
+        self._drop_all_spills()
         self._shiftrefs("R", at, -1)
         new_cells: dict[tuple[int, int], Cell] = {}
         for (c, r), cl in self._cells.items():
@@ -1814,6 +2113,7 @@ class Grid:
         self.dirty = 1
 
     def deletecol(self, at: int) -> None:
+        self._drop_all_spills()
         self._shiftrefs("C", at, -1)
         new_cells: dict[tuple[int, int], Cell] = {}
         for (c, r), cl in self._cells.items():
@@ -1828,6 +2128,7 @@ class Grid:
         self.dirty = 1
 
     def swaprow(self, a: int, b: int) -> None:
+        self._drop_all_spills()
         new_cells: dict[tuple[int, int], Cell] = {}
         for (c, r), cl in self._cells.items():
             if r == a:
@@ -1841,6 +2142,7 @@ class Grid:
         self._rebuild_dep_graph()
 
     def swapcol(self, a: int, b: int) -> None:
+        self._drop_all_spills()
         new_cells: dict[tuple[int, int], Cell] = {}
         for (c, r), cl in self._cells.items():
             if c == a:
@@ -2097,10 +2399,12 @@ class Grid:
 
     def _encode_sheet_rows(self, cells: dict[tuple[int, int], Cell]) -> list[list[Any]]:
         """Encode one sheet's cell store as a v2 ``cells`` rows list."""
+        # SPILL cells are derived from their anchor's formula and are not
+        # persisted -- they are rebuilt when the anchor recomputes on load.
         maxr = -1
         maxc = -1
         for (c, r), cl in cells.items():
-            if cl.type != EMPTY:
+            if cl.type != EMPTY and cl.type != SPILL:
                 if r > maxr:
                     maxr = r
                 if c > maxc:
@@ -2110,7 +2414,7 @@ class Grid:
             row: list[Any] = []
             for c in range(maxc + 1):
                 sc = cells.get((c, r))
-                if not sc or sc.type == EMPTY:
+                if not sc or sc.type == EMPTY or sc.type == SPILL:
                     row.append(None)
                     continue
                 elif sc.type == NUM:
@@ -2191,6 +2495,7 @@ class Grid:
         self._dep_of.clear()
         self._subscribers.clear()
         self._volatile.clear()
+        self._spill_blocked.clear()
         self._apply_mode_libs()
 
         # Group payload by sheet, preserving first-seen order.

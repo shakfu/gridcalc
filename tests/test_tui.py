@@ -3129,3 +3129,70 @@ class TestOptOnVisualSelection:
     def test_no_selection_means_no_inference(self):
         self._run("opt max", sel=None)
         assert "usage" in self.stdscr.screen
+
+
+class TestSpillRendering:
+    """Display polish for dynamic-array spill (engine covered in test_spill)."""
+
+    def _excel_grid(self):
+        from gridcalc.engine import Mode
+
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        return g
+
+    def test_fmtcell_spilling_anchor_shows_scalar_not_badge(self):
+        from gridcalc.tui import fmtcell
+
+        g = self._excel_grid()
+        g.setcell(0, 0, "=SEQUENCE(3)")
+        out = fmtcell(g.cell(0, 0), 8)
+        assert out.strip() == "1"  # top-left scalar, not "1[3]"
+        assert "[" not in out
+
+    def test_fmtcell_spill_cell_shows_value(self):
+        from gridcalc.tui import fmtcell
+
+        g = self._excel_grid()
+        g.setcell(0, 0, "=SEQUENCE(3)")
+        assert fmtcell(g.cell(0, 1), 8).strip() == "2"
+        assert fmtcell(g.cell(0, 2), 8).strip() == "3"
+
+    def test_fmtcell_python_mode_array_keeps_badge(self):
+        # PYTHON mode does not spill, so the array badge is still the display.
+        from gridcalc.tui import fmtcell
+
+        g = Grid()  # PYTHON mode by default
+        g.setcell(0, 0, "0")
+        g.setcell(0, 1, "1")
+        g.setcell(0, 2, "2")
+        g.setcell(1, 0, "=A1:A3 * 2")
+        out = fmtcell(g.cell(1, 0), 8)
+        assert "[3]" in out
+
+    def test_status_bar_notes_spill_provenance(self):
+        from gridcalc.tui import draw
+
+        _setup_curses_constants()
+        g = self._excel_grid()
+        g.setcell(0, 0, "=SEQUENCE(3)")
+        g.cc, g.cr = 0, 1  # cursor on the spilled A2
+        stdscr = _RecordingStdscr()
+        draw(stdscr, g, mode="", buf="")
+        status = next(s for (y, x, s, n) in stdscr.calls if y == 0)
+        assert "spill from A1" in status
+
+    def test_status_bar_explains_spill_error(self):
+        from gridcalc.tui import draw
+
+        _setup_curses_constants()
+        g = self._excel_grid()
+        g.setcell(0, 1, "X")  # block the spill
+        g.setcell(0, 0, "=SEQUENCE(3)")
+        g.cc, g.cr = 0, 0  # cursor on the blocked anchor
+        stdscr = _RecordingStdscr()
+        draw(stdscr, g, mode="", buf="")
+        status = next(s for (y, x, s, n) in stdscr.calls if y == 0)
+        assert "#SPILL!" in status
+        assert "blocked" in status

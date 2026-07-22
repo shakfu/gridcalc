@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 
-from ..engine import EMPTY, FORMULA, LABEL, Cell, _is_dataframe
+from ..engine import EMPTY, FORMULA, LABEL, SPILL, Cell, _is_dataframe
 from ..opt import Sensitivity, SweepPoint
 
 
@@ -93,7 +93,7 @@ def cell_clip_value(cl: Cell | None) -> str:
         return str(cl.err)
     if cl.arr is not None and len(cl.arr) > 0:
         return _num_str(cl.arr[0])
-    if cl.type == FORMULA and cl.sval is not None:
+    if cl.type in (FORMULA, SPILL) and cl.sval is not None:
         return cl.sval
     if isinstance(cl.val, float) and math.isnan(cl.val):
         return ""
@@ -125,13 +125,17 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
                 t = "[" + "x".join(str(s) for s in shape) + "]"
         return f"{t:>{cw}}"[:cw]
 
-    if cl.arr is not None and len(cl.arr) > 0:
+    # A spilling anchor (spill_shape set) shows its own top-left scalar --
+    # the array is laid out in the neighbouring cells. Only a non-spilling
+    # array cell (PYTHON mode, where arrays live in one cell) shows the
+    # `1[3]` array badge.
+    if cl.arr is not None and len(cl.arr) > 0 and cl.spill_shape is None:
         v = cl.arr[0]
         numstr = str(int(v)) if abs(v) < 1e9 and v == int(v) else f"{v:g}"
         t = f"{numstr}[{len(cl.arr)}]"
         return f"{t:>{cw}}"[:cw]
 
-    if cl.type == FORMULA and cl.sval is not None:
+    if cl.type in (FORMULA, SPILL) and cl.sval is not None:
         fc = cl.fmt or global_fmt
         if fc == "L":
             return f"{cl.sval:<{cw}}"[:cw]

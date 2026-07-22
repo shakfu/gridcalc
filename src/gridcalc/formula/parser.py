@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .ast_nodes import (
+    Apply,
     BinOp,
     Bool,
     Call,
@@ -12,6 +13,7 @@ from .ast_nodes import (
     Percent,
     PyCall,
     RangeRef,
+    SpillRef,
     String,
     UnaryOp,
 )
@@ -30,6 +32,7 @@ from .lexer import (
     ERROR_LIT,
     GE,
     GT,
+    HASH,
     IDENT,
     LE,
     LPAREN,
@@ -131,10 +134,19 @@ class _Parser:
         return self._percent()
 
     def _percent(self) -> Node:
-        node = self._primary()
+        node = self._postfix()
         while self._peek().kind == PERCENT:
             self._advance()
             node = Percent(node)
+        return node
+
+    def _postfix(self) -> Node:
+        # A trailing argument list applies the preceding expression as a
+        # first-class function: LAMBDA(x, x+1)(5), or (LAMBDA(...))(...).
+        node = self._primary()
+        while self._peek().kind == LPAREN:
+            args = self._call_args()
+            node = Apply(node, tuple(args))
         return node
 
     def _primary(self) -> Node:
@@ -176,6 +188,10 @@ class _Parser:
         t = self._advance()
         col, row, ac, ar = t.value
         start = CellRef(col, row, ac, ar, sheet=sheet)
+        if self._peek().kind == HASH:
+            # A1# -- the spill range anchored at A1.
+            self._advance()
+            return SpillRef(start)
         if self._peek().kind == COLON:
             self._advance()
             # The right side may carry its own sheet prefix; if so, it

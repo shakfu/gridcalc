@@ -32,6 +32,7 @@ GT = "GT"
 LE = "LE"
 GE = "GE"
 BANG = "BANG"
+HASH = "HASH"
 EOF = "EOF"
 
 
@@ -181,6 +182,7 @@ def tokenize(text: str) -> list[Token]:
             "<": LT,
             ">": GT,
             "!": BANG,
+            "#": HASH,  # spill-range operator (A1#); error literals matched above
         }
         kind = single.get(ch)
         if kind is not None:

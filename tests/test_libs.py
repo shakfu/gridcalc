@@ -1490,6 +1490,157 @@ class TestLet:
         g.setcell(0, 0, "=LET(s, SUM(B1:B3), s * 2)")
         assert g.cells[0][0].val == 12.0
 
+
+class TestLambda:
+    """LAMBDA plus the higher-order functions (MAP/REDUCE/SCAN/BYROW/BYCOL/
+    MAKEARRAY). LAMBDA builds a first-class closure in the evaluator; the
+    higher-order functions are builtins that drive it. Exercised through the
+    EXCEL-mode grid."""
+
+    @staticmethod
+    def _grid() -> Grid:
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        return g
+
+    def test_direct_application(self) -> None:
+        g = self._grid()
+        g.setcell(0, 0, "=LAMBDA(x, x + 1)(5)")
+        assert g.cells[0][0].val == 6.0
+
+    def test_direct_application_two_params(self) -> None:
+        g = self._grid()
+        g.setcell(0, 0, "=LAMBDA(x, y, x * y)(6, 7)")
+        assert g.cells[0][0].val == 42.0
+
+    def test_parenthesized_lambda_application(self) -> None:
+        g = self._grid()
+        g.setcell(0, 0, "=(LAMBDA(x, x * x))(9)")
+        assert g.cells[0][0].val == 81.0
+
+    def test_let_bound_lambda_called_by_name(self) -> None:
+        g = self._grid()
+        g.setcell(0, 0, "=LET(inc, LAMBDA(x, x + 1), inc(41))")
+        assert g.cells[0][0].val == 42.0
+
+    def test_lambda_composition(self) -> None:
+        g = self._grid()
+        g.setcell(0, 0, "=LET(dbl, LAMBDA(x, x * 2), dbl(dbl(3)))")
+        assert g.cells[0][0].val == 12.0
+
+    def test_closure_captures_let_binding(self) -> None:
+        g = self._grid()
+        g.setcell(0, 4, "1")
+        g.setcell(0, 5, "2")
+        g.setcell(0, 0, "=SUM(LET(k, 100, MAP(A5:A6, LAMBDA(x, x + k))))")
+        assert g.cells[0][0].val == 203.0
+
+    def test_arity_mismatch_is_value_error(self) -> None:
+        g = self._grid()
+        g.setcell(0, 0, "=LAMBDA(x, x + 1)(1, 2)")
+        assert g.cells[0][0].err is ExcelError.VALUE
+
+    def test_apply_non_lambda_is_value_error(self) -> None:
+        g = self._grid()
+        g.setcell(0, 4, "7")
+        g.setcell(0, 0, "=(A5)(3)")
+        assert g.cells[0][0].err is ExcelError.VALUE
+
+    def test_lambda_body_cell_ref_tracked_as_dependency(self) -> None:
+        # A cell referenced inside a lambda body must be a live dependency:
+        # changing it recomputes the consuming cell.
+        g = self._grid()
+        g.setcell(1, 0, "10")  # B1
+        g.setcell(0, 4, "1")
+        g.setcell(0, 5, "2")
+        g.setcell(3, 0, "=SUM(MAP(A5:A6, LAMBDA(x, x + B1)))")
+        assert g.cells[3][0].val == 23.0
+        g.setcell(1, 0, "100")
+        assert g.cells[3][0].val == 203.0
+
+    def test_map_single_array(self) -> None:
+        g = self._grid()
+        for i, v in enumerate([10, 20, 30, 40]):
+            g.setcell(0, i, str(v))
+        g.setcell(2, 0, "=SUM(MAP(A1:A4, LAMBDA(x, x * 10)))")
+        assert g.cells[2][0].val == 1000.0
+
+    def test_map_two_arrays(self) -> None:
+        g = self._grid()
+        g.setcell(0, 0, "10")
+        g.setcell(0, 1, "20")
+        g.setcell(0, 2, "3")
+        g.setcell(0, 3, "4")
+        g.setcell(2, 0, "=SUM(MAP(A1:A2, A3:A4, LAMBDA(a, b, a + b)))")
+        assert g.cells[2][0].val == 37.0
+
+    def test_map_mismatched_lengths_na(self) -> None:
+        g = self._grid()
+        for i, v in enumerate([1, 2, 3, 4, 5]):
+            g.setcell(0, i, str(v))
+        g.setcell(2, 0, "=MAP(A1:A3, A1:A2, LAMBDA(a, b, a + b))")
+        assert g.cells[2][0].err is ExcelError.NA
+
+    def test_reduce(self) -> None:
+        g = self._grid()
+        for i, v in enumerate([1, 2, 3, 4]):
+            g.setcell(0, i, str(v))
+        g.setcell(2, 0, "=REDUCE(0, A1:A4, LAMBDA(acc, x, acc + x))")
+        g.setcell(2, 1, "=REDUCE(1, A1:A4, LAMBDA(acc, x, acc * x))")
+        assert g.cells[2][0].val == 10.0
+        assert g.cells[2][1].val == 24.0
+
+    def test_scan(self) -> None:
+        g = self._grid()
+        for i, v in enumerate([1, 2, 3, 4]):
+            g.setcell(0, i, str(v))
+        # Running sum: last element is the full total, second is 1+2=3.
+        g.setcell(2, 0, "=INDEX(SCAN(0, A1:A4, LAMBDA(acc, x, acc + x)), 4)")
+        g.setcell(2, 1, "=INDEX(SCAN(0, A1:A4, LAMBDA(acc, x, acc + x)), 2)")
+        assert g.cells[2][0].val == 10.0
+        assert g.cells[2][1].val == 3.0
+
+    def test_byrow(self) -> None:
+        g = self._grid()
+        # 2x2 block B1:C2 = [[1, 2], [3, 4]]; row sums are 3 and 7.
+        g.setcell(1, 0, "1")
+        g.setcell(2, 0, "2")
+        g.setcell(1, 1, "3")
+        g.setcell(2, 1, "4")
+        g.setcell(0, 0, "=INDEX(BYROW(B1:C2, LAMBDA(r, SUM(r))), 1)")
+        g.setcell(0, 1, "=INDEX(BYROW(B1:C2, LAMBDA(r, SUM(r))), 2)")
+        assert g.cells[0][0].val == 3.0
+        assert g.cells[0][1].val == 7.0
+
+    def test_bycol(self) -> None:
+        g = self._grid()
+        # column sums of [[1, 2], [3, 4]] are 4 and 6.
+        g.setcell(1, 0, "1")
+        g.setcell(2, 0, "2")
+        g.setcell(1, 1, "3")
+        g.setcell(2, 1, "4")
+        # BYCOL yields a 1-row array, so index it as (row 1, col j).
+        g.setcell(0, 0, "=INDEX(BYCOL(B1:C2, LAMBDA(c, SUM(c))), 1, 1)")
+        g.setcell(0, 1, "=INDEX(BYCOL(B1:C2, LAMBDA(c, SUM(c))), 1, 2)")
+        g.setcell(0, 2, "=SUM(BYCOL(B1:C2, LAMBDA(c, SUM(c))))")
+        assert g.cells[0][0].val == 4.0
+        assert g.cells[0][1].val == 6.0
+        assert g.cells[0][2].val == 10.0
+
+    def test_makearray(self) -> None:
+        g = self._grid()
+        # sum over i in 1..2, j in 1..3 of i*j = (1+2+3)+(2+4+6) = 18.
+        g.setcell(0, 0, "=SUM(MAKEARRAY(2, 3, LAMBDA(i, j, i * j)))")
+        assert g.cells[0][0].val == 18.0
+
+    def test_higher_order_non_callable_is_value_error(self) -> None:
+        g = self._grid()
+        g.setcell(0, 0, "1")
+        g.setcell(0, 1, "2")
+        g.setcell(2, 0, "=MAP(A1:A2, 5)")
+        assert g.cells[2][0].err is ExcelError.VALUE
+
     def test_recalcs_on_dependency_change(self) -> None:
         g = self._grid()
         for i, v in enumerate([1.0, 2.0, 3.0]):
@@ -2778,3 +2929,875 @@ class TestRegressionFamily:
         g.setcell(3, 1, "=INDEX(LINEST(A1:A5, B1:B5), 1, 2)")
         assert math.isclose(g.cells[3][0].val, 2.0, abs_tol=1e-9)
         assert math.isclose(g.cells[3][1].val, 1.0, abs_tol=1e-9)
+
+
+class TestEngineeringComparison:
+    def test_delta(self) -> None:
+        from gridcalc.libs.xlsx import DELTA
+
+        assert DELTA(5, 4) == 0
+        assert DELTA(5, 5) == 1
+        assert DELTA(0) == 1  # second arg defaults to 0
+        assert DELTA(2) == 0
+
+    def test_gestep(self) -> None:
+        from gridcalc.libs.xlsx import GESTEP
+
+        assert GESTEP(5, 4) == 1
+        assert GESTEP(3, 4) == 0
+        assert GESTEP(5, 5) == 1
+        assert GESTEP(-1) == 0  # step defaults to 0
+        assert GESTEP(2) == 1
+
+
+class TestNumeralConversion:
+    def test_roman(self) -> None:
+        from gridcalc.libs.xlsx import ROMAN
+
+        assert ROMAN(1) == "I"
+        assert ROMAN(4) == "IV"
+        assert ROMAN(1990) == "MCMXC"
+        assert ROMAN(2024) == "MMXXIV"
+        assert ROMAN(3999) == "MMMCMXCIX"
+        assert ROMAN(0) == ""
+        assert ROMAN(4000) is ExcelError.VALUE
+        assert ROMAN(-1) is ExcelError.VALUE
+
+    def test_arabic(self) -> None:
+        from gridcalc.libs.xlsx import ARABIC
+
+        assert ARABIC("IV") == 4
+        assert ARABIC("MCMXC") == 1990
+        assert ARABIC("MMXXIV") == 2024
+        assert ARABIC("") == 0
+        assert ARABIC("-IV") == -4
+        assert ARABIC(" mcmxc ") == 1990  # lenient about case/space
+        assert ARABIC("foo") is ExcelError.VALUE
+
+    def test_roman_arabic_roundtrip(self) -> None:
+        from gridcalc.libs.xlsx import ARABIC, ROMAN
+
+        for n in (1, 9, 14, 49, 99, 444, 1888, 2024, 3999):
+            assert ARABIC(ROMAN(n)) == n
+
+    def test_base(self) -> None:
+        from gridcalc.libs.xlsx import BASE
+
+        assert BASE(7, 2) == "111"
+        assert BASE(100, 16) == "64"
+        assert BASE(15, 2, 8) == "00001111"  # min_length pads
+        assert BASE(0, 10) == "0"
+        assert BASE(255, 16) == "FF"
+        assert BASE(-1, 2) is ExcelError.NUM
+        assert BASE(10, 1) is ExcelError.NUM  # radix out of range
+        assert BASE(10, 37) is ExcelError.NUM
+
+    def test_decimal(self) -> None:
+        from gridcalc.libs.xlsx import DECIMAL
+
+        assert DECIMAL("111", 2) == 7
+        assert DECIMAL("FF", 16) == 255
+        assert DECIMAL("ff", 16) == 255  # case-insensitive
+        assert DECIMAL("ZZ", 36) == 1295
+        assert DECIMAL("", 2) == 0
+        assert DECIMAL("2", 2) is ExcelError.NUM  # digit >= radix
+        assert DECIMAL("10", 1) is ExcelError.NUM
+
+    def test_base_decimal_roundtrip(self) -> None:
+        from gridcalc.libs.xlsx import BASE, DECIMAL
+
+        for n in (0, 1, 42, 255, 4095, 123456):
+            for radix in (2, 8, 16, 36):
+                assert DECIMAL(BASE(n, radix), radix) == n
+
+
+class TestComplexNumbers:
+    def test_complex_formatting(self) -> None:
+        from gridcalc.libs.xlsx import COMPLEX
+
+        assert COMPLEX(3, 4) == "3+4i"
+        assert COMPLEX(3, -4) == "3-4i"
+        assert COMPLEX(0, 1) == "i"
+        assert COMPLEX(0, -1) == "-i"
+        assert COMPLEX(3, 1) == "3+i"
+        assert COMPLEX(3, -1) == "3-i"
+        assert COMPLEX(5, 0) == "5"
+        assert COMPLEX(0, 5) == "5i"
+        assert COMPLEX(1.5, 2.5) == "1.5+2.5i"
+        assert COMPLEX(3, 4, "j") == "3+4j"
+        assert COMPLEX(3, 4, "k") is ExcelError.VALUE
+
+    def test_parse_variants(self) -> None:
+        from gridcalc.libs.xlsx import IMAGINARY, IMREAL
+
+        # Bare imaginary units and both suffixes.
+        assert (IMREAL("i"), IMAGINARY("i")) == (0.0, 1.0)
+        assert (IMREAL("-i"), IMAGINARY("-i")) == (0.0, -1.0)
+        assert (IMREAL("3-i"), IMAGINARY("3-i")) == (3.0, -1.0)
+        assert (IMREAL("4i"), IMAGINARY("4i")) == (0.0, 4.0)
+        assert (IMREAL("6-9j"), IMAGINARY("6-9j")) == (6.0, -9.0)
+        assert (IMREAL(5), IMAGINARY(5)) == (5.0, 0.0)  # bare number
+
+    def test_arithmetic(self) -> None:
+        from gridcalc.libs.xlsx import IMDIV, IMPRODUCT, IMSUB, IMSUM
+
+        assert IMSUM("3+4i", "1+2i") == "4+6i"
+        assert IMSUB("3+4i", "1+2i") == "2+2i"
+        assert IMPRODUCT("3+4i", "5-2i") == "23+14i"
+        assert IMDIV("-238+240i", "10+24i") == "5+12i"
+        assert IMDIV("1+i", "0") is ExcelError.NUM
+
+    def test_magnitude_argument_conjugate(self) -> None:
+        from gridcalc.libs.xlsx import IMABS, IMARGUMENT, IMCONJUGATE
+
+        assert IMABS("3+4i") == 5.0
+        assert IMCONJUGATE("3+4i") == "3-4i"
+        assert math.isclose(IMARGUMENT("1+i"), math.pi / 4, abs_tol=1e-12)
+        assert IMARGUMENT("0") is ExcelError.DIV0
+
+    def test_power_sqrt_exp(self) -> None:
+        from gridcalc.libs.xlsx import IMAGINARY, IMEXP, IMLN, IMPOWER, IMREAL, IMSQRT
+
+        assert IMPOWER("2+3i", 3) == "-46+9i"
+        # sqrt(i) = (1+i)/sqrt(2); compare components (last digit is float noise).
+        root = IMSQRT("i")
+        assert math.isclose(IMREAL(root), 2**-0.5, abs_tol=1e-12)
+        assert math.isclose(IMAGINARY(root), 2**-0.5, abs_tol=1e-12)
+        assert IMEXP("0") == "1"
+        assert IMLN("1") == "0"
+
+    def test_trig(self) -> None:
+        from gridcalc.libs.xlsx import IMCOS, IMSIN
+
+        # sin/cos of a real value collapse to the real trig result.
+        assert IMSIN("0") == "0"
+        assert IMCOS("0") == "1"
+
+    def test_error_propagation(self) -> None:
+        from gridcalc.libs.xlsx import IMABS, IMSUM
+
+        assert IMSUM("3+4i", "not-a-complex") is ExcelError.NUM
+        assert IMABS("") is ExcelError.NUM
+
+    def test_via_grid(self) -> None:
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, '=IMSUM("3+4i","1+2i")')
+        g.setcell(0, 1, '=IMABS("3+4i")')
+        assert g.cells[0][0].sval == "4+6i"
+        assert g.cells[0][1].val == 5.0
+
+
+class TestFringeStatistics:
+    def test_fisher(self) -> None:
+        from gridcalc.libs.xlsx import FISHER, FISHERINV
+
+        assert math.isclose(FISHER(0.75), 0.9729550745276566, abs_tol=1e-12)
+        assert math.isclose(FISHERINV(FISHER(0.62)), 0.62, abs_tol=1e-12)
+        assert FISHER(1) is ExcelError.NUM
+        assert FISHER(-1) is ExcelError.NUM
+
+    def test_trimmean(self) -> None:
+        from gridcalc.libs.xlsx import TRIMMEAN
+
+        data = Vec([4, 5, 6, 7, 2, 3, 4, 5, 1, 2, 3])
+        # 11 values, 20% -> floor(2.2)=2, even -> trim 1 from each end.
+        assert math.isclose(TRIMMEAN(data, 0.2), 3.7777777777777777, abs_tol=1e-12)
+        # percent too small to trim anything -> plain mean.
+        assert math.isclose(TRIMMEAN(Vec([1, 2, 3, 4, 5]), 0.1), 3.0, abs_tol=1e-12)
+        assert TRIMMEAN(data, 1) is ExcelError.NUM
+
+    def test_pearson_alias(self) -> None:
+        # PEARSON is registered as an alias of CORREL.
+        from gridcalc.libs.xlsx import BUILTINS, CORREL
+
+        assert BUILTINS["PEARSON"] is CORREL
+        x = Vec([9, 7, 5, 3, 1])
+        y = Vec([10, 6, 1, 5, 3])
+        assert math.isclose(BUILTINS["PEARSON"](x, y), 0.6993786061802354, abs_tol=1e-12)
+
+
+class TestNetworkdaysIntl:
+    def _d(self, y: int, m: int, day: int) -> float:
+        from gridcalc.libs.xlsx import DATE
+
+        return DATE(y, m, day)
+
+    def test_default_weekend(self) -> None:
+        from gridcalc.libs.xlsx import NETWORKDAYS_INTL
+
+        # 2026-05-04 Mon .. 2026-05-10 Sun, default Sat/Sun weekend -> 5.
+        assert NETWORKDAYS_INTL(self._d(2026, 5, 4), self._d(2026, 5, 10)) == 5
+
+    def test_weekend_code(self) -> None:
+        from gridcalc.libs.xlsx import NETWORKDAYS_INTL
+
+        # weekend 11 = Sunday only -> Mon..Sun = 6 working days.
+        assert NETWORKDAYS_INTL(self._d(2026, 5, 4), self._d(2026, 5, 10), 11) == 6
+
+    def test_weekend_mask(self) -> None:
+        from gridcalc.libs.xlsx import NETWORKDAYS_INTL
+
+        # Mask Fri+Sat off ("0000110"): Mon-Thu + Sun = 5 working days.
+        assert NETWORKDAYS_INTL(self._d(2026, 5, 4), self._d(2026, 5, 10), "0000110") == 5
+
+    def test_holidays(self) -> None:
+        from gridcalc.libs.xlsx import NETWORKDAYS_INTL
+
+        n = NETWORKDAYS_INTL(self._d(2026, 5, 4), self._d(2026, 5, 10), 1, self._d(2026, 5, 6))
+        assert n == 4
+
+    def test_reversed_is_negative(self) -> None:
+        from gridcalc.libs.xlsx import NETWORKDAYS_INTL
+
+        assert NETWORKDAYS_INTL(self._d(2026, 5, 10), self._d(2026, 5, 4)) == -5
+
+    def test_bad_weekend(self) -> None:
+        from gridcalc.libs.xlsx import NETWORKDAYS_INTL
+
+        assert NETWORKDAYS_INTL(self._d(2026, 5, 4), self._d(2026, 5, 10), 8) is ExcelError.NUM
+        assert (
+            NETWORKDAYS_INTL(self._d(2026, 5, 4), self._d(2026, 5, 10), "1111111")
+            is ExcelError.VALUE
+        )
+
+    def test_workday_intl(self) -> None:
+        from gridcalc.libs.xlsx import WORKDAY_INTL, _from_serial
+
+        # Fri 2026-05-08 + 1 working day, default weekend -> Mon 2026-05-11.
+        got = _from_serial(WORKDAY_INTL(self._d(2026, 5, 8), 1)).date()
+        assert (got.year, got.month, got.day) == (2026, 5, 11)
+
+    def test_workday_intl_holiday(self) -> None:
+        from gridcalc.libs.xlsx import WORKDAY_INTL, _from_serial
+
+        # Skip the intervening Monday as a holiday -> lands on Tue 2026-05-12.
+        got = _from_serial(WORKDAY_INTL(self._d(2026, 5, 8), 1, 1, self._d(2026, 5, 11))).date()
+        assert (got.year, got.month, got.day) == (2026, 5, 12)
+
+
+class TestBondCouponPeriods:
+    """COUP* family against Microsoft's documented example:
+    settlement 2011-01-25, maturity 2011-11-15, frequency 2, basis 1."""
+
+    def _mk(self):
+        from gridcalc.libs.xlsx import DATE
+
+        return DATE(2011, 1, 25), DATE(2011, 11, 15)
+
+    def test_coupdaybs(self) -> None:
+        from gridcalc.libs.xlsx import COUPDAYBS
+
+        s, m = self._mk()
+        assert COUPDAYBS(s, m, 2, 1) == 71.0
+
+    def test_coupdays(self) -> None:
+        from gridcalc.libs.xlsx import COUPDAYS
+
+        s, m = self._mk()
+        assert COUPDAYS(s, m, 2, 1) == 181.0
+
+    def test_coupdaysnc(self) -> None:
+        from gridcalc.libs.xlsx import COUPDAYSNC
+
+        s, m = self._mk()
+        assert COUPDAYSNC(s, m, 2, 1) == 110.0
+
+    def test_coupnum(self) -> None:
+        from gridcalc.libs.xlsx import COUPNUM
+
+        s, m = self._mk()
+        assert COUPNUM(s, m, 2, 1) == 2
+
+    def test_coupncd_couppcd(self) -> None:
+        from gridcalc.libs.xlsx import COUPNCD, COUPPCD, DATE, _from_serial
+
+        s, m = self._mk()
+        assert _from_serial(COUPNCD(s, m, 2, 1)).date() == _from_serial(DATE(2011, 5, 15)).date()
+        assert _from_serial(COUPPCD(s, m, 2, 1)).date() == _from_serial(DATE(2010, 11, 15)).date()
+
+    def test_coupdays_composition(self) -> None:
+        # COUPDAYBS + COUPDAYSNC == COUPDAYS within the coupon period.
+        from gridcalc.libs.xlsx import COUPDAYBS, COUPDAYS, COUPDAYSNC
+
+        s, m = self._mk()
+        assert COUPDAYBS(s, m, 2, 1) + COUPDAYSNC(s, m, 2, 1) == COUPDAYS(s, m, 2, 1)
+
+    def test_30_360_coupdays_is_fixed(self) -> None:
+        # For 30/360 bases the coupon period is exactly 360/freq days.
+        from gridcalc.libs.xlsx import COUPDAYS
+
+        s, m = self._mk()
+        assert COUPDAYS(s, m, 2, 0) == 180.0
+        assert COUPDAYS(s, m, 4, 0) == 90.0
+
+    def test_errors(self) -> None:
+        from gridcalc.libs.xlsx import COUPNUM, DATE
+
+        assert COUPNUM(DATE(2017, 1, 1), DATE(2016, 1, 1), 2, 0) is ExcelError.NUM  # settle>=mat
+        assert COUPNUM(DATE(2015, 1, 1), DATE(2016, 1, 1), 3, 0) is ExcelError.NUM  # bad freq
+        assert COUPNUM(DATE(2015, 1, 1), DATE(2016, 1, 1), 2, 7) is ExcelError.NUM  # bad basis
+
+
+class TestBondPricing:
+    def _d(self, y, m, day):
+        from gridcalc.libs.xlsx import DATE
+
+        return DATE(y, m, day)
+
+    def test_price_ms_example(self) -> None:
+        from gridcalc.libs.xlsx import PRICE
+
+        # MS: 2008-02-15 .. 2017-11-15, 5.75%, 6.5%, 100, semiannual, 30/360.
+        got = PRICE(self._d(2008, 2, 15), self._d(2017, 11, 15), 0.0575, 0.065, 100, 2, 0)
+        assert math.isclose(got, 94.63436162, abs_tol=1e-6)
+
+    def test_price_yield_roundtrip(self) -> None:
+        from gridcalc.libs.xlsx import PRICE, YIELD
+
+        s, m = self._d(2008, 2, 15), self._d(2017, 11, 15)
+        price = PRICE(s, m, 0.0575, 0.065, 100, 2, 0)
+        assert math.isclose(YIELD(s, m, 0.0575, price, 100, 2, 0), 0.065, abs_tol=1e-8)
+
+    def test_price_single_period(self) -> None:
+        # Settlement inside the final coupon period (N == 1) uses simple
+        # interest; verify PRICE/YIELD still invert each other.
+        from gridcalc.libs.xlsx import PRICE, YIELD
+
+        s, m = self._d(2016, 8, 15), self._d(2016, 11, 15)
+        price = PRICE(s, m, 0.0575, 0.07, 100, 2, 0)
+        assert math.isclose(YIELD(s, m, 0.0575, price, 100, 2, 0), 0.07, abs_tol=1e-8)
+
+    def test_duration_mduration_ms(self) -> None:
+        from gridcalc.libs.xlsx import DURATION, MDURATION
+
+        s, m = self._d(2008, 1, 1), self._d(2016, 1, 1)
+        assert math.isclose(DURATION(s, m, 0.08, 0.09, 2, 1), 5.993775, abs_tol=1e-5)
+        assert math.isclose(MDURATION(s, m, 0.08, 0.09, 2, 1), 5.735669, abs_tol=1e-5)
+        # MDURATION = DURATION / (1 + yld/freq).
+        assert math.isclose(
+            MDURATION(s, m, 0.08, 0.09, 2, 1),
+            DURATION(s, m, 0.08, 0.09, 2, 1) / (1 + 0.09 / 2),
+            abs_tol=1e-12,
+        )
+
+    def test_errors(self) -> None:
+        from gridcalc.libs.xlsx import PRICE
+
+        assert (
+            PRICE(self._d(2008, 2, 15), self._d(2017, 11, 15), 0.0575, 0.065, 100, 2, 7)
+            is ExcelError.NUM
+        )
+        assert (
+            PRICE(self._d(2017, 1, 1), self._d(2016, 1, 1), 0.0575, 0.065, 100, 2, 0)
+            is ExcelError.NUM
+        )
+
+
+class TestBondAccrued:
+    def _d(self, y, m, day):
+        from gridcalc.libs.xlsx import DATE
+
+        return DATE(y, m, day)
+
+    def test_accrint(self) -> None:
+        from gridcalc.libs.xlsx import ACCRINT
+
+        got = ACCRINT(
+            self._d(2008, 3, 1), self._d(2008, 8, 31), self._d(2008, 5, 1), 0.1, 1000, 2, 0
+        )
+        assert math.isclose(got, 16.66666667, abs_tol=1e-6)
+
+    def test_accrintm(self) -> None:
+        from gridcalc.libs.xlsx import ACCRINTM
+
+        got = ACCRINTM(self._d(2008, 4, 1), self._d(2008, 6, 15), 0.1, 1000, 3)
+        assert math.isclose(got, 20.54794521, abs_tol=1e-6)
+
+
+class TestDiscountedSecurities:
+    def _d(self, y, m, day):
+        from gridcalc.libs.xlsx import DATE
+
+        return DATE(y, m, day)
+
+    def test_disc(self) -> None:
+        from gridcalc.libs.xlsx import DISC
+
+        got = DISC(self._d(2007, 1, 25), self._d(2007, 6, 15), 97.975, 100, 1)
+        assert math.isclose(got, 0.052420213, abs_tol=1e-8)
+
+    def test_pricedisc(self) -> None:
+        from gridcalc.libs.xlsx import PRICEDISC
+
+        got = PRICEDISC(self._d(2008, 2, 16), self._d(2008, 3, 1), 0.0525, 100, 2)
+        assert math.isclose(got, 99.79583333, abs_tol=1e-6)
+
+    def test_yielddisc(self) -> None:
+        from gridcalc.libs.xlsx import YIELDDISC
+
+        got = YIELDDISC(self._d(2008, 2, 16), self._d(2008, 3, 1), 99.795, 100, 2)
+        assert math.isclose(got, 0.052822572, abs_tol=1e-8)
+
+    def test_disc_pricedisc_inverse(self) -> None:
+        from gridcalc.libs.xlsx import DISC, PRICEDISC
+
+        s, m = self._d(2008, 2, 16), self._d(2008, 6, 1)
+        price = PRICEDISC(s, m, 0.0525, 100, 2)
+        assert math.isclose(DISC(s, m, price, 100, 2), 0.0525, abs_tol=1e-10)
+
+    def test_received(self) -> None:
+        from gridcalc.libs.xlsx import RECEIVED
+
+        got = RECEIVED(self._d(2008, 2, 15), self._d(2008, 5, 15), 1000000, 0.0575, 2)
+        assert math.isclose(got, 1014584.654407, abs_tol=1e-4)
+
+    def test_intrate(self) -> None:
+        from gridcalc.libs.xlsx import INTRATE
+
+        got = INTRATE(self._d(2008, 2, 15), self._d(2008, 5, 15), 1000000, 1014420, 2)
+        assert math.isclose(got, 0.05768, abs_tol=1e-6)
+
+    def test_pricemat_yieldmat_roundtrip(self) -> None:
+        from gridcalc.libs.xlsx import PRICEMAT, YIELDMAT
+
+        s, m, iss = self._d(2008, 2, 15), self._d(2008, 4, 13), self._d(2007, 11, 11)
+        price = PRICEMAT(s, m, iss, 0.061, 0.061, 0)
+        assert math.isclose(price, 99.98449888, abs_tol=1e-6)
+        assert math.isclose(YIELDMAT(s, m, iss, 0.061, price, 0), 0.061, abs_tol=1e-10)
+
+
+class TestTreasuryBills:
+    def _d(self, y, m, day):
+        from gridcalc.libs.xlsx import DATE
+
+        return DATE(y, m, day)
+
+    def test_tbillprice(self) -> None:
+        from gridcalc.libs.xlsx import TBILLPRICE
+
+        assert math.isclose(
+            TBILLPRICE(self._d(2008, 3, 31), self._d(2008, 6, 1), 0.09), 98.45, abs_tol=1e-9
+        )
+
+    def test_tbillyield(self) -> None:
+        from gridcalc.libs.xlsx import TBILLYIELD
+
+        assert math.isclose(
+            TBILLYIELD(self._d(2008, 3, 31), self._d(2008, 6, 1), 98.45),
+            0.09141696,
+            abs_tol=1e-7,
+        )
+
+    def test_tbilleq(self) -> None:
+        from gridcalc.libs.xlsx import TBILLEQ
+
+        assert math.isclose(
+            TBILLEQ(self._d(2008, 3, 31), self._d(2008, 6, 1), 0.0914),
+            0.09415149,
+            abs_tol=1e-7,
+        )
+
+    def test_tbilleq_long_dated(self) -> None:
+        # > 182 days exercises the quadratic branch; result stays finite.
+        from gridcalc.libs.xlsx import TBILLEQ
+
+        got = TBILLEQ(self._d(2008, 1, 1), self._d(2008, 12, 1), 0.05)
+        assert isinstance(got, float) and 0 < got < 1
+
+    def test_over_one_year_errors(self) -> None:
+        from gridcalc.libs.xlsx import TBILLPRICE
+
+        assert TBILLPRICE(self._d(2008, 1, 1), self._d(2009, 6, 1), 0.09) is ExcelError.NUM
+
+
+class TestFinancialMisc:
+    def test_dollarde(self) -> None:
+        from gridcalc.libs.xlsx import DOLLARDE
+
+        assert math.isclose(DOLLARDE(1.02, 16), 1.125, abs_tol=1e-12)
+        assert math.isclose(DOLLARDE(1.1, 32), 1.3125, abs_tol=1e-12)
+        assert DOLLARDE(1.02, 0) is ExcelError.DIV0
+        assert DOLLARDE(1.02, -1) is ExcelError.NUM
+
+    def test_dollarfr(self) -> None:
+        from gridcalc.libs.xlsx import DOLLARFR
+
+        assert math.isclose(DOLLARFR(1.125, 16), 1.02, abs_tol=1e-12)
+        assert math.isclose(DOLLARFR(1.125, 32), 1.04, abs_tol=1e-12)
+
+    def test_dollar_de_fr_inverse(self) -> None:
+        from gridcalc.libs.xlsx import DOLLARDE, DOLLARFR
+
+        assert math.isclose(DOLLARDE(DOLLARFR(1.3125, 16), 16), 1.3125, abs_tol=1e-12)
+
+    def test_rri(self) -> None:
+        from gridcalc.libs.xlsx import RRI
+
+        assert math.isclose(RRI(96, 10000, 11000), 0.0009933073, abs_tol=1e-9)
+
+    def test_pduration(self) -> None:
+        from gridcalc.libs.xlsx import PDURATION
+
+        assert math.isclose(PDURATION(0.025, 2000, 2200), 3.859866, abs_tol=1e-5)
+
+    def test_ispmt(self) -> None:
+        from gridcalc.libs.xlsx import ISPMT
+
+        assert math.isclose(ISPMT(0.1 / 12, 1, 3 * 12, 8000000), -64814.8148, abs_tol=1e-3)
+
+    def test_via_grid(self) -> None:
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, "=TBILLPRICE(DATE(2008,3,31),DATE(2008,6,1),0.09)")
+        g.setcell(0, 1, "=DOLLARDE(1.02,16)")
+        assert math.isclose(g.cells[0][0].val, 98.45, abs_tol=1e-9)
+        assert math.isclose(g.cells[0][1].val, 1.125, abs_tol=1e-12)
+
+
+class TestFringeStatsExtra:
+    def test_skew_p_ms_example(self) -> None:
+        from gridcalc.libs.xlsx import SKEWP
+
+        got = SKEWP(Vec([3, 4, 5, 2, 3, 4, 5, 6, 4, 7]))
+        assert math.isclose(got, 0.303193, abs_tol=1e-6)
+
+    def test_skew_p_vs_sample_skew(self) -> None:
+        # Population skew has smaller magnitude than sample SKEW for the same data.
+        from gridcalc.libs.xlsx import SKEW, SKEWP
+
+        data = Vec([1, 2, 5, 9, 9, 10])
+        assert abs(SKEWP(data)) < abs(SKEW(data))
+
+    def test_skew_p_errors(self) -> None:
+        from gridcalc.libs.xlsx import SKEWP
+
+        assert SKEWP(Vec([5, 5, 5])) is ExcelError.DIV0  # zero spread
+
+    def test_ftest_ms_example(self) -> None:
+        from gridcalc.libs.xlsx import F_TEST
+
+        got = F_TEST(Vec([6, 7, 9, 15, 21]), Vec([20, 28, 31, 38, 40]))
+        assert math.isclose(got, 0.64831785, abs_tol=1e-6)
+
+    def test_ftest_symmetric(self) -> None:
+        # F.TEST is a two-tailed variance test: order of arguments doesn't matter.
+        from gridcalc.libs.xlsx import F_TEST
+
+        a = Vec([6, 7, 9, 15, 21])
+        b = Vec([20, 28, 31, 38, 40])
+        assert math.isclose(F_TEST(a, b), F_TEST(b, a), abs_tol=1e-12)
+
+    def test_ftest_identical_variance(self) -> None:
+        # Equal variances -> p-value of 1 (no evidence they differ).
+        from gridcalc.libs.xlsx import F_TEST
+
+        assert math.isclose(F_TEST(Vec([1, 2, 3, 4]), Vec([11, 12, 13, 14])), 1.0, abs_tol=1e-9)
+
+    def test_ftest_errors(self) -> None:
+        from gridcalc.libs.xlsx import F_TEST
+
+        assert F_TEST(Vec([1]), Vec([1, 2, 3])) is ExcelError.DIV0
+        assert F_TEST(Vec([5, 5, 5]), Vec([1, 2, 3])) is ExcelError.DIV0
+
+
+class TestConvert:
+    def test_ms_examples(self) -> None:
+        from gridcalc.libs.xlsx import CONVERT
+
+        assert math.isclose(CONVERT(1, "lbm", "kg"), 0.45359237, abs_tol=1e-9)
+        assert math.isclose(CONVERT(68, "F", "C"), 20.0, abs_tol=1e-12)
+        assert CONVERT(2.5, "ft", "sec") is ExcelError.NA
+        assert math.isclose(CONVERT(100, "ft", "m"), 30.48, abs_tol=1e-12)
+
+    def test_distance(self) -> None:
+        from gridcalc.libs.xlsx import CONVERT
+
+        assert math.isclose(CONVERT(1, "mi", "km"), 1.609344, abs_tol=1e-9)
+        assert math.isclose(CONVERT(1, "km", "mi"), 0.62137119, abs_tol=1e-7)
+        assert math.isclose(CONVERT(1, "in", "cm"), 2.54, abs_tol=1e-12)
+
+    def test_time(self) -> None:
+        from gridcalc.libs.xlsx import CONVERT
+
+        assert math.isclose(CONVERT(1, "day", "hr"), 24.0, abs_tol=1e-12)
+        assert math.isclose(CONVERT(1, "hr", "mn"), 60.0, abs_tol=1e-12)
+        assert math.isclose(CONVERT(1, "yr", "day"), 365.25, abs_tol=1e-9)
+
+    def test_temperature(self) -> None:
+        from gridcalc.libs.xlsx import CONVERT
+
+        assert math.isclose(CONVERT(0, "C", "F"), 32.0, abs_tol=1e-12)
+        assert math.isclose(CONVERT(100, "C", "K"), 373.15, abs_tol=1e-12)
+        assert math.isclose(CONVERT(32, "F", "C"), 0.0, abs_tol=1e-12)
+        assert math.isclose(CONVERT(0, "C", "Rank"), 491.67, abs_tol=1e-9)
+        assert math.isclose(CONVERT(80, "Reau", "C"), 100.0, abs_tol=1e-9)
+
+    def test_metric_prefixes(self) -> None:
+        from gridcalc.libs.xlsx import CONVERT
+
+        assert math.isclose(CONVERT(1, "kg", "g"), 1000.0, abs_tol=1e-9)
+        assert math.isclose(CONVERT(1, "cm", "mm"), 10.0, abs_tol=1e-12)
+        assert math.isclose(CONVERT(1000, "mm", "m"), 1.0, abs_tol=1e-12)
+        assert math.isclose(CONVERT(1, "kPa", "Pa"), 1000.0, abs_tol=1e-9)
+
+    def test_prefix_rejected_on_nonmetric(self) -> None:
+        # A prefix on a non-metric unit (foot) is not valid -> #N/A.
+        from gridcalc.libs.xlsx import CONVERT
+
+        assert CONVERT(1, "kft", "m") is ExcelError.NA
+
+    def test_standalone_unit_wins_over_prefix(self) -> None:
+        # "min" is minute, not milli-inch; "mi" is mile, not milli-i.
+        from gridcalc.libs.xlsx import CONVERT
+
+        assert math.isclose(CONVERT(1, "min", "sec"), 60.0, abs_tol=1e-12)
+        assert math.isclose(CONVERT(1, "mi", "ft"), 5280.0, abs_tol=1e-9)
+
+    def test_information_binary_prefixes(self) -> None:
+        from gridcalc.libs.xlsx import CONVERT
+
+        assert math.isclose(CONVERT(1, "kibyte", "byte"), 1024.0, abs_tol=1e-9)
+        assert math.isclose(CONVERT(1, "Mibyte", "kibyte"), 1024.0, abs_tol=1e-9)
+        assert math.isclose(CONVERT(1, "byte", "bit"), 8.0, abs_tol=1e-12)
+
+    def test_category_mismatch_and_unknown(self) -> None:
+        from gridcalc.libs.xlsx import CONVERT
+
+        assert CONVERT(1, "mi", "kg") is ExcelError.NA
+        assert CONVERT(1, "C", "m") is ExcelError.NA  # temp vs distance
+        assert CONVERT(1, "foo", "m") is ExcelError.NA
+        assert CONVERT(1, "m", "bar") is ExcelError.NA
+
+    def test_roundtrip(self) -> None:
+        from gridcalc.libs.xlsx import CONVERT
+
+        for val, a, b in [(100, "ft", "m"), (5, "gal", "l"), (72, "F", "C"), (3, "BTU", "J")]:
+            there = CONVERT(val, a, b)
+            back = CONVERT(there, b, a)
+            assert math.isclose(back, val, rel_tol=1e-9)
+
+    def test_via_grid(self) -> None:
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, '=CONVERT(1,"lbm","kg")')
+        g.setcell(0, 1, '=CONVERT(68,"F","C")')
+        assert math.isclose(g.cells[0][0].val, 0.45359237, abs_tol=1e-9)
+        assert math.isclose(g.cells[0][1].val, 20.0, abs_tol=1e-12)
+
+
+class TestFrequency:
+    def test_ms_example(self) -> None:
+        from gridcalc.libs.xlsx import FREQUENCY
+
+        # MS docs example: scores against bins 70/79/89 -> [1, 2, 4, 2].
+        r = FREQUENCY(
+            Vec([79, 85, 78, 85, 50, 81, 95, 88, 97]),
+            Vec([70, 79, 89]),
+        )
+        assert isinstance(r, Vec)
+        assert r.data == [1.0, 2.0, 4.0, 2.0]
+
+    def test_result_length_is_bins_plus_one(self) -> None:
+        from gridcalc.libs.xlsx import FREQUENCY
+
+        r = FREQUENCY(Vec([1, 2, 3, 4, 5]), Vec([2, 4]))
+        assert isinstance(r, Vec) and len(r.data) == 3
+
+    def test_boundary_counts_in_lower_interval(self) -> None:
+        from gridcalc.libs.xlsx import FREQUENCY
+
+        # A value equal to a bin boundary falls in that (<=) interval.
+        assert FREQUENCY(Vec([1, 2, 3]), Vec([2])).data == [2.0, 1.0]
+
+    def test_empty_bins_counts_all(self) -> None:
+        from gridcalc.libs.xlsx import FREQUENCY
+
+        assert FREQUENCY(Vec([1, 2, 3]), Vec([])).data == [3.0]
+
+    def test_duplicate_bin_yields_zero(self) -> None:
+        from gridcalc.libs.xlsx import FREQUENCY
+
+        assert FREQUENCY(Vec([1, 2, 3, 4]), Vec([2, 2, 3])).data == [2.0, 0.0, 1.0, 1.0]
+
+    def test_non_numeric_ignored(self) -> None:
+        from gridcalc.libs.xlsx import FREQUENCY
+
+        assert FREQUENCY(Vec([1, "x", 2, None, 3]), Vec([2])).data == [2.0, 1.0]
+
+    def test_counts_sum_to_data_size(self) -> None:
+        from gridcalc.libs.xlsx import FREQUENCY
+
+        data = Vec([5, 1, 9, 3, 7, 2, 8, 4, 6])
+        r = FREQUENCY(data, Vec([3, 6]))
+        assert isinstance(r, Vec) and sum(r.data) == 9
+
+    def test_via_grid_spills(self) -> None:
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        for i, v in enumerate([79, 85, 78, 85, 50, 81, 95, 88, 97]):
+            g.setcell(0, i, str(v))
+        for i, v in enumerate([70, 79, 89]):
+            g.setcell(1, i, str(v))
+        g.setcell(3, 0, "=FREQUENCY(A1:A9, B1:B3)")
+        assert g.cells[3][0].spill_shape == (4, 1)
+        assert [g.cells[3][r].val for r in range(4)] == [1.0, 2.0, 4.0, 2.0]
+        g.setcell(5, 0, "=SUM(D1#)")
+        assert g.cells[5][0].val == 9.0
+
+
+class TestReferenceFunctions:
+    """OFFSET / FORMULATEXT / AREAS / LOOKUP and the Reference value type.
+
+    OFFSET returns a reference that materialises to a scalar or Vec wherever
+    a value is expected (a function argument, an arithmetic operand, a
+    formula result). Exercised through the EXCEL-mode grid."""
+
+    @staticmethod
+    def _grid() -> Grid:
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        for i, v in enumerate([10, 20, 30, 40, 50]):
+            g.setcell(0, i, str(v))  # A1:A5
+        return g
+
+    def test_offset_single_cell(self) -> None:
+        g = self._grid()
+        g.setcell(2, 0, "=OFFSET(A1,2,0)")  # A3
+        assert g.cells[2][0].val == 30.0
+
+    def test_offset_column_shift(self) -> None:
+        g = self._grid()
+        g.setcell(1, 0, "7")  # B1
+        g.setcell(2, 0, "=OFFSET(A1,0,1)")  # B1
+        assert g.cells[2][0].val == 7.0
+
+    def test_offset_range_summed(self) -> None:
+        g = self._grid()
+        g.setcell(2, 0, "=SUM(OFFSET(A1,0,0,5,1))")  # A1:A5
+        g.setcell(2, 1, "=SUM(OFFSET(A1,1,0,3,1))")  # A2:A4
+        assert g.cells[2][0].val == 150.0
+        assert g.cells[2][1].val == 90.0
+
+    def test_offset_in_arithmetic(self) -> None:
+        g = self._grid()
+        g.setcell(2, 0, "=OFFSET(A1,3,0)+OFFSET(A1,4,0)")  # 40+50
+        assert g.cells[2][0].val == 90.0
+
+    def test_offset_off_sheet_is_ref_error(self) -> None:
+        g = self._grid()
+        g.setcell(2, 0, "=OFFSET(A1,-1,0)")
+        assert g.cells[2][0].err is ExcelError.REF
+
+    def test_offset_zero_height_is_ref_error(self) -> None:
+        g = self._grid()
+        g.setcell(2, 0, "=SUM(OFFSET(A1,0,0,0,1))")
+        assert g.cells[2][0].err is ExcelError.REF
+
+    def test_offset_dynamic_argument_recomputes(self) -> None:
+        g = self._grid()
+        g.setcell(5, 0, "2")  # F1
+        g.setcell(2, 0, "=OFFSET(A1,F1,0)")  # A3
+        assert g.cells[2][0].val == 30.0
+        g.setcell(5, 0, "4")  # -> A5
+        assert g.cells[2][0].val == 50.0
+
+    def test_offset_read_cell_change_recomputes(self) -> None:
+        # OFFSET is volatile, so a change to a cell it reads recomputes it.
+        g = self._grid()
+        g.setcell(2, 0, "=SUM(OFFSET(A1,0,0,3,1))")  # A1:A3 = 60
+        assert g.cells[2][0].val == 60.0
+        g.setcell(0, 1, "99")  # A2
+        assert g.cells[2][0].val == 139.0
+
+    def test_rows_columns_of_offset(self) -> None:
+        g = self._grid()
+        g.setcell(2, 0, "=ROWS(OFFSET(A1,0,0,4,1))")
+        g.setcell(2, 1, "=COLUMNS(OFFSET(A1,0,0,2,3))")
+        assert g.cells[2][0].val == 4.0
+        assert g.cells[2][1].val == 3.0
+
+    def test_offset_nested(self) -> None:
+        g = self._grid()
+        g.setcell(2, 0, "=OFFSET(OFFSET(A1,1,0),1,0)")  # A2 then +1 row -> A3
+        assert g.cells[2][0].val == 30.0
+
+    def test_formulatext(self) -> None:
+        g = self._grid()
+        g.setcell(5, 0, "=A2*3")
+        g.setcell(5, 1, "=FORMULATEXT(F1)")
+        assert g.cells[5][1].sval == "=A2*3"
+
+    def test_formulatext_non_formula_is_na(self) -> None:
+        g = self._grid()
+        g.setcell(5, 0, "=FORMULATEXT(A1)")  # A1 is a number
+        assert g.cells[5][0].err is ExcelError.NA
+
+    def test_formulatext_tracks_referenced_formula(self) -> None:
+        g = self._grid()
+        g.setcell(5, 0, "=A1+1")
+        g.setcell(5, 1, "=FORMULATEXT(F1)")
+        assert g.cells[5][1].sval == "=A1+1"
+        g.setcell(5, 0, "=A1*2")
+        assert g.cells[5][1].sval == "=A1*2"
+
+    def test_areas(self) -> None:
+        g = self._grid()
+        g.setcell(2, 0, "=AREAS(A1:A5)")
+        g.setcell(2, 1, "=AREAS(A1)")
+        assert g.cells[2][0].val == 1.0
+        assert g.cells[2][1].val == 1.0
+
+    def test_isref_of_offset(self) -> None:
+        g = self._grid()
+        g.setcell(2, 0, "=ISREF(OFFSET(A1,1,1))")
+        g.setcell(2, 1, "=ISREF(A1+1)")
+        assert g.cells[2][0].sval == "TRUE"
+        assert g.cells[2][1].sval == "FALSE"
+
+    def test_lookup_vector_form(self) -> None:
+        g = self._grid()
+        for i, (x, y) in enumerate([(10, "a"), (20, "b"), (30, "c"), (40, "d")]):
+            g.setcell(6, i, str(x))  # G1:G4
+            g.setcell(7, i, y)  # H1:H4
+        g.setcell(8, 0, "=LOOKUP(25, G1:G4, H1:H4)")  # largest <= 25 -> b
+        g.setcell(8, 1, "=LOOKUP(40, G1:G4, H1:H4)")  # exact -> d
+        g.setcell(8, 2, "=LOOKUP(5, G1:G4, H1:H4)")  # below all -> #N/A
+        assert g.cells[8][0].sval == "b"
+        assert g.cells[8][1].sval == "d"
+        assert g.cells[8][2].err is ExcelError.NA
+
+    def test_lookup_default_result_vector(self) -> None:
+        g = self._grid()
+        # No result vector: returns the matched lookup value itself.
+        g.setcell(2, 0, "=LOOKUP(35, A1:A5)")  # largest <= 35 is 30
+        assert g.cells[2][0].val == 30.0
+
+    def test_offset_as_top_level_result_materialises(self) -> None:
+        g = self._grid()
+        g.setcell(2, 0, "=OFFSET(A1,4,0)")  # A5 = 50, bare reference result
+        assert g.cells[2][0].val == 50.0
+
+    def test_iferror_catches_offset_error(self) -> None:
+        g = self._grid()
+        g.setcell(2, 0, "=IFERROR(OFFSET(A1,-5,0), 999)")
+        assert g.cells[2][0].val == 999.0
+
+    def test_index_of_offset_range(self) -> None:
+        g = self._grid()
+        g.setcell(2, 0, "=INDEX(OFFSET(A1,0,0,5,1), 3)")  # 3rd of A1:A5
+        assert g.cells[2][0].val == 30.0
+
+    def test_offset_range_arithmetic_spills(self) -> None:
+        from gridcalc.engine import SPILL
+
+        g = self._grid()
+        g.setcell(3, 0, "=OFFSET(A1,0,0,3,1)*2")  # [20,40,60] down D1:D3
+        assert g.cells[3][0].val == 20.0
+        assert g.cells[3][1].type == SPILL
+        assert g.cells[3][2].val == 60.0

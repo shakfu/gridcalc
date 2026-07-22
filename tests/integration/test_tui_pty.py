@@ -239,3 +239,18 @@ def test_opt_bad_args_renders_usage(tui_session) -> None:
     # see the required keywords without consulting docs.
     assert "max|min" in render
     assert "vars" in render
+
+
+def test_dynamic_array_spills_into_neighbours(tui_session) -> None:
+    """End-to-end spill through the real curses path: switch to EXCEL mode,
+    type ``=SEQUENCE(9)`` into A1, and confirm the array spills down column A
+    (the value ``9`` only appears if it spilled) rather than staying a single
+    ``1[9]`` array-badge cell."""
+    tui_session.wait_for("[HYBRID]", timeout=5.0)  # empty launch starts in HYBRID
+    tui_session.send(":mode excel\n")
+    tui_session.wait_for("[EXCEL]", timeout=5.0)
+    tui_session.send("=SEQUENCE(9)\n")
+    render = tui_session.wait_for("9", timeout=5.0)
+    # Spilled: the last element is present and the anchor is not a badge.
+    assert "9" in render
+    assert "1[9]" not in render

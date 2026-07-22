@@ -6,6 +6,7 @@ All functions accept the same argument patterns as their Excel counterparts.
 
 from __future__ import annotations
 
+import cmath
 import datetime as _dt
 import math
 import operator
@@ -1564,68 +1565,178 @@ def CHOOSE(index: int, *args: Any) -> Any:
 
 def ROW(env: Any, *args: Any) -> int | ExcelError:
     """=ROW() -> current cell's 1-based row.
-    =ROW(A5) -> 5. =ROW(B2:B7) -> 2 (top row of range)."""
-    from ..formula.ast_nodes import CellRef as _CellRef
-    from ..formula.ast_nodes import RangeRef as _RangeRef
-
+    =ROW(A5) -> 5. =ROW(B2:B7) -> 2 (top row of range).
+    Accepts a reference-producing call too, e.g. =ROW(OFFSET(A1,3,0))."""
     if not args:
         if env.current_cell is None:
             return ExcelError.VALUE
         return int(env.current_cell[1]) + 1
-    a = args[0]
-    if isinstance(a, _CellRef):
-        return a.row + 1
-    if isinstance(a, _RangeRef):
-        return min(a.start.row, a.end.row) + 1
-    return ExcelError.VALUE
+    ref = env.resolve_ref(args[0])
+    return ref.r1 + 1 if ref is not None else ExcelError.VALUE
 
 
 def COLUMN(env: Any, *args: Any) -> int | ExcelError:
     """=COLUMN() -> current cell's 1-based column.
     =COLUMN(A5) -> 1. =COLUMN(B2:D7) -> 2 (leftmost col of range)."""
-    from ..formula.ast_nodes import CellRef as _CellRef
-    from ..formula.ast_nodes import RangeRef as _RangeRef
-
     if not args:
         if env.current_cell is None:
             return ExcelError.VALUE
         return int(env.current_cell[0]) + 1
-    a = args[0]
-    if isinstance(a, _CellRef):
-        return a.col + 1
-    if isinstance(a, _RangeRef):
-        return min(a.start.col, a.end.col) + 1
-    return ExcelError.VALUE
+    ref = env.resolve_ref(args[0])
+    return ref.c1 + 1 if ref is not None else ExcelError.VALUE
 
 
 def ROWS(env: Any, *args: Any) -> int | ExcelError:
-    """=ROWS(A1:B10) -> 10. =ROWS(A1) -> 1."""
-    from ..formula.ast_nodes import CellRef as _CellRef
-    from ..formula.ast_nodes import RangeRef as _RangeRef
-
+    """=ROWS(A1:B10) -> 10. =ROWS(A1) -> 1. =ROWS(OFFSET(A1,0,0,5,1)) -> 5."""
     if len(args) != 1:
         return ExcelError.VALUE
-    a = args[0]
-    if isinstance(a, _CellRef):
-        return 1
-    if isinstance(a, _RangeRef):
-        return abs(a.end.row - a.start.row) + 1
-    return ExcelError.VALUE
+    ref = env.resolve_ref(args[0])
+    return ref.r2 - ref.r1 + 1 if ref is not None else ExcelError.VALUE
 
 
 def COLUMNS(env: Any, *args: Any) -> int | ExcelError:
     """=COLUMNS(A1:C10) -> 3. =COLUMNS(A1) -> 1."""
-    from ..formula.ast_nodes import CellRef as _CellRef
-    from ..formula.ast_nodes import RangeRef as _RangeRef
-
     if len(args) != 1:
         return ExcelError.VALUE
-    a = args[0]
-    if isinstance(a, _CellRef):
-        return 1
-    if isinstance(a, _RangeRef):
-        return abs(a.end.col - a.start.col) + 1
+    ref = env.resolve_ref(args[0])
+    return ref.c2 - ref.c1 + 1 if ref is not None else ExcelError.VALUE
+
+
+def _offset_int(v: Any) -> int | ExcelError:
+    """Coerce an OFFSET numeric argument to an int (Excel truncates)."""
+    if isinstance(v, ExcelError):
+        return v
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, (int, float)):
+        return int(v)
+    if isinstance(v, Vec):
+        return _offset_int(v.data[0]) if v.data else ExcelError.VALUE
+    if isinstance(v, str):
+        try:
+            return int(float(v))
+        except ValueError:
+            return ExcelError.VALUE
+    if v is None:
+        return 0
     return ExcelError.VALUE
+
+
+def OFFSET(env: Any, *args: Any) -> Any:
+    """=OFFSET(reference, rows, cols, [height], [width]) -> a reference
+    shifted from `reference` by (rows, cols), sized [height]x[width]
+    (defaulting to the base reference's size). Returns a reference, which
+    an enclosing function materialises (e.g. =SUM(OFFSET(A1,0,0,10,1)))."""
+    from ..engine import NCOL, NROW
+    from ..formula.evaluator import Reference
+
+    if not 3 <= len(args) <= 5:
+        return ExcelError.VALUE
+    base = env.resolve_ref(args[0])
+    if base is None:
+        return ExcelError.REF
+    rows = _offset_int(env.eval_node(args[1]))
+    cols = _offset_int(env.eval_node(args[2]))
+    if isinstance(rows, ExcelError):
+        return rows
+    if isinstance(cols, ExcelError):
+        return cols
+    height = base.r2 - base.r1 + 1
+    if len(args) >= 4:
+        h = _offset_int(env.eval_node(args[3]))
+        if isinstance(h, ExcelError):
+            return h
+        height = h
+    width = base.c2 - base.c1 + 1
+    if len(args) == 5:
+        w = _offset_int(env.eval_node(args[4]))
+        if isinstance(w, ExcelError):
+            return w
+        width = w
+    if height <= 0 or width <= 0:
+        return ExcelError.REF
+    r1 = base.r1 + rows
+    c1 = base.c1 + cols
+    r2 = r1 + height - 1
+    c2 = c1 + width - 1
+    if r1 < 0 or c1 < 0 or r2 >= NROW or c2 >= NCOL:
+        return ExcelError.REF
+    return Reference(c1, r1, c2, r2, base.sheet)
+
+
+def FORMULATEXT(env: Any, *args: Any) -> str | ExcelError:
+    """=FORMULATEXT(reference) -> the formula text of the (top-left) cell of
+    the reference, or #N/A if it holds no formula."""
+    if len(args) != 1:
+        return ExcelError.VALUE
+    ref = env.resolve_ref(args[0])
+    if ref is None:
+        return ExcelError.NA
+    txt = env.cell_formula_text(ref.c1, ref.r1, ref.sheet)
+    return txt if isinstance(txt, str) else ExcelError.NA
+
+
+def AREAS(env: Any, *args: Any) -> int | ExcelError:
+    """=AREAS(reference) -> number of areas in a reference. Union references
+    (multiple areas) are not expressible in this grammar, so a valid single
+    reference is always 1 area."""
+    if len(args) != 1:
+        return ExcelError.VALUE
+    ref = env.resolve_ref(args[0])
+    return 1 if ref is not None else ExcelError.VALUE
+
+
+def _lookup_cmp(a: Any, b: Any) -> int | None:
+    """Order two LOOKUP operands: numbers numerically, text case-insensitively.
+    Returns -1/0/1, or None when the two are not comparable (skip)."""
+    an = isinstance(a, (int, float)) and not isinstance(a, bool)
+    bn = isinstance(b, (int, float)) and not isinstance(b, bool)
+    if an and bn:
+        return -1 if a < b else (1 if a > b else 0)
+    if isinstance(a, str) and isinstance(b, str):
+        la, lb = a.lower(), b.lower()
+        return -1 if la < lb else (1 if la > lb else 0)
+    return None
+
+
+def LOOKUP(lookup_value: Any, lookup_vector: Any, result_vector: Any = None) -> Any:
+    """=LOOKUP(lookup_value, lookup_vector, [result_vector]). Legacy lookup.
+
+    Vector form finds the largest value in ``lookup_vector`` that is <=
+    ``lookup_value`` (the vector is assumed sorted ascending) and returns the
+    aligned element of ``result_vector`` (or of ``lookup_vector`` itself).
+    Array form -- ``LOOKUP(value, array)`` -- searches the first row or
+    column of the array and returns from the last, whichever dimension is
+    longer.
+    """
+    if result_vector is None and isinstance(lookup_vector, Vec) and lookup_vector.is_2d:
+        rows, cols = lookup_vector.shape
+        if cols > rows:
+            search = [lookup_vector.at(1, j) for j in range(1, cols + 1)]
+            result = [lookup_vector.at(rows, j) for j in range(1, cols + 1)]
+        else:
+            search = [lookup_vector.at(i, 1) for i in range(1, rows + 1)]
+            result = [lookup_vector.at(i, cols) for i in range(1, rows + 1)]
+    else:
+        search = list(lookup_vector.data) if isinstance(lookup_vector, Vec) else [lookup_vector]
+        if result_vector is None:
+            result = list(search)
+        elif isinstance(result_vector, Vec):
+            result = list(result_vector.data)
+        else:
+            result = [result_vector]
+    best = -1
+    for i, v in enumerate(search):
+        c = _lookup_cmp(v, lookup_value)
+        if c is None:
+            continue
+        if c <= 0:
+            best = i
+        else:
+            break
+    if best < 0 or best >= len(result):
+        return ExcelError.NA
+    return result[best]
 
 
 # -- Tier 3: aggregates --
@@ -2054,13 +2165,11 @@ def ISFORMULA(env: Any, *args: Any) -> bool | ExcelError:
 
 
 def ISREF(env: Any, *args: Any) -> bool:
-    """Raw-args. True if argument is a cell or range reference."""
-    from ..formula.ast_nodes import CellRef as _CellRef
-    from ..formula.ast_nodes import RangeRef as _RangeRef
-
+    """Raw-args. True if the argument resolves to a reference (a cell, a
+    range, a named range, or a reference-returning call like OFFSET)."""
     if len(args) != 1:
         return False
-    return isinstance(args[0], (_CellRef, _RangeRef))
+    return env.resolve_ref(args[0]) is not None
 
 
 # -- Tier 3: text --
@@ -4197,6 +4306,34 @@ def GROWTH(
     return pred
 
 
+def FREQUENCY(data_array: Vec | float, bins_array: Vec | float) -> Vec | ExcelError:
+    """=FREQUENCY(data_array, bins_array) -> a vertical array of counts of how
+    many values in ``data_array`` fall into each interval defined by
+    ``bins_array``.
+
+    The result has one more element than ``bins_array``: element 0 counts
+    values ``<= bins[0]``, element i counts ``bins[i-1] < x <= bins[i]``, and
+    the final element counts values greater than the last bin. Non-numeric
+    entries in either argument are ignored (Excel rule). With spill enabled
+    the result column lays itself out down the sheet.
+    """
+    data = _vec_data(data_array)
+    bins = _vec_data(bins_array)
+    if not bins:
+        return Vec([float(len(data))])
+    n = len(bins)
+    counts = [0] * (n + 1)
+    for x in data:
+        for i in range(n):
+            lo = bins[i - 1] if i > 0 else float("-inf")
+            if lo < x <= bins[i]:
+                counts[i] += 1
+                break
+        else:
+            counts[n] += 1
+    return Vec([float(c) for c in counts])
+
+
 # -- Tier 4: D-functions (database queries) --
 #
 # Database is a 2D Vec (cells row-major; cols carries the width). The
@@ -4663,6 +4800,1433 @@ def HSTACK(*ranges: Any) -> Vec | ExcelError:
     return Vec(out, cols=total_cols)
 
 
+# -- Engineering: comparison --
+
+
+def DELTA(a: float, b: float = 0.0) -> int:
+    """=DELTA(n1, [n2]) -> 1 if the two numbers are equal, else 0 (Kronecker)."""
+    return 1 if float(a) == float(b) else 0
+
+
+def GESTEP(number: float, step: float = 0.0) -> int:
+    """=GESTEP(number, [step]) -> 1 if number >= step, else 0."""
+    return 1 if float(number) >= float(step) else 0
+
+
+# -- Numeral conversion --
+
+_BASE_DIGITS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+_ROMAN_PAIRS: list[tuple[int, str]] = [
+    (1000, "M"),
+    (900, "CM"),
+    (500, "D"),
+    (400, "CD"),
+    (100, "C"),
+    (90, "XC"),
+    (50, "L"),
+    (40, "XL"),
+    (10, "X"),
+    (9, "IX"),
+    (5, "V"),
+    (4, "IV"),
+    (1, "I"),
+]
+
+_ROMAN_VALUE = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+
+
+def ROMAN(number: int, form: int = 0) -> str | ExcelError:
+    """=ROMAN(number, [form]) -> classic Roman numeral for 0..3999.
+
+    Only the classic form (form 0 / omitted / TRUE) is produced; the
+    concise forms 1..4 are accepted but return the classic representation.
+    """
+    n = int(number)
+    if n < 0 or n > 3999:
+        return ExcelError.VALUE
+    out: list[str] = []
+    for val, sym in _ROMAN_PAIRS:
+        while n >= val:
+            out.append(sym)
+            n -= val
+    return "".join(out)
+
+
+def ARABIC(text: str) -> int | ExcelError:
+    """=ARABIC(roman) -> integer value of a Roman numeral. Lenient about
+    form (mirrors Excel); a leading '-' negates."""
+    s = str(text).strip().upper()
+    if s == "":
+        return 0
+    neg = s[0] == "-"
+    if neg:
+        s = s[1:]
+    if len(s) > 255:
+        return ExcelError.VALUE
+    total = 0
+    prev = 0
+    for ch in reversed(s):
+        v = _ROMAN_VALUE.get(ch)
+        if v is None:
+            return ExcelError.VALUE
+        if v < prev:
+            total -= v
+        else:
+            total += v
+            prev = v
+    return -total if neg else total
+
+
+def BASE(number: int, radix: int, min_length: int = 0) -> str | ExcelError:
+    """=BASE(number, radix, [min_length]) -> number as a string in radix 2..36."""
+    n = int(number)
+    r = int(radix)
+    ml = int(min_length)
+    if n < 0 or n >= 2**53:
+        return ExcelError.NUM
+    if r < 2 or r > 36:
+        return ExcelError.NUM
+    if ml < 0 or ml > 255:
+        return ExcelError.NUM
+    if n == 0:
+        s = "0"
+    else:
+        s = ""
+        while n:
+            s = _BASE_DIGITS[n % r] + s
+            n //= r
+    return s.rjust(ml, "0")
+
+
+def DECIMAL(text: str, radix: int) -> int | ExcelError:
+    """=DECIMAL(text, radix) -> integer value of a radix 2..36 string."""
+    r = int(radix)
+    if r < 2 or r > 36:
+        return ExcelError.NUM
+    s = str(text).strip().upper()
+    if len(s) > 255:
+        return ExcelError.NUM
+    if s == "":
+        return 0
+    val = 0
+    for ch in s:
+        d = _BASE_DIGITS.find(ch)
+        if d < 0 or d >= r:
+            return ExcelError.NUM
+        val = val * r + d
+    return val
+
+
+# -- Engineering: complex numbers --
+#
+# Excel encodes complex numbers as text ("a+bi" or "a+bj"). The IM* family
+# parses that text, computes with Python's complex type, and re-formats.
+# Results are emitted with the "i" suffix (Excel's default); j-suffix
+# propagation from inputs is not tracked.
+
+
+def _fmt_num(x: float) -> str:
+    """Excel-style number formatting: integers lose the decimal, otherwise
+    up to 15 significant digits. Normalises -0.0 to 0."""
+    if x == 0:
+        x = 0.0
+    return f"{x:.15g}"
+
+
+def _fmt_complex(z: complex, suffix: str = "i") -> str:
+    re_ = z.real if z.real != 0 else 0.0
+    im = z.imag if z.imag != 0 else 0.0
+    if im == 0:
+        return _fmt_num(re_)
+    if re_ == 0:
+        if im == 1:
+            return suffix
+        if im == -1:
+            return "-" + suffix
+        return _fmt_num(im) + suffix
+    sign = "+" if im > 0 else "-"
+    coef = "" if abs(im) == 1 else _fmt_num(abs(im))
+    return f"{_fmt_num(re_)}{sign}{coef}{suffix}"
+
+
+def _parse_complex(v: Any) -> complex | ExcelError:
+    """Parse an Excel complex string (or a bare number) into a complex."""
+    if isinstance(v, bool):
+        return ExcelError.VALUE
+    if isinstance(v, (int, float)):
+        return complex(float(v), 0.0)
+    if not isinstance(v, str):
+        return ExcelError.VALUE
+    s = v.strip()
+    if s == "":
+        return ExcelError.NUM
+    suffix = ""
+    if s[-1] in ("i", "j"):
+        suffix = s[-1]
+        s = s[:-1]
+    try:
+        if not suffix:
+            return complex(float(s), 0.0)
+        # Body holds real and imaginary parts; split on the last sign that
+        # is not part of an exponent and not a leading sign.
+        split = None
+        for i in range(1, len(s)):
+            if s[i] in "+-" and s[i - 1] not in "eE":
+                split = i
+        if split is None:
+            real_str, imag_str = "", s
+        else:
+            real_str, imag_str = s[:split], s[split:]
+        real = 0.0 if real_str == "" else float(real_str)
+        if imag_str in ("", "+"):
+            imag = 1.0
+        elif imag_str == "-":
+            imag = -1.0
+        else:
+            imag = float(imag_str)
+        return complex(real, imag)
+    except ValueError:
+        return ExcelError.NUM
+
+
+def COMPLEX(real: float, imag: float, suffix: str = "i") -> str | ExcelError:
+    """=COMPLEX(real, imaginary, [suffix]) -> complex number as text."""
+    suf = str(suffix)
+    if suf not in ("i", "j"):
+        return ExcelError.VALUE
+    return _fmt_complex(complex(float(real), float(imag)), suf)
+
+
+def _im_unary(inumber: Any, fn: Callable[[complex], complex]) -> str | ExcelError:
+    z = _parse_complex(inumber)
+    if isinstance(z, ExcelError):
+        return z
+    return _fmt_complex(fn(z))
+
+
+def IMREAL(inumber: Any) -> float | ExcelError:
+    z = _parse_complex(inumber)
+    return z.real if not isinstance(z, ExcelError) else z
+
+
+def IMAGINARY(inumber: Any) -> float | ExcelError:
+    z = _parse_complex(inumber)
+    return z.imag if not isinstance(z, ExcelError) else z
+
+
+def IMABS(inumber: Any) -> float | ExcelError:
+    z = _parse_complex(inumber)
+    return abs(z) if not isinstance(z, ExcelError) else z
+
+
+def IMARGUMENT(inumber: Any) -> float | ExcelError:
+    z = _parse_complex(inumber)
+    if isinstance(z, ExcelError):
+        return z
+    if z == 0:
+        return ExcelError.DIV0
+    return cmath.phase(z)
+
+
+def IMCONJUGATE(inumber: Any) -> str | ExcelError:
+    return _im_unary(inumber, lambda z: z.conjugate())
+
+
+def IMSUM(*args: Any) -> str | ExcelError:
+    total = 0j
+    for a in args:
+        z = _parse_complex(a)
+        if isinstance(z, ExcelError):
+            return z
+        total += z
+    return _fmt_complex(total)
+
+
+def IMSUB(a: Any, b: Any) -> str | ExcelError:
+    za, zb = _parse_complex(a), _parse_complex(b)
+    if isinstance(za, ExcelError):
+        return za
+    if isinstance(zb, ExcelError):
+        return zb
+    return _fmt_complex(za - zb)
+
+
+def IMPRODUCT(*args: Any) -> str | ExcelError:
+    total = 1 + 0j
+    for a in args:
+        z = _parse_complex(a)
+        if isinstance(z, ExcelError):
+            return z
+        total *= z
+    return _fmt_complex(total)
+
+
+def IMDIV(a: Any, b: Any) -> str | ExcelError:
+    za, zb = _parse_complex(a), _parse_complex(b)
+    if isinstance(za, ExcelError):
+        return za
+    if isinstance(zb, ExcelError):
+        return zb
+    if zb == 0:
+        return ExcelError.NUM
+    return _fmt_complex(za / zb)
+
+
+def IMPOWER(inumber: Any, number: float) -> str | ExcelError:
+    z = _parse_complex(inumber)
+    if isinstance(z, ExcelError):
+        return z
+    return _fmt_complex(z ** float(number))
+
+
+def IMSQRT(inumber: Any) -> str | ExcelError:
+    return _im_unary(inumber, cmath.sqrt)
+
+
+def IMEXP(inumber: Any) -> str | ExcelError:
+    return _im_unary(inumber, cmath.exp)
+
+
+def IMLN(inumber: Any) -> str | ExcelError:
+    return _im_unary(inumber, cmath.log)
+
+
+def IMLOG10(inumber: Any) -> str | ExcelError:
+    return _im_unary(inumber, cmath.log10)
+
+
+def IMLOG2(inumber: Any) -> str | ExcelError:
+    return _im_unary(inumber, lambda z: cmath.log(z) / math.log(2))
+
+
+def IMSIN(inumber: Any) -> str | ExcelError:
+    return _im_unary(inumber, cmath.sin)
+
+
+def IMCOS(inumber: Any) -> str | ExcelError:
+    return _im_unary(inumber, cmath.cos)
+
+
+def IMTAN(inumber: Any) -> str | ExcelError:
+    return _im_unary(inumber, cmath.tan)
+
+
+def IMSINH(inumber: Any) -> str | ExcelError:
+    return _im_unary(inumber, cmath.sinh)
+
+
+def IMCOSH(inumber: Any) -> str | ExcelError:
+    return _im_unary(inumber, cmath.cosh)
+
+
+def IMSEC(inumber: Any) -> str | ExcelError:
+    return _im_unary(inumber, lambda z: 1 / cmath.cos(z))
+
+
+def IMCSC(inumber: Any) -> str | ExcelError:
+    return _im_unary(inumber, lambda z: 1 / cmath.sin(z))
+
+
+def IMCOT(inumber: Any) -> str | ExcelError:
+    return _im_unary(inumber, lambda z: cmath.cos(z) / cmath.sin(z))
+
+
+def IMSECH(inumber: Any) -> str | ExcelError:
+    return _im_unary(inumber, lambda z: 1 / cmath.cosh(z))
+
+
+def IMCSCH(inumber: Any) -> str | ExcelError:
+    return _im_unary(inumber, lambda z: 1 / cmath.sinh(z))
+
+
+# -- Statistical: fringe --
+
+
+def FISHER(x: float) -> float | ExcelError:
+    """=FISHER(x) -> Fisher transform atanh(x); -1 < x < 1."""
+    xf = float(x)
+    if xf <= -1 or xf >= 1:
+        return ExcelError.NUM
+    return 0.5 * math.log((1 + xf) / (1 - xf))
+
+
+def FISHERINV(y: float) -> float:
+    """=FISHERINV(y) -> inverse Fisher transform tanh(y)."""
+    e = math.exp(2 * float(y))
+    return (e - 1) / (e + 1)
+
+
+def TRIMMEAN(rng: Vec | float, percent: float) -> float | ExcelError:
+    """=TRIMMEAN(array, percent) -> mean after trimming the top/bottom
+    fraction. The trim count is floored to an even integer, split evenly."""
+    p = float(percent)
+    if p < 0 or p >= 1:
+        return ExcelError.NUM
+    data = sorted(_vec_data(rng))
+    if not data:
+        return ExcelError.NUM
+    n = len(data)
+    k = int(n * p)
+    k -= k % 2  # floor to even
+    trim = k // 2
+    kept = data[trim : n - trim] if trim else data
+    return sum(kept) / len(kept)
+
+
+# -- Date: international weekend variants --
+
+_WEEKEND_CODES: dict[int, set[int]] = {
+    1: {5, 6},
+    2: {6, 0},
+    3: {0, 1},
+    4: {1, 2},
+    5: {2, 3},
+    6: {3, 4},
+    7: {4, 5},
+    11: {6},
+    12: {0},
+    13: {1},
+    14: {2},
+    15: {3},
+    16: {4},
+    17: {5},
+}
+
+
+def _weekend_set(weekend: Any) -> set[int] | ExcelError:
+    """Resolve a NETWORKDAYS.INTL/WORKDAY.INTL weekend spec to a set of
+    Python weekday indices (Mon=0..Sun=6) that are non-working."""
+    if isinstance(weekend, str):
+        m = weekend.strip()
+        if len(m) != 7 or any(c not in "01" for c in m) or all(c == "1" for c in m):
+            return ExcelError.VALUE
+        return {i for i, c in enumerate(m) if c == "1"}
+    try:
+        code = int(weekend)
+    except (TypeError, ValueError):
+        return ExcelError.VALUE
+    if code not in _WEEKEND_CODES:
+        return ExcelError.NUM
+    return set(_WEEKEND_CODES[code])
+
+
+def _holiday_serials(holidays: Any) -> set[int]:
+    if isinstance(holidays, Vec):
+        return {
+            int(v) for v in holidays.data if isinstance(v, (int, float)) and not isinstance(v, bool)
+        }
+    if isinstance(holidays, (int, float)) and not isinstance(holidays, bool):
+        return {int(holidays)}
+    return set()
+
+
+def NETWORKDAYS_INTL(
+    start: float, end: float, weekend: Any = 1, holidays: Any = None
+) -> int | ExcelError:
+    """=NETWORKDAYS.INTL(start, end, [weekend], [holidays]). Weekend is a
+    code (1-7, 11-17) or a 7-char Mon..Sun 0/1 mask. Negative if end<start."""
+    ws = _weekend_set(weekend)
+    if isinstance(ws, ExcelError):
+        return ws
+    s = _from_serial(float(start)).date()
+    e = _from_serial(float(end)).date()
+    sign = 1
+    if e < s:
+        s, e = e, s
+        sign = -1
+    hol = _holiday_serials(holidays)
+    n = 0
+    cur = s
+    while cur <= e:
+        if cur.weekday() not in ws and int(_to_serial(cur)) not in hol:
+            n += 1
+        cur += _dt.timedelta(days=1)
+    return sign * n
+
+
+def WORKDAY_INTL(
+    start: float, days: int, weekend: Any = 1, holidays: Any = None
+) -> float | ExcelError:
+    """=WORKDAY.INTL(start, days, [weekend], [holidays]). Serial of the date
+    `days` working days from start, honouring the weekend spec and holidays."""
+    ws = _weekend_set(weekend)
+    if isinstance(ws, ExcelError):
+        return ws
+    hol = _holiday_serials(holidays)
+    cur = _from_serial(float(start)).date()
+    remaining = int(days)
+    step = 1 if remaining >= 0 else -1
+    while remaining != 0:
+        cur += _dt.timedelta(days=step)
+        if cur.weekday() not in ws and int(_to_serial(cur)) not in hol:
+            remaining -= step
+    return _to_serial(cur)
+
+
+# -- Statistical: fringe (continued) --
+
+
+def SKEWP(x: Vec | float) -> float | ExcelError:
+    """=SKEW.P(...) -> population skewness (biased, divides by n with the
+    population standard deviation)."""
+    data = _vec_data(x)
+    n = len(data)
+    if n < 1:
+        return ExcelError.DIV0
+    m = sum(data) / n
+    sp = statistics.pstdev(data)
+    if sp == 0:
+        return ExcelError.DIV0
+    return sum(((v - m) / sp) ** 3 for v in data) / n
+
+
+def F_TEST(array1: Vec, array2: Vec) -> float | ExcelError:
+    """=F.TEST(array1, array2) -> two-tailed probability that the variances
+    of the two samples are not significantly different."""
+    a = _vec_data(array1)
+    b = _vec_data(array2)
+    if len(a) < 2 or len(b) < 2:
+        return ExcelError.DIV0
+    va = statistics.variance(a)
+    vb = statistics.variance(b)
+    if va == 0 or vb == 0:
+        return ExcelError.DIV0
+    f = va / vb
+    df1 = len(a) - 1
+    df2 = len(b) - 1
+    rt = 1.0 - _f_cdf(f, df1, df2)
+    p = 2.0 * min(rt, 1.0 - rt)
+    return p
+
+
+# -- Financial: bonds and Treasury securities --
+#
+# Day-count basis codes match the rest of the library: 0 = US (NASD)
+# 30/360, 1 = actual/actual, 2 = actual/360, 3 = actual/365, 4 =
+# European 30/360. Coupon-period math (COUP* family, PRICE, YIELD,
+# DURATION) is driven by a coupon schedule generated backwards from the
+# maturity date with end-of-month awareness. Formulas follow Microsoft's
+# documented definitions; verified against their published examples.
+
+
+def _valid_basis(basis: int) -> bool:
+    return 0 <= int(basis) <= 4
+
+
+def _valid_freq(freq: int) -> bool:
+    return int(freq) in (1, 2, 4)
+
+
+def _date(serial: float) -> _dt.date:
+    return _from_serial(float(serial)).date()
+
+
+def _yf(d1: _dt.date, d2: _dt.date, basis: int) -> float:
+    """Year fraction between two dates for a basis (dates, not serials)."""
+    res = YEARFRAC(_to_serial(d1), _to_serial(d2), int(basis))
+    return float(res) if not isinstance(res, ExcelError) else math.nan
+
+
+def _daycount(d1: _dt.date, d2: _dt.date, basis: int) -> int:
+    """Signed day count between two dates honouring 30/360 bases."""
+    b = int(basis)
+    if b == 0:
+        return DAYS360(_to_serial(d1), _to_serial(d2), method=False)
+    if b == 4:
+        return DAYS360(_to_serial(d1), _to_serial(d2), method=True)
+    return (d2 - d1).days
+
+
+def _add_months(y: int, m: int, delta: int) -> tuple[int, int]:
+    idx = y * 12 + (m - 1) + delta
+    return idx // 12, idx % 12 + 1
+
+
+def _coupon_date(maturity: _dt.date, k: int, months: int, eom: bool) -> _dt.date:
+    """The coupon date k periods before maturity, end-of-month aware."""
+    y, m = _add_months(maturity.year, maturity.month, -k * months)
+    day = _last_day(y, m) if eom else min(maturity.day, _last_day(y, m))
+    return _dt.date(y, m, day)
+
+
+def _coupon_info(sd: _dt.date, md: _dt.date, freq: int) -> tuple[_dt.date, _dt.date, int]:
+    """(previous coupon date, next coupon date, number of coupons) for a
+    settlement date, generating the schedule backwards from maturity."""
+    months = 12 // int(freq)
+    eom = md.day == _last_day(md.year, md.month)
+    k = 0
+    while True:
+        k += 1
+        cd = _coupon_date(md, k, months, eom)
+        if cd <= sd:
+            return cd, _coupon_date(md, k - 1, months, eom), k
+
+
+def _coup_days(pcd: _dt.date, ncd: _dt.date, freq: int, basis: int) -> float:
+    """Days in the coupon period containing settlement."""
+    b = int(basis)
+    if b == 1:
+        return float((ncd - pcd).days)
+    if b == 3:
+        return 365.0 / freq
+    return 360.0 / freq  # bases 0, 2, 4
+
+
+def COUPPCD(
+    settlement: float, maturity: float, frequency: int, basis: int = 0
+) -> float | ExcelError:
+    """=COUPPCD(settlement, maturity, frequency, [basis]) -> serial of the
+    coupon date on or before settlement."""
+    if not _valid_basis(basis) or not _valid_freq(frequency):
+        return ExcelError.NUM
+    sd, md = _date(settlement), _date(maturity)
+    if sd >= md:
+        return ExcelError.NUM
+    pcd, _, _ = _coupon_info(sd, md, int(frequency))
+    return _to_serial(pcd)
+
+
+def COUPNCD(
+    settlement: float, maturity: float, frequency: int, basis: int = 0
+) -> float | ExcelError:
+    """=COUPNCD(settlement, maturity, frequency, [basis]) -> serial of the
+    next coupon date after settlement."""
+    if not _valid_basis(basis) or not _valid_freq(frequency):
+        return ExcelError.NUM
+    sd, md = _date(settlement), _date(maturity)
+    if sd >= md:
+        return ExcelError.NUM
+    _, ncd, _ = _coupon_info(sd, md, int(frequency))
+    return _to_serial(ncd)
+
+
+def COUPNUM(settlement: float, maturity: float, frequency: int, basis: int = 0) -> int | ExcelError:
+    """=COUPNUM(...) -> number of coupons payable between settlement and maturity."""
+    if not _valid_basis(basis) or not _valid_freq(frequency):
+        return ExcelError.NUM
+    sd, md = _date(settlement), _date(maturity)
+    if sd >= md:
+        return ExcelError.NUM
+    return _coupon_info(sd, md, int(frequency))[2]
+
+
+def COUPDAYBS(
+    settlement: float, maturity: float, frequency: int, basis: int = 0
+) -> float | ExcelError:
+    """=COUPDAYBS(...) -> days from the beginning of the coupon period to settlement."""
+    if not _valid_basis(basis) or not _valid_freq(frequency):
+        return ExcelError.NUM
+    sd, md = _date(settlement), _date(maturity)
+    if sd >= md:
+        return ExcelError.NUM
+    pcd, _, _ = _coupon_info(sd, md, int(frequency))
+    return float(_daycount(pcd, sd, int(basis)))
+
+
+def COUPDAYSNC(
+    settlement: float, maturity: float, frequency: int, basis: int = 0
+) -> float | ExcelError:
+    """=COUPDAYSNC(...) -> days from settlement to the next coupon date."""
+    if not _valid_basis(basis) or not _valid_freq(frequency):
+        return ExcelError.NUM
+    sd, md = _date(settlement), _date(maturity)
+    if sd >= md:
+        return ExcelError.NUM
+    _, ncd, _ = _coupon_info(sd, md, int(frequency))
+    return float(_daycount(sd, ncd, int(basis)))
+
+
+def COUPDAYS(
+    settlement: float, maturity: float, frequency: int, basis: int = 0
+) -> float | ExcelError:
+    """=COUPDAYS(...) -> days in the coupon period that contains settlement."""
+    if not _valid_basis(basis) or not _valid_freq(frequency):
+        return ExcelError.NUM
+    sd, md = _date(settlement), _date(maturity)
+    if sd >= md:
+        return ExcelError.NUM
+    pcd, ncd, _ = _coupon_info(sd, md, int(frequency))
+    return _coup_days(pcd, ncd, int(frequency), int(basis))
+
+
+def _price(
+    sd: _dt.date, md: _dt.date, rate: float, yld: float, redemption: float, freq: int, basis: int
+) -> float:
+    pcd, ncd, n = _coupon_info(sd, md, freq)
+    e = _coup_days(pcd, ncd, freq, basis)
+    dsc = float(_daycount(sd, ncd, basis))
+    a = float(_daycount(pcd, sd, basis))
+    coupon = 100.0 * rate / freq
+    if n > 1:
+        dsc_e = dsc / e
+        total = redemption / (1 + yld / freq) ** (n - 1 + dsc_e)
+        total -= coupon * a / e
+        for k in range(1, n + 1):
+            total += coupon / (1 + yld / freq) ** (k - 1 + dsc_e)
+        return float(total)
+    # Single remaining coupon: simple interest for the final stub period.
+    return float((redemption + coupon) / (1 + (yld / freq) * (dsc / e)) - coupon * a / e)
+
+
+def PRICE(
+    settlement: float,
+    maturity: float,
+    rate: float,
+    yld: float,
+    redemption: float,
+    frequency: int,
+    basis: int = 0,
+) -> float | ExcelError:
+    """=PRICE(settlement, maturity, rate, yld, redemption, frequency, [basis])
+    -> price per $100 face of a periodic-coupon security."""
+    if not _valid_basis(basis) or not _valid_freq(frequency):
+        return ExcelError.NUM
+    if float(rate) < 0 or float(yld) < 0 or float(redemption) <= 0:
+        return ExcelError.NUM
+    sd, md = _date(settlement), _date(maturity)
+    if sd >= md:
+        return ExcelError.NUM
+    return _price(sd, md, float(rate), float(yld), float(redemption), int(frequency), int(basis))
+
+
+def YIELD(
+    settlement: float,
+    maturity: float,
+    rate: float,
+    pr: float,
+    redemption: float,
+    frequency: int,
+    basis: int = 0,
+) -> float | ExcelError:
+    """=YIELD(settlement, maturity, rate, pr, redemption, frequency, [basis])
+    -> yield of a periodic-coupon security, solved from PRICE."""
+    if not _valid_basis(basis) or not _valid_freq(frequency):
+        return ExcelError.NUM
+    if float(rate) < 0 or float(pr) <= 0 or float(redemption) <= 0:
+        return ExcelError.NUM
+    sd, md = _date(settlement), _date(maturity)
+    if sd >= md:
+        return ExcelError.NUM
+    f = int(frequency)
+    b = int(basis)
+    target = float(pr)
+
+    def g(y: float) -> float:
+        return _price(sd, md, float(rate), y, float(redemption), f, b) - target
+
+    return _solve_monotone(g, -0.9999, 1.0)
+
+
+def DURATION(
+    settlement: float, maturity: float, coupon: float, yld: float, frequency: int, basis: int = 0
+) -> float | ExcelError:
+    """=DURATION(...) -> Macaulay duration in years of a periodic-coupon security."""
+    if not _valid_basis(basis) or not _valid_freq(frequency):
+        return ExcelError.NUM
+    if float(coupon) < 0 or float(yld) < 0:
+        return ExcelError.NUM
+    sd, md = _date(settlement), _date(maturity)
+    if sd >= md:
+        return ExcelError.NUM
+    f = int(frequency)
+    pcd, ncd, n = _coupon_info(sd, md, f)
+    e = _coup_days(pcd, ncd, f, int(basis))
+    dsc = float(_daycount(sd, ncd, int(basis)))
+    ndiff = dsc / e - 1.0  # fractional-period offset, coupon-consistent
+    cpn = float(coupon) * 100.0 / f
+    y = float(yld) / f + 1.0
+    num = 0.0
+    den = 0.0
+    for t in range(1, n):
+        disc = y ** (t + ndiff)
+        num += (t + ndiff) * cpn / disc
+        den += cpn / disc
+    disc = y ** (n + ndiff)
+    num += (n + ndiff) * (cpn + 100.0) / disc
+    den += (cpn + 100.0) / disc
+    return float((num / den) / f)
+
+
+def MDURATION(
+    settlement: float, maturity: float, coupon: float, yld: float, frequency: int, basis: int = 0
+) -> float | ExcelError:
+    """=MDURATION(...) -> modified duration = DURATION / (1 + yld/frequency)."""
+    dur = DURATION(settlement, maturity, coupon, yld, frequency, basis)
+    if isinstance(dur, ExcelError):
+        return dur
+    return dur / (1 + float(yld) / int(frequency))
+
+
+def DISC(
+    settlement: float, maturity: float, pr: float, redemption: float, basis: int = 0
+) -> float | ExcelError:
+    """=DISC(...) -> discount rate of a security."""
+    if not _valid_basis(basis):
+        return ExcelError.NUM
+    sd, md = _date(settlement), _date(maturity)
+    if sd >= md:
+        return ExcelError.NUM
+    yf = _yf(sd, md, int(basis))
+    if math.isnan(yf) or yf == 0 or float(redemption) == 0:
+        return ExcelError.NUM
+    return (float(redemption) - float(pr)) / float(redemption) / yf
+
+
+def PRICEDISC(
+    settlement: float, maturity: float, discount: float, redemption: float, basis: int = 0
+) -> float | ExcelError:
+    """=PRICEDISC(...) -> price per $100 of a discounted security."""
+    if not _valid_basis(basis):
+        return ExcelError.NUM
+    sd, md = _date(settlement), _date(maturity)
+    if sd >= md:
+        return ExcelError.NUM
+    yf = _yf(sd, md, int(basis))
+    return float(redemption) - float(discount) * float(redemption) * yf
+
+
+def YIELDDISC(
+    settlement: float, maturity: float, pr: float, redemption: float, basis: int = 0
+) -> float | ExcelError:
+    """=YIELDDISC(...) -> annual yield of a discounted security."""
+    if not _valid_basis(basis):
+        return ExcelError.NUM
+    sd, md = _date(settlement), _date(maturity)
+    if sd >= md:
+        return ExcelError.NUM
+    yf = _yf(sd, md, int(basis))
+    if math.isnan(yf) or yf == 0 or float(pr) == 0:
+        return ExcelError.NUM
+    return (float(redemption) - float(pr)) / float(pr) / yf
+
+
+def RECEIVED(
+    settlement: float, maturity: float, investment: float, discount: float, basis: int = 0
+) -> float | ExcelError:
+    """=RECEIVED(...) -> amount received at maturity for a fully invested security."""
+    if not _valid_basis(basis):
+        return ExcelError.NUM
+    sd, md = _date(settlement), _date(maturity)
+    if sd >= md:
+        return ExcelError.NUM
+    yf = _yf(sd, md, int(basis))
+    denom = 1 - float(discount) * yf
+    if denom == 0:
+        return ExcelError.NUM
+    return float(investment) / denom
+
+
+def INTRATE(
+    settlement: float, maturity: float, investment: float, redemption: float, basis: int = 0
+) -> float | ExcelError:
+    """=INTRATE(...) -> interest rate for a fully invested security."""
+    if not _valid_basis(basis):
+        return ExcelError.NUM
+    sd, md = _date(settlement), _date(maturity)
+    if sd >= md:
+        return ExcelError.NUM
+    yf = _yf(sd, md, int(basis))
+    if math.isnan(yf) or yf == 0 or float(investment) == 0:
+        return ExcelError.NUM
+    return (float(redemption) - float(investment)) / float(investment) / yf
+
+
+def ACCRINTM(
+    issue: float, settlement: float, rate: float, par: float = 1000.0, basis: int = 0
+) -> float | ExcelError:
+    """=ACCRINTM(issue, settlement, rate, [par], [basis]) -> accrued interest
+    for a security that pays interest at maturity."""
+    if not _valid_basis(basis):
+        return ExcelError.NUM
+    iss, sd = _date(issue), _date(settlement)
+    if iss >= sd:
+        return ExcelError.NUM
+    return float(par) * float(rate) * _yf(iss, sd, int(basis))
+
+
+def ACCRINT(
+    issue: float,
+    first_interest: float,
+    settlement: float,
+    rate: float,
+    par: float = 1000.0,
+    frequency: int = 1,
+    basis: int = 0,
+    calc_method: bool = True,
+) -> float | ExcelError:
+    """=ACCRINT(issue, first_interest, settlement, rate, [par], [frequency],
+    [basis], [calc_method]) -> accrued interest for a periodic-coupon security.
+
+    Accrues from issue (calc_method TRUE, default) or from first_interest
+    (FALSE) when settlement is later than first_interest. Uses YEARFRAC per
+    basis; the actual/actual quasi-coupon refinement is not modelled.
+    """
+    if not _valid_basis(basis) or not _valid_freq(frequency):
+        return ExcelError.NUM
+    iss = _date(issue)
+    fi = _date(first_interest)
+    sd = _date(settlement)
+    if iss >= sd:
+        return ExcelError.NUM
+    start = iss if (calc_method or sd <= fi) else fi
+    return float(par) * float(rate) * _yf(start, sd, int(basis))
+
+
+def PRICEMAT(
+    settlement: float, maturity: float, issue: float, rate: float, yld: float, basis: int = 0
+) -> float | ExcelError:
+    """=PRICEMAT(...) -> price per $100 of a security paying interest at maturity."""
+    if not _valid_basis(basis):
+        return ExcelError.NUM
+    sd, md, iss = _date(settlement), _date(maturity), _date(issue)
+    if sd >= md:
+        return ExcelError.NUM
+    dsm = _yf(sd, md, int(basis))
+    dim = _yf(iss, md, int(basis))
+    dis = _yf(iss, sd, int(basis))
+    denom = 1 + dsm * float(yld)
+    if denom == 0:
+        return ExcelError.NUM
+    return (100 + dim * float(rate) * 100) / denom - dis * float(rate) * 100
+
+
+def YIELDMAT(
+    settlement: float, maturity: float, issue: float, rate: float, pr: float, basis: int = 0
+) -> float | ExcelError:
+    """=YIELDMAT(...) -> annual yield of a security paying interest at maturity."""
+    if not _valid_basis(basis):
+        return ExcelError.NUM
+    sd, md, iss = _date(settlement), _date(maturity), _date(issue)
+    if sd >= md:
+        return ExcelError.NUM
+    dsm = _yf(sd, md, int(basis))
+    dim = _yf(iss, md, int(basis))
+    dis = _yf(iss, sd, int(basis))
+    base = float(pr) / 100 + dis * float(rate)
+    if base == 0 or dsm == 0:
+        return ExcelError.NUM
+    return ((1 + dim * float(rate)) - base) / base / dsm
+
+
+def _tbill_dsm(settlement: float, maturity: float) -> int | ExcelError:
+    sd, md = _date(settlement), _date(maturity)
+    dsm = (md - sd).days
+    if dsm <= 0 or dsm > 365:
+        return ExcelError.NUM
+    return dsm
+
+
+def TBILLPRICE(settlement: float, maturity: float, discount: float) -> float | ExcelError:
+    """=TBILLPRICE(settlement, maturity, discount) -> price per $100 of a T-bill."""
+    dsm = _tbill_dsm(settlement, maturity)
+    if isinstance(dsm, ExcelError):
+        return dsm
+    if float(discount) <= 0:
+        return ExcelError.NUM
+    return 100 * (1 - float(discount) * dsm / 360)
+
+
+def TBILLYIELD(settlement: float, maturity: float, pr: float) -> float | ExcelError:
+    """=TBILLYIELD(settlement, maturity, pr) -> yield of a T-bill."""
+    dsm = _tbill_dsm(settlement, maturity)
+    if isinstance(dsm, ExcelError):
+        return dsm
+    if float(pr) <= 0:
+        return ExcelError.NUM
+    return (100 - float(pr)) / float(pr) * (360 / dsm)
+
+
+def TBILLEQ(settlement: float, maturity: float, discount: float) -> float | ExcelError:
+    """=TBILLEQ(settlement, maturity, discount) -> bond-equivalent yield of a T-bill."""
+    dsm = _tbill_dsm(settlement, maturity)
+    if isinstance(dsm, ExcelError):
+        return dsm
+    d = float(discount)
+    if d <= 0:
+        return ExcelError.NUM
+    if dsm <= 182:
+        denom = 360 - d * dsm
+        if denom == 0:
+            return ExcelError.NUM
+        return 365 * d / denom
+    dr = dsm / 360.0
+    disc = dr * dr - (2 * dr - 1) * d * dsm / (d * dsm - 360)
+    if disc < 0 or dr == 0.5:
+        return ExcelError.NUM
+    return (-dr + math.sqrt(disc)) / (dr - 0.5)
+
+
+def _dollar_digits(fraction: int) -> int:
+    return int(math.floor(math.log10(fraction))) + 1 if fraction >= 1 else 1
+
+
+def DOLLARDE(fractional_dollar: float, fraction: int) -> float | ExcelError:
+    """=DOLLARDE(fractional_dollar, fraction) -> fractional dollar price
+    (integer.numerator) converted to a decimal number."""
+    frac = int(fraction)
+    if frac < 0:
+        return ExcelError.NUM
+    if frac == 0:
+        return ExcelError.DIV0
+    val = float(fractional_dollar)
+    sign = -1.0 if val < 0 else 1.0
+    val = abs(val)
+    ipart = math.floor(val)
+    fpart = val - ipart
+    n = _dollar_digits(frac)
+    return float(sign * (ipart + fpart * (10**n) / frac))
+
+
+def DOLLARFR(decimal_dollar: float, fraction: int) -> float | ExcelError:
+    """=DOLLARFR(decimal_dollar, fraction) -> decimal dollar price converted
+    to fractional notation (integer.numerator)."""
+    frac = int(fraction)
+    if frac < 0:
+        return ExcelError.NUM
+    if frac == 0:
+        return ExcelError.DIV0
+    val = float(decimal_dollar)
+    sign = -1.0 if val < 0 else 1.0
+    val = abs(val)
+    ipart = math.floor(val)
+    fpart = val - ipart
+    n = _dollar_digits(frac)
+    return float(sign * (ipart + fpart * frac / (10**n)))
+
+
+def RRI(nper: float, pv: float, fv: float) -> float | ExcelError:
+    """=RRI(nper, pv, fv) -> equivalent per-period interest rate for growth."""
+    if float(nper) <= 0 or float(pv) == 0:
+        return ExcelError.NUM
+    return float((float(fv) / float(pv)) ** (1 / float(nper)) - 1)
+
+
+def PDURATION(rate: float, pv: float, fv: float) -> float | ExcelError:
+    """=PDURATION(rate, pv, fv) -> periods required to reach fv from pv."""
+    r = float(rate)
+    if r <= 0 or float(pv) <= 0 or float(fv) <= 0:
+        return ExcelError.NUM
+    return (math.log(float(fv)) - math.log(float(pv))) / math.log(1 + r)
+
+
+def ISPMT(rate: float, per: float, nper: float, pv: float) -> float | ExcelError:
+    """=ISPMT(rate, per, nper, pv) -> interest paid during a period under
+    straight-line (non-amortising) principal repayment."""
+    if float(nper) == 0:
+        return ExcelError.DIV0
+    return -float(pv) * float(rate) * (float(nper) - float(per)) / float(nper)
+
+
+def _solve_monotone(f: Callable[[float], float], lo: float, hi: float) -> float | ExcelError:
+    """Bisection root-finder for a monotone f, expanding hi to bracket a sign
+    change. Used to invert PRICE for YIELD."""
+    flo = f(lo)
+    fhi = f(hi)
+    it = 0
+    while flo * fhi > 0 and it < 100:
+        hi *= 2
+        fhi = f(hi)
+        it += 1
+    if flo * fhi > 0:
+        return ExcelError.NUM
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        fm = f(mid)
+        if abs(fm) < 1e-10:
+            return mid
+        if flo * fm < 0:
+            hi = mid
+        else:
+            lo, flo = mid, fm
+    return (lo + hi) / 2
+
+
+# -- Engineering: unit conversion (CONVERT) --
+#
+# Each non-temperature unit maps to (category, factor) where factor is the
+# number of that category's base unit per one of this unit. Conversion is
+# number * from_factor / to_factor, only within a category. Units in
+# `_CONVERT_METRIC` additionally accept SI prefixes (and bit/byte accept
+# binary prefixes); a prefix is tried only when the whole abbreviation is
+# not itself a unit, so standalone units (e.g. "min", "mi") win. Temperature
+# is handled separately because its conversions carry offsets. This covers
+# the common Excel unit table; the most exotic cubic/area variants and
+# prefixes on temperature units are not modelled.
+
+_CONVERT_UNITS: dict[str, tuple[str, float]] = {
+    # Mass (base: gram)
+    "g": ("mass", 1.0),
+    "sg": ("mass", 14593.90294),
+    "lbm": ("mass", 453.59237),
+    "u": ("mass", 1.66053906660e-24),
+    "ozm": ("mass", 28.349523125),
+    "grain": ("mass", 0.06479891),
+    "cwt": ("mass", 45359.237),
+    "shweight": ("mass", 45359.237),
+    "uk_cwt": ("mass", 50802.34544),
+    "lcwt": ("mass", 50802.34544),
+    "hweight": ("mass", 50802.34544),
+    "stone": ("mass", 6350.29318),
+    "ton": ("mass", 907184.74),
+    "uk_ton": ("mass", 1016046.9088),
+    "LTON": ("mass", 1016046.9088),
+    "brton": ("mass", 1016046.9088),
+    # Distance (base: meter)
+    "m": ("dist", 1.0),
+    "mi": ("dist", 1609.344),
+    "Nmi": ("dist", 1852.0),
+    "in": ("dist", 0.0254),
+    "ft": ("dist", 0.3048),
+    "yd": ("dist", 0.9144),
+    "ang": ("dist", 1e-10),
+    "ell": ("dist", 1.143),
+    "ly": ("dist", 9.4607304725808e15),
+    "parsec": ("dist", 3.0856775814671916e16),
+    "pc": ("dist", 3.0856775814671916e16),
+    "Pica": ("dist", 0.0254 / 72),
+    "Picapt": ("dist", 0.0254 / 72),
+    "pica": ("dist", 0.0254 / 6),
+    "survey_mi": ("dist", 1609.3472186944),
+    # Time (base: second)
+    "sec": ("time", 1.0),
+    "s": ("time", 1.0),
+    "mn": ("time", 60.0),
+    "min": ("time", 60.0),
+    "hr": ("time", 3600.0),
+    "day": ("time", 86400.0),
+    "d": ("time", 86400.0),
+    "yr": ("time", 31557600.0),
+    # Pressure (base: pascal)
+    "Pa": ("pres", 1.0),
+    "p": ("pres", 1.0),
+    "atm": ("pres", 101325.0),
+    "at": ("pres", 101325.0),
+    "mmHg": ("pres", 133.322387415),
+    "psi": ("pres", 6894.757293168),
+    "Torr": ("pres", 101325.0 / 760.0),
+    # Force (base: newton)
+    "N": ("force", 1.0),
+    "dyn": ("force", 1e-5),
+    "dy": ("force", 1e-5),
+    "lbf": ("force", 4.4482216152605),
+    "pond": ("force", 9.80665e-3),
+    # Energy (base: joule)
+    "J": ("energy", 1.0),
+    "e": ("energy", 1e-7),
+    "c": ("energy", 4.184),
+    "cal": ("energy", 4.1868),
+    "eV": ("energy", 1.602176634e-19),
+    "ev": ("energy", 1.602176634e-19),
+    "HPh": ("energy", 2684519.537696172792),
+    "hh": ("energy", 2684519.537696172792),
+    "Wh": ("energy", 3600.0),
+    "wh": ("energy", 3600.0),
+    "flb": ("energy", 1.3558179483314004),
+    "BTU": ("energy", 1055.05585262),
+    "btu": ("energy", 1055.05585262),
+    # Power (base: watt)
+    "W": ("power", 1.0),
+    "w": ("power", 1.0),
+    "HP": ("power", 745.69987158227022),
+    "h": ("power", 745.69987158227022),
+    "PS": ("power", 735.49875),
+    # Magnetism (base: tesla)
+    "T": ("mag", 1.0),
+    "ga": ("mag", 1e-4),
+    # Volume (base: liter)
+    "l": ("vol", 1.0),
+    "L": ("vol", 1.0),
+    "lt": ("vol", 1.0),
+    "tsp": ("vol", 0.00492892159375),
+    "tspm": ("vol", 0.005),
+    "tbs": ("vol", 0.01478676478125),
+    "oz": ("vol", 0.0295735295625),
+    "cup": ("vol", 0.2365882365),
+    "pt": ("vol", 0.473176473),
+    "us_pt": ("vol", 0.473176473),
+    "uk_pt": ("vol", 0.56826125),
+    "qt": ("vol", 0.946352946),
+    "uk_qt": ("vol", 1.1365225),
+    "gal": ("vol", 3.785411784),
+    "uk_gal": ("vol", 4.54609),
+    "m3": ("vol", 1000.0),
+    "ft3": ("vol", 28.316846592),
+    "in3": ("vol", 0.016387064),
+    "yd3": ("vol", 764.554857984),
+    "barrel": ("vol", 158.987294928),
+    "bushel": ("vol", 35.23907016688),
+    "GRT": ("vol", 2831.6846592),
+    "regton": ("vol", 2831.6846592),
+    "MTON": ("vol", 1132.67386368),
+    # Area (base: square meter)
+    "m2": ("area", 1.0),
+    "mi2": ("area", 2589988.110336),
+    "Nmi2": ("area", 3429904.0),
+    "in2": ("area", 0.00064516),
+    "ft2": ("area", 0.09290304),
+    "yd2": ("area", 0.83612736),
+    "ang2": ("area", 1e-20),
+    "ar": ("area", 100.0),
+    "ha": ("area", 10000.0),
+    "Morgen": ("area", 2500.0),
+    "us_acre": ("area", 4046.87260987),
+    "uk_acre": ("area", 4046.8564224),
+    # Speed (base: meter/second)
+    "m/s": ("speed", 1.0),
+    "m/sec": ("speed", 1.0),
+    "km/h": ("speed", 1000.0 / 3600.0),
+    "kmh": ("speed", 1000.0 / 3600.0),
+    "mph": ("speed", 0.44704),
+    "kn": ("speed", 1852.0 / 3600.0),
+    "admkn": ("speed", 0.5147733333333333),
+    # Information (base: bit)
+    "bit": ("info", 1.0),
+    "byte": ("info", 8.0),
+}
+
+# Units that accept SI (metric) prefixes.
+_CONVERT_METRIC: set[str] = {
+    "g",
+    "u",
+    "m",
+    "ang",
+    "parsec",
+    "pc",
+    "sec",
+    "s",
+    "Pa",
+    "p",
+    "atm",
+    "at",
+    "mmHg",
+    "N",
+    "dyn",
+    "dy",
+    "pond",
+    "J",
+    "e",
+    "c",
+    "cal",
+    "eV",
+    "ev",
+    "Wh",
+    "wh",
+    "W",
+    "w",
+    "T",
+    "ga",
+    "l",
+    "L",
+    "lt",
+    "m/s",
+    "m/sec",
+    "bit",
+    "byte",
+}
+
+_SI_PREFIX: dict[str, float] = {
+    "Y": 1e24,
+    "Z": 1e21,
+    "E": 1e18,
+    "P": 1e15,
+    "T": 1e12,
+    "G": 1e9,
+    "M": 1e6,
+    "k": 1e3,
+    "h": 1e2,
+    "da": 1e1,
+    "e": 1e1,
+    "d": 1e-1,
+    "c": 1e-2,
+    "m": 1e-3,
+    "u": 1e-6,
+    "n": 1e-9,
+    "p": 1e-12,
+    "f": 1e-15,
+    "a": 1e-18,
+    "z": 1e-21,
+    "y": 1e-24,
+}
+
+_BIN_PREFIX: dict[str, float] = {
+    "Yi": 2.0**80,
+    "Zi": 2.0**70,
+    "Ei": 2.0**60,
+    "Pi": 2.0**50,
+    "Ti": 2.0**40,
+    "Gi": 2.0**30,
+    "Mi": 2.0**20,
+    "ki": 2.0**10,
+}
+
+_TEMP_ALIAS: dict[str, str] = {
+    "C": "C",
+    "cel": "C",
+    "F": "F",
+    "fah": "F",
+    "K": "K",
+    "kel": "K",
+    "Rank": "Rank",
+    "Reau": "Reau",
+}
+
+
+def _to_kelvin(v: float, unit: str) -> float:
+    if unit == "C":
+        return v + 273.15
+    if unit == "F":
+        return (v - 32.0) * 5.0 / 9.0 + 273.15
+    if unit == "Rank":
+        return v * 5.0 / 9.0
+    if unit == "Reau":
+        return v * 1.25 + 273.15
+    return v  # K
+
+
+def _from_kelvin(k: float, unit: str) -> float:
+    if unit == "C":
+        return k - 273.15
+    if unit == "F":
+        return (k - 273.15) * 9.0 / 5.0 + 32.0
+    if unit == "Rank":
+        return k * 9.0 / 5.0
+    if unit == "Reau":
+        return (k - 273.15) * 0.8
+    return k  # K
+
+
+def _convert_unit(u: str) -> tuple[str, float] | None:
+    """Resolve a unit abbreviation (with optional prefix) to (category, factor)."""
+    if u in _CONVERT_UNITS:
+        return _CONVERT_UNITS[u]
+    # Binary prefixes (information units only).
+    for pre, mult in _BIN_PREFIX.items():
+        if u.startswith(pre):
+            rest = u[len(pre) :]
+            if rest in _CONVERT_UNITS and rest in _CONVERT_METRIC:
+                cat, factor = _CONVERT_UNITS[rest]
+                return cat, factor * mult
+    # SI prefixes; try the two-character "da" before single characters.
+    for pre in ("da", *[k for k in _SI_PREFIX if k != "da"]):
+        if u.startswith(pre) and len(u) > len(pre):
+            rest = u[len(pre) :]
+            if rest in _CONVERT_UNITS and rest in _CONVERT_METRIC:
+                cat, factor = _CONVERT_UNITS[rest]
+                return cat, factor * _SI_PREFIX[pre]
+    return None
+
+
+def CONVERT(number: float, from_unit: str, to_unit: str) -> float | ExcelError:
+    """=CONVERT(number, from_unit, to_unit) -> number converted between two
+    measurement units of the same category. Returns #N/A for unknown units or
+    a category mismatch."""
+    num = float(number)
+    fu = str(from_unit)
+    tu = str(to_unit)
+    # Temperature (offset conversions).
+    if fu in _TEMP_ALIAS or tu in _TEMP_ALIAS:
+        if fu not in _TEMP_ALIAS or tu not in _TEMP_ALIAS:
+            return ExcelError.NA
+        return _from_kelvin(_to_kelvin(num, _TEMP_ALIAS[fu]), _TEMP_ALIAS[tu])
+    f = _convert_unit(fu)
+    t = _convert_unit(tu)
+    if f is None or t is None:
+        return ExcelError.NA
+    if f[0] != t[0]:
+        return ExcelError.NA
+    return num * f[1] / t[1]
+
+
+# -- Excel 365: lexical-scope higher-order functions --
+#
+# These take a LambdaValue (any Python callable) plus array data and drive
+# the closure. LET and LAMBDA themselves live in the evaluator, since their
+# arguments are declarations rather than eager values; the functions here
+# are ordinary builtins that receive an already-constructed lambda.
+
+
+def _as_vec(x: Any) -> Vec:
+    return x if isinstance(x, Vec) else Vec([x])
+
+
+def MAP(*args: Any) -> Vec | ExcelError:
+    """=MAP(array1, [array2, ...], lambda) -> element-wise application of the
+    lambda across one or more equally-shaped arrays, preserving array1's shape."""
+    if len(args) < 2:
+        return ExcelError.VALUE
+    func = args[-1]
+    if not callable(func):
+        return ExcelError.VALUE
+    arrays = [_as_vec(a) for a in args[:-1]]
+    n = len(arrays[0].data)
+    if any(len(a.data) != n for a in arrays):
+        return ExcelError.NA
+    out = [func(*[a.data[i] for a in arrays]) for i in range(n)]
+    return Vec(out, cols=arrays[0].cols)
+
+
+def REDUCE(initial: Any, array: Any, func: Any) -> Any:
+    """=REDUCE(initial_value, array, lambda(acc, value)) -> the accumulator
+    after folding the lambda over every element."""
+    if not callable(func):
+        return ExcelError.VALUE
+    acc = initial
+    for v in _as_vec(array).data:
+        acc = func(acc, v)
+        if isinstance(acc, ExcelError):
+            return acc
+    return acc
+
+
+def SCAN(initial: Any, array: Any, func: Any) -> Vec | ExcelError:
+    """=SCAN(initial_value, array, lambda(acc, value)) -> the running
+    accumulator at each step, same shape as the array."""
+    if not callable(func):
+        return ExcelError.VALUE
+    arr = _as_vec(array)
+    acc = initial
+    out: list[Any] = []
+    for v in arr.data:
+        acc = func(acc, v)
+        out.append(acc)
+    return Vec(out, cols=arr.cols)
+
+
+def BYROW(array: Any, func: Any) -> Vec | ExcelError:
+    """=BYROW(array, lambda(row)) -> a column vector holding the lambda's
+    result for each row (the row is passed as a 1D Vec)."""
+    if not callable(func):
+        return ExcelError.VALUE
+    arr = _as_vec(array)
+    rows, _ = arr.shape
+    out = [func(arr.row(i)) for i in range(1, rows + 1)]
+    return Vec(out, cols=1)
+
+
+def BYCOL(array: Any, func: Any) -> Vec | ExcelError:
+    """=BYCOL(array, lambda(col)) -> a row vector holding the lambda's result
+    for each column (the column is passed as a 1D Vec)."""
+    if not callable(func):
+        return ExcelError.VALUE
+    arr = _as_vec(array)
+    _, cols = arr.shape
+    out = [func(arr.col(j)) for j in range(1, cols + 1)]
+    return Vec(out, cols=len(out))
+
+
+def MAKEARRAY(rows: int, cols: int, func: Any) -> Vec | ExcelError:
+    """=MAKEARRAY(rows, cols, lambda(row, col)) -> a rows x cols array whose
+    cells are the lambda evaluated at 1-based (row, col) indices."""
+    if not callable(func):
+        return ExcelError.VALUE
+    r, c = int(rows), int(cols)
+    if r < 1 or c < 1:
+        return ExcelError.VALUE
+    out = [func(float(i), float(j)) for i in range(1, r + 1) for j in range(1, c + 1)]
+    return Vec(out, cols=c)
+
+
 # -- Builtins dict for registration --
 
 BUILTINS: dict[str, Any] = {
@@ -4798,6 +6362,11 @@ BUILTINS: dict[str, Any] = {
     "COLUMN": COLUMN,
     "ROWS": ROWS,
     "COLUMNS": COLUMNS,
+    # Reference functions (raw-args; OFFSET returns a Reference value)
+    "OFFSET": OFFSET,
+    "FORMULATEXT": FORMULATEXT,
+    "AREAS": AREAS,
+    "LOOKUP": LOOKUP,
     # Tier 3 -- aggregates
     "COUNTA": COUNTA,
     "COUNTBLANK": COUNTBLANK,
@@ -5017,6 +6586,7 @@ BUILTINS: dict[str, Any] = {
     "GROWTH": GROWTH,
     "LINEST": LINEST,
     "LOGEST": LOGEST,
+    "FREQUENCY": FREQUENCY,
     # Tier 4 -- D-functions
     "DSUM": DSUM,
     "DAVERAGE": DAVERAGE,
@@ -5030,4 +6600,91 @@ BUILTINS: dict[str, Any] = {
     "DSTDEVP": DSTDEVP,
     "DVAR": DVAR,
     "DVARP": DVARP,
+    # Engineering -- comparison
+    "DELTA": DELTA,
+    "GESTEP": GESTEP,
+    # Numeral conversion
+    "ROMAN": ROMAN,
+    "ARABIC": ARABIC,
+    "BASE": BASE,
+    "DECIMAL": DECIMAL,
+    # Engineering -- complex numbers
+    "COMPLEX": COMPLEX,
+    "IMREAL": IMREAL,
+    "IMAGINARY": IMAGINARY,
+    "IMABS": IMABS,
+    "IMARGUMENT": IMARGUMENT,
+    "IMCONJUGATE": IMCONJUGATE,
+    "IMSUM": IMSUM,
+    "IMSUB": IMSUB,
+    "IMPRODUCT": IMPRODUCT,
+    "IMDIV": IMDIV,
+    "IMPOWER": IMPOWER,
+    "IMSQRT": IMSQRT,
+    "IMEXP": IMEXP,
+    "IMLN": IMLN,
+    "IMLOG10": IMLOG10,
+    "IMLOG2": IMLOG2,
+    "IMSIN": IMSIN,
+    "IMCOS": IMCOS,
+    "IMTAN": IMTAN,
+    "IMSINH": IMSINH,
+    "IMCOSH": IMCOSH,
+    "IMSEC": IMSEC,
+    "IMCSC": IMCSC,
+    "IMCOT": IMCOT,
+    "IMSECH": IMSECH,
+    "IMCSCH": IMCSCH,
+    # Statistical -- fringe
+    "FISHER": FISHER,
+    "FISHERINV": FISHERINV,
+    "TRIMMEAN": TRIMMEAN,
+    "PEARSON": CORREL,
+    "SKEW.P": SKEWP,
+    "F.TEST": F_TEST,
+    "FTEST": F_TEST,
+    # Engineering -- unit conversion
+    "CONVERT": CONVERT,
+    # Date -- international weekend variants
+    "NETWORKDAYS.INTL": NETWORKDAYS_INTL,
+    "WORKDAY.INTL": WORKDAY_INTL,
+    # Financial -- coupon period
+    "COUPPCD": COUPPCD,
+    "COUPNCD": COUPNCD,
+    "COUPNUM": COUPNUM,
+    "COUPDAYBS": COUPDAYBS,
+    "COUPDAYSNC": COUPDAYSNC,
+    "COUPDAYS": COUPDAYS,
+    # Financial -- coupon bonds
+    "PRICE": PRICE,
+    "YIELD": YIELD,
+    "DURATION": DURATION,
+    "MDURATION": MDURATION,
+    "ACCRINT": ACCRINT,
+    "ACCRINTM": ACCRINTM,
+    # Financial -- discounted / at-maturity securities
+    "DISC": DISC,
+    "PRICEDISC": PRICEDISC,
+    "YIELDDISC": YIELDDISC,
+    "PRICEMAT": PRICEMAT,
+    "YIELDMAT": YIELDMAT,
+    "RECEIVED": RECEIVED,
+    "INTRATE": INTRATE,
+    # Financial -- Treasury bills
+    "TBILLEQ": TBILLEQ,
+    "TBILLPRICE": TBILLPRICE,
+    "TBILLYIELD": TBILLYIELD,
+    # Financial -- misc
+    "DOLLARDE": DOLLARDE,
+    "DOLLARFR": DOLLARFR,
+    "RRI": RRI,
+    "PDURATION": PDURATION,
+    "ISPMT": ISPMT,
+    # Excel 365 -- lexical-scope higher-order functions (LET/LAMBDA in evaluator)
+    "MAP": MAP,
+    "REDUCE": REDUCE,
+    "SCAN": SCAN,
+    "BYROW": BYROW,
+    "BYCOL": BYCOL,
+    "MAKEARRAY": MAKEARRAY,
 }

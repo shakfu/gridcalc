@@ -7,6 +7,7 @@ topological recalc. Pure-AST analysis: no evaluation.
 from __future__ import annotations
 
 from .ast_nodes import (
+    Apply,
     BinOp,
     Bool,
     Call,
@@ -18,6 +19,7 @@ from .ast_nodes import (
     Percent,
     PyCall,
     RangeRef,
+    SpillRef,
     String,
     UnaryOp,
 )
@@ -36,7 +38,7 @@ VOLATILE_FUNCS: frozenset[str] = frozenset({"RAND", "RANDBETWEEN", "RANDARRAY"})
 # dependency set -- e.g. `=ROWS(A1:B10)` does not read A1..B10, it only
 # uses the range's shape. Mirrors `formula.evaluator.RAW_ARG_FUNCS`.
 ADDRESS_ONLY_FUNCS: frozenset[str] = frozenset(
-    {"ROW", "COLUMN", "ROWS", "COLUMNS", "ISREF", "ISFORMULA"}
+    {"ROW", "COLUMN", "ROWS", "COLUMNS", "ISREF", "ISFORMULA", "AREAS"}
 )
 
 
@@ -75,6 +77,8 @@ def has_dynamic_refs(node: Node) -> bool:
         if up in DYNAMIC_REF_FUNCS or up in VOLATILE_FUNCS:
             return True
         return any(has_dynamic_refs(a) for a in node.args)
+    if isinstance(node, Apply):
+        return has_dynamic_refs(node.func) or any(has_dynamic_refs(a) for a in node.args)
     if isinstance(node, PyCall):
         return True  # py.* gateway can read arbitrary cells
     if isinstance(node, BinOp):
@@ -102,6 +106,13 @@ def _walk(
             for c in range(c1, c2 + 1):
                 out.add((sheet, c, r))
         return
+    if isinstance(node, SpillRef):
+        # A spill range depends on its anchor: when the anchor's array
+        # changes, the whole spill (and its consumers) must recompute.
+        anchor = node.anchor
+        sheet = anchor.sheet if anchor.sheet is not None else formula_sheet
+        out.add((sheet, anchor.col, anchor.row))
+        return
     if isinstance(node, Name):
         target = named.get(node.name.lower())
         if target is not None:
@@ -111,6 +122,11 @@ def _walk(
         if node.name.upper() in ADDRESS_ONLY_FUNCS:
             # Args are used as references, not read for value.
             return
+        for a in node.args:
+            _walk(a, named, out, formula_sheet)
+        return
+    if isinstance(node, Apply):
+        _walk(node.func, named, out, formula_sheet)
         for a in node.args:
             _walk(a, named, out, formula_sheet)
         return

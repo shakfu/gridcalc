@@ -6,17 +6,26 @@ documented Excel function set. Implemented functions live in
 of bare aggregates and trig in `src/gridcalc/engine.py`
 (`_make_eval_globals`).
 
-**As of last audit: 310 names in `xlsx.BUILTINS` plus 8 aggregates
+**As of last audit: 405 names in `xlsx.BUILTINS` (plus `LET`/`LAMBDA`,
+handled in the evaluator) plus 8 aggregates
 (`SUM`/`AVG`/`MIN`/`MAX`/`COUNT`/`ABS`/`SQRT`/`INT`) and ~23
-math constants/funcs in the engine globals — call it ~318 unique
+math constants/funcs in the engine globals — call it ~415 unique
 Excel-callable names** out of ~480–500. Practical coverage is the
-overwhelming majority of formulas seen in real workbooks. Remaining
-gaps are now concentrated in Excel 365 functional features
-(`LET`/`LAMBDA`/`MAP`/...) and 2D-aware return types
-(`TRANSPOSE`/`LINEST`/...) — both architectural — plus low-value niche
-families (bond/Treasury finance, complex numbers, numeral conversion,
-unit conversion). The full statistical-distribution suite is now
-covered.
+overwhelming majority of formulas seen in real workbooks, and all four
+architectural lifts have landed. The 2D-aware return types (`TRANSPOSE`,
+`LINEST`/`LOGEST`, `HSTACK`/`VSTACK`, `CHOOSEROWS`/`CHOOSECOLS`,
+multi-regressor `TREND`/`GROWTH`, reshape functions, `FREQUENCY`) run on
+the `Vec` `cols` machinery and spill into neighbour cells. The full
+statistical-distribution suite, the complex-number (`IM*`) family,
+numeral conversion (`ROMAN`/`ARABIC`/`BASE`/`DECIMAL`), the entire
+bond/Treasury finance family (coupon `PRICE`/`YIELD`/`DURATION`, the
+`COUP*` schedule functions, discounted and at-maturity securities,
+T-bills), unit conversion (`CONVERT`), the fringe stats
+(`SKEW.P`/`F.TEST`), the lexical-scope family
+(`LET`/`LAMBDA`/`MAP`/`REDUCE`/`SCAN`/`BYROW`/`BYCOL`/`MAKEARRAY`), and
+the reference value type (`OFFSET`/`FORMULATEXT`/`AREAS`/`LOOKUP`) are
+all covered. What remains is out of scope by design (external I/O,
+cube/OLAP, `INDIRECT`).
 
 ## Currently implemented
 
@@ -33,47 +42,54 @@ truth — read `xlsx.BUILTINS` if in doubt.)
 | Hyperbolic | `SINH`, `COSH`, `TANH`, `ASINH`, `ACOSH`, `ATANH` |
 | Bitwise | `BITAND`, `BITOR`, `BITXOR`, `BITLSHIFT`, `BITRSHIFT` |
 | Random (volatile) | `RAND`, `RANDBETWEEN`, `RANDARRAY` |
-| Lookup | `VLOOKUP`, `HLOOKUP`, `INDEX`, `MATCH`, `XLOOKUP`, `XMATCH`, `CHOOSE` |
-| Reference | `ROW`, `COLUMN`, `ROWS`, `COLUMNS`, `ADDRESS` |
+| Lookup | `VLOOKUP`, `HLOOKUP`, `INDEX`, `MATCH`, `XLOOKUP`, `XMATCH`, `CHOOSE`, `LOOKUP` (vector + array) |
+| Reference | `ROW`, `COLUMN`, `ROWS`, `COLUMNS`, `ADDRESS`, `OFFSET`, `FORMULATEXT`, `AREAS`, `ISREF` |
 | Text | `CONCAT`, `CONCATENATE`, `LEFT`, `RIGHT`, `MID`, `LEN`, `TRIM`, `UPPER`, `LOWER`, `PROPER`, `SUBSTITUTE`, `REPT`, `EXACT`, `FIND`, `SEARCH`, `REPLACE`, `TEXTJOIN`, `TEXTSPLIT`, `TEXTBEFORE`, `TEXTAFTER`, `CHAR`, `CODE`, `VALUE`, `TEXT`, `CLEAN`, `NUMBERVALUE`, `FIXED`, `DOLLAR`, `T`, `UNICHAR`, `UNICODE` |
-| Date/time | `NOW`, `TODAY`, `DATE`, `TIME`, `DATEVALUE`, `TIMEVALUE`, `YEAR`, `MONTH`, `DAY`, `HOUR`, `MINUTE`, `SECOND`, `WEEKDAY`, `WEEKNUM`, `ISOWEEKNUM`, `EDATE`, `EOMONTH`, `DATEDIF`, `DAYS`, `DAYS360`, `YEARFRAC`, `NETWORKDAYS`, `WORKDAY` |
+| Date/time | `NOW`, `TODAY`, `DATE`, `TIME`, `DATEVALUE`, `TIMEVALUE`, `YEAR`, `MONTH`, `DAY`, `HOUR`, `MINUTE`, `SECOND`, `WEEKDAY`, `WEEKNUM`, `ISOWEEKNUM`, `EDATE`, `EOMONTH`, `DATEDIF`, `DAYS`, `DAYS360`, `YEARFRAC`, `NETWORKDAYS`, `NETWORKDAYS.INTL`, `WORKDAY`, `WORKDAY.INTL` |
 | Information | `ISNUMBER`, `ISTEXT`, `ISBLANK`, `ISERROR`, `ISNA`, `ISERR`, `ISLOGICAL`, `ISEVEN`, `ISODD`, `ISFORMULA`, `ISREF`, `ISNONTEXT`, `NA`, `N`, `TYPE`, `ERROR.TYPE` |
 | Statistical (descriptive) | `STDEV`/`STDEV.S`/`STDEV.P`, `STDEVP`, `VAR`/`VAR.S`/`VAR.P`, `VARP`, `CORREL`, `COVAR`, `COVARIANCE.P`/`COVARIANCE.S`, `RANK`/`RANK.EQ`/`RANK.AVG`, `PERCENTILE`/`PERCENTILE.INC`/`PERCENTILE.EXC`, `QUARTILE`/`QUARTILE.INC`/`QUARTILE.EXC`, `MODE`/`MODE.SNGL`/`MODE.MULT`, `GEOMEAN`, `HARMEAN`, `AVEDEV`, `DEVSQ`, `SLOPE`, `INTERCEPT`, `RSQ`, `STEYX`, `SKEW`, `KURT`, `PERCENTRANK` |
 | Statistical (distributions) | `NORM.DIST`/`NORM.INV`, `NORM.S.DIST`/`NORM.S.INV`, `T.DIST`/`T.DIST.2T`/`T.DIST.RT`/`T.INV`/`T.INV.2T`, `F.DIST`/`F.DIST.RT`/`F.INV`/`F.INV.RT`, `CHISQ.DIST`/`CHISQ.DIST.RT`/`CHISQ.INV`/`CHISQ.INV.RT`, `GAMMA.DIST`/`GAMMA.INV`, `BETA.DIST`/`BETA.INV`, `LOGNORM.DIST`/`LOGNORM.INV`, `WEIBULL.DIST`, `BINOM.DIST`/`BINOM.INV`, `NEGBINOM.DIST`, `POISSON.DIST`, `EXPON.DIST`, `HYPGEOM.DIST`, `CONFIDENCE.NORM`/`CONFIDENCE.T`, plus pre-2010 aliases (`NORMDIST`, `NORMSDIST`, `TDIST`, `TINV`, `FDIST`, `FINV`, `CHIDIST`, `CHIINV`, `GAMMADIST`, `GAMMAINV`, `BETADIST`, `BETAINV`, `LOGNORMDIST`, `LOGINV`, `WEIBULL`, `BINOMDIST`, `CRITBINOM`, `NEGBINOMDIST`, `HYPGEOMDIST`, `POISSON`, `EXPONDIST`, `CONFIDENCE`) |
 | Statistical (tests) | `CHISQ.TEST`, `T.TEST`, `Z.TEST`, `PROB`, plus aliases `CHITEST`, `TTEST`, `ZTEST` |
+| Statistical (fringe) | `FISHER`, `FISHERINV`, `TRIMMEAN`, `PEARSON` (= `CORREL`), `SKEW.P`, `F.TEST` |
 | Forecasting (scalar) | `FORECAST`, `FORECAST.LINEAR`, `TREND` (scalar/1D new-x only) |
+| Array (spilling) | `FREQUENCY` (counts into bins), plus `TREND`/`GROWTH`/`LINEST`/`SEQUENCE`/`SORT`/`FILTER`/`UNIQUE`/... which now spill |
 | Database (D-functions) | `DSUM`, `DAVERAGE`, `DCOUNT`, `DCOUNTA`, `DGET`, `DMAX`, `DMIN`, `DPRODUCT`, `DSTDEV`, `DSTDEVP`, `DVAR`, `DVARP` |
-| Financial | `PV`, `FV`, `PMT`, `NPER`, `RATE`, `NPV`, `IRR`, `IPMT`, `PPMT`, `SLN`, `SYD`, `DB`, `DDB`, `VDB` (integer periods), `EFFECT`, `NOMINAL`, `CUMIPMT`, `CUMPRINC`, `MIRR`, `XNPV`, `XIRR` |
+| Financial | `PV`, `FV`, `PMT`, `NPER`, `RATE`, `NPV`, `IRR`, `IPMT`, `PPMT`, `SLN`, `SYD`, `DB`, `DDB`, `VDB` (integer periods), `EFFECT`, `NOMINAL`, `CUMIPMT`, `CUMPRINC`, `MIRR`, `XNPV`, `XIRR`, `RRI`, `PDURATION`, `ISPMT`, `DOLLARDE`, `DOLLARFR` |
+| Financial — bonds | `PRICE`, `YIELD`, `DURATION`, `MDURATION`, `ACCRINT`, `ACCRINTM`, `DISC`, `PRICEDISC`, `YIELDDISC`, `PRICEMAT`, `YIELDMAT`, `RECEIVED`, `INTRATE`, `COUPPCD`, `COUPNCD`, `COUPNUM`, `COUPDAYBS`, `COUPDAYS`, `COUPDAYSNC` |
+| Financial — Treasury | `TBILLEQ`, `TBILLPRICE`, `TBILLYIELD` |
 | Engineering — number-base | `DEC2BIN`, `DEC2OCT`, `DEC2HEX`, `BIN2DEC`, `OCT2DEC`, `HEX2DEC`, `BIN2OCT`, `BIN2HEX`, `OCT2BIN`, `OCT2HEX`, `HEX2BIN`, `HEX2OCT` |
+| Engineering — comparison | `DELTA`, `GESTEP` |
+| Engineering — unit conversion | `CONVERT` (mass, distance, time, pressure, force, energy, power, magnetism, temperature, volume, area, speed, information; SI + binary prefixes) |
+| Engineering — complex | `COMPLEX`, `IMREAL`, `IMAGINARY`, `IMABS`, `IMARGUMENT`, `IMCONJUGATE`, `IMSUM`, `IMSUB`, `IMPRODUCT`, `IMDIV`, `IMPOWER`, `IMSQRT`, `IMEXP`, `IMLN`, `IMLOG10`, `IMLOG2`, `IMSIN`, `IMCOS`, `IMTAN`, `IMSINH`, `IMCOSH`, `IMSEC`, `IMCSC`, `IMCOT`, `IMSECH`, `IMCSCH` |
+| Numeral conversion | `ROMAN` (classic form), `ARABIC`, `BASE`, `DECIMAL` |
+| Lexical scope (Excel 365) | `LET`, `LAMBDA` (evaluator), `MAP`, `REDUCE`, `SCAN`, `BYROW`, `BYCOL`, `MAKEARRAY` |
 | Excel 365 dynamic-array (1D-only) | `FILTER`, `SORT`, `UNIQUE`, `SEQUENCE`, `RANDARRAY`, `XLOOKUP`, `XMATCH` |
 
-Dynamic-array entries operate on flat `Vec` data. They do not "spill"
-into adjacent cells — the result Vec is held in a single cell and
-consumed by surrounding formulas via `INDEX`, `SUM`, etc. True spill
-semantics need a `Cell`/`Grid` model change.
+Dynamic-array results now **spill** into adjacent cells (EXCEL/HYBRID
+mode): a multi-cell result fills a rectangle anchored at the formula
+cell, a bare reference reads the anchor's top-left scalar, and the whole
+array is reached with the `A1#` spill-range operator. A blocked
+rectangle yields `#SPILL!`. See the "Spill" note below.
 
 ## Gaps — by tractability
 
 ### Mechanical (low risk, hours-to-days of effort)
 
+The mechanical batches are effectively exhausted. What is left is either
+out of scope or blocked on an architectural change (below).
+
 | Group | Missing | Notes |
 |---|---|---|
-| Numeral conversion | `ARABIC`, `ROMAN`, `BASE`, `DECIMAL` | Hours each, niche. |
-| Engineering — other | `CONVERT` (unit conversion table), `DELTA`, `GESTEP` | `DELTA`/`GESTEP` trivial; `CONVERT` needs a unit-table data file. |
-| Date variants | `NETWORKDAYS.INTL`, `WORKDAY.INTL` | Custom weekend masks + holiday lists. Hours. |
 | Hyperlinks/external | `HYPERLINK`, `IMAGE`, `WEBSERVICE`, `FILTERXML`, `ENCODEURL`, `RTD` | Defer indefinitely — out of scope for a local TUI. |
-| Bond/Treasury finance (~25) | `PRICE`, `YIELD`, `DURATION`, `MDURATION`, `COUPDAYBS`/...coupon family, `TBILLEQ`/`TBILLPRICE`/`TBILLYIELD`, `ACCRINT`/`ACCRINTM`, `RECEIVED`, `INTRATE`, `DOLLARDE`/`DOLLARFR`, `RRI`, `PDURATION`, `ISPMT` | Day-count conventions and coupon-period math are tedious but mechanical. Skip until requested by a real workbook. |
-| Engineering — complex numbers (~40) | `COMPLEX`, `IMABS`, `IMAGINARY`, `IMREAL`, `IMSUM`, `IMPRODUCT`, ... | Need a string-encoded complex type round-tripped through `Cell`. Days of work; defer. |
-| Statistical — fringe | `FISHER`, `FISHERINV`, `LARGE` (already have), `TRIMMEAN`, `KURT`/`SKEW.P`, `RANK.EQ`/`RANK.AVG` (already have), `PEARSON` (= `CORREL`), `F.TEST`, `Z.TEST.RT` | A handful of named conveniences over existing infra. Hour or two. |
 
 ### Architectural blockers
 
 | Capability | Blocks | Notes |
 |---|---|---|
-| 2D-aware result type | `TRANSPOSE`, true `HSTACK`, `LINEST`/`LOGEST` 2D output, multi-regressor `TREND`/`GROWTH`, `FREQUENCY`, `CHOOSEROWS`/`CHOOSECOLS`, `WRAPROWS`/`WRAPCOLS`, full spill | `Vec` already carries `cols` for 2D ranges; need to wire it through arithmetic, persistence, and surrounding formula consumers. |
-| Spilled results | Excel 365 spill semantics for `FILTER`/`SORT`/`UNIQUE`/`SEQUENCE`/`RANDARRAY`/the 2D-aware functions above | Today these return a `Vec` stored in one cell rather than spilling into neighbours. Major change to `Cell` model and recalc — depends on user demand. |
-| Reference value type | `OFFSET`, `LOOKUP` (legacy), proper `INDIRECT`, `AREAS`, `FORMULATEXT` | Need a "reference object" distinct from a materialised value, threaded through the evaluator and dependency tracker. `INDIRECT` is deliberately omitted — defeats static dep analysis. |
-| Closures / let-binding | `LET`, `LAMBDA`, `BYROW`, `BYCOL`, `MAP`, `REDUCE`, `SCAN`, `MAKEARRAY` | Evaluator currently has no environment for user-defined names beyond `named_ranges`. Requires real lexical scope. |
+| 2D-aware result type — DONE | `TRANSPOSE`, `HSTACK`/`VSTACK`, `LINEST`/`LOGEST`, multi-regressor `TREND`/`GROWTH`, `CHOOSEROWS`/`CHOOSECOLS`, `WRAPROWS`/`WRAPCOLS`, `TAKE`/`DROP`/`EXPAND`/`TOROW`/`TOCOL`, `FREQUENCY` all landed on the `Vec` `cols` machinery, and results now spill into neighbour cells. | Complete. |
+| Spilled results — DONE | Excel spill semantics for `FILTER`/`SORT`/`UNIQUE`/`SEQUENCE`/`RANDARRAY`/`FREQUENCY`/the 2D-aware functions | Landed: results spill into neighbour cells (`SPILL` cell type), `A1#` spill-range operator, `#SPILL!` on blockage, bounded-fixpoint recalc, and the TUI (cyan spill tint, scalar anchor display, status-bar provenance). |
+| Reference value type — DONE | `OFFSET`, `LOOKUP`, `AREAS`, `FORMULATEXT` | Landed: a `Reference` value (a location) flows through the evaluator and materialises (`_deref`) wherever a value is expected. `OFFSET` returns one; `ROW`/`COLUMN`/`ROWS`/`COLUMNS`/`ISREF` consume one via `Env.resolve_ref`. `INDIRECT` stays omitted — a string-built reference defeats static dep analysis. |
+| Closures / let-binding — DONE | `LET`, `LAMBDA`, `MAP`, `REDUCE`, `SCAN`, `BYROW`, `BYCOL`, `MAKEARRAY` all shipped. `LambdaValue` closes over the `LET` scope stack; a new `Apply` node + parser postfix layer gives direct `LAMBDA(...)(...)` application. | Recursion is not supported (would need Name-Manager lambdas and a lazy `IF`; `IF` here is an eager builtin). Lambda results do not spill — consumed via `INDEX`/`SUM`. |
 | Multi-sheet model | `SHEET`, `SHEETS`, cross-sheet refs in `INDIRECT` | Single-sheet today. |
 | Cube / OLAP | `CUBEMEMBER`, `CUBEVALUE`, etc. | Out of scope. |
 
@@ -98,24 +114,62 @@ semantics need a `Cell`/`Grid` model change.
   treats inputs as 1D arrays with `df = n - 1`. Excel's 2D form computes
   `df = (rows-1)(cols-1)` from row/column sums. Needs 2D Vec to fix
   cleanly.
+- **`ACCRINT` actual/actual quasi-coupon** — accrued interest is computed
+  as `par * rate * YEARFRAC(start, settlement, basis)`, exact for the
+  30/360 and actual/360-365 bases. Excel's basis-1 form sums over
+  quasi-coupon periods of varying length; the difference is tiny (and
+  bounded by this library's `YEARFRAC` basis-1 approximation). Fix
+  together with a Excel-exact actual/actual `YEARFRAC`.
+- **`YIELD`/`YIELDMAT` by bisection** — invert `PRICE`/`PRICEMAT` with a
+  bracketing bisection (200 steps, 1e-10 in price). Round-trips to ~1e-8
+  in yield. Excel uses Newton; the payoff over an already-cheap bisection
+  is negligible for a coupon bond.
+- **`PRICE` single final period** — when settlement is inside the last
+  coupon period (`COUPNUM == 1`), the final stub discounts with simple
+  interest, matching Excel; earlier periods use compound discounting.
+- **`CONVERT` unit table** — covers all thirteen Excel categories (mass,
+  distance, time, pressure, force, energy, power, magnetism, temperature,
+  volume, area, speed, information) with SI decimal prefixes and binary
+  prefixes for `bit`/`byte`. Prefixes on temperature units and the most
+  exotic cubic/area variants (`ly3`, `Nmi3`, `Pica2`, ...) are omitted;
+  add entries to `_CONVERT_UNITS` if a workbook needs them.
+- **`LAMBDA` recursion** — a self-referential lambda cannot terminate:
+  `IF` is an eager builtin that evaluates both branches, and gridcalc's
+  named ranges model only cell references, so there is no global lambda
+  name to recurse through. The evaluator already resolves a syntactic
+  named `LAMBDA` dynamically per call, so recursion would work once a
+  lazy `IF` and Name-Manager lambdas exist.
+- **Spill** — the anchor keeps the whole array in `arr` and its own
+  displayed value is the top-left scalar; the extra elements materialise
+  as `SPILL` cells (a new cell type) owned by the anchor. Reads follow
+  Excel: `A1` is the scalar, `A1#` is the array. `#SPILL!` on a blocked
+  or off-sheet rectangle; a blocked anchor is re-attempted on any edit,
+  since it has no dependency on what blocks it. Recalc is a bounded
+  fixpoint because spill shape is only known post-evaluation — a spill
+  can create/destroy cells whose consumers were not in the current pass.
+  Not persisted (rebuilt from the anchor on load). The TUI paints the
+  spill block in a subtle cyan tint, shows the anchor's scalar instead of
+  the `[n]` array badge, and names a spilled cell's origin in the status
+  bar. Spilling is EXCEL/HYBRID only; PYTHON mode keeps arrays in one
+  cell (and keeps the badge).
 
 ## Summary
 
 | Tier | Count | Effort | Priority |
 |---|---|---|---|
-| Implemented | ~318 | done | — |
-| Numeral conversion + `CONVERT`/`DELTA`/`GESTEP` + `NETWORKDAYS.INTL`/`WORKDAY.INTL` + `FISHER`/`TRIMMEAN`/`PEARSON` | ~12 | 1 day | low — niche fillers |
-| Bond/Treasury finance | ~25 | weeks | low — niche, no current asks |
-| Complex numbers | ~40 | weeks | defer |
-| Multi-regressor / 2D output (`LINEST`/`TRANSPOSE`/`HSTACK`/`FREQUENCY`/full spill) | many | weeks | blocked on 2D Vec |
-| `LET`/`LAMBDA` family | 7 | weeks | blocked on evaluator scope |
-| `OFFSET`/`LOOKUP`/`AREAS`/`FORMULATEXT` | ~5 | weeks | blocked on reference type |
-| External I/O / cube | many | — | out of scope |
+| Implemented | ~415 | done | — |
+| External I/O / cube, `INDIRECT` | many | — | out of scope / by design |
 
-The only mechanical batches left are small (numeral conversion,
-unit conversion, fringe stats) and add little practical coverage. The
-real next move is a strategic call between **architectural lifts**
-(2D Vec / reference type / lexical scope) — each unblocks a whole
-family — and **deferring further work** until a concrete workbook
-demands something specific. Bond/Treasury finance and complex numbers
-are best driven by demand rather than coverage-completeness.
+The mechanical batches are exhausted and **all four architectural lifts
+have now landed**: the 2D-aware result type unblocked the
+`LINEST`/`TRANSPOSE`/stacking families (and `FREQUENCY`); lexical scope
+brought `LET`/`LAMBDA`/`MAP`/`REDUCE`/`SCAN`/`BYROW`/`BYCOL`/`MAKEARRAY`;
+cell spill lets dynamic-array results write into neighbour cells with the
+`A1#` operator and `#SPILL!` semantics (engine and TUI); and the
+reference value type brought `OFFSET`/`FORMULATEXT`/`AREAS`/`LOOKUP` with
+a `Reference` that materialises wherever a value is expected. What
+remains is out of scope by design: external I/O (`WEBSERVICE`, `RTD`,
+hyperlinks), cube/OLAP, and `INDIRECT` (a string-built reference defeats
+the static dependency analysis the topological recalc depends on).
+Coverage is now the overwhelming majority of Excel's function set; drive
+any further additions by a concrete workbook need.

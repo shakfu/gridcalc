@@ -12,11 +12,13 @@ from ..engine import (
     NCOL,
     NROW,
     NUM,
+    SPILL,
     Cell,
     Grid,
     _is_dataframe,
     col_name,
 )
+from ..formula.errors import ExcelError
 from ..sandbox import SANDBOX_ENABLED
 from .format import fmtcell
 
@@ -32,6 +34,7 @@ CP_MODE_DEFAULT = 7
 CP_MODE_ENTRY = 8
 CP_MODE_CMD = 9
 CP_SELECT = 10
+CP_SPILL = 11
 
 
 def init_colors() -> None:
@@ -47,6 +50,9 @@ def init_colors() -> None:
     curses.init_pair(CP_MODE_ENTRY, curses.COLOR_YELLOW, curses.COLOR_BLACK)
     curses.init_pair(CP_MODE_CMD, curses.COLOR_RED, curses.COLOR_BLACK)
     curses.init_pair(CP_SELECT, curses.COLOR_WHITE, curses.COLOR_MAGENTA)
+    # A spilling anchor and the cells it painted share one subtle cyan tint,
+    # so a dynamic-array result reads as a single cohesive block.
+    curses.init_pair(CP_SPILL, curses.COLOR_CYAN, -1)
 
 
 def _fmt_collection(cur: Cell) -> str | None:
@@ -140,7 +146,9 @@ def draw(
         else:
             if cur.err is not None:
                 status += str(cur.err)
-                if cur.err_msg:
+                if cur.err is ExcelError.SPILL:
+                    status += "  (spill range blocked -- clear the target cells)"
+                elif cur.err_msg:
                     status += f"  ({cur.err_msg})"
             elif isinstance(cur.val, float) and math.isnan(cur.val):
                 if (g.cc, g.cr) in g._circular:
@@ -151,6 +159,18 @@ def draw(
                 status += f"{cur.val:.10g}"
     elif cur and cur.type == LABEL:
         status += f"  {cur.text}"
+    elif cur and cur.type == SPILL:
+        if cur.sval is not None:
+            status += f"  {cur.sval!r}"
+        elif cur.err is not None:
+            status += f"  {cur.err}"
+        elif isinstance(cur.val, float) and math.isnan(cur.val):
+            status += "  ERR"
+        else:
+            status += f"  {cur.val:.10g}"
+        if cur.spill_parent is not None:
+            ac, ar = cur.spill_parent
+            status += f"  (spill from {col_name(ac)}{ar + 1})"
     if g.code_error:
         status += f"  [CODE ERR: {g.code_error}]"
     stdscr.addnstr(0, 0, status, curses.COLS - 1)
@@ -231,6 +251,10 @@ def draw(
                 and math.isnan(cl.val)
                 and cl.matrix is None
             )
+            # A spill cell, or a healthy spilling anchor: one cohesive block.
+            # A blocked anchor (#SPILL!) has spill_shape cleared, so it falls
+            # through to is_error and renders red instead.
+            is_spill = cl is not None and (cl.type == SPILL or cl.spill_shape is not None)
             style = 0
             if cl:
                 if cl.bold:
@@ -250,10 +274,10 @@ def draw(
                 attr = curses.color_pair(CP_LOCKED) | curses.A_BOLD
             elif is_error:
                 attr = curses.color_pair(CP_ERROR) | curses.A_BOLD
-            elif style:
-                attr = style
+            elif is_spill:
+                attr = curses.color_pair(CP_SPILL) | style
             else:
-                attr = 0
+                attr = style
 
             x = GW + ci * g.cw
             if x < curses.COLS:

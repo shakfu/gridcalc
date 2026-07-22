@@ -12,6 +12,7 @@ class ExcelError(Enum):
     NUM = "#NUM!"
     NULL = "#NULL!"
     CIRC = "#CIRC!"
+    SPILL = "#SPILL!"
 
     def __str__(self) -> str:
         return self.value

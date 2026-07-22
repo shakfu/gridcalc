@@ -41,6 +41,15 @@ class RangeRef:
 
 
 @dataclass(frozen=True)
+class SpillRef:
+    """The spill-range operator ``A1#``: the whole dynamic array that the
+    formula in ``anchor`` spilled, as opposed to ``A1`` which reads only
+    the top-left scalar."""
+
+    anchor: CellRef
+
+
+@dataclass(frozen=True)
 class Name:
     name: str
 
@@ -54,6 +63,16 @@ class Call:
 @dataclass(frozen=True)
 class PyCall:
     name: str
+    args: tuple[Node, ...]
+
+
+@dataclass(frozen=True)
+class Apply:
+    """Application of an expression's result to arguments, e.g.
+    ``LAMBDA(x, x+1)(5)``. ``func`` evaluates to a first-class lambda
+    value; distinct from ``Call``, whose callee is a static name."""
+
+    func: Node
     args: tuple[Node, ...]
 
 
@@ -82,9 +101,11 @@ Node = (
     | ErrorLit
     | CellRef
     | RangeRef
+    | SpillRef
     | Name
     | Call
     | PyCall
+    | Apply
     | BinOp
     | UnaryOp
     | Percent

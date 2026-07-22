@@ -160,6 +160,18 @@ class TestLexerErrorLit:
         t = tokenize("#VALUE!")[0]
         assert t.value == ExcelError.VALUE
 
+    def test_spill_hash_after_cellref_is_not_an_error_literal(self):
+        # A1# tokenises as CELLREF then HASH, distinct from #DIV/0! etc.
+        from gridcalc.formula.lexer import CELLREF, HASH
+
+        ks = [t.kind for t in tokenize("A1#")]
+        assert ks[:2] == [CELLREF, HASH]
+
+    def test_bare_hash_is_hash_token(self):
+        from gridcalc.formula.lexer import HASH
+
+        assert tokenize("#")[0].kind == HASH
+
 
 class TestLexerOperators:
     def test_arithmetic(self):

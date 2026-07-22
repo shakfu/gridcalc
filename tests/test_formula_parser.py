@@ -1,6 +1,7 @@
 import pytest
 
 from gridcalc.formula.ast_nodes import (
+    Apply,
     BinOp,
     Bool,
     Call,
@@ -16,6 +17,50 @@ from gridcalc.formula.ast_nodes import (
 )
 from gridcalc.formula.errors import ExcelError
 from gridcalc.formula.parser import ParseError, parse
+
+
+class TestParseApply:
+    def test_lambda_direct_application(self) -> None:
+        # LAMBDA(x, x+1)(5) -> Apply(Call("lambda", ...), (Number 5,)).
+        n = parse("LAMBDA(x, x+1)(5)")
+        assert isinstance(n, Apply)
+        assert isinstance(n.func, Call)
+        assert n.func.name == "lambda"
+        assert n.args == (Number(5.0),)
+
+    def test_parenthesized_application(self) -> None:
+        n = parse("(LAMBDA(x, x))(9)")
+        assert isinstance(n, Apply)
+        assert n.args == (Number(9.0),)
+
+    def test_chained_application(self) -> None:
+        # A curried lambda applied twice: f(1)(2).
+        n = parse("LAMBDA(x, LAMBDA(y, x+y))(1)(2)")
+        assert isinstance(n, Apply)
+        assert n.args == (Number(2.0),)
+        assert isinstance(n.func, Apply)
+        assert n.func.args == (Number(1.0),)
+
+    def test_ordinary_call_is_not_apply(self) -> None:
+        assert isinstance(parse("SUM(A1:A3)"), Call)
+
+
+class TestParseSpillRef:
+    def test_spill_ref(self) -> None:
+        from gridcalc.formula.ast_nodes import SpillRef
+
+        n = parse("A1#")
+        assert n == SpillRef(CellRef(0, 0, False, False))
+
+    def test_spill_ref_inside_call(self) -> None:
+        from gridcalc.formula.ast_nodes import SpillRef
+
+        n = parse("SUM(B2#)")
+        assert isinstance(n, Call)
+        assert n.args == (SpillRef(CellRef(1, 1, False, False)),)
+
+    def test_plain_ref_is_not_spill(self) -> None:
+        assert isinstance(parse("A1"), CellRef)
 
 
 class TestParseLiterals:

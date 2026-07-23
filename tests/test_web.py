@@ -596,6 +596,23 @@ def test_opt_sweep_returns_points_without_mutating() -> None:
     assert api._undo.undo_stack == []
 
 
+def test_load_html_returns_the_built_bundle_or_raises() -> None:
+    """`run()` serves the built React bundle. When the frontend has been built
+    (`make web-build`) the bundle is a self-contained document that mounts the
+    app and talks to the bridge; without it, `_load_html` raises a directive
+    error rather than opening a blank window."""
+    from gridcalc import web
+
+    bundle = Path(web.__file__).resolve().parent / "static" / "index.html"
+    if bundle.exists():
+        html = web._load_html()
+        assert 'id="root"' in html  # the React mount point
+        assert "pywebviewready" in html  # the inlined app awaits the bridge
+    else:
+        with pytest.raises(OSError, match="web UI bundle not found"):
+            web._load_html()
+
+
 def test_importing_web_does_not_load_pywebview() -> None:
     """`import gridcalc.web` must stay cheap: the native webview stack is pulled
     in only when a window is opened, so the module and its `Api` import without

@@ -1,7 +1,7 @@
 .PHONY: all sync build rebuild test test-stdlib lint format typecheck qa clean  \
        distclean wheel wheel-abi3 build-abi3 sdist dist dist-abi3 check \
        publish-test publish upgrade coverage coverage-html docs release \
-       bench bench-clean help
+       bench bench-clean web-build web-dev web-jstest web-run help
 
 # Default target
 all: build
@@ -28,11 +28,32 @@ test:
 test-tty:
 	@GRIDCALC_SANDBOX=1 uv run pytest tests/integration/ -v -m tty
 
-# Run the Playwright web-frontend render tests. These load the web view's HTML
-# in headless Chromium with a mocked pywebview bridge and assert on the DOM, so
-# they need `pip install gridcalc[web]` plus `uv run playwright install chromium`.
+# Run the Playwright web-frontend tests. These load the web view in headless
+# Chromium with a mocked pywebview bridge and assert on the DOM, so they need
+# `pip install gridcalc[web]` plus `uv run playwright install chromium`. The
+# bundle smoke additionally needs `make web-build` (else it skips).
 test-web:
-	@GRIDCALC_SANDBOX=1 uv run pytest tests/integration/test_web_playwright.py -v -m browser
+	@GRIDCALC_SANDBOX=1 uv run pytest tests/integration/ -v -m browser
+
+# Build the React web frontend (web/frontend) into a single self-contained
+# static/index.html that the pywebview window serves. Requires Node/npm.
+web-build:
+	@npm --prefix src/gridcalc/web/frontend install --no-audit --no-fund
+	@npm --prefix src/gridcalc/web/frontend run build
+
+# Run the frontend dev server (browser + mock bridge, hot reload) for fast UI
+# iteration without launching pywebview.
+web-dev:
+	@npm --prefix src/gridcalc/web/frontend run dev
+
+# Run the frontend component tests (vitest + React Testing Library).
+web-jstest:
+	@npm --prefix src/gridcalc/web/frontend run test
+
+# Launch the desktop web app (serves the built static/index.html in a pywebview
+# window). Run `make web-build` first. Needs the `web` extra (pywebview).
+web-run:
+	@GRIDCALC_SANDBOX=1 uv run gridcalc-web
 
 # Run tests in an isolated environment without the optional extras
 # (numpy / pandas). Verifies the optional-dep skipif guards work and

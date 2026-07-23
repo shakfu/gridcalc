@@ -1,0 +1,83 @@
+import type { PywebviewApi } from './types'
+
+// pywebview injects `window.pywebview.api` and fires `pywebviewready` once the
+// bridge is live -- but the timing relative to React mounting is not
+// guaranteed, and the api object can appear a tick before its method stubs are
+// attached. So "the api object is truthy" is NOT a safe readiness signal (that
+// was a Phase 0 bug: a real WebView reached `dims()` before it existed).
+// Instead we treat "a known method is callable" as ready, listen for the event,
+// AND poll -- covering the event having already fired before we listened, or
+// methods attaching just after it. A timeout turns a hang into a diagnostic
+// naming whatever the bridge did expose.
+function bridgeReady(): boolean {
+  return typeof window.pywebview?.api?.dims === 'function'
+}
+
+function apiMethodNames(): string[] {
+  const a = window.pywebview?.api
+  if (!a) return []
+  const names = new Set<string>()
+  for (const k in a) names.add(k)
+  Object.getOwnPropertyNames(a).forEach((n) => names.add(n))
+  const proto = Object.getPrototypeOf(a) as object | null
+  if (proto) Object.getOwnPropertyNames(proto).forEach((n) => names.add(n))
+  names.delete('constructor')
+  return [...names]
+}
+
+export function whenReady(timeoutMs = 8000): Promise<void> {
+  if (bridgeReady()) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    const start = Date.now()
+    let timer: ReturnType<typeof setInterval>
+    const cleanup = () => {
+      clearInterval(timer)
+      window.removeEventListener('pywebviewready', check)
+    }
+    const check = () => {
+      if (bridgeReady()) {
+        cleanup()
+        resolve()
+      } else if (Date.now() - start > timeoutMs) {
+        cleanup()
+        reject(
+          new Error(
+            `pywebview bridge not ready after ${timeoutMs}ms; ` +
+              `window.pywebview=${!!window.pywebview}, ` +
+              `api methods=${JSON.stringify(apiMethodNames())}`,
+          ),
+        )
+      }
+    }
+    timer = setInterval(check, 25)
+    window.addEventListener('pywebviewready', check)
+  })
+}
+
+function api(): PywebviewApi {
+  const a = window.pywebview?.api
+  if (!a) throw new Error('pywebview bridge is not available')
+  return a
+}
+
+// The typed client the React app calls. Each method is a thin, awaitable
+// forward to the Python `Api`; call sites never touch `window.pywebview`.
+export const bridge: PywebviewApi = {
+  dims: () => api().dims(),
+  sheets: () => api().sheets(),
+  set_active: (idx) => api().set_active(idx),
+  undo: () => api().undo(),
+  redo: () => api().redo(),
+  save: (path) => api().save(path),
+  save_dialog: () => api().save_dialog(),
+  open_dialog: () => api().open_dialog(),
+  open_file: (path) => api().open_file(path),
+  viewport: (r0, c0, rows, cols) => api().viewport(r0, c0, rows, cols),
+  cell_source: (r, c) => api().cell_source(r, c),
+  set_cell: (r, c, text) => api().set_cell(r, c, text),
+  clear_range: (r0, c0, r1, c1) => api().clear_range(r0, c0, r1, c1),
+  copy: (r0, c0, r1, c1, cut) => api().copy(r0, c0, r1, c1, cut),
+  paste: (r, c) => api().paste(r, c),
+  paste_text: (r, c, text) => api().paste_text(r, c, text),
+  fill: (r0, c0, r1, c1, direction) => api().fill(r0, c0, r1, c1, direction),
+}

@@ -8,9 +8,24 @@ import math
 from ..engine import EMPTY, LABEL, NCOL, NROW, NUM, Grid, cellname, ref
 from ..goalseek import GoalSeekError
 from ..goalseek import seek as goal_seek
-from ..opt import OptError, OptModel, infer_model
-from ..opt import solve as opt_solve
-from ..opt import sweep as opt_sweep
+from ..opt import (
+    OptError,
+    OptModel,
+    _parse_bound_value,
+    infer_model,
+)
+from ..opt import (
+    parse_bounds as _parse_bounds,
+)
+from ..opt import (
+    parse_cells as _parse_cells,
+)
+from ..opt import (
+    solve as opt_solve,
+)
+from ..opt import (
+    sweep as opt_sweep,
+)
 from .format import (
     format_conflict,
     format_sensitivity,
@@ -20,77 +35,6 @@ from .format import (
 )
 from .undo import UndoManager
 from .widgets import _flash, pager, show_error
-
-
-def _parse_cells(spec: str) -> list[tuple[int, int]]:
-    """Expand a cell-list spec like ``A1:B3`` or ``A1,A2,B5`` into (col,row)s.
-
-    Returns the cells in row-major order within each range and in spec order
-    across comma-separated parts. Duplicate-detection is the caller's job.
-    """
-    out: list[tuple[int, int]] = []
-    for part in spec.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if ":" in part:
-            a_str, b_str = part.split(":", 1)
-            a = ref(a_str.strip())
-            b = ref(b_str.strip())
-            if not a or not b:
-                raise ValueError(f"bad cell range: {part}")
-            _, c1, r1 = a
-            _, c2, r2 = b
-            c1, c2 = sorted((c1, c2))
-            r1, r2 = sorted((r1, r2))
-            for c in range(c1, c2 + 1):
-                for r in range(r1, r2 + 1):
-                    out.append((c, r))
-        else:
-            m = ref(part)
-            if not m:
-                raise ValueError(f"bad cell ref: {part}")
-            _, c, r = m
-            out.append((c, r))
-    return out
-
-
-def _parse_bound_value(s: str, *, positive: bool) -> float:
-    """Parse a bound endpoint, accepting 'inf' / '-inf' for ±infinity.
-
-    `positive` decides which way a bare 'inf' goes; '+inf'/'-inf' override it.
-    """
-    s = s.strip().lower()
-    if s in ("inf", "+inf", "infinity", "+infinity"):
-        return math.inf
-    if s in ("-inf", "-infinity"):
-        return -math.inf
-    return float(s)
-
-
-def _parse_bounds(spec: str) -> dict[tuple[int, int], tuple[float, float]]:
-    """Parse ``A1=lo:hi,B2=lo:hi`` into a bounds dict."""
-    out: dict[tuple[int, int], tuple[float, float]] = {}
-    for part in spec.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if "=" not in part:
-            raise ValueError(f"bounds entry missing '=': {part}")
-        cellref_str, range_str = part.split("=", 1)
-        m = ref(cellref_str.strip())
-        if not m:
-            raise ValueError(f"bad cell ref in bounds: {cellref_str}")
-        _, c, r = m
-        if ":" not in range_str:
-            raise ValueError(f"bounds range needs 'lo:hi': {range_str}")
-        lo_s, hi_s = range_str.split(":", 1)
-        out[(c, r)] = (
-            _parse_bound_value(lo_s, positive=False),
-            _parse_bound_value(hi_s, positive=True),
-        )
-    return out
-
 
 _OPT_USAGE = (
     "usage: opt [max|min <cell> vars <cells> st <cells> [bounds <spec>] | "

@@ -36,6 +36,8 @@ from ..engine import (
     ref,
 )
 from ..keys import build_resolved_keymap
+from ..opt import parse_bounds as _parse_bounds
+from ..opt import parse_cells as _parse_cells
 from ..sandbox import (
     SANDBOX_ENABLED,
     FileInfo,
@@ -78,12 +80,7 @@ from .objedit import _build_formula, _fmt_val, obj_editor
 from .osclip import SystemClipboard
 from .render import GW, _paint_label_overflow, draw, init_colors, vcols, vrows
 from .search import _search_grid, search_indicator, search_next
-from .solve import (
-    _parse_bounds,
-    _parse_cells,
-    cmd_goal,
-    cmd_opt,
-)
+from .solve import cmd_goal, cmd_opt
 from .undo import Clipboard, UndoEntry, UndoManager
 from .widgets import _line_input, show_error
 

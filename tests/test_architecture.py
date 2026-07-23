@@ -31,6 +31,8 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "gridcalc"
 CORE_MODULES = (
     "engine.py",
     "display.py",
+    "loader.py",
+    "undo.py",
     "opt.py",
     "goalseek.py",
     "config.py",
@@ -44,8 +46,10 @@ CORE_MODULES = (
     "libs/xlsx.py",
 )
 
-# Presentation layer.
-VIEW_MODULES = ("tui",)
+# Presentation layer. `tui` is the curses view; `web` (pywebview) is the
+# experimental editable view (docs/gui.md). Both depend on the engine, never
+# the reverse.
+VIEW_MODULES = ("tui", "web")
 
 # `keys.py` straddles the boundary by design: parsing a keyspec is pure data
 # work the core needs (`config.py` calls it at load time), while resolving a
@@ -61,6 +65,8 @@ FORBIDDEN_IN_CORE = ("curses", "gridcalc.tui")
 CORE_IMPORTS = (
     "gridcalc.engine",
     "gridcalc.display",
+    "gridcalc.loader",
+    "gridcalc.undo",
     "gridcalc.config",
     "gridcalc.opt",
     "gridcalc.goalseek",

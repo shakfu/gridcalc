@@ -51,6 +51,10 @@ dependencies = [
 # DataFrame formulas and the `:pd` commands, pygments enables
 # syntax-highlighted code preview in the trust prompt.
 extras = ["numpy>=1.24", "pandas>=2.0", "pygments>=2.15"]
+# Experimental web frontend (see docs/gui.md): an editable grid rendered in a
+# desktop webview. The engine stays in-process on CPython; pywebview embeds the
+# OS webview and bridges to it. `pip install gridcalc[web]` then `gridcalc-web`.
+web = ["pywebview>=5.0"]
 
 [dependency-groups]
 dev = [
@@ -63,6 +67,7 @@ dev = [
     "pygments>=2.15",
     "pytest",
     "pytest-cov>=5.0",
+    "pytest-playwright>=0.5",
     "ruff>=0.15.7",
     "twine>=6.2.0",
     "types-Pygments>=2.15",
@@ -70,6 +75,7 @@ dev = [
 
 [project.scripts]
 gridcalc = "gridcalc.tui:main"
+gridcalc-web = "gridcalc.web:run_cli"
 
 [project.urls]
 Homepage = "https://github.com/shakfu/gridcalc"
@@ -107,11 +113,18 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 
+# The `web` extra is optional; the web frontend imports webview lazily.
+# Ignore the missing import so a checkout without the extra still typechecks.
+[[tool.mypy.overrides]]
+module = ["webview", "webview.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 # Default test run excludes the slow PTY-driven curses integration tests.
 # Run them explicitly with `make test-tty` or `pytest -m tty tests/integration`.
-addopts = "-m 'not tty'"
+addopts = "-m 'not tty and not browser'"
 markers = [
     "tty: PTY-driven curses integration test (slow, requires pty + xterm-256color)",
+    "browser: Playwright-driven web-frontend render test (slow, requires chromium)",
     "tui_file(path): preload gridcalc with this file on launch",
 ]

@@ -28,6 +28,12 @@ test:
 test-tty:
 	@GRIDCALC_SANDBOX=1 uv run pytest tests/integration/ -v -m tty
 
+# Run the Playwright web-frontend render tests. These load the web view's HTML
+# in headless Chromium with a mocked pywebview bridge and assert on the DOM, so
+# they need `pip install gridcalc[web]` plus `uv run playwright install chromium`.
+test-web:
+	@GRIDCALC_SANDBOX=1 uv run pytest tests/integration/test_web_playwright.py -v -m browser
+
 # Run tests in an isolated environment without the optional extras
 # (numpy / pandas). Verifies the optional-dep skipif guards work and
 # the core engine operates without any third-party runtime deps.

@@ -70,6 +70,24 @@ The `[extras]` bundle enables, all at once:
 - `pd.DataFrame(...)`, `:pd load/save`, DataFrame cell display.
 - Pygments syntax-highlight in the load-time trust prompt.
 
+### Experimental GUI (preview)
+
+A frontend spike lives behind an optional extra (it is not the product;
+see [`docs/gui.md`](docs/gui.md) for the direction). It reuses the headless
+engine and formats cells exactly as the terminal does.
+
+- **Web** (`gridcalc[web]`, the current direction) -- an editable grid in a
+  desktop [pywebview](https://pywebview.flowrl.com/) window. The engine runs
+  in-process on CPython; the browser view bridges to it directly (no server).
+
+  ```sh
+  pip install 'gridcalc[web]'
+  gridcalc-web                    # demo workbook, or: gridcalc-web book.json
+  ```
+
+The extra pulls a native webview stack, kept out of the lean terminal build on
+purpose; the curses app has no such dependency.
+
 ## Quick tour
 
 Cells hold a number, a label (any non-`=`-prefixed string), or a formula

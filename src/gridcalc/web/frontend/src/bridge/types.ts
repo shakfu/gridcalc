@@ -39,6 +39,9 @@ export interface ViewportCell {
   c: number
   text: string
   align: 'l' | 'r'
+  bold?: boolean
+  italic?: boolean
+  underline?: boolean
 }
 
 export interface Viewport {
@@ -54,6 +57,87 @@ export interface CopyResult {
   tsv?: string
 }
 
+// --- optimization ---
+
+export interface VarSensitivity {
+  cell: string
+  value: number
+  reduced_cost: number
+  obj_coef: number
+  obj_from: number | null
+  obj_till: number | null
+}
+
+export interface ConSensitivity {
+  cell: string
+  shadow_price: number
+  rhs: number
+  activity: number
+  slack: number
+  binding: boolean
+  rhs_from: number | null
+  rhs_till: number | null
+}
+
+export interface Sensitivity {
+  variables: VarSensitivity[]
+  constraints: ConSensitivity[]
+}
+
+export interface SolveResult {
+  ok: boolean
+  error?: string
+  status?: string
+  optimal?: boolean
+  objective?: number | null
+  values?: Record<string, number>
+  applied?: boolean
+  quadratic?: boolean
+  sensitivity?: Sensitivity
+  conflict?: string[]
+  unbounded?: string[]
+}
+
+export interface GoalResult {
+  ok: boolean
+  error?: string
+  converged?: boolean
+  iterations?: number
+  var_value?: number
+  formula_value?: number
+  residual?: number
+  applied?: boolean
+}
+
+export interface SweepPoint {
+  rhs: number
+  status: string
+  objective: number | null
+  shadow_price: number | null
+  delta: number | null
+  breakpoint: boolean
+}
+
+export interface SweepResult {
+  ok: boolean
+  error?: string
+  points?: SweepPoint[]
+}
+
+export interface ChartSeries {
+  name: string
+  values: (number | null)[]
+}
+
+export interface ChartData {
+  title?: string
+  labels?: string[]
+  series?: ChartSeries[]
+  error?: string
+}
+
+export type ModelSpec = Record<string, unknown>
+
 export interface PywebviewApi {
   dims(): Promise<Dims>
   sheets(): Promise<Sheets>
@@ -68,10 +152,23 @@ export interface PywebviewApi {
   cell_source(r: number, c: number): Promise<string>
   set_cell(r: number, c: number, text: string): Promise<OkResult>
   clear_range(r0: number, c0: number, r1: number, c1: number): Promise<OkResult>
+  set_format(r0: number, c0: number, r1: number, c1: number, spec: string): Promise<OkResult>
+  set_global_format(fmt: string): Promise<OkResult>
   copy(r0: number, c0: number, r1: number, c1: number, cut: boolean): Promise<CopyResult>
   paste(r: number, c: number): Promise<OkResult>
   paste_text(r: number, c: number, text: string): Promise<OkResult>
   fill(r0: number, c0: number, r1: number, c1: number, direction: 'down' | 'right'): Promise<OkResult>
+  solve_selection(r0: number, c0: number, r1: number, c1: number, sense: string): Promise<SolveResult>
+  solve_model(spec: ModelSpec): Promise<SolveResult>
+  goal_seek(
+    formula_ref: string,
+    target: number,
+    var_ref: string,
+    lo?: number | null,
+    hi?: number | null,
+  ): Promise<GoalResult>
+  opt_sweep(spec: ModelSpec): Promise<SweepResult>
+  chart_data(spec: string): Promise<ChartData>
 }
 
 declare global {

@@ -5,6 +5,11 @@ import type { WorkbookActions } from '../hooks/useWorkbook'
 interface MenuBarProps {
   actions: WorkbookActions
   onAbout: () => void
+  onOptimize: () => void
+  onGoal: () => void
+  onChart: () => void
+  onFormat: (spec: string) => void
+  onDefaultFormat: (fmt: string) => void
 }
 
 // Items that need the grid's cursor/selection or a feature dialog are shown but
@@ -44,7 +49,15 @@ function Menu(props: { label: string; children: ReactNode }) {
   )
 }
 
-export function MenuBar({ actions, onAbout }: MenuBarProps) {
+export function MenuBar({
+  actions,
+  onAbout,
+  onOptimize,
+  onGoal,
+  onChart,
+  onFormat,
+  onDefaultFormat,
+}: MenuBarProps) {
   return (
     <Menubar.Root className="menubar">
       <Menu label="File">
@@ -95,19 +108,41 @@ export function MenuBar({ actions, onAbout }: MenuBarProps) {
         </Item>
       </Menu>
 
+      <Menu label="Format">
+        <Item shortcut="⌘B" onSelect={() => onFormat('b')}>
+          Bold
+        </Item>
+        <Item shortcut="⌘I" onSelect={() => onFormat('i')}>
+          Italic
+        </Item>
+        <Item shortcut="⌘U" onSelect={() => onFormat('u')}>
+          Underline
+        </Item>
+        <Menubar.Separator className="menu-sep" />
+        <Item onSelect={() => onFormat('G')}>Number: General</Item>
+        <Item onSelect={() => onFormat('I')}>Number: Integer</Item>
+        <Item onSelect={() => onFormat('$')}>Number: Currency</Item>
+        <Item onSelect={() => onFormat('%')}>Number: Percent</Item>
+        <Item onSelect={() => onFormat(',')}>Number: Comma</Item>
+        <Item onSelect={() => onFormat('*')}>Bar chart</Item>
+        <Menubar.Separator className="menu-sep" />
+        <Item onSelect={() => onFormat('L')}>Align Left</Item>
+        <Item onSelect={() => onFormat('R')}>Align Right</Item>
+        <Menubar.Separator className="menu-sep" />
+        <Item onSelect={() => onDefaultFormat('G')}>Default: General</Item>
+        <Item onSelect={() => onDefaultFormat('I')}>Default: Integer</Item>
+        <Item onSelect={() => onDefaultFormat('$')}>Default: Currency</Item>
+        <Item onSelect={() => onDefaultFormat('%')}>Default: Percent</Item>
+      </Menu>
+
       <Menu label="Data">
-        <Item disabled title={SOON}>
-          Optimize…
-        </Item>
-        <Item disabled title={SOON}>
-          Goal Seek…
-        </Item>
+        <Item onSelect={onOptimize}>Optimize…</Item>
+        <Item onSelect={onGoal}>Goal Seek…</Item>
         <Item disabled title={SOON}>
           Sweep…
         </Item>
-        <Item disabled title={SOON}>
-          Chart…
-        </Item>
+        <Menubar.Separator className="menu-sep" />
+        <Item onSelect={onChart}>Chart…</Item>
       </Menu>
 
       <Menu label="Help">

@@ -33,7 +33,7 @@ function SheetSelect({ wb }: { wb: Workbook }) {
   )
 }
 
-export function Toolbar({ wb }: { wb: Workbook }) {
+export function Toolbar({ wb, onFormat }: { wb: Workbook; onFormat: (spec: string) => void }) {
   const disabled = !wb.ready
   return (
     <div className="toolbar">
@@ -59,6 +59,31 @@ export function Toolbar({ wb }: { wb: Workbook }) {
         title="Redo (⇧⌘Z)"
       >
         Redo
+      </button>
+      <span className="tool-sep" />
+      <button
+        className="tool-btn fmt-b"
+        onClick={() => onFormat('b')}
+        disabled={disabled}
+        title="Bold (⌘B)"
+      >
+        B
+      </button>
+      <button
+        className="tool-btn fmt-i"
+        onClick={() => onFormat('i')}
+        disabled={disabled}
+        title="Italic (⌘I)"
+      >
+        I
+      </button>
+      <button
+        className="tool-btn fmt-u"
+        onClick={() => onFormat('u')}
+        disabled={disabled}
+        title="Underline (⌘U)"
+      >
+        U
       </button>
       <span className="tool-sep" />
       <span className="tool-label">Sheet</span>

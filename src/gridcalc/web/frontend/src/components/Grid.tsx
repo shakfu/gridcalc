@@ -9,22 +9,35 @@ import {
 } from 'react'
 import { bridge } from '../bridge/api'
 import type { Viewport } from '../bridge/types'
-import { CH, CW, GW, PAD, cellRef, clamp, colName, rangeRef, selRect, type Cursor } from '../lib/grid'
+import {
+  CH,
+  CW,
+  GW,
+  PAD,
+  cellRef,
+  clamp,
+  colName,
+  rangeRef,
+  selRect,
+  type Cursor,
+  type Selection,
+} from '../lib/grid'
 
 interface GridProps {
   ncol: number
   nrow: number
-  // Bumps when an out-of-grid action (undo/redo) mutates cells, so the grid
-  // refetches its viewport without losing scroll/cursor.
+  // Bumps when an out-of-grid action (undo/redo, formatting) changes cells, so
+  // the grid refetches its viewport without losing scroll/cursor.
   revision: number
+  onSelectionChange?: (sel: Selection) => void
 }
 
+const MIN_COL_W = 28
+
 // The virtualized spreadsheet grid. Only cells inside the scrolled viewport
-// enter the DOM (fetched from the engine on scroll), so the full 256x1024 sheet
-// scrolls without hundreds of thousands of nodes. Owns the cursor, rectangular
-// selection, keyboard navigation, single-cell editing, clipboard, fill, and
-// formula point mode.
-export function Grid({ ncol, nrow, revision }: GridProps) {
+// enter the DOM (fetched from the engine on scroll). Column widths are
+// variable (drag a header's right edge to resize); row height is uniform.
+export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
   const scrollEl = useRef<HTMLDivElement>(null)
   const editorEl = useRef<HTMLInputElement>(null)
   const scrollPos = useRef({ top: 0, left: 0 })
@@ -36,6 +49,7 @@ export function Grid({ ncol, nrow, revision }: GridProps) {
   const [editing, setEditing] = useState<Cursor | null>(null)
   const [editValue, setEditValue] = useState('')
   const [source, setSource] = useState('')
+  const [colWidths, setColWidths] = useState<Map<number, number>>(new Map())
 
   // Refs mirroring state so window-level and async handlers read current values.
   const curRef = useRef(cur)
@@ -44,23 +58,52 @@ export function Grid({ ncol, nrow, revision }: GridProps) {
   anchorRef.current = anchor
   const editValueRef = useRef(editValue)
   editValueRef.current = editValue
+  const colWidthsRef = useRef(colWidths)
+  colWidthsRef.current = colWidths
 
-  // --- viewport fetch, coalesced so overlapping async fetches never tear the
-  // render and a scroll during a fetch queues exactly one more pass. ---
+  // Prefix sum of column left-edges: xs[c] is column c's left x (xs[0] = GW),
+  // xs[ncol] the right edge of the sheet. Recomputed only when widths change.
+  const xs = useMemo(() => {
+    const arr = new Array<number>(ncol + 1)
+    arr[0] = GW
+    for (let c = 0; c < ncol; c++) arr[c + 1] = arr[c] + (colWidths.get(c) ?? CW)
+    return arr
+  }, [colWidths, ncol])
+  const xsRef = useRef(xs)
+  xsRef.current = xs
+
+  const colX = (c: number) => xs[c]
+  const colW = (c: number) => xs[c + 1] - xs[c]
+
+  // Column index at a canvas x-pixel (binary search over xs). Reads the ref so
+  // callbacks need not depend on the widths.
+  const colAtX = useCallback((px: number) => {
+    const a = xsRef.current
+    if (px < a[0]) return 0
+    let lo = 0
+    let hi = a.length - 2
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if (a[mid] <= px) lo = mid
+      else hi = mid - 1
+    }
+    return lo
+  }, [])
+
+  // --- viewport fetch, coalesced ---
   const busy = useRef(false)
   const dirty = useRef(false)
   const doFetch = useCallback(async () => {
     const el = scrollEl.current
     if (!el) return
     const { top, left } = scrollPos.current
-    const c0 = Math.max(0, Math.floor((left - GW) / CW) - PAD)
+    const c0 = Math.max(0, colAtX(left) - PAD)
     const r0 = Math.max(0, Math.floor((top - CH) / CH) - PAD)
-    const cols = Math.ceil(el.clientWidth / CW) + 2 * PAD + 1
     const rows = Math.ceil(el.clientHeight / CH) + 2 * PAD + 1
-    const c1 = Math.min(ncol, c0 + cols)
+    const c1 = Math.min(ncol, colAtX(left + el.clientWidth) + PAD + 1)
     const r1 = Math.min(nrow, r0 + rows)
     setView(await bridge.viewport(r0, c0, r1 - r0, c1 - c0))
-  }, [ncol, nrow])
+  }, [ncol, nrow, colAtX])
 
   const refresh = useCallback(async () => {
     dirty.current = true
@@ -88,7 +131,6 @@ export function Grid({ ncol, nrow, revision }: GridProps) {
     scrollEl.current?.focus()
   }, [])
 
-  // Active-cell source for the formula bar (paused while editing).
   useEffect(() => {
     if (editing) return
     let alive = true
@@ -97,6 +139,12 @@ export function Grid({ ncol, nrow, revision }: GridProps) {
       alive = false
     }
   }, [cur, editing])
+
+  useEffect(() => {
+    if (!onSelectionChange) return
+    const s = selRect(cur, anchor)
+    onSelectionChange({ ...s, ref: rangeRef(cur, anchor), active: cellRef(cur.r, cur.c) })
+  }, [cur, anchor, onSelectionChange])
 
   const onScroll = () => {
     const el = scrollEl.current
@@ -109,10 +157,12 @@ export function Grid({ ncol, nrow, revision }: GridProps) {
   const ensureVisible = useCallback((r: number, c: number) => {
     const el = scrollEl.current
     if (!el) return
-    const l = GW + c * CW
+    const a = xsRef.current
+    const l = a[c]
+    const w = a[c + 1] - a[c]
     const t = CH + r * CH
     if (l < el.scrollLeft + GW) el.scrollLeft = l - GW
-    else if (l + CW > el.scrollLeft + el.clientWidth) el.scrollLeft = l + CW - el.clientWidth
+    else if (l + w > el.scrollLeft + el.clientWidth) el.scrollLeft = l + w - el.clientWidth
     if (t < el.scrollTop + CH) el.scrollTop = t - CH
     else if (t + CH > el.scrollTop + el.clientHeight) el.scrollTop = t + CH - el.clientHeight
   }, [])
@@ -172,8 +222,6 @@ export function Grid({ ncol, nrow, revision }: GridProps) {
     scrollEl.current?.focus()
   }, [])
 
-  // Apply a deferred caret position after a point-mode insert re-renders the
-  // controlled editor (which would otherwise drop the caret to the end).
   useEffect(() => {
     if (pendingCaret.current !== null && editorEl.current) {
       const caret = pendingCaret.current
@@ -213,19 +261,16 @@ export function Grid({ ncol, nrow, revision }: GridProps) {
   // --- clipboard + fill ---
   const lastCopyTsv = useRef<string | null>(null)
 
-  const copySelection = useCallback(
-    async (cut: boolean) => {
-      const s = selRect(curRef.current, anchorRef.current)
-      const res = await bridge.copy(s.r0, s.c0, s.r1, s.c1, cut)
-      lastCopyTsv.current = res.tsv ?? null
-      try {
-        await navigator.clipboard.writeText(res.tsv ?? '')
-      } catch {
-        /* no OS clipboard */
-      }
-    },
-    [],
-  )
+  const copySelection = useCallback(async (cut: boolean) => {
+    const s = selRect(curRef.current, anchorRef.current)
+    const res = await bridge.copy(s.r0, s.c0, s.r1, s.c1, cut)
+    lastCopyTsv.current = res.tsv ?? null
+    try {
+      await navigator.clipboard.writeText(res.tsv ?? '')
+    } catch {
+      /* no OS clipboard */
+    }
+  }, [])
 
   const pasteAt = useCallback(async () => {
     let ext = ''
@@ -256,23 +301,63 @@ export function Grid({ ncol, nrow, revision }: GridProps) {
       const el = scrollEl.current
       if (!el) return null
       const rect = el.getBoundingClientRect()
-      const c = Math.floor((clientX - rect.left + el.scrollLeft - GW) / CW)
+      const px = clientX - rect.left + el.scrollLeft
+      if (px < GW) return null // the gutter, not a cell
+      const c = colAtX(px)
       const r = Math.floor((clientY - rect.top + el.scrollTop - CH) / CH)
       if (c < 0 || r < 0 || c >= ncol || r >= nrow) return null
       return { r, c }
     },
-    [ncol, nrow],
+    [colAtX, ncol, nrow],
   )
 
   const dragging = useRef(false)
   const fillFrom = useRef({ r0: 0, c0: 0, r1: 0, c1: 0 })
   const filling = useRef(false)
+  const resizing = useRef<{ col: number; startX: number; startW: number } | null>(null)
+
+  const startResize = useCallback((e: MouseEvent, col: number) => {
+    e.preventDefault()
+    e.stopPropagation()
+    resizing.current = { col, startX: e.clientX, startW: colWidthsRef.current.get(col) ?? CW }
+  }, [])
+
+  // Column resize (and drags that end outside the grid) resolve at the window.
+  useEffect(() => {
+    const onMove = (e: globalThis.MouseEvent) => {
+      const rz = resizing.current
+      if (!rz) return
+      const w = Math.max(MIN_COL_W, rz.startW + (e.clientX - rz.startX))
+      setColWidths((prev) => new Map(prev).set(rz.col, w))
+    }
+    const onUp = () => {
+      if (filling.current) {
+        filling.current = false
+        const s = selRect(curRef.current, anchorRef.current)
+        const ff = fillFrom.current
+        const dir = s.r1 > ff.r1 ? 'down' : s.c1 > ff.c1 ? 'right' : null
+        if (dir) void bridge.fill(s.r0, s.c0, s.r1, s.c1, dir).then(refresh)
+      }
+      if (resizing.current) {
+        resizing.current = null
+        void refresh() // the visible column range may have changed
+      }
+      dragging.current = false
+      pointing.current = false
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [refresh])
 
   const onMouseDown = (e: MouseEvent) => {
     const hit = cellAt(e.clientX, e.clientY)
     if (!hit) return
     if (inFormula()) {
-      e.preventDefault() // keep the editor focused; point, do not select
+      e.preventDefault()
       pointAt(hit, e.shiftKey)
       pointing.current = true
       return
@@ -283,7 +368,7 @@ export function Grid({ ncol, nrow, revision }: GridProps) {
   }
 
   const onMouseMove = (e: MouseEvent) => {
-    if (e.buttons !== 1) return
+    if (e.buttons !== 1 || resizing.current) return
     const hit = cellAt(e.clientX, e.clientY)
     if (!hit) return
     if (filling.current) {
@@ -307,23 +392,6 @@ export function Grid({ ncol, nrow, revision }: GridProps) {
     if (hit) void beginEdit(hit.r, hit.c)
   }
 
-  // Fill-handle drag and any drag that ends outside the grid resolve here.
-  useEffect(() => {
-    const onUp = () => {
-      if (filling.current) {
-        filling.current = false
-        const s = selRect(curRef.current, anchorRef.current)
-        const ff = fillFrom.current
-        const dir = s.r1 > ff.r1 ? 'down' : s.c1 > ff.c1 ? 'right' : null
-        if (dir) void bridge.fill(s.r0, s.c0, s.r1, s.c1, dir).then(refresh)
-      }
-      dragging.current = false
-      pointing.current = false
-    }
-    window.addEventListener('mouseup', onUp)
-    return () => window.removeEventListener('mouseup', onUp)
-  }, [refresh])
-
   const onKeyDown = (e: KeyboardEvent) => {
     if (editing) return
     if (e.metaKey || e.ctrlKey) {
@@ -341,7 +409,7 @@ export function Grid({ ncol, nrow, revision }: GridProps) {
         e.preventDefault()
         void fillSelection('right')
       }
-      return // let app-level shortcuts (o/s/z/y) handle the rest
+      return
     }
     if (e.altKey) return
     const ext = e.shiftKey
@@ -395,26 +463,53 @@ export function Grid({ ncol, nrow, revision }: GridProps) {
     return view.cells.map((cell) => (
       <div
         key={`${cell.r},${cell.c}`}
-        className={'cell' + (cell.align === 'r' ? ' num' : '')}
-        style={{ left: GW + cell.c * CW, top: CH + cell.r * CH, width: CW }}
+        className={
+          'cell' +
+          (cell.align === 'r' ? ' num' : '') +
+          (cell.bold ? ' b' : '') +
+          (cell.italic ? ' i' : '') +
+          (cell.underline ? ' u' : '')
+        }
+        style={{ left: xs[cell.c], top: CH + cell.r * CH, width: xs[cell.c + 1] - xs[cell.c] }}
       >
         {cell.text}
       </div>
     ))
-  }, [view])
+  }, [view, xs])
 
   const headerLayer = useMemo(() => {
     if (!view) return null
     const items = []
     for (let c = view.c0; c < view.c0 + view.cols; c++) {
       items.push(
-        <div key={c} className="hdr" style={{ left: GW + c * CW, width: CW }}>
+        <div key={c} className="hdr" style={{ left: xs[c], width: xs[c + 1] - xs[c] }}>
           {colName(c)}
         </div>,
       )
+      items.push(
+        <div
+          key={`rz${c}`}
+          className="col-resize"
+          style={{ left: xs[c + 1] - 3 }}
+          onMouseDown={(e) => startResize(e, c)}
+        />,
+      )
     }
     return items
-  }, [view])
+  }, [view, xs, startResize])
+
+  // Vertical gridlines at the real column boundaries so they track resizing
+  // (the horizontal lines come from the canvas background, since rows are
+  // uniform).
+  const vlineLayer = useMemo(() => {
+    if (!view) return null
+    const h = nrow * CH
+    const items = []
+    for (let c = view.c0; c <= view.c0 + view.cols; c++) {
+      items.push(<div key={c} className="vline" style={{ left: xs[c], height: h }} />)
+    }
+    return items
+  }, [view, xs, nrow])
 
   const gutterLayer = useMemo(() => {
     if (!view) return null
@@ -445,28 +540,29 @@ export function Grid({ ncol, nrow, revision }: GridProps) {
         onDoubleClick={onDoubleClick}
         onKeyDown={onKeyDown}
       >
-        <div className="grid-canvas" style={{ width: GW + ncol * CW, height: CH + nrow * CH }}>
+        <div className="grid-canvas" style={{ width: xs[ncol], height: CH + nrow * CH }}>
+          <div className="vline-layer">{vlineLayer}</div>
           <div className="cell-layer">{cellLayer}</div>
 
           {!single && (
             <div
               className="sel-rect"
               style={{
-                left: GW + sel.c0 * CW,
+                left: colX(sel.c0),
                 top: CH + sel.r0 * CH,
-                width: (sel.c1 - sel.c0 + 1) * CW,
+                width: xs[sel.c1 + 1] - xs[sel.c0],
                 height: (sel.r1 - sel.r0 + 1) * CH,
               }}
             />
           )}
           <div
             className="cursor"
-            style={{ left: GW + cur.c * CW, top: CH + cur.r * CH, width: CW, height: CH }}
+            style={{ left: colX(cur.c), top: CH + cur.r * CH, width: colW(cur.c), height: CH }}
           />
           {!editing && (
             <div
               className="fill-handle"
-              style={{ left: GW + (sel.c1 + 1) * CW - 4, top: CH + (sel.r1 + 1) * CH - 4 }}
+              style={{ left: xs[sel.c1 + 1] - 4, top: CH + (sel.r1 + 1) * CH - 4 }}
               onMouseDown={(e) => {
                 e.preventDefault()
                 e.stopPropagation()
@@ -488,11 +584,11 @@ export function Grid({ ncol, nrow, revision }: GridProps) {
             <input
               ref={editorEl}
               className="cell-editor"
-              style={{ left: GW + editing.c * CW, top: CH + editing.r * CH, width: CW }}
+              style={{ left: colX(editing.c), top: CH + editing.r * CH, width: colW(editing.c) }}
               value={editValue}
               onChange={(e) => {
                 setEditValue(e.target.value)
-                resetPoint() // typing finalizes any pointed reference
+                resetPoint()
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {

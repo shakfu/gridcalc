@@ -156,6 +156,25 @@ button {
   background: var(--border-soft);
 }
 
+.tool-btn.fmt-b,
+.tool-btn.fmt-i,
+.tool-btn.fmt-u {
+  padding: 4px 9px;
+  min-width: 26px;
+}
+
+.tool-btn.fmt-b {
+  font-weight: 700;
+}
+
+.tool-btn.fmt-i {
+  font-style: italic;
+}
+
+.tool-btn.fmt-u {
+  text-decoration: underline;
+}
+
 .tool-label,
 .sheet-label {
   color: var(--muted);
@@ -241,17 +260,142 @@ button {
   justify-content: flex-end;
 }
 
-.btn-primary {
+.dialog-content.wide {
+  width: 560px;
+}
+
+.btn-primary,
+.btn {
   padding: 6px 16px;
-  background: var(--accent);
-  color: #fff;
   border: none;
   border-radius: 6px;
   cursor: pointer;
+  font: inherit;
 }
 
-.btn-primary:hover {
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
   filter: brightness(1.08);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn {
+  background: #30333a;
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
+
+.btn:hover {
+  background: #383c44;
+}
+
+/* --- dialog forms + results ------------------------------------------ */
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+}
+
+.field-label {
+  width: 68px;
+  color: var(--muted);
+  flex: none;
+}
+
+.field-row input {
+  flex: 1;
+  min-width: 0;
+  background: #1e1e1e;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 7px;
+  font: inherit;
+}
+
+.field-row .radio {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  color: var(--fg);
+}
+
+.field-row .btn-primary {
+  margin-left: auto;
+}
+
+.result-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0 8px;
+}
+
+.result-obj {
+  font-variant-numeric: tabular-nums;
+}
+
+.panel-subtitle {
+  margin: 12px 0 4px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+table.sens {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 2px 0 6px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+table.sens th,
+table.sens td {
+  border: 1px solid var(--border-soft);
+  padding: 2px 7px;
+  text-align: right;
+}
+
+table.sens th {
+  background: var(--hdr-bg);
+  color: var(--accent);
+}
+
+table.sens td.k,
+table.sens th.k {
+  text-align: left;
+  color: var(--accent);
+}
+
+.sens-note {
+  color: #c8a24a;
+  margin: 4px 0;
+}
+
+.diag {
+  color: var(--err);
+  margin: 4px 0;
+}
+
+.goal-result {
+  flex: 1;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-box {
+  margin: 10px 0;
+  height: 320px;
 }
 
 /* --- Grid ------------------------------------------------------------ */
@@ -302,10 +446,19 @@ button {
 
 .grid-canvas {
   position: relative;
-  background-image: linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
-  background-size: 90px 22px;
-  background-position: 52px 22px;
+  /* Horizontal gridlines only -- rows are uniform, so a repeating background
+     is correct. Vertical lines are DOM elements (.vline) placed at the actual
+     column boundaries, so they track column resizing. */
+  background-image: linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 100% 22px;
+  background-position: 0 22px;
+}
+
+.vline {
+  position: absolute;
+  top: 22px;
+  width: 1px;
+  background: var(--grid-line);
 }
 
 .cell {
@@ -320,6 +473,18 @@ button {
 
 .cell.num {
   text-align: right;
+}
+
+.cell.b {
+  font-weight: 700;
+}
+
+.cell.i {
+  font-style: italic;
+}
+
+.cell.u {
+  text-decoration: underline;
 }
 
 .sel-rect {
@@ -387,6 +552,19 @@ button {
   color: var(--muted);
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--grid-line);
+}
+
+.col-resize {
+  position: absolute;
+  top: 0;
+  width: 6px;
+  height: 22px;
+  cursor: col-resize;
+  z-index: 11;
+}
+
+.col-resize:hover {
+  background: var(--accent);
 }
 
 .corner {

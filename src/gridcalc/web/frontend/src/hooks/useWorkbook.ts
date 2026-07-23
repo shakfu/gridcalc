@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { bridge, whenReady } from '../bridge/api'
 import type { Dims, Sheets } from '../bridge/types'
+import type { Rect } from '../lib/grid'
 
 export interface WorkbookActions {
   open(): Promise<void>
@@ -9,6 +10,8 @@ export interface WorkbookActions {
   undo(): Promise<void>
   redo(): Promise<void>
   setSheet(idx: number): Promise<void>
+  format(rect: Rect, spec: string): Promise<void>
+  setDefaultFormat(fmt: string): Promise<void>
 }
 
 export interface Workbook {
@@ -95,6 +98,14 @@ export function useWorkbook(): Workbook {
       },
       setSheet: async (idx: number) => {
         setSheets(await bridge.set_active(idx))
+      },
+      format: async (rect: Rect, spec: string) => {
+        await bridge.set_format(rect.r0, rect.c0, rect.r1, rect.c1, spec)
+        setRevision((n) => n + 1) // re-fetch the viewport with the new formatting
+      },
+      setDefaultFormat: async (fmt: string) => {
+        await bridge.set_global_format(fmt)
+        setRevision((n) => n + 1)
       },
     }),
     [refresh, flash],

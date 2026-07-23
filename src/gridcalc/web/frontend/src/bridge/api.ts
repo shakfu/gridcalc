@@ -76,8 +76,16 @@ export const bridge: PywebviewApi = {
   cell_source: (r, c) => api().cell_source(r, c),
   set_cell: (r, c, text) => api().set_cell(r, c, text),
   clear_range: (r0, c0, r1, c1) => api().clear_range(r0, c0, r1, c1),
+  set_format: (r0, c0, r1, c1, spec) => api().set_format(r0, c0, r1, c1, spec),
+  set_global_format: (fmt) => api().set_global_format(fmt),
   copy: (r0, c0, r1, c1, cut) => api().copy(r0, c0, r1, c1, cut),
   paste: (r, c) => api().paste(r, c),
   paste_text: (r, c, text) => api().paste_text(r, c, text),
   fill: (r0, c0, r1, c1, direction) => api().fill(r0, c0, r1, c1, direction),
+  solve_selection: (r0, c0, r1, c1, sense) => api().solve_selection(r0, c0, r1, c1, sense),
+  solve_model: (spec) => api().solve_model(spec),
+  goal_seek: (formula_ref, target, var_ref, lo, hi) =>
+    api().goal_seek(formula_ref, target, var_ref, lo, hi),
+  opt_sweep: (spec) => api().opt_sweep(spec),
+  chart_data: (spec) => api().chart_data(spec),
 }

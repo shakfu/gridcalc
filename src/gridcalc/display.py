@@ -4,8 +4,8 @@ Pure functions that turn a `Cell` into a string a *view* can paint -- the
 width-padded grid field (`fmtcell`), the plain clipboard value
 (`cell_clip_value`), and the number-format helper they share (`fmt_float`).
 This module imports only the engine, never `curses` or anything under
-`gridcalc.tui`, so any frontend (the curses TUI today, an ImGui/Qt/web view
-later) can reuse it without dragging in a terminal dependency. The
+`gridcalc.tui`, so any frontend (the curses TUI and the web view today, a Qt
+or other view later) can reuse it without dragging in a terminal dependency. The
 `tests/test_architecture.py` guard pins that: `display` is a core module and
 importing it must not load `curses`.
 
@@ -19,7 +19,13 @@ from __future__ import annotations
 
 import math
 
-from .engine import EMPTY, FORMULA, LABEL, SPILL, Cell, _is_dataframe
+from .engine import EMPTY, FORMULA, LABEL, NUM, SPILL, Cell, _is_dataframe
+
+# Width (in characters) handed to ``fmtcell`` by :func:`cell_text` before the
+# padding is stripped. Wide enough that ordinary values and array badges
+# survive; over-long labels are truncated, which a GUI cell tolerates since it
+# manages its own column width.
+_CELL_CHARS = 64
 
 
 def _insert_commas(s: str) -> str:
@@ -111,6 +117,25 @@ def cell_clip_value(cl: Cell | None) -> str:
     if isinstance(cl.val, float) and math.isnan(cl.val):
         return ""
     return _num_str(cl.val)
+
+
+def cell_text(cl: Cell | None, global_fmt: str = "") -> str:
+    """Unpadded display string for a cell, for a GUI table cell.
+
+    ``fmtcell`` pads and justifies to a fixed width; stripping recovers the
+    bare token (value, label, error, or array badge) for a frontend that
+    manages its own column widths (the web view).
+    """
+    if cl is None or cl.type == EMPTY:
+        return ""
+    return fmtcell(cl, _CELL_CHARS, global_fmt).strip()
+
+
+def cell_right_aligned(cl: Cell | None) -> bool:
+    """Whether a cell should be right-aligned (numbers and computed values)."""
+    if cl is None or cl.type == LABEL:
+        return False
+    return cl.type in (NUM, FORMULA, SPILL)
 
 
 def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:

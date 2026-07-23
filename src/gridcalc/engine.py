@@ -616,6 +616,31 @@ def _emitref(rc: int, rr: int, ac: int, ar: int) -> str:
     return s
 
 
+def adjust_refs(text: str, dcol: int, drow: int) -> str:
+    """Shift every relative cell reference in ``text`` by ``(dcol, drow)``.
+
+    Absolute (``$``-prefixed) columns/rows are left unchanged. Used both by
+    replicate (copy a formula across the grid) and by the frontends' paste, so
+    the two share one definition of reference adjustment.
+    """
+    out = []
+    i = 0
+    while i < len(text):
+        result = refabs(text[i:])
+        if result:
+            n, rc, rr, ac, ar = result
+            if not ac:
+                rc += dcol
+            if not ar:
+                rr += drow
+            out.append(_emitref(rc, rr, ac, ar))
+            i += n
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
 def _expand_ranges(expr: str) -> str:
     """Expand A1:B3 range syntax into Vec([A1,A2,...]) calls."""
     result = []
@@ -2253,25 +2278,7 @@ class Grid:
             return
 
         # Formula: rewrite refs by replicate offset.
-        dcol = dc - sc
-        drow = dr - sr
-        out = []
-        s = src.text
-        i = 0
-        while i < len(s):
-            result = refabs(s[i:])
-            if result:
-                n, rc, rr, ac, ar = result
-                if not ac:
-                    rc += dcol
-                if not ar:
-                    rr += drow
-                out.append(_emitref(rc, rr, ac, ar))
-                i += n
-            else:
-                out.append(s[i])
-                i += 1
-        self._setcell_no_recalc(dc, dr, "".join(out))
+        self._setcell_no_recalc(dc, dr, adjust_refs(src.text, dc - sc, dr - sr))
         dst = self._cells.get((dc, dr))
         if dst is not None:
             dst.fmt = src.fmt

@@ -11,12 +11,28 @@ function makeActions(): WorkbookActions {
     undo: vi.fn(async () => {}),
     redo: vi.fn(async () => {}),
     setSheet: vi.fn(async () => {}),
+    format: vi.fn(async () => {}),
+    setDefaultFormat: vi.fn(async () => {}),
   }
 }
 
+function renderMenu(over: Partial<Parameters<typeof MenuBar>[0]> = {}) {
+  const props = {
+    actions: makeActions(),
+    onAbout: vi.fn(),
+    onOptimize: vi.fn(),
+    onGoal: vi.fn(),
+    onChart: vi.fn(),
+    onFormat: vi.fn(),
+    onDefaultFormat: vi.fn(),
+    ...over,
+  }
+  render(<MenuBar {...props} />)
+  return props
+}
+
 test('File > Open invokes the open action', async () => {
-  const actions = makeActions()
-  render(<MenuBar actions={actions} onAbout={() => {}} />)
+  const { actions } = renderMenu()
   const user = userEvent.setup()
   await user.click(screen.getByRole('menuitem', { name: 'File' }))
   await user.click(await screen.findByRole('menuitem', { name: /Open/ }))
@@ -24,18 +40,47 @@ test('File > Open invokes the open action', async () => {
 })
 
 test('Edit > Undo invokes the undo action', async () => {
-  const actions = makeActions()
-  render(<MenuBar actions={actions} onAbout={() => {}} />)
+  const { actions } = renderMenu()
   const user = userEvent.setup()
   await user.click(screen.getByRole('menuitem', { name: 'Edit' }))
   await user.click(await screen.findByRole('menuitem', { name: /Undo/ }))
   expect(actions.undo).toHaveBeenCalledOnce()
 })
 
+test('Data > Optimize invokes the optimize callback', async () => {
+  const { onOptimize } = renderMenu()
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Data' }))
+  await user.click(await screen.findByRole('menuitem', { name: /Optimize/ }))
+  expect(onOptimize).toHaveBeenCalledOnce()
+})
+
+test('Format > Bold emits a bold format spec', async () => {
+  const { onFormat } = renderMenu()
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Format' }))
+  await user.click(await screen.findByRole('menuitem', { name: /Bold/ }))
+  expect(onFormat).toHaveBeenCalledWith('b')
+})
+
+test('Format > Currency emits a currency format spec', async () => {
+  const { onFormat } = renderMenu()
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Format' }))
+  await user.click(await screen.findByRole('menuitem', { name: 'Number: Currency' }))
+  expect(onFormat).toHaveBeenCalledWith('$')
+})
+
+test('Format > Default: Currency sets the global default format', async () => {
+  const { onDefaultFormat } = renderMenu()
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Format' }))
+  await user.click(await screen.findByRole('menuitem', { name: 'Default: Currency' }))
+  expect(onDefaultFormat).toHaveBeenCalledWith('$')
+})
+
 test('Help > About invokes the about callback', async () => {
-  const actions = makeActions()
-  const onAbout = vi.fn()
-  render(<MenuBar actions={actions} onAbout={onAbout} />)
+  const { onAbout } = renderMenu()
   const user = userEvent.setup()
   await user.click(screen.getByRole('menuitem', { name: 'Help' }))
   await user.click(await screen.findByRole('menuitem', { name: /About/ }))
@@ -43,7 +88,7 @@ test('Help > About invokes the about callback', async () => {
 })
 
 test('not-yet-available items are disabled', async () => {
-  render(<MenuBar actions={makeActions()} onAbout={() => {}} />)
+  renderMenu()
   const user = userEvent.setup()
   await user.click(screen.getByRole('menuitem', { name: 'Edit' }))
   const cut = await screen.findByRole('menuitem', { name: /Cut/ })

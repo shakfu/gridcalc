@@ -100,9 +100,11 @@ def test_api_over_a_loaded_workbook() -> None:
     g = load_workbook(EXAMPLES / "example_excel.json")
     api = Api(g)
     vp = api.viewport(0, 0, 20, 10)
-    # Round-trips without error and every returned cell has the expected shape.
+    # Round-trips without error and every returned cell has the expected shape:
+    # the base keys always, plus optional style flags when set.
     for cell in vp["cells"]:
-        assert set(cell) == {"r", "c", "text", "align"}
+        assert {"r", "c", "text", "align"} <= set(cell)
+        assert set(cell) <= {"r", "c", "text", "align", "bold", "italic", "underline"}
         assert cell["align"] in ("r", "l")
 
 
@@ -594,6 +596,64 @@ def test_opt_sweep_returns_points_without_mutating() -> None:
     # A sweep is what-if only: the sheet is never written.
     assert g.cell(0, 1).val == pytest.approx(0.0)  # A2 still its typed 0
     assert api._undo.undo_stack == []
+
+
+def test_set_format_bold_toggles_and_viewport_reports_it() -> None:
+    g = _grid()
+    g.setcell(0, 0, "5")
+    g.recalc()
+    api = Api(g)
+    api.set_format(0, 0, 0, 0, "b")  # (r0, c0, r1, c1) -> A1
+    assert g.cell(0, 0).bold == 1
+    assert api.viewport(0, 0, 1, 1)["cells"][0]["bold"] is True
+    api.set_format(0, 0, 0, 0, "b")  # toggle off
+    assert g.cell(0, 0).bold == 0
+    assert "bold" not in api.viewport(0, 0, 1, 1)["cells"][0]
+
+
+def test_set_format_number_format_bakes_into_the_text() -> None:
+    g = _grid()
+    g.setcell(0, 0, "99.5")
+    g.recalc()
+    api = Api(g)
+    api.set_format(0, 0, 0, 0, "$")
+    assert api.viewport(0, 0, 1, 1)["cells"][0]["text"] == "99.50"
+    api.set_format(0, 0, 0, 0, "%")
+    assert api.viewport(0, 0, 1, 1)["cells"][0]["text"] == "9950.00%"
+
+
+def test_set_format_python_spec_sets_fmtstr() -> None:
+    g = _grid()
+    g.setcell(0, 0, "1234.5")
+    g.recalc()
+    api = Api(g)
+    api.set_format(0, 0, 0, 0, ",.2f")
+    assert g.cell(0, 0).fmtstr == ",.2f"
+    assert api.viewport(0, 0, 1, 1)["cells"][0]["text"] == "1,234.50"
+
+
+def test_set_global_format_changes_default_display() -> None:
+    g = _grid()
+    g.setcell(0, 0, "0.25")  # a number with no explicit format
+    g.recalc()
+    api = Api(g)
+    assert api.viewport(0, 0, 1, 1)["cells"][0]["text"] == "0.25"
+    api.set_global_format("%")
+    assert g.fmt == "%"
+    assert api.viewport(0, 0, 1, 1)["cells"][0]["text"] == "25.00%"
+    api.set_global_format("bad")  # not a valid single char -> cleared
+    assert g.fmt == ""
+
+
+def test_set_format_is_undoable() -> None:
+    g = _grid()
+    g.setcell(0, 0, "5")
+    g.recalc()
+    api = Api(g)
+    api.set_format(0, 0, 0, 0, "bi")  # bold + italic
+    assert g.cell(0, 0).bold == 1 and g.cell(0, 0).italic == 1
+    api.undo()
+    assert g.cell(0, 0).bold == 0 and g.cell(0, 0).italic == 0
 
 
 def test_load_html_returns_the_built_bundle_or_raises() -> None:

@@ -1,4 +1,70 @@
-import type { Dims, OpenResult, SaveResult, Sheets, Viewport, ViewportCell } from './types'
+import type {
+  ChartData,
+  Dims,
+  GoalResult,
+  OpenResult,
+  SaveResult,
+  Sheets,
+  SolveResult,
+  SweepResult,
+  Viewport,
+  ViewportCell,
+} from './types'
+
+const colLetter = (c: number): string => {
+  let s = ''
+  c += 1
+  while (c > 0) {
+    c -= 1
+    s = String.fromCharCode(65 + (c % 26)) + s
+    c = Math.floor(c / 26)
+  }
+  return s
+}
+
+const parseRef = (s: string): { r: number; c: number } | null => {
+  const m = /^([A-Za-z]+)(\d+)$/.exec(s.trim())
+  if (!m) return null
+  let c = 0
+  for (const ch of m[1].toUpperCase()) c = c * 26 + (ch.charCodeAt(0) - 64)
+  return { r: parseInt(m[2], 10) - 1, c: c - 1 }
+}
+
+const parseRange = (spec: string) => {
+  const [a, b] = spec.split(':')
+  const A = parseRef(a)
+  const B = parseRef(b ?? a)
+  if (!A || !B) return null
+  return {
+    r0: Math.min(A.r, B.r),
+    c0: Math.min(A.c, B.c),
+    r1: Math.max(A.r, B.r),
+    c1: Math.max(A.c, B.c),
+  }
+}
+
+// A canned optimal LP result (the Wyndor example) for the dev/test bridge --
+// real solving lives in the Python engine, not the mock.
+const MOCK_SOLVE: SolveResult = {
+  ok: true,
+  status: 'OPTIMAL',
+  optimal: true,
+  objective: 36,
+  values: { A2: 2, A3: 6 },
+  applied: true,
+  quadratic: false,
+  sensitivity: {
+    variables: [
+      { cell: 'A2', value: 2, reduced_cost: 0, obj_coef: 3, obj_from: 0, obj_till: 7.5 },
+      { cell: 'A3', value: 6, reduced_cost: 0, obj_coef: 5, obj_from: 2, obj_till: null },
+    ],
+    constraints: [
+      { cell: 'C2', shadow_price: 0, rhs: 4, activity: 2, slack: 2, binding: false, rhs_from: 2, rhs_till: null },
+      { cell: 'C3', shadow_price: 1.5, rhs: 12, activity: 12, slack: 0, binding: true, rhs_from: 6, rhs_till: 18 },
+      { cell: 'C4', shadow_price: 1, rhs: 18, activity: 18, slack: 0, binding: true, rhs_from: 12, rhs_till: 24 },
+    ],
+  },
+}
 
 // A stateful stand-in for the pywebview js_api so the UI runs in a plain
 // browser -- `npm run dev` (Vite HMR) and the vitest suite. It keeps a tiny
@@ -32,6 +98,15 @@ export function installMockBridge(): void {
   for (const [r, c, t] of seed) cells.set(key(r, c), t)
 
   const isNumeric = (s: string) => s !== '' && (!Number.isNaN(Number(s)) || s.startsWith('='))
+
+  interface Style {
+    bold: boolean
+    italic: boolean
+    underline: boolean
+    fmt: string
+    fmtstr: string
+  }
+  const styles = new Map<string, Style>()
 
   let clip: {
     r0: number
@@ -75,11 +150,50 @@ export function installMockBridge(): void {
         for (let r = r0; r < r0 + rows; r++) {
           for (let c = c0; c < c0 + cols; c++) {
             const text = cells.get(key(r, c))
-            if (text) out.push({ r, c, text, align: isNumeric(text) ? 'r' : 'l' })
+            if (!text) continue
+            const cell: ViewportCell = { r, c, text, align: isNumeric(text) ? 'r' : 'l' }
+            const st = styles.get(key(r, c))
+            if (st?.bold) cell.bold = true
+            if (st?.italic) cell.italic = true
+            if (st?.underline) cell.underline = true
+            out.push(cell)
           }
         }
         return { r0, c0, rows, cols, cells: out }
       },
+      set_format: async (r0: number, c0: number, r1: number, c1: number, spec: string) => {
+        const s = spec || ''
+        const style = s.length > 0 && [...s].every((ch) => 'bui'.includes(ch))
+        const single = s.length === 1 && 'LRIGD$%*'.includes(s.toUpperCase())
+        for (let r = Math.min(r0, r1); r <= Math.max(r0, r1); r++) {
+          for (let c = Math.min(c0, c1); c <= Math.max(c0, c1); c++) {
+            if (!cells.has(key(r, c))) continue
+            const cur: Style = styles.get(key(r, c)) ?? {
+              bold: false,
+              italic: false,
+              underline: false,
+              fmt: '',
+              fmtstr: '',
+            }
+            if (style) {
+              for (const ch of s) {
+                if (ch === 'b') cur.bold = !cur.bold
+                else if (ch === 'u') cur.underline = !cur.underline
+                else if (ch === 'i') cur.italic = !cur.italic
+              }
+            } else if (single) {
+              cur.fmt = s.toUpperCase()
+              cur.fmtstr = ''
+            } else if (s) {
+              cur.fmtstr = s.slice(0, 31)
+              cur.fmt = ''
+            }
+            styles.set(key(r, c), cur)
+          }
+        }
+        return { ok: true }
+      },
+      set_global_format: async () => ({ ok: true }),
       cell_source: async (r: number, c: number): Promise<string> => cells.get(key(r, c)) ?? '',
       set_cell: async (r: number, c: number, text: string) => {
         if (text) cells.set(key(r, c), text)
@@ -152,6 +266,51 @@ export function installMockBridge(): void {
           }
         }
         return { ok: true }
+      },
+      solve_selection: async (): Promise<SolveResult> => ({ ...MOCK_SOLVE }),
+      solve_model: async (): Promise<SolveResult> => ({ ...MOCK_SOLVE }),
+      goal_seek: async (_f: string, target: number): Promise<GoalResult> => ({
+        ok: true,
+        converged: true,
+        iterations: 12,
+        var_value: target / 2,
+        formula_value: target,
+        residual: 0,
+        applied: true,
+      }),
+      opt_sweep: async (): Promise<SweepResult> => ({
+        ok: true,
+        points: [
+          { rhs: 0, status: 'OPTIMAL', objective: 24, shadow_price: 1.5, delta: null, breakpoint: false },
+          { rhs: 4, status: 'OPTIMAL', objective: 30, shadow_price: 1.5, delta: 6, breakpoint: false },
+          { rhs: 8, status: 'OPTIMAL', objective: 36, shadow_price: 1, delta: 6, breakpoint: true },
+        ],
+      }),
+      chart_data: async (spec: string): Promise<ChartData> => {
+        const rect = parseRange(spec)
+        if (!rect) return { error: `bad range: ${spec}` }
+        const rows: number[] = []
+        for (let r = rect.r0; r <= rect.r1; r++) rows.push(r)
+        const cols: number[] = []
+        for (let c = rect.c0; c <= rect.c1; c++) cols.push(c)
+        let labelCol: number | null = null
+        if (cols.length > 1 && rows.some((r) => !isNumeric(cells.get(key(r, cols[0])) ?? ''))) {
+          labelCol = cols[0]
+        }
+        const labels =
+          labelCol !== null
+            ? rows.map((r) => cells.get(key(r, labelCol as number)) ?? '')
+            : rows.map((r) => String(r + 1))
+        const seriesCols = labelCol !== null ? cols.filter((c) => c !== labelCol) : cols
+        const series = seriesCols.map((c) => ({
+          name: colLetter(c),
+          values: rows.map((r) => {
+            const t = cells.get(key(r, c))
+            const n = t ? Number(t) : NaN
+            return Number.isFinite(n) ? n : null
+          }),
+        }))
+        return { title: spec.toUpperCase(), labels, series }
       },
     },
   }

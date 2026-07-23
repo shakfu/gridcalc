@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import contextlib
 import math
+from pathlib import Path
 from typing import Any
 
 from .. import goalseek, opt
@@ -703,6 +704,23 @@ class Api:
         return float(v)
 
 
+def _load_html() -> str:
+    """Read the built React bundle (``static/index.html``).
+
+    The frontend under ``web/frontend`` compiles to a single self-contained file
+    via ``make web-build``. A source checkout that has not run the build has no
+    bundle, so this raises a directive error rather than opening a blank window.
+    """
+    bundle = Path(__file__).resolve().parent / "static" / "index.html"
+    try:
+        return bundle.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise OSError(
+            f"web UI bundle not found at {bundle}; build it with `make web-build` "
+            "(compiles web/frontend into static/index.html)"
+        ) from None
+
+
 def run(path: str | None = None) -> None:
     """Open the editable grid in a desktop webview window."""
     import webview  # lazy: only needed to open a window
@@ -712,7 +730,7 @@ def run(path: str | None = None) -> None:
     name = getattr(g, "filename", "") or "(demo)"
     api._window = webview.create_window(
         f"gridcalc - {name}",
-        html=_HTML,
+        html=_load_html(),
         js_api=api,
         width=1200,
         height=800,

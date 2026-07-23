@@ -1,0 +1,460 @@
+:root {
+  color-scheme: dark;
+  --bg: #1b1d21;
+  --chrome: #26282d;
+  --panel: #2b2e34;
+  --border: #3a3d44;
+  --border-soft: #33363c;
+  --fg: #e6e8eb;
+  --muted: #9aa0a8;
+  --accent: #4c8dff;
+  --accent-soft: rgba(76, 141, 255, 0.22);
+  --hover: rgba(255, 255, 255, 0.06);
+  --ok: #6bbf59;
+  --err: #e06c6c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font: 13px/1.5 -apple-system, system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* --- Menubar --------------------------------------------------------- */
+.menubar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 30px;
+  padding: 0 6px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--border-soft);
+  user-select: none;
+}
+
+.menu-trigger {
+  padding: 3px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: default;
+}
+
+.menu-trigger:hover,
+.menu-trigger[data-state='open'] {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.menu-content,
+.select-content {
+  min-width: 210px;
+  padding: 5px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  z-index: 30;
+}
+
+.menu-item,
+.select-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 28px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  color: var(--fg);
+  cursor: default;
+  outline: none;
+}
+
+.menu-item[data-highlighted],
+.select-item[data-highlighted] {
+  background: var(--accent-soft);
+}
+
+.menu-item[data-disabled] {
+  color: var(--muted);
+  opacity: 0.5;
+}
+
+.menu-shortcut {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.menu-sep {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--border-soft);
+}
+
+/* --- Toolbar --------------------------------------------------------- */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 10px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.tool-btn,
+.select-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  background: #30333a;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.tool-btn:hover:not(:disabled),
+.select-trigger:hover {
+  background: #383c44;
+}
+
+.tool-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.tool-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--border-soft);
+}
+
+.tool-label,
+.sheet-label {
+  color: var(--muted);
+}
+
+.tool-spacer {
+  flex: 1;
+}
+
+.tool-file {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tool-status {
+  min-width: 56px;
+  text-align: right;
+  color: var(--ok);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Select ---------------------------------------------------------- */
+.select-trigger {
+  justify-content: space-between;
+  min-width: 96px;
+}
+
+.select-icon {
+  color: var(--muted);
+}
+
+.select-content {
+  min-width: 96px;
+  padding: 4px;
+}
+
+.select-item {
+  gap: 0;
+  padding: 4px 10px;
+}
+
+.select-item[data-state='checked'] {
+  color: var(--accent);
+}
+
+/* --- Dialog ---------------------------------------------------------- */
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 40;
+}
+
+.dialog-content {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 420px;
+  max-width: 90vw;
+  padding: 20px 22px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+  z-index: 41;
+}
+
+.dialog-title {
+  margin: 0 0 8px;
+  font-size: 17px;
+  color: var(--accent);
+}
+
+.dialog-desc {
+  margin: 0 0 18px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn-primary {
+  padding: 6px 16px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn-primary:hover {
+  filter: brightness(1.08);
+}
+
+/* --- Grid ------------------------------------------------------------ */
+:root {
+  --grid-line: #2b2e34;
+  --hdr-bg: #26282d;
+}
+
+.grid {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.formula-bar {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.name-box {
+  min-width: 64px;
+  padding: 0 8px;
+  color: var(--accent);
+  font-weight: 600;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  border-right: 1px solid var(--border-soft);
+}
+
+.formula-src {
+  flex: 1;
+  padding: 0 10px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.grid-scroll {
+  position: relative;
+  flex: 1;
+  overflow: auto;
+  outline: none;
+}
+
+.grid-canvas {
+  position: relative;
+  background-image: linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 90px 22px;
+  background-position: 52px 22px;
+}
+
+.cell {
+  position: absolute;
+  height: 22px;
+  line-height: 22px;
+  padding: 0 5px;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--fg);
+}
+
+.cell.num {
+  text-align: right;
+}
+
+.sel-rect {
+  position: absolute;
+  background: var(--accent-soft);
+  border: 1px solid rgba(76, 141, 255, 0.5);
+  pointer-events: none;
+  z-index: 3;
+}
+
+.cursor {
+  position: absolute;
+  border: 2px solid var(--accent);
+  pointer-events: none;
+  z-index: 4;
+}
+
+.fill-handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+  border: 1px solid #fff;
+  cursor: crosshair;
+  z-index: 6;
+}
+
+/* Frozen chrome sits above the overlays so a selection scrolling under it never
+   paints over the header row or gutter. */
+.hdr-layer {
+  position: absolute;
+  left: 0;
+  height: 22px;
+  z-index: 9;
+}
+
+.gut-layer {
+  position: absolute;
+  top: 0;
+  z-index: 8;
+}
+
+.hdr,
+.gut {
+  position: absolute;
+  height: 22px;
+  line-height: 22px;
+  background: var(--hdr-bg);
+}
+
+.hdr {
+  top: 0;
+  text-align: center;
+  font-weight: 600;
+  color: var(--accent);
+  border-right: 1px solid var(--grid-line);
+  border-bottom: 1px solid var(--border);
+}
+
+.gut {
+  left: 0;
+  width: 52px;
+  padding-right: 6px;
+  text-align: right;
+  color: var(--muted);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--grid-line);
+}
+
+.corner {
+  position: absolute;
+  width: 52px;
+  height: 22px;
+  background: var(--hdr-bg);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  z-index: 10;
+}
+
+.cell-editor {
+  position: absolute;
+  height: 22px;
+  padding: 0 4px;
+  border: 2px solid var(--accent);
+  background: #fff;
+  color: #000;
+  font: inherit;
+  outline: none;
+  z-index: 15;
+}
+
+/* --- Stage / placeholder --------------------------------------------- */
+.stage {
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.stage > .note {
+  padding: 20px;
+}
+
+.placeholder .ok {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.placeholder dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 16px;
+  margin: 12px 0;
+}
+
+.placeholder dt {
+  color: var(--muted);
+}
+
+.placeholder dd {
+  margin: 0;
+}
+
+.note {
+  color: var(--muted);
+}
+
+.error {
+  color: var(--err);
+}
+
+/* Keyboard-visible focus for accessibility. */
+.menu-trigger:focus-visible,
+.tool-btn:focus-visible,
+.select-trigger:focus-visible,
+.btn-primary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

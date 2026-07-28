@@ -8,6 +8,8 @@ export interface Dims {
   ncol: number
   nrow: number
   filename: string
+  // True when the workbook has changes not yet written to disk.
+  dirty: boolean
 }
 
 export interface Sheets {
@@ -17,6 +19,20 @@ export interface Sheets {
 
 export interface OkResult {
   ok: boolean
+  // Every mutating method reports the workbook's dirty state back, so the
+  // client learns it from the call that caused it rather than re-polling.
+  dirty?: boolean
+}
+
+// Selection summary for the status bar. `count` includes labels; the
+// aggregates cover only the numeric cells and are null when there are none.
+export interface Stats {
+  count: number
+  numeric: number
+  sum: number | null
+  avg: number | null
+  min: number | null
+  max: number | null
 }
 
 export interface SaveResult {
@@ -138,6 +154,40 @@ export interface ChartData {
 
 export type ModelSpec = Record<string, unknown>
 
+// A model definition persisted in the workbook (`grid.models`), shared with the
+// TUI's `:opt run <name>`. The fields are the *spec strings* the user typed --
+// cell refs resolve at solve time, so a model outlives edits to the sheet.
+export interface SavedModel {
+  name: string
+  sense: string
+  objective: string
+  vars: string
+  constraints: string
+  bounds?: string
+  integers?: string
+  binaries?: string
+}
+
+export interface ModelsResult {
+  models: SavedModel[]
+}
+
+export interface SaveModelResult {
+  ok: boolean
+  name?: string
+  error?: string
+}
+
+// What `solve_selection` would build from a block, without running it.
+export interface InferResult {
+  ok: boolean
+  error?: string
+  sense?: string
+  objective?: string
+  vars?: string
+  constraints?: string
+}
+
 export interface PywebviewApi {
   dims(): Promise<Dims>
   sheets(): Promise<Sheets>
@@ -149,6 +199,7 @@ export interface PywebviewApi {
   open_dialog(): Promise<OpenResult>
   open_file(path: string): Promise<OpenResult>
   viewport(r0: number, c0: number, rows: number, cols: number): Promise<Viewport>
+  stats(r0: number, c0: number, r1: number, c1: number): Promise<Stats>
   cell_source(r: number, c: number): Promise<string>
   set_cell(r: number, c: number, text: string): Promise<OkResult>
   clear_range(r0: number, c0: number, r1: number, c1: number): Promise<OkResult>
@@ -168,6 +219,17 @@ export interface PywebviewApi {
     hi?: number | null,
   ): Promise<GoalResult>
   opt_sweep(spec: ModelSpec): Promise<SweepResult>
+  list_models(): Promise<ModelsResult>
+  save_model(name: string, spec: ModelSpec): Promise<SaveModelResult>
+  delete_model(name: string): Promise<OkResult & { error?: string }>
+  run_model(name: string, spec?: ModelSpec): Promise<SolveResult>
+  infer_model_spec(
+    r0: number,
+    c0: number,
+    r1: number,
+    c1: number,
+    sense: string,
+  ): Promise<InferResult>
   chart_data(spec: string): Promise<ChartData>
 }
 

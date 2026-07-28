@@ -85,6 +85,20 @@ engine and formats cells exactly as the terminal does.
   gridcalc-web                    # demo workbook, or: gridcalc-web book.json
   ```
 
+  It covers cell editing (in-cell or from the formula bar), navigation and
+  selection, copy/cut/paste, fill, undo/redo, and per-cell and workbook number
+  formats. A status bar reports the selection's aggregates and an
+  unsaved-changes marker. Structural edits (insert/delete row and column),
+  search, and named ranges are terminal-only for now.
+
+  Optimization is where it goes beyond the terminal. `Optimize` reads a model
+  off a selected block or loads one saved in the workbook (the same models
+  `:opt run` executes), solves it, and then **paints the result onto the
+  sheet** -- objective, decision cells, and each constraint marked binding or
+  slack, with shadow prices and ranging in the hover text. `Goal Seek` and a
+  parametric `Sweep` (plotting the objective against a constraint's
+  right-hand side, breakpoints marked) round it out.
+
 The extra pulls a native webview stack, kept out of the lean terminal build on
 purpose; the curses app has no such dependency.
 

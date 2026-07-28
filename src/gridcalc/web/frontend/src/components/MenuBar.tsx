@@ -2,19 +2,33 @@ import type { ReactNode } from 'react'
 import * as Menubar from '@radix-ui/react-menubar'
 import type { WorkbookActions } from '../hooks/useWorkbook'
 
+// The grid commands the Edit menu drives. Supplied by the app from the grid's
+// imperative handle, so the menu and the keyboard run the same code.
+export interface EditCommands {
+  cut(): void
+  copy(): void
+  paste(): void
+  clear(): void
+  fillDown(): void
+  fillRight(): void
+}
+
 interface MenuBarProps {
   actions: WorkbookActions
+  commands: EditCommands
   onAbout: () => void
   onOptimize: () => void
   onGoal: () => void
+  onSweep: () => void
   onChart: () => void
   onFormat: (spec: string) => void
   onDefaultFormat: (fmt: string) => void
 }
 
-// Items that need the grid's cursor/selection or a feature dialog are shown but
-// disabled until their phase lands, so the menu structure reads complete.
-const SOON = 'arrives with the grid / feature dialogs in a later phase'
+// Structural editing (insert/delete row and column) has no `Api` method yet, so
+// those items are shown disabled rather than hidden -- the menu reads complete
+// and the gap is visible instead of silently absent.
+const SOON = 'needs a structural-edit Api method (insert/delete row+column)'
 
 function Item(props: {
   children: ReactNode
@@ -51,9 +65,11 @@ function Menu(props: { label: string; children: ReactNode }) {
 
 export function MenuBar({
   actions,
+  commands,
   onAbout,
   onOptimize,
   onGoal,
+  onSweep,
   onChart,
   onFormat,
   onDefaultFormat,
@@ -78,23 +94,21 @@ export function MenuBar({
           Redo
         </Item>
         <Menubar.Separator className="menu-sep" />
-        <Item disabled title={SOON} shortcut="⌘X">
+        <Item shortcut="⌘X" onSelect={commands.cut}>
           Cut
         </Item>
-        <Item disabled title={SOON} shortcut="⌘C">
+        <Item shortcut="⌘C" onSelect={commands.copy}>
           Copy
         </Item>
-        <Item disabled title={SOON} shortcut="⌘V">
+        <Item shortcut="⌘V" onSelect={commands.paste}>
           Paste
         </Item>
-        <Item disabled title={SOON}>
-          Delete
-        </Item>
+        <Item onSelect={commands.clear}>Delete</Item>
         <Menubar.Separator className="menu-sep" />
-        <Item disabled title={SOON} shortcut="⌘D">
+        <Item shortcut="⌘D" onSelect={commands.fillDown}>
           Fill Down
         </Item>
-        <Item disabled title={SOON} shortcut="⌘R">
+        <Item shortcut="⌘R" onSelect={commands.fillRight}>
           Fill Right
         </Item>
       </Menu>
@@ -138,9 +152,7 @@ export function MenuBar({
       <Menu label="Data">
         <Item onSelect={onOptimize}>Optimize…</Item>
         <Item onSelect={onGoal}>Goal Seek…</Item>
-        <Item disabled title={SOON}>
-          Sweep…
-        </Item>
+        <Item onSelect={onSweep}>Sweep…</Item>
         <Menubar.Separator className="menu-sep" />
         <Item onSelect={onChart}>Chart…</Item>
       </Menu>

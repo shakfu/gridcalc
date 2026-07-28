@@ -48,6 +48,85 @@ they are the strategy.
 - [ ] **Integer + quadratic together.** HiGHS does not support integrality
       with a Hessian. Currently the combination is simply refused.
 
+## Web frontend
+
+The editable pywebview/React frontend (`gridcalc.web`). `docs/web.md` holds the
+full analysis and a "what has since landed" status section reconciling its
+P0-P3 roadmap with reality; this list is only what is still open, ordered by
+priority. The security posture is deliberately unchanged -- formulas-only, no
+code-block trust flow (`docs/web.md` §5a option 1). Do not wire `load_code=True`
+without building the consent UI first; that is a decision, not an oversight.
+
+- [ ] **Correctness loose ends.** Small, and worth clearing before more
+  breadth:
+  (a) The **`NamedRange` structural-edit bug** below under Refactoring is a
+      hard prerequisite for structural edits in any frontend.
+  (b) **Dialog field focus guard.** `App.tsx`'s window-level Ctrl/Cmd handler
+      fires while a dialog text field has focus, so Ctrl+Z while typing a cell
+      ref in Goal Seek undoes the *workbook* rather than the field. The
+      in-cell editor is already protected by `stopPropagation`; the dialogs
+      are not. Observed by reading the handler, not yet reproduced in a real
+      webview.
+  (c) **Per-sheet view state.** `Grid` is keyed `${filename}:${active}`
+      (`App.tsx`), so switching sheets remounts it and discards column widths
+      (local `useState` in `Grid.tsx`), scroll position, and cursor. Keep a
+      per-sheet record instead of remounting. Column widths are also never
+      persisted to the workbook, unlike the TUI's `:width`.
+  (d) **Constrain `save` paths.** `Api.save` writes wherever the client asks
+      (`docs/web.md` §4). Blast radius is small while the client is in-process
+      and local, but it is cheap to fix now and load-bearing if a served
+      frontend is ever considered.
+- [ ] **Structural edits: insert / delete / move row and column.** The top of
+  the editing-parity list and the only Insert menu items still disabled.
+  `engine.insertrow`/`deleterow`/`swaprow` are ready, so this is an `Api`
+  method plus client UI. **Gated on the `NamedRange` fix** -- a row-editing
+  GUI makes that bug trivially easy to hit.
+- [ ] **Command palette (Ctrl-K) over the `:` command set.** Reuses the TUI's
+  mental model without forcing modal `:` typing into a GUI, and is the natural
+  home for commands that will never justify a menu item (`:width`, `:name`,
+  `:sort`, `:mode`). Materially cheaper now that the grid exposes an
+  imperative command handle (`GridHandle` in `Grid.tsx`) -- that was the
+  missing prerequisite. See `docs/web.md` §5d.
+- [ ] **Remaining editing parity.** Search, named-range management, sort,
+  sheet add/rename/delete/move. Each is an `Api` method over an existing
+  engine call plus client UI; none is architecturally interesting, which is
+  exactly why they should not be done ahead of the items above.
+- [ ] **Accessibility, and validating the reason web was chosen.**
+  `docs/gui.md` justified the web bet partly on IME/CJK input and
+  accessibility, and neither claim has been tested in a real webview -- only
+  asserted. The grid is absolutely-positioned `div`s with no
+  `role="grid"`/`gridcell`/`aria-rowindex` and a single focusable container,
+  so the assertion is currently unbacked by the implementation too. Add ARIA
+  grid semantics, then verify CJK/IME input on each platform's real webview
+  (the Playwright suite is Chromium -- a faithful proxy, not the production
+  engine).
+- [ ] **Full spreadsheet keyboard model.** Missing: PageUp/PageDown,
+  Ctrl+Home/End, Ctrl+arrow (jump to data edge), End, Ctrl+A, Escape,
+  shift+space / ctrl+space (row/column select), F4 (toggle absolute in the
+  editor). Today only `Home` exists (`Grid.tsx`).
+- [ ] **Light theme.** `styles.css` is a single dark `:root` with no
+  `prefers-color-scheme` support, and a few hex values leak out of it into
+  component props (`ChartDialog.tsx` hands literal colours to Recharts;
+  `SweepDialog.tsx` already uses CSS variables, so that is the pattern to
+  follow). A light-mode user currently gets a forced dark app.
+- [ ] **Viewport fetch cost.** `viewport()` fires per scroll event, coalesced
+  only by in-flight dedup (`Grid.tsx`). No debounce and no client-side block
+  cache, so fast scrolling issues a round trip per frame, newly-scrolled rows
+  stay blank until each returns, and scrolling back refetches from scratch.
+  Not urgent in-process on a 256x1024 sheet; an LRU of fetched blocks is the
+  cheap fix when it bites. `docs/web.md` §5e.
+- [ ] **Distribution (P3).** Frozen, signed, double-clickable builds for
+  macOS/Windows/Linux around pywebview plus the C++ extensions, and per-
+  platform manual QA of clipboard/IME/rendering. `docs/web.md` §5b calls this
+  the most underestimated cost in the plan; budget it as its own project, not
+  a task. Only worth starting once the decision below is answered.
+- [ ] **Open decision: does the web view replace the TUI as the default, or
+  complement it?** (`docs/web.md` §7.) This gates how much of the parity work
+  above is worth doing at all. If it complements -- the TUI stays the
+  power-editing frontend and the web view is the visualize-and-solve
+  companion -- then breadth stops mattering and distribution becomes the next
+  real question instead.
+
 ## Performance
 
 - [ ] **Range subscriber explosion (Phase E from `docs/topological.md`).**
@@ -72,6 +151,28 @@ they are the strategy.
 
 ## Refactoring & code quality
 
+- [ ] **BUG: named ranges are not shifted on structural edits.**
+  `insertrow`/`insertcol`/`deleterow`/`deletecol` (engine.py:2171+) move cells
+  and call `_shiftrefs` to rewrite cell-text references, but nothing adjusts
+  `NamedRange` coordinates in `g.names`. The name keeps pointing at the old
+  rectangle, so it silently reads the wrong cells -- wrong answers, no error.
+  Reproduced:
+
+  ```python
+  g.setcell(0, 1, "10"); g.setcell(0, 2, "20")     # A2, A3
+  g.names.append(NamedRange("Data", 0, 1, 0, 2))   # Data = A2:A3
+  g.setcell(2, 0, "=SUM(Data)"); g.recalc()        # -> 30
+  g.insertrow(0); g.recalc()                       # data moves to A3:A4
+  # =SUM(Data) is now 10: the name still covers rows 1..2
+  ```
+
+  Affects both frontends -- found while scoping the web view (`docs/web.md`
+  §4), but it is an engine bug and the TUI's `:ir`/`:dr`/`:ic`/`:dc`
+  (`tui/commands.py:1270+`) reach it today. A prerequisite for structural
+  editing in the web view. Needs tests covering insert and delete above,
+  below, and straddling a named range, plus the delete case where the range
+  loses its cells entirely (Excel collapses such a name to `#REF!`; decide
+  whether to match that or clamp).
 - [ ] **`Cell.ast` cache invalidates by text equality.** For very large
   sheets where many formulas share text, hashing the text would cut
   cache lookups; not a priority but worth measuring.

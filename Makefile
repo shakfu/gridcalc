@@ -1,7 +1,7 @@
 .PHONY: all sync build rebuild test test-stdlib lint format typecheck qa clean  \
        distclean wheel wheel-abi3 build-abi3 sdist dist dist-abi3 check \
        publish-test publish upgrade coverage coverage-html docs release \
-       bench bench-clean web-build web-dev web-jstest web-run help
+       bench bench-clean web-build web-dev web-jstest web-qa web-run help
 
 # Default target
 all: build
@@ -76,8 +76,24 @@ format:
 typecheck:
 	@uv run mypy src/gridcalc/ --exclude '.venv'
 
+# Type-check and test the web frontend. The whole TypeScript/React layer was
+# previously outside every quality gate -- `make qa` guarded the Python and
+# nothing guarded the client, which is the failure mode docs/web.md warned
+# about for the old inline HTML string. Skipped (not failed) when Node is
+# absent or the frontend has never been `npm install`ed, since the web extra is
+# optional and the curses TUI must stay buildable without it.
+web-qa:
+	@if ! command -v npm >/dev/null 2>&1; then \
+		echo "web-qa: skipped (npm not found)"; \
+	elif [ ! -d src/gridcalc/web/frontend/node_modules ]; then \
+		echo "web-qa: skipped (run 'make web-build' first)"; \
+	else \
+		npm --prefix src/gridcalc/web/frontend run typecheck && \
+		npm --prefix src/gridcalc/web/frontend run test; \
+	fi
+
 # Run a full quality assurance check
-qa: lint typecheck test format
+qa: lint typecheck test web-qa format
 
 # Build wheel (per-version, current Python)
 wheel:

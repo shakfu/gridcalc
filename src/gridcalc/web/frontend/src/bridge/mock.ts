@@ -5,7 +5,13 @@ import type {
   OpenResult,
   SaveResult,
   Sheets,
+  InferResult,
+  ModelSpec,
+  ModelsResult,
+  SaveModelResult,
+  SavedModel,
   SolveResult,
+  Stats,
   SweepResult,
   Viewport,
   ViewportCell,
@@ -75,7 +81,7 @@ export function installMockBridge(): void {
   if (!import.meta.env.DEV) return
   if (window.pywebview?.api) return
 
-  const dims: Dims = { ncol: 256, nrow: 1024, filename: '' }
+  const dims: Dims = { ncol: 256, nrow: 1024, filename: '', dirty: false }
   const sheets: Sheets = { active: 0, names: ['Sheet1', 'Data'] }
 
   const cells = new Map<string, string>() // "r,c" -> source text
@@ -99,6 +105,12 @@ export function installMockBridge(): void {
 
   const isNumeric = (s: string) => s !== '' && (!Number.isNaN(Number(s)) || s.startsWith('='))
 
+  // Mirrors `Api._touch`: any mutation dirties the workbook and says so.
+  const touch = () => {
+    dims.dirty = true
+    return { ok: true, dirty: true }
+  }
+
   interface Style {
     bold: boolean
     italic: boolean
@@ -107,6 +119,7 @@ export function installMockBridge(): void {
     fmtstr: string
   }
   const styles = new Map<string, Style>()
+  const models = new Map<string, SavedModel>()
 
   let clip: {
     r0: number
@@ -123,26 +136,30 @@ export function installMockBridge(): void {
         if (idx >= 0 && idx < sheets.names.length) sheets.active = idx
         return { ...sheets }
       },
-      undo: async () => ({ ok: true }),
-      redo: async () => ({ ok: true }),
+      undo: async () => touch(),
+      redo: async () => touch(),
       save: async (path?: string): Promise<SaveResult> => {
         const target = path || dims.filename
         if (!target) return { ok: false, needs_path: true }
         dims.filename = target
+        dims.dirty = false
         return { ok: true, path: target }
       },
       save_dialog: async (): Promise<SaveResult> => {
         dims.filename = '/tmp/mock-workbook.json'
+        dims.dirty = false
         return { ok: true, path: dims.filename }
       },
       open_dialog: async (): Promise<OpenResult> => {
         dims.filename = '/tmp/opened.json'
+        dims.dirty = false
         sheets.names = ['Sheet1', 'Budget', 'Data']
         sheets.active = 0
         return { ok: true, filename: dims.filename }
       },
       open_file: async (path: string): Promise<OpenResult> => {
         dims.filename = path
+        dims.dirty = false
         return { ok: true, filename: path }
       },
       viewport: async (r0: number, c0: number, rows: number, cols: number): Promise<Viewport> => {
@@ -160,6 +177,30 @@ export function installMockBridge(): void {
           }
         }
         return { r0, c0, rows, cols, cells: out }
+      },
+      // The mock stores source text and never evaluates, so a formula cell is
+      // counted but contributes no value -- the real Api aggregates `cl.val`.
+      stats: async (r0: number, c0: number, r1: number, c1: number): Promise<Stats> => {
+        let count = 0
+        const nums: number[] = []
+        for (let r = Math.min(r0, r1); r <= Math.max(r0, r1); r++) {
+          for (let c = Math.min(c0, c1); c <= Math.max(c0, c1); c++) {
+            const text = cells.get(key(r, c))
+            if (!text) continue
+            count++
+            const n = Number(text)
+            if (text.trim() !== '' && Number.isFinite(n)) nums.push(n)
+          }
+        }
+        const sum = nums.length ? nums.reduce((a, b) => a + b, 0) : null
+        return {
+          count,
+          numeric: nums.length,
+          sum,
+          avg: sum === null ? null : sum / nums.length,
+          min: nums.length ? Math.min(...nums) : null,
+          max: nums.length ? Math.max(...nums) : null,
+        }
       },
       set_format: async (r0: number, c0: number, r1: number, c1: number, spec: string) => {
         const s = spec || ''
@@ -191,20 +232,20 @@ export function installMockBridge(): void {
             styles.set(key(r, c), cur)
           }
         }
-        return { ok: true }
+        return touch()
       },
-      set_global_format: async () => ({ ok: true }),
+      set_global_format: async () => touch(),
       cell_source: async (r: number, c: number): Promise<string> => cells.get(key(r, c)) ?? '',
       set_cell: async (r: number, c: number, text: string) => {
         if (text) cells.set(key(r, c), text)
         else cells.delete(key(r, c))
-        return { ok: true }
+        return touch()
       },
       clear_range: async (r0: number, c0: number, r1: number, c1: number) => {
         for (let r = Math.min(r0, r1); r <= Math.max(r0, r1); r++) {
           for (let c = Math.min(c0, c1); c <= Math.max(c0, c1); c++) cells.delete(key(r, c))
         }
-        return { ok: true }
+        return touch()
       },
       copy: async (r0: number, c0: number, r1: number, c1: number, cut: boolean) => {
         const ra = Math.min(r0, r1)
@@ -234,7 +275,7 @@ export function installMockBridge(): void {
           }
           clip = null
         }
-        return { ok: true }
+        return touch()
       },
       paste_text: async (r: number, c: number, text: string) => {
         const rows = text.replace(/\r\n?/g, '\n').split('\n')
@@ -245,7 +286,7 @@ export function installMockBridge(): void {
             else cells.delete(key(r + dr, c + dc))
           }),
         )
-        return { ok: true }
+        return touch()
       },
       fill: async (r0: number, c0: number, r1: number, c1: number, direction: 'down' | 'right') => {
         if (direction === 'down') {
@@ -265,10 +306,54 @@ export function installMockBridge(): void {
             }
           }
         }
-        return { ok: true }
+        return touch()
       },
-      solve_selection: async (): Promise<SolveResult> => ({ ...MOCK_SOLVE }),
+      solve_selection: async (): Promise<SolveResult> => {
+        models.set('default', {
+          name: 'default',
+          sense: 'max',
+          objective: 'B2',
+          vars: 'A2:A3',
+          constraints: 'C2:C4',
+        })
+        return { ...MOCK_SOLVE }
+      },
       solve_model: async (): Promise<SolveResult> => ({ ...MOCK_SOLVE }),
+      list_models: async (): Promise<ModelsResult> => ({
+        models: [...models.values()].sort((a, b) => a.name.localeCompare(b.name)),
+      }),
+      save_model: async (name: string, spec: ModelSpec): Promise<SaveModelResult> => {
+        const key = String(name ?? '').trim()
+        if (!key) return { ok: false, error: 'a model needs a name' }
+        if (!spec.objective || !spec.vars || !spec.constraints) {
+          return { ok: false, error: 'saved model missing required field' }
+        }
+        models.set(key, { name: key, ...spec } as SavedModel)
+        touch()
+        return { ok: true, name: key }
+      },
+      delete_model: async (name: string) => {
+        if (!models.has(name)) return { ok: false, error: `no such model: ${name}` }
+        models.delete(name)
+        return touch()
+      },
+      run_model: async (name: string): Promise<SolveResult> => {
+        if (!models.has(name)) return { ok: false, error: `no such model: ${name}` }
+        return { ...MOCK_SOLVE }
+      },
+      infer_model_spec: async (
+        _r0: number,
+        _c0: number,
+        _r1: number,
+        _c1: number,
+        sense: string,
+      ): Promise<InferResult> => ({
+        ok: true,
+        sense,
+        objective: 'B2',
+        vars: 'A2:A3',
+        constraints: 'C2:C4',
+      }),
       goal_seek: async (_f: string, target: number): Promise<GoalResult> => ({
         ok: true,
         converged: true,

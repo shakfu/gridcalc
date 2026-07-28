@@ -5,6 +5,35 @@ experimental spike (`docs/gui.md`); this doc lays out what "product" would
 actually require, the decisions that gate it, and a phased path. It is a plan
 to argue with, not a committed roadmap.
 
+## What has since landed
+
+The body below is unchanged from when it was written; this section records
+where the work actually got to, so the two do not silently diverge.
+
+- **P0 is done.** The client is a real Vite/React/TypeScript app under a lint,
+  type-check and test gate (`make web-qa`, now part of `make qa`), not the
+  inline `_HTML` string Section 5c describes. There is an error/notification
+  channel (Section 5d), plus a React error boundary and an
+  `unhandledrejection` handler. Constraining `save` paths (Section 4) and the
+  `NamedRange` structural-edit bug are **still open**.
+- **P1 is done and then some.** `:opt`/`:goal` reached the GUI, and beyond the
+  original sketch: persisted named models (the `:opt def/run/list/undef`
+  surface, which Appendix A explicitly deferred as "not core P1"), a
+  non-solving `infer_model_spec` so a model can be read off a block and
+  corrected before it runs, a parametric sweep plotted with breakpoints marked,
+  and a **grid annotation layer** that paints binding/slack constraints and
+  shadow prices onto the sheet itself. Charts use Recharts, as Section 5c
+  anticipated the renderer-agnostic `chart_data` shape would allow.
+- **P2 is partial.** Formula bar, per-cell and global number formats, styles,
+  and a status bar with selection aggregates exist. Row/column insert-delete,
+  named ranges, search, sort, sheet management, column-width persistence, and
+  a command palette do **not**.
+- **P3 is untouched.** No frozen builds, no per-platform QA, no signing. The
+  IME/CJK and accessibility claims from Section 5e remain unvalidated in a real
+  webview; the grid still has no ARIA grid semantics.
+- **Security is unchanged and deliberately so**: formulas-only, Section 5a
+  option 1. No trust flow, no `load_code=True`.
+
 ## 1. The premise, challenged
 
 "Polished product" is underspecified, and the ambiguity is not cosmetic -- it

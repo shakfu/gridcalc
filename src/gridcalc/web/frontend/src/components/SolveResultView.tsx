@@ -1,8 +1,6 @@
-import { useEffect, useState } from 'react'
-import * as Dialog from '@radix-ui/react-dialog'
-import { bridge } from '../bridge/api'
+// The solver result rendering shared by every path that runs a solve --
+// status, objective, decision values, and the sensitivity tables.
 import type { SolveResult } from '../bridge/types'
-import type { Selection } from '../lib/grid'
 import { fmtCell, fnum } from '../lib/format'
 
 interface Col {
@@ -57,7 +55,7 @@ function SensTable({ rows, cols }: { rows: readonly object[]; cols: Col[] }) {
   )
 }
 
-function SolveResultView({ result, sense }: { result: SolveResult; sense: string }) {
+export function SolveResultView({ result, sense }: { result: SolveResult; sense: string }) {
   if (!result.ok) return <p className="error">{result.error}</p>
   const values = result.values ?? {}
   return (
@@ -101,70 +99,5 @@ function SolveResultView({ result, sense }: { result: SolveResult; sense: string
         </p>
       )}
     </div>
-  )
-}
-
-export function ResultsDialog({
-  open,
-  onOpenChange,
-  selection,
-}: {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  selection: Selection | null
-}) {
-  const [sense, setSense] = useState<'max' | 'min'>('max')
-  const [result, setResult] = useState<SolveResult | null>(null)
-  const [busy, setBusy] = useState(false)
-
-  useEffect(() => {
-    if (!open) setResult(null)
-  }, [open])
-
-  const solve = async () => {
-    if (!selection) return
-    setBusy(true)
-    setResult(
-      await bridge.solve_selection(
-        selection.r0,
-        selection.c0,
-        selection.r1,
-        selection.c1,
-        sense,
-      ),
-    )
-    setBusy(false)
-  }
-
-  return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="dialog-overlay" />
-        <Dialog.Content className="dialog-content wide">
-          <Dialog.Title className="dialog-title">Optimize</Dialog.Title>
-          <Dialog.Description className="dialog-desc">
-            Infer and solve a linear model from the selection {selection?.ref ?? '(none)'}.
-          </Dialog.Description>
-          <div className="field-row">
-            <span className="field-label">Sense</span>
-            <label className="radio">
-              <input type="radio" checked={sense === 'max'} onChange={() => setSense('max')} />
-              Maximize
-            </label>
-            <label className="radio">
-              <input type="radio" checked={sense === 'min'} onChange={() => setSense('min')} />
-              Minimize
-            </label>
-            <button className="btn-primary" onClick={() => void solve()} disabled={busy || !selection}>
-              Solve
-            </button>
-          </div>
-          {result && <SolveResultView result={result} sense={sense} />}
-          <div className="dialog-actions">
-            <Dialog.Close className="btn">Close</Dialog.Close>
-          </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
   )
 }

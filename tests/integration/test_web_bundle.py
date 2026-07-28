@@ -23,9 +23,7 @@ sync_api = pytest.importorskip("playwright.sync_api")
 
 pytestmark = pytest.mark.browser
 
-BUNDLE = (
-    Path(__file__).resolve().parents[2] / "src" / "gridcalc" / "web" / "static" / "index.html"
-)
+BUNDLE = Path(__file__).resolve().parents[2] / "src" / "gridcalc" / "web" / "static" / "index.html"
 
 # The pywebview window injects `window.pywebview.api`; here the test provides a
 # stateful mock (records calls, a seeded cell store, switches sheets) and fires
@@ -34,11 +32,14 @@ _MOCK_BRIDGE = """
   window.__calls = {
     open_dialog: 0, save: 0, set_active: [], set_cell: [], clear_range: [],
     copy: [], paste: [], paste_text: [], fill: [], solve: [], goal: [], chart: [],
-    set_format: [], set_global_format: []
+    set_format: [], set_global_format: [], save_model: []
   };
   const sheets = { active: 0, names: ['Sheet1', 'Data'] };
   const cells = new Map();
   const styles = new Map();
+  const models = new Map();
+  let dirty = false;
+  const touch = () => { dirty = true; return { ok: true, dirty: true }; };
   const k = (r, c) => r + ',' + c;
   [[0,0,'gridcalc demo'],[2,0,'Item'],[2,1,'Qty'],[2,2,'Price'],
    [3,0,'Widget'],[3,1,'10'],[3,2,'2.5'],
@@ -46,13 +47,13 @@ _MOCK_BRIDGE = """
    [5,0,'Gizmo'],[5,1,'7'],[5,2,'3.25']].forEach(([r,c,t]) => cells.set(k(r,c), t));
   const isNum = (s) => s !== '' && (!isNaN(Number(s)) || s.startsWith('='));
   window.pywebview = { api: {
-    dims: async () => ({ ncol: 256, nrow: 1024, filename: 'book.json' }),
+    dims: async () => ({ ncol: 256, nrow: 1024, filename: 'book.json', dirty }),
     sheets: async () => ({ ...sheets }),
     set_active: async (i) => {
       window.__calls.set_active.push(i); sheets.active = i; return { ...sheets };
     },
-    undo: async () => ({ ok: true }),
-    redo: async () => ({ ok: true }),
+    undo: async () => touch(),
+    redo: async () => touch(),
     save: async () => { window.__calls.save++; return { ok: true, path: 'book.json' }; },
     save_dialog: async () => ({ ok: true, path: 'book.json' }),
     open_dialog: async () => {
@@ -75,6 +76,25 @@ _MOCK_BRIDGE = """
       }
       return { r0, c0, rows, cols, cells: out };
     },
+    stats: async (r0, c0, r1, c1) => {
+      let count = 0; const nums = [];
+      for (let r = Math.min(r0, r1); r <= Math.max(r0, r1); r++) {
+        for (let c = Math.min(c0, c1); c <= Math.max(c0, c1); c++) {
+          const t = cells.get(k(r, c));
+          if (!t) continue;
+          count++;
+          const n = Number(t);
+          if (isFinite(n)) nums.push(n);
+        }
+      }
+      const sum = nums.length ? nums.reduce((a, b) => a + b, 0) : null;
+      return {
+        count, numeric: nums.length, sum,
+        avg: sum === null ? null : sum / nums.length,
+        min: nums.length ? Math.min(...nums) : null,
+        max: nums.length ? Math.max(...nums) : null,
+      };
+    },
     set_format: async (r0, c0, r1, c1, spec) => {
       window.__calls.set_format.push([r0, c0, r1, c1, spec]);
       const s = spec || '';
@@ -96,38 +116,40 @@ _MOCK_BRIDGE = """
           styles.set(k(r, c), cur);
         }
       }
-      return { ok: true };
+      return touch();
     },
     set_global_format: async (fmt) => {
-      window.__calls.set_global_format.push(fmt); return { ok: true };
+      window.__calls.set_global_format.push(fmt); return touch();
     },
     cell_source: async (r, c) => cells.get(k(r, c)) || '',
     set_cell: async (r, c, text) => {
       window.__calls.set_cell.push([r, c, text]);
       if (text) cells.set(k(r, c), text); else cells.delete(k(r, c));
-      return { ok: true };
+      return touch();
     },
     clear_range: async (r0, c0, r1, c1) => {
       window.__calls.clear_range.push([r0, c0, r1, c1]);
       for (let r = Math.min(r0, r1); r <= Math.max(r0, r1); r++) {
         for (let c = Math.min(c0, c1); c <= Math.max(c0, c1); c++) cells.delete(k(r, c));
       }
-      return { ok: true };
+      return touch();
     },
     copy: async (r0, c0, r1, c1, cut) => {
       window.__calls.copy.push([r0, c0, r1, c1, cut]);
       const t = cells.get(k(r0, c0)) || '';
       return { ok: true, tsv: t };
     },
-    paste: async (r, c) => { window.__calls.paste.push([r, c]); return { ok: true }; },
+    paste: async (r, c) => { window.__calls.paste.push([r, c]); return touch(); },
     paste_text: async (r, c, text) => {
-      window.__calls.paste_text.push([r, c, text]); return { ok: true };
+      window.__calls.paste_text.push([r, c, text]); return touch();
     },
     fill: async (r0, c0, r1, c1, dir) => {
-      window.__calls.fill.push([r0, c0, r1, c1, dir]); return { ok: true };
+      window.__calls.fill.push([r0, c0, r1, c1, dir]); return touch();
     },
     solve_selection: async (r0, c0, r1, c1, sense) => {
       window.__calls.solve.push([r0, c0, r1, c1, sense]);
+      models.set('default', { name: 'default', sense: 'max', objective: 'B2',
+                              vars: 'A2:A3', constraints: 'C2:C4' });
       return { ok: true, status: 'OPTIMAL', optimal: true, objective: 36,
         values: { A2: 2, A3: 6 }, applied: true, quadratic: false,
         sensitivity: {
@@ -137,13 +159,50 @@ _MOCK_BRIDGE = """
                           slack: 0, binding: true, rhs_from: 6, rhs_till: 18 }] } };
     },
     solve_model: async () => ({ ok: true, status: 'OPTIMAL', optimal: true, objective: 36,
-      values: {}, applied: false, quadratic: false }),
+      values: { A2: 2, A3: 6 }, applied: true, quadratic: false,
+      sensitivity: {
+        variables: [{ cell: 'A2', value: 2, reduced_cost: 0, obj_coef: 3,
+                      obj_from: 0, obj_till: 7.5 }],
+        constraints: [
+          { cell: 'C2', shadow_price: 0, rhs: 4, activity: 2, slack: 2,
+            binding: false, rhs_from: 2, rhs_till: null },
+          { cell: 'C3', shadow_price: 1.5, rhs: 12, activity: 12, slack: 0,
+            binding: true, rhs_from: 6, rhs_till: 18 }] } }),
+    list_models: async () => ({
+      models: [...models.values()].sort((a, b) => a.name.localeCompare(b.name)),
+    }),
+    save_model: async (name, spec) => {
+      const key = String(name || '').trim();
+      if (!key) return { ok: false, error: 'a model needs a name' };
+      if (!spec.objective || !spec.vars || !spec.constraints) {
+        return { ok: false, error: 'saved model missing required field' };
+      }
+      window.__calls.save_model.push(key);
+      models.set(key, { name: key, ...spec });
+      return { ...touch(), name: key };
+    },
+    delete_model: async (name) => {
+      if (!models.has(name)) return { ok: false, error: 'no such model: ' + name };
+      models.delete(name); return touch();
+    },
+    run_model: async (name) => {
+      if (!models.has(name)) return { ok: false, error: 'no such model: ' + name };
+      return { ok: true, status: 'OPTIMAL', optimal: true, objective: 36,
+        values: { A2: 2, A3: 6 }, applied: true, quadratic: false };
+    },
+    infer_model_spec: async (r0, c0, r1, c1, sense) => ({
+      ok: true, sense, objective: 'B2', vars: 'A2:A3', constraints: 'C2:C4' }),
     goal_seek: async (f, t, v) => {
       window.__calls.goal.push([f, t, v]);
       return { ok: true, converged: true, iterations: 12, var_value: t / 2,
         formula_value: t, residual: 0, applied: true };
     },
-    opt_sweep: async () => ({ ok: true, points: [] }),
+    opt_sweep: async () => ({ ok: true, points: [
+      { rhs: 0, status: 'OPTIMAL', objective: 24, shadow_price: 1.5, delta: null,
+        breakpoint: false },
+      { rhs: 12, status: 'OPTIMAL', objective: 30, shadow_price: 1.5, delta: 6, breakpoint: false },
+      { rhs: 24, status: 'OPTIMAL', objective: 36, shadow_price: 1, delta: 6, breakpoint: true },
+    ] }),
     chart_data: async (spec) => {
       window.__calls.chart.push(spec);
       if (spec.includes(':')) {
@@ -219,14 +278,14 @@ def test_grid_renders_seeded_cells(page) -> None:
 
 def test_clicking_a_cell_moves_the_cursor(page) -> None:
     page.get_by_text("Widget").click()  # A4
-    assert page.locator(".name-box").text_content() == "A4"
+    assert page.locator(".name-box").input_value() == "A4"
 
 
 def test_arrow_keys_navigate_the_grid(page) -> None:
     page.locator(".cell-layer").get_by_text("gridcalc demo").click()  # A1
     page.keyboard.press("ArrowDown")
     page.keyboard.press("ArrowRight")
-    assert page.locator(".name-box").text_content() == "B2"
+    assert page.locator(".name-box").input_value() == "B2"
 
 
 def test_double_click_edits_and_commits_through_set_cell(page) -> None:
@@ -326,7 +385,7 @@ def test_data_optimize_solves_the_selection(page) -> None:
     page.get_by_text("Widget").click()  # A4 selection
     page.get_by_role("menuitem", name="Data").click()
     page.get_by_role("menuitem", name=re.compile("Optimize")).click()
-    page.get_by_role("button", name="Solve").click()
+    page.get_by_role("button", name="Solve selection").click()
     result = page.get_by_test_id("solve-result")
     result.wait_for()
     txt = result.text_content()
@@ -408,3 +467,134 @@ def test_column_resize_widens_the_column(page) -> None:
     assert info["width"] > 120  # was the default 90px
     # a vertical gridline sits at the widened column's right edge (tracks resize)
     assert info["lineTracks"] is True
+
+
+# --- command layer, status bar (Phase 3) -----------------------------------
+
+
+def test_edit_menu_delete_reaches_the_grid(page) -> None:
+    """The Edit items were disabled placeholders until the grid exposed an
+    imperative handle; this proves the wiring survives the production build."""
+    page.get_by_text("Widget").click()  # A4 becomes the cursor cell
+    page.get_by_role("menuitem", name="Edit").click()
+    page.get_by_role("menuitem", name="Delete", exact=True).click()
+    page.wait_for_function("() => window.__calls.clear_range.length === 1")
+    assert page.evaluate("() => window.__calls.clear_range[0]") == [3, 0, 3, 0]
+
+
+def test_edit_menu_copy_and_paste_reach_the_grid(page) -> None:
+    page.get_by_text("Widget").click()  # A4
+    page.get_by_role("menuitem", name="Edit").click()
+    page.get_by_role("menuitem", name=re.compile("Copy")).click()
+    page.wait_for_function("() => window.__calls.copy.length === 1")
+    assert page.evaluate("() => window.__calls.copy[0]") == [3, 0, 3, 0, False]
+
+
+def test_status_bar_summarizes_the_selection(page) -> None:
+    page.locator(".cell-layer").get_by_text("10", exact=True).click()  # B4
+    page.keyboard.press("Shift+ArrowDown")
+    page.keyboard.press("Shift+ArrowDown")  # B4:B6 = 10, 4, 7
+    bar = page.locator(".statusbar")
+    bar.get_by_text("B4:B6").wait_for()
+    bar.get_by_text("sum 21").wait_for()
+    bar.get_by_text("count 3").wait_for()
+
+
+def test_an_edit_marks_the_workbook_modified(page) -> None:
+    assert page.locator(".statusbar").get_by_text("modified").count() == 0
+    page.get_by_text("Widget").click()
+    page.keyboard.press("Delete")
+    page.locator(".statusbar").get_by_text("modified").wait_for()
+
+
+def test_the_formula_bar_edits_the_active_cell(page) -> None:
+    page.get_by_text("Widget").click()  # A4
+    bar = page.locator(".formula-src")
+    assert bar.input_value() == "Widget"
+    bar.fill("Doohickey")
+    bar.press("Enter")
+    page.wait_for_function("() => window.__calls.set_cell.length === 1")
+    assert page.evaluate("() => window.__calls.set_cell[0]") == [3, 0, "Doohickey"]
+
+
+def test_the_name_box_jumps_to_a_typed_reference(page) -> None:
+    box = page.locator(".name-box")
+    box.fill("C7")
+    box.press("Enter")
+    assert box.input_value() == "C7"
+
+
+def test_data_sweep_opens_and_plots(page) -> None:
+    page.get_by_role("menuitem", name="Data").click()
+    page.get_by_role("menuitem", name=re.compile("Sweep")).click()
+    dialog = page.get_by_role("dialog")
+    dialog.get_by_placeholder("B2").fill("B2")
+    dialog.get_by_placeholder("A2:A3").fill("A2:A3")
+    dialog.get_by_placeholder("C3").fill("C3")
+    dialog.get_by_placeholder("0", exact=True).fill("0")
+    dialog.get_by_placeholder("24").fill("24")
+    dialog.get_by_role("button", name="Run").click()
+    page.wait_for_selector("[data-testid='sweep-table']")
+
+
+# --- optimization depth: models + grid annotations (Phase 4) ---------------
+
+
+def _open_optimize(page) -> None:
+    page.get_by_role("menuitem", name="Data").click()
+    page.get_by_role("menuitem", name=re.compile("Optimize")).click()
+
+
+def test_a_solve_paints_the_sensitivity_onto_the_grid(page) -> None:
+    """The tables say the same thing, but a shadow price sitting on the
+    constraint row is the part a terminal cannot render."""
+    page.get_by_text("Widget").click()
+    _open_optimize(page)
+    page.get_by_role("button", name="Solve selection").click()
+    page.get_by_test_id("solve-result").wait_for()
+    page.keyboard.press("Escape")
+
+    page.wait_for_selector(".annot.decision")
+    binding = page.locator(".annot.binding")
+    binding.wait_for()
+    assert "shadow price" in (binding.get_attribute("title") or "")
+
+
+def test_editing_clears_a_stale_solution_from_the_grid(page) -> None:
+    page.get_by_text("Widget").click()
+    _open_optimize(page)
+    page.get_by_role("button", name="Solve selection").click()
+    page.get_by_test_id("solve-result").wait_for()
+    page.keyboard.press("Escape")
+    page.wait_for_selector(".annot.decision")
+
+    page.get_by_text("Gadget").click()
+    page.keyboard.press("Delete")
+    page.wait_for_selector(".annot", state="detached")
+
+
+def test_a_model_can_be_saved_and_reloaded_from_the_workbook(page) -> None:
+    _open_optimize(page)
+    dialog = page.get_by_role("dialog")
+    dialog.get_by_label("Objective").fill("B2")
+    dialog.get_by_label("Decision variables").fill("A2:A3")
+    dialog.get_by_label("Constraints").fill("C2:C4")
+    dialog.get_by_label("Model name").fill("wyndor")
+    dialog.get_by_role("button", name="Save").click()
+    dialog.get_by_text("saved wyndor").wait_for()
+    assert page.evaluate("() => window.__calls.save_model") == ["wyndor"]
+
+    # It is now workbook state: reloading it refills the fields.
+    dialog.get_by_label("Objective").fill("")
+    dialog.get_by_label("Saved models").select_option("wyndor")
+    assert dialog.get_by_label("Objective").input_value() == "B2"
+
+
+def test_reading_a_model_from_the_selection_does_not_solve(page) -> None:
+    page.get_by_text("Widget").click()
+    _open_optimize(page)
+    dialog = page.get_by_role("dialog")
+    dialog.get_by_role("button", name="Read from selection").click()
+    dialog.get_by_text(re.compile("read from")).wait_for()
+    assert dialog.get_by_label("Objective").input_value() == "B2"
+    assert page.get_by_test_id("solve-result").count() == 0

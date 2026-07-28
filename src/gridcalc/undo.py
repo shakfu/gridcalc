@@ -16,13 +16,17 @@ UNDO_MAX = 64
 
 
 class UndoEntry:
-    __slots__ = ("cells", "cc", "cr", "is_grid")
+    __slots__ = ("cells", "cc", "cr", "is_grid", "fmt")
 
     def __init__(self) -> None:
         self.cells: list[tuple[int, int, Cell]] = []
         self.cc: int = 0
         self.cr: int = 0
         self.is_grid: bool = False
+        # The workbook's default number format at snapshot time, or None for an
+        # entry that predates the field / does not care about it. Grid-level
+        # state, so it cannot ride along in the per-cell snapshots.
+        self.fmt: str | None = None
 
 
 class UndoManager:
@@ -34,6 +38,7 @@ class UndoManager:
         e = UndoEntry()
         e.cc = g.cc
         e.cr = g.cr
+        e.fmt = g.fmt
         for r in range(r1, r2 + 1):
             for c in range(c1, c2 + 1):
                 cl = g.cell(c, r)
@@ -54,10 +59,28 @@ class UndoManager:
         if self.undo_stack:
             self.undo_stack.pop()
 
+    def save_global(self, g: Grid) -> None:
+        """Snapshot only workbook-level state (the default number format).
+
+        A `:gformat` / `set_global_format` change touches no cell, so there is
+        nothing for `save_region` to record -- but it is still a user-visible
+        edit that undo must reverse. The entry carries no cells; `_apply`
+        restores `g.fmt` from it.
+        """
+        e = UndoEntry()
+        e.cc = g.cc
+        e.cr = g.cr
+        e.fmt = g.fmt
+        self.undo_stack.append(e)
+        if len(self.undo_stack) > UNDO_MAX:
+            self.undo_stack.pop(0)
+        self.redo_stack.clear()
+
     def save_grid(self, g: Grid) -> None:
         e = UndoEntry()
         e.cc = g.cc
         e.cr = g.cr
+        e.fmt = g.fmt
         e.is_grid = True
         for (c, r), cl in g._cells.items():
             if cl.type != EMPTY:
@@ -77,6 +100,7 @@ class UndoManager:
         re = UndoEntry()
         re.cc = g.cc
         re.cr = g.cr
+        re.fmt = g.fmt
         re.is_grid = e.is_grid
         if e.is_grid:
             for (c, r), cl in g._cells.items():
@@ -100,6 +124,8 @@ class UndoManager:
                     cl.copy_from(snap)
             g.cc = e.cc
             g.cr = e.cr
+            if e.fmt is not None:
+                g.fmt = e.fmt
             g.recalc()
         except Exception:
             if re.is_grid:
@@ -113,6 +139,8 @@ class UndoManager:
                     cl.copy_from(snap)
             g.cc = re.cc
             g.cr = re.cr
+            if re.fmt is not None:
+                g.fmt = re.fmt
             g.recalc()
             raise
 

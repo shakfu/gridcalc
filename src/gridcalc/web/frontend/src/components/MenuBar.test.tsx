@@ -16,12 +16,25 @@ function makeActions(): WorkbookActions {
   }
 }
 
+function makeCommands() {
+  return {
+    cut: vi.fn(),
+    copy: vi.fn(),
+    paste: vi.fn(),
+    clear: vi.fn(),
+    fillDown: vi.fn(),
+    fillRight: vi.fn(),
+  }
+}
+
 function renderMenu(over: Partial<Parameters<typeof MenuBar>[0]> = {}) {
   const props = {
     actions: makeActions(),
+    commands: makeCommands(),
     onAbout: vi.fn(),
     onOptimize: vi.fn(),
     onGoal: vi.fn(),
+    onSweep: vi.fn(),
     onChart: vi.fn(),
     onFormat: vi.fn(),
     onDefaultFormat: vi.fn(),
@@ -87,10 +100,43 @@ test('Help > About invokes the about callback', async () => {
   expect(onAbout).toHaveBeenCalledOnce()
 })
 
-test('not-yet-available items are disabled', async () => {
+test.each([
+  ['Cut', 'cut'],
+  ['Copy', 'copy'],
+  ['Paste', 'paste'],
+  ['Delete', 'clear'],
+  ['Fill Down', 'fillDown'],
+  ['Fill Right', 'fillRight'],
+] as const)('Edit > %s runs the grid command', async (label, cmd) => {
+  const { commands } = renderMenu()
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Edit' }))
+  await user.click(await screen.findByRole('menuitem', { name: new RegExp(label) }))
+  expect(commands[cmd]).toHaveBeenCalledOnce()
+})
+
+test('Data > Sweep invokes the sweep callback', async () => {
+  const { onSweep } = renderMenu()
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Data' }))
+  await user.click(await screen.findByRole('menuitem', { name: /Sweep/ }))
+  expect(onSweep).toHaveBeenCalledOnce()
+})
+
+test('structural editing, which has no Api method yet, stays disabled', async () => {
+  renderMenu()
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Insert' }))
+  expect(await screen.findByRole('menuitem', { name: /Row/ })).toHaveAttribute('data-disabled')
+})
+
+test('Edit items are enabled -- the commands behind them all exist', async () => {
+  // A disabled item here would be the menu misrepresenting the app: every one
+  // of these has worked from the keyboard since the grid landed.
   renderMenu()
   const user = userEvent.setup()
   await user.click(screen.getByRole('menuitem', { name: 'Edit' }))
-  const cut = await screen.findByRole('menuitem', { name: /Cut/ })
-  expect(cut).toHaveAttribute('data-disabled')
+  for (const name of [/Cut/, /Copy/, /Paste/, /Fill Down/, /Fill Right/]) {
+    expect(await screen.findByRole('menuitem', { name })).not.toHaveAttribute('data-disabled')
+  }
 })

@@ -169,6 +169,32 @@ def _parse_bound_value(s: str, *, positive: bool) -> float:
     return float(s)
 
 
+def cells_to_spec(cells: list[tuple[int, int]]) -> str:
+    """Render a cell list as a comma-separated spec string -- the inverse of
+    :func:`parse_cells`.
+
+    Inferred models are stored as specs, exactly like typed ones, so they
+    round-trip through the workbook JSON and can be re-run after reopening. A
+    contiguous single-column or single-row run collapses to range syntax so the
+    saved model stays readable.
+    """
+    if not cells:
+        return ""
+    cols = {c for c, _ in cells}
+    rows = {r for _, r in cells}
+    if len(cols) == 1:
+        rs = sorted(rows)
+        if rs == list(range(rs[0], rs[-1] + 1)) and len(rs) > 1:
+            c = next(iter(cols))
+            return f"{_cellname(c, rs[0])}:{_cellname(c, rs[-1])}"
+    if len(rows) == 1:
+        cs = sorted(cols)
+        if cs == list(range(cs[0], cs[-1] + 1)) and len(cs) > 1:
+            r = next(iter(rows))
+            return f"{_cellname(cs[0], r)}:{_cellname(cs[-1], r)}"
+    return ",".join(_cellname(c, r) for c, r in cells)
+
+
 def parse_bounds(spec: str) -> dict[tuple[int, int], tuple[float, float]]:
     """Parse ``A1=lo:hi,B2=lo:hi`` into a bounds dict. Raises ``ValueError``."""
     out: dict[tuple[int, int], tuple[float, float]] = {}

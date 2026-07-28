@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from gridcalc.engine import NCOL, NROW, Grid, Mode
+from gridcalc.loader import load_workbook
 from gridcalc.web import Api
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
@@ -243,9 +244,10 @@ def test_undo_reverts_a_paste() -> None:
 
 
 def test_undo_with_empty_history_is_harmless() -> None:
+    """No raise, and -- since nothing changed -- no dirty flag either."""
     api = Api(_grid())
-    assert api.undo() == {"ok": True}  # no-op, no raise
-    assert api.redo() == {"ok": True}
+    assert api.undo() == {"ok": True, "dirty": False}
+    assert api.redo() == {"ok": True, "dirty": False}
 
 
 def test_fill_down_adjusts_references() -> None:
@@ -569,6 +571,113 @@ def test_goal_seek_bad_ref_returns_error() -> None:
     assert res["ok"] is False and "error" in res
 
 
+def test_saved_models_round_trip_through_the_workbook(tmp_path) -> None:
+    """Models are workbook state, not session state: a model defined in the web
+    view is the same object `:opt run` reads in the TUI, and survives save."""
+    g = _wyndor()
+    api = Api(g)
+    spec = {"sense": "max", "objective": "B2", "vars": "A2:A3", "constraints": "C2:C4"}
+    assert api.save_model("wyndor", spec)["ok"] is True
+
+    listed = api.list_models()["models"]
+    assert [m["name"] for m in listed] == ["wyndor"]
+    assert listed[0]["objective"] == "B2" and listed[0]["sense"] == "max"
+
+    path = tmp_path / "book.json"
+    api.save(str(path))
+    reopened = Api(load_workbook(str(path)))
+    assert [m["name"] for m in reopened.list_models()["models"]] == ["wyndor"]
+
+
+def test_run_model_solves_a_saved_model() -> None:
+    g = _wyndor()
+    api = Api(g)
+    api.save_model("wyndor", {"objective": "B2", "vars": "A2:A3", "constraints": "C2:C4"})
+    res = api.run_model("wyndor")
+    assert res["ok"] is True and res["status"] == "OPTIMAL"
+    assert res["objective"] == pytest.approx(36.0)
+    assert res["values"]["A2"] == pytest.approx(2.0)
+    assert res["values"]["A3"] == pytest.approx(6.0)
+
+
+def test_run_model_honours_the_apply_switch() -> None:
+    g = _wyndor()
+    api = Api(g)
+    api.save_model("wyndor", {"objective": "B2", "vars": "A2:A3", "constraints": "C2:C4"})
+    res = api.run_model("wyndor", {"apply": False})
+    assert res["ok"] is True and res["applied"] is False
+    assert g.cell(0, 1).val == pytest.approx(0.0)  # A2 untouched
+
+
+def test_run_missing_model_reports_rather_than_raises() -> None:
+    api = Api(_wyndor())
+    assert api.run_model("nope") == {"ok": False, "error": "no such model: nope"}
+
+
+def test_save_model_rejects_an_incomplete_spec() -> None:
+    api = Api(_wyndor())
+    res = api.save_model("bad", {"objective": "B2", "vars": "", "constraints": "C2:C4"})
+    assert res["ok"] is False and "vars" in res["error"]
+    assert api.list_models()["models"] == []
+
+
+def test_save_model_needs_a_name() -> None:
+    api = Api(_wyndor())
+    res = api.save_model("  ", {"objective": "B2", "vars": "A2:A3", "constraints": "C2:C4"})
+    assert res["ok"] is False
+
+
+def test_delete_model_removes_it() -> None:
+    api = Api(_wyndor())
+    api.save_model("wyndor", {"objective": "B2", "vars": "A2:A3", "constraints": "C2:C4"})
+    assert api.delete_model("wyndor")["ok"] is True
+    assert api.list_models()["models"] == []
+    assert api.delete_model("wyndor")["ok"] is False  # already gone
+
+
+def test_a_model_with_an_unresolvable_ref_lists_but_fails_on_run() -> None:
+    """Spec strings resolve at run time, not at save time. A model that names
+    something unparseable still lists -- the error arrives when it is used,
+    with a message -- rather than being rejected or corrupting the listing."""
+    api = Api(_wyndor())
+    api.save_model("broken", {"objective": "B2", "vars": "not-a-ref", "constraints": "C2:C4"})
+    assert [m["name"] for m in api.list_models()["models"]] == ["broken"]
+    res = api.run_model("broken")
+    assert res["ok"] is False and "bad model spec" in res["error"]
+
+
+def test_solve_selection_stores_the_inferred_model_as_default() -> None:
+    g = _wyndor()
+    api = Api(g)
+    assert api.solve_selection(0, 0, 3, 2, "max")["ok"] is True
+    models = {m["name"]: m for m in api.list_models()["models"]}
+    assert "default" in models
+    assert models["default"]["sense"] == "max"
+    assert models["default"]["objective"] == "B2"
+    # Re-runnable without a selection, which is the point of storing it.
+    assert api.run_model("default")["status"] == "OPTIMAL"
+
+
+def test_infer_model_spec_describes_a_selection_without_solving() -> None:
+    g = _wyndor()
+    api = Api(g)
+    res = api.infer_model_spec(0, 0, 3, 2, "min")
+    assert res["ok"] is True
+    assert res["sense"] == "min"
+    assert res["objective"] == "B2"
+    assert res["vars"] == "A2:A3"
+    # Nothing ran: no write, no undo entry, no stored model.
+    assert g.cell(0, 1).val == pytest.approx(0.0)
+    assert api._undo.undo_stack == []
+    assert api.list_models()["models"] == []
+
+
+def test_infer_model_spec_reports_an_unusable_selection() -> None:
+    api = Api(_grid())  # empty sheet: nothing to infer
+    res = api.infer_model_spec(0, 0, 3, 3)
+    assert res["ok"] is False and res["error"]
+
+
 def test_opt_sweep_returns_points_without_mutating() -> None:
     g = _wyndor()
     api = Api(g)
@@ -643,6 +752,104 @@ def test_set_global_format_changes_default_display() -> None:
     assert api.viewport(0, 0, 1, 1)["cells"][0]["text"] == "25.00%"
     api.set_global_format("bad")  # not a valid single char -> cleared
     assert g.fmt == ""
+
+
+def test_set_global_format_is_undoable() -> None:
+    """The global format touches no cell, so it needs a grid-level snapshot --
+    without one, undo would silently skip a user-visible change."""
+    g = _grid()
+    g.setcell(0, 0, "0.25")
+    g.recalc()
+    api = Api(g)
+    api.set_global_format("%")
+    assert g.fmt == "%"
+    api.undo()
+    assert g.fmt == ""
+    assert api.viewport(0, 0, 1, 1)["cells"][0]["text"] == "0.25"
+    api.redo()
+    assert g.fmt == "%"
+
+
+def test_stats_aggregates_the_numeric_cells_in_a_rectangle() -> None:
+    g = _grid()
+    g.setcell(0, 0, "label")  # counted, but not numeric
+    g.setcell(0, 1, "10")
+    g.setcell(0, 2, "4")
+    g.setcell(1, 1, "=1+5")  # a formula's value counts
+    g.recalc()
+    api = Api(g)
+    s = api.stats(0, 0, 2, 1)
+    assert s["count"] == 4
+    assert s["numeric"] == 3
+    assert s["sum"] == 20
+    assert s["avg"] == pytest.approx(20 / 3)
+    assert s["min"] == 4
+    assert s["max"] == 10
+
+
+def test_stats_over_an_empty_selection_has_no_aggregates() -> None:
+    api = Api(_grid())
+    s = api.stats(5, 5, 8, 8)
+    assert s["count"] == 0 and s["numeric"] == 0
+    assert s["sum"] is None and s["avg"] is None
+    assert s["min"] is None and s["max"] is None
+
+
+def test_stats_normalizes_reversed_corners_and_clamps() -> None:
+    g = _grid()
+    g.setcell(0, 0, "3")
+    g.recalc()
+    api = Api(g)
+    assert api.stats(2, 2, -5, -5)["sum"] == 3  # reversed and out of bounds
+
+
+def test_dirty_tracks_unsaved_changes(tmp_path) -> None:
+    """A freshly loaded workbook is clean; any mutation dirties it; saving
+    clears it again. The engine's own `dirty` flag is left in step."""
+    g = _grid()
+    g.setcell(0, 0, "1")
+    g.recalc()
+    api = Api(g)
+    assert api.dims()["dirty"] is False  # construction normalizes
+    assert g.dirty == 0
+
+    assert api.set_cell(0, 1, "2")["dirty"] is True
+    assert api.dims()["dirty"] is True
+    assert g.dirty == 1
+
+    path = tmp_path / "book.json"
+    api.save(str(path))
+    assert api.dims()["dirty"] is False
+    assert g.dirty == 0
+
+    api.set_format(0, 0, 0, 0, "b")  # formatting counts as a change
+    assert api.dims()["dirty"] is True
+
+
+def test_undo_marks_the_workbook_dirty() -> None:
+    """Undo moves the workbook away from what is on disk just as an edit
+    does, so it must not leave the title claiming the file is saved."""
+    g = _grid()
+    api = Api(g)
+    api.set_cell(0, 0, "1")
+    api._mark_clean()  # stand in for a save
+    assert api.dims()["dirty"] is False
+    api.undo()
+    assert api.dims()["dirty"] is True
+
+
+def test_open_file_clears_the_dirty_flag(tmp_path) -> None:
+    src = tmp_path / "src.json"
+    g0 = _grid()
+    g0.setcell(0, 0, "7")
+    g0.recalc()
+    g0.jsonsave(str(src))
+
+    api = Api(_grid())
+    api.set_cell(0, 0, "1")
+    assert api.dims()["dirty"] is True
+    assert api.open_file(str(src))["ok"] is True
+    assert api.dims()["dirty"] is False
 
 
 def test_set_format_is_undoable() -> None:

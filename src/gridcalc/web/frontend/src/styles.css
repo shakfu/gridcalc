@@ -189,11 +189,60 @@ button {
   font-size: 12px;
 }
 
-.tool-status {
-  min-width: 56px;
-  text-align: right;
-  color: var(--ok);
+/* --- Status bar ------------------------------------------------------ */
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: none;
+  height: 24px;
+  padding: 0 10px;
+  background: var(--chrome);
+  border-top: 1px solid var(--border-soft);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.status-ref {
+  min-width: 64px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.status-stat,
+.status-dim {
+  white-space: nowrap;
+}
+
+.status-dirty {
+  color: #c8a24a;
+}
+
+.status-msg.info {
+  color: var(--ok);
+}
+
+.status-msg.error {
+  color: var(--err);
+  font-weight: 600;
+}
+
+/* --- Crash screen (ErrorBoundary) ------------------------------------- */
+.crash {
+  padding: 24px;
+  overflow: auto;
+  height: 100%;
+}
+
+.crash pre {
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow: auto;
 }
 
 /* --- Select ---------------------------------------------------------- */
@@ -377,6 +426,11 @@ table.sens th.k {
   color: var(--accent);
 }
 
+/* A sweep row where the marginal value of the constraint changed. */
+table.sens tr.breakpoint td {
+  color: #c8a24a;
+}
+
 .sens-note {
   color: #c8a24a;
   margin: 4px 0;
@@ -418,23 +472,39 @@ table.sens th.k {
   border-bottom: 1px solid var(--border-soft);
 }
 
+/* Both halves of the formula bar are real inputs: the left one jumps to a
+   typed reference, the right one edits the active cell. They are styled flat
+   so the bar still reads as chrome rather than as a form. */
+.name-box,
+.formula-src {
+  height: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
 .name-box {
-  min-width: 64px;
+  width: 84px;
+  flex: none;
   padding: 0 8px;
   color: var(--accent);
   font-weight: 600;
   text-align: center;
-  font-variant-numeric: tabular-nums;
   border-right: 1px solid var(--border-soft);
 }
 
 .formula-src {
   flex: 1;
+  min-width: 0;
   padding: 0 10px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+
+.name-box:focus,
+.formula-src:focus {
+  background: rgba(76, 141, 255, 0.1);
 }
 
 .grid-scroll {
@@ -485,6 +555,77 @@ table.sens th.k {
 
 .cell.u {
   text-decoration: underline;
+}
+
+/* --- Solver annotations ---------------------------------------------- */
+/* Painted under the cell text so values stay readable; a left bar carries the
+   role so the tint can stay faint enough not to fight the grid. */
+.annot-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.annot {
+  position: absolute;
+  height: 22px;
+  border-left: 3px solid transparent;
+  pointer-events: auto; /* so the title tooltip is reachable */
+}
+
+.annot.objective {
+  background: rgba(76, 141, 255, 0.2);
+  border-left-color: var(--accent);
+}
+
+.annot.decision {
+  background: rgba(107, 191, 89, 0.16);
+  border-left-color: var(--ok);
+}
+
+.annot.binding {
+  background: rgba(224, 108, 108, 0.18);
+  border-left-color: var(--err);
+}
+
+.annot.slack {
+  background: rgba(200, 162, 74, 0.12);
+  border-left-color: #c8a24a;
+}
+
+/* The key that says what the tints mean; without it the colours are noise. */
+.annot-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 10px 0 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.annot-legend .swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 5px;
+  vertical-align: -1px;
+  border-radius: 2px;
+}
+
+.annot-legend .swatch.objective {
+  background: var(--accent);
+}
+
+.annot-legend .swatch.decision {
+  background: var(--ok);
+}
+
+.annot-legend .swatch.binding {
+  background: var(--err);
+}
+
+.annot-legend .swatch.slack {
+  background: #c8a24a;
 }
 
 .sel-rect {

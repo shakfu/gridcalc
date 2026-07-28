@@ -24,9 +24,14 @@ Design:
   the web view and the curses TUI format cells identically.
 
 The ``Api`` methods cover the workbook (dims/sheets/open/save/undo), the grid
-(viewport/cell_source/set_cell/clear_range/copy/paste/fill), and optimization
-(solve_selection/solve_model/goal_seek/opt_sweep/chart_data). The React client
-wires them to a menubar, a virtualized grid, and the feature dialogs.
+(viewport/cell_source/set_cell/clear_range/copy/paste/fill/stats), and
+optimization (solve_selection/solve_model/goal_seek/opt_sweep/chart_data). The
+React client wires them to a menubar, a virtualized grid, and the feature
+dialogs.
+
+Every mutating method routes its result through :meth:`Api._touch`, so the
+workbook's unsaved-changes state is tracked in one place: it marks the window
+title with a ``*`` and rides back to the client on the call that caused it.
 """
 
 from __future__ import annotations
@@ -52,7 +57,7 @@ from ..engine import (
     ref,
 )
 from ..loader import demo_grid, load_workbook
-from ..opt import parse_bounds, parse_cells
+from ..opt import OptError, OptModel, cells_to_spec, parse_bounds, parse_cells
 from ..undo import UndoManager
 
 
@@ -69,10 +74,17 @@ class Api:
         self._clip: dict[str, Any] | None = None  # internal copy/cut buffer
         self._undo = UndoManager()
         self._window: Any = None  # set by run() for the native save dialog
+        self._dirty = False
+        g.dirty = 0  # a freshly loaded (or demo) workbook is not user-modified
 
     def dims(self) -> dict[str, Any]:
-        """Sheet extent and the loaded filename (for the title)."""
-        return {"ncol": NCOL, "nrow": NROW, "filename": getattr(self._g, "filename", "") or ""}
+        """Sheet extent, the loaded filename, and the unsaved-changes flag."""
+        return {
+            "ncol": NCOL,
+            "nrow": NROW,
+            "filename": getattr(self._g, "filename", "") or "",
+            "dirty": self._dirty,
+        }
 
     def sheets(self) -> dict[str, Any]:
         """The sheet tab list and which one is active."""
@@ -136,17 +148,25 @@ class Api:
         self._undo.save_cell(g, int(c), int(r))
         g.setcell(int(c), int(r), text if text is not None else "")
         g.recalc()
-        return {"ok": True}
+        return self._touch()
 
     def undo(self) -> dict[str, Any]:
-        """Undo the last mutation (recomputes derived cells)."""
+        """Undo the last mutation (recomputes derived cells).
+
+        An empty history is a no-op that must not dirty the workbook -- the
+        stack is checked first, since `UndoManager.undo` reports nothing back.
+        """
+        if not self._undo.undo_stack:
+            return {"ok": True, "dirty": self._dirty}
         self._undo.undo(self._g)
-        return {"ok": True}
+        return self._touch()
 
     def redo(self) -> dict[str, Any]:
-        """Redo the last undone mutation."""
+        """Redo the last undone mutation; an empty history is a no-op."""
+        if not self._undo.redo_stack:
+            return {"ok": True, "dirty": self._dirty}
         self._undo.redo(self._g)
-        return {"ok": True}
+        return self._touch()
 
     def clear_range(self, r0: int, c0: int, r1: int, c1: int) -> dict[str, Any]:
         """Blank every cell in a rectangle, then recalc once (Delete on a
@@ -159,7 +179,7 @@ class Api:
             for c in range(max(0, ca), min(NCOL, cb + 1)):
                 g.setcell(c, r, "")
         g.recalc()
-        return {"ok": True}
+        return self._touch()
 
     def set_format(self, r0: int, c0: int, r1: int, c1: int, spec: str) -> dict[str, Any]:
         """Apply a format ``spec`` to every non-empty cell in a rectangle.
@@ -197,7 +217,7 @@ class Api:
                 elif s:
                     cl.fmtstr = s[:31]
                     cl.fmt = ""
-        return {"ok": True}
+        return self._touch()
 
     def set_global_format(self, fmt: str) -> dict[str, Any]:
         """Set the workbook's default number format (the TUI's ``:gformat``).
@@ -205,11 +225,48 @@ class Api:
         A single char in ``LRIGD$%*`` becomes the default; anything else clears
         it. Cells with no explicit format render with this default -- ``viewport``
         already passes ``g.fmt`` to ``cell_text`` as the global format, so the
-        change shows on the next fetch.
+        change shows on the next fetch. The change touches no cell, so it is
+        snapshotted with ``save_global`` (grid-level state) rather than
+        ``save_region``; without that, undo would silently skip it.
         """
         f = (fmt or "").upper()
+        self._undo.save_global(self._g)
         self._g.fmt = f if len(f) == 1 and f in "LRIGD$%*" else ""
-        return {"ok": True, "global_format": self._g.fmt}
+        return {**self._touch(), "global_format": self._g.fmt}
+
+    def stats(self, r0: int, c0: int, r1: int, c1: int) -> dict[str, Any]:
+        """Aggregate the numeric cells in a rectangle, for the status bar.
+
+        ``count`` is every non-empty cell (labels included), ``numeric`` only
+        those carrying a finite number; the aggregates are over the numeric
+        ones and come back ``None`` when there are none. This is the
+        selection-summary a spreadsheet shows in its status bar, computed
+        engine-side so the client never has to re-derive values it only ever
+        received as formatted text.
+        """
+        g = self._g
+        ra, rb = sorted((int(r0), int(r1)))
+        ca, cb = sorted((int(c0), int(c1)))
+        count = 0
+        nums: list[float] = []
+        for r in range(max(0, ra), min(NROW, rb + 1)):
+            for c in range(max(0, ca), min(NCOL, cb + 1)):
+                cl = g.cell(c, r)
+                if cl is None or cl.type == EMPTY:
+                    continue
+                count += 1
+                v = self._num_at(c, r)
+                if v is not None:
+                    nums.append(v)
+        total = math.fsum(nums) if nums else None
+        return {
+            "count": count,
+            "numeric": len(nums),
+            "sum": total,
+            "avg": (total / len(nums)) if nums and total is not None else None,
+            "min": min(nums) if nums else None,
+            "max": max(nums) if nums else None,
+        }
 
     def copy(self, r0: int, c0: int, r1: int, c1: int, cut: bool = False) -> dict[str, Any]:
         """Snapshot a rectangle into the internal buffer and return its values
@@ -263,7 +320,7 @@ class Api:
                     g.setcell(sc, sr, "")
             self._clip = None
         g.recalc()
-        return {"ok": True}
+        return self._touch()
 
     def paste_text(self, r: int, c: int, text: str) -> dict[str, Any]:
         """Paste external clipboard text (a TSV block) with top-left at ``(r, c)``.
@@ -294,7 +351,7 @@ class Api:
                 if 0 <= tc < NCOL and 0 <= tr < NROW:
                     g.setcell(tc, tr, val)
         g.recalc()
-        return {"ok": True, "rows": len(rows), "cols": ncols}
+        return {**self._touch(), "rows": len(rows), "cols": ncols}
 
     def fill(self, r0: int, c0: int, r1: int, c1: int, direction: str) -> dict[str, Any]:
         """Fill a selection from its leading edge (Ctrl+D down / Ctrl+R right).
@@ -325,7 +382,7 @@ class Api:
         else:
             return {"ok": False}
         g.recalc()
-        return {"ok": True}
+        return self._touch()
 
     def save(self, path: str | None = None) -> dict[str, Any]:
         """Write the workbook to ``path`` or its current filename.
@@ -349,6 +406,7 @@ class Api:
         if rc < 0:
             return {"ok": False, "error": f"could not save: {target}"}
         g.filename = target
+        self._mark_clean()
         return {"ok": True, "path": target}
 
     def save_dialog(self) -> dict[str, Any]:
@@ -383,7 +441,7 @@ class Api:
         self._g = g
         self._undo = UndoManager()
         self._clip = None
-        self._retitle()
+        self._mark_clean()
         return {"ok": True, "filename": getattr(g, "filename", "") or ""}
 
     def open_dialog(self) -> dict[str, Any]:
@@ -404,13 +462,34 @@ class Api:
         return self.open_file(path)
 
     def _retitle(self) -> None:
-        """Best-effort window-title refresh after the workbook changes."""
+        """Best-effort window-title refresh; a trailing ``*`` means unsaved."""
         win = self._window
         if win is None:
             return
         name = getattr(self._g, "filename", "") or "(demo)"
+        mark = " *" if self._dirty else ""
         with contextlib.suppress(Exception):
-            win.set_title(f"gridcalc - {name}")
+            win.set_title(f"gridcalc - {name}{mark}")
+
+    def _touch(self) -> dict[str, Any]:
+        """Record that the workbook now differs from what is on disk.
+
+        Retitles only on the clean->dirty transition: every cell edit calls
+        this, and a native ``set_title`` per keystroke would be a bridge round
+        trip for nothing. Returned by the mutating methods so the client learns
+        the dirty state from the call it already made.
+        """
+        self._g.dirty = 1
+        if not self._dirty:
+            self._dirty = True
+            self._retitle()
+        return {"ok": True, "dirty": True}
+
+    def _mark_clean(self) -> None:
+        """The workbook now matches disk (saved, or freshly opened)."""
+        self._g.dirty = 0
+        self._dirty = False
+        self._retitle()
 
     def chart_data(self, spec: str) -> dict[str, Any]:
         """Chart-ready data for an A1 range like ``A4:D6``.
@@ -464,6 +543,15 @@ class Api:
             m = opt.infer_model(g, ca, ra, cb, rb)
         except opt.OptError as exc:
             return {"ok": False, "error": str(exc)}
+        # Store what was inferred as `default`, matching `:opt max` in the TUI:
+        # the block only has to be selected once, and the model is then a
+        # workbook object the user can re-run, edit, or rename.
+        g.models["default"] = OptModel(
+            sense="min" if sense == "min" else "max",
+            objective=self._a1(m.objective),
+            vars=cells_to_spec(m.decision_vars),
+            constraints=cells_to_spec(m.constraint_cells),
+        )
         return self._run_solve(
             objective=m.objective,
             decision_vars=m.decision_vars,
@@ -502,6 +590,94 @@ class Api:
             apply=bool(spec.get("apply", True)),
         )
 
+    # -- persisted models (the `:opt def/run/list/undef` surface) ----------
+
+    def list_models(self) -> dict[str, Any]:
+        """Every model definition saved in the workbook.
+
+        Models are workbook state (`grid.models`, persisted under ``models`` in
+        the JSON), so they outlive a session and are shared with the TUI's
+        ``:opt run <name>``. Each is returned as the spec strings the user
+        typed -- cell refs are resolved at solve time, not here, so a model
+        naming a cell that has since been deleted still lists (and reports its
+        error when run) rather than breaking the whole listing.
+        """
+        return {
+            "models": [
+                {"name": name, **model.to_json()} for name, model in sorted(self._g.models.items())
+            ]
+        }
+
+    def save_model(self, name: str, spec: dict[str, Any]) -> dict[str, Any]:
+        """Create or replace a named model. Validates before storing."""
+        key = (name or "").strip()
+        if not key:
+            return {"ok": False, "error": "a model needs a name"}
+        try:
+            model = OptModel.from_json(
+                {
+                    "sense": "min" if spec.get("sense") == "min" else "max",
+                    "objective": str(spec.get("objective", "")),
+                    "vars": str(spec.get("vars", "")),
+                    "constraints": str(spec.get("constraints", "")),
+                    "bounds": str(spec.get("bounds", "") or ""),
+                    "integers": str(spec.get("integers", "") or ""),
+                    "binaries": str(spec.get("binaries", "") or ""),
+                }
+            )
+        except OptError as exc:
+            return {"ok": False, "error": str(exc)}
+        self._g.models[key] = model
+        return {**self._touch(), "name": key}
+
+    def delete_model(self, name: str) -> dict[str, Any]:
+        """Remove a named model (the TUI's ``:opt undef``)."""
+        if name not in self._g.models:
+            return {"ok": False, "error": f"no such model: {name}"}
+        del self._g.models[name]
+        return self._touch()
+
+    def run_model(self, name: str, spec: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Solve a saved model by name (the TUI's ``:opt run <name>``).
+
+        ``spec`` may carry the run-time switches ``sensitivity`` / ``diagnose``
+        / ``apply``; the model itself supplies the cells. Its spec strings are
+        resolved here rather than at save time, so a model saved against a
+        sheet that later changed reports a useful error instead of having been
+        rejected when it was still valid.
+        """
+        model = self._g.models.get(name)
+        if model is None:
+            return {"ok": False, "error": f"no such model: {name}"}
+        run = dict(model.to_json())
+        for switch in ("sensitivity", "diagnose", "apply"):
+            if spec and switch in spec:
+                run[switch] = spec[switch]
+        return self.solve_model(run)
+
+    def infer_model_spec(
+        self, r0: int, c0: int, r1: int, c1: int, sense: str = "max"
+    ) -> dict[str, Any]:
+        """What ``solve_selection`` would build from this selection, unsolved.
+
+        Lets the client prefill a model editor from a block on the sheet
+        without committing to running it -- the user can see and correct the
+        inference before anything is written to the grid.
+        """
+        ra, rb = sorted((int(r0), int(r1)))
+        ca, cb = sorted((int(c0), int(c1)))
+        try:
+            m = opt.infer_model(self._g, ca, ra, cb, rb)
+        except opt.OptError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {
+            "ok": True,
+            "sense": "min" if sense == "min" else "max",
+            "objective": self._a1(m.objective),
+            "vars": cells_to_spec(m.decision_vars),
+            "constraints": cells_to_spec(m.constraint_cells),
+        }
+
     def goal_seek(
         self,
         formula_ref: str,
@@ -535,6 +711,8 @@ class Api:
             return {"ok": False, "error": str(exc)}
         if apply and not res.applied:
             self._undo.discard_last()
+        elif res.applied:
+            self._touch()
         return {
             "ok": True,
             "converged": res.converged,
@@ -644,6 +822,8 @@ class Api:
             return {"ok": False, "error": str(exc)}
         if apply and not res.applied:
             self._undo.discard_last()
+        elif res.applied:
+            self._touch()
         return {"ok": True, **self._solve_json(res)}
 
     def _solve_json(self, res: opt.SolveResult) -> dict[str, Any]:
@@ -795,4 +975,3 @@ def run_cli() -> None:
         print("Usage: gridcalc-web [workbook.json | workbook.xlsx]")
         return
     run(args[0] if args else None)
-

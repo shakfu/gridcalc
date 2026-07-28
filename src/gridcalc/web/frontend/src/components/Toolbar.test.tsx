@@ -5,11 +5,18 @@ import type { Workbook } from '../hooks/useWorkbook'
 
 function makeWb(overrides: Partial<Workbook> = {}): Workbook {
   return {
-    dims: { ncol: 256, nrow: 1024, filename: 'book.json' },
+    dims: { ncol: 256, nrow: 1024, filename: 'book.json', dirty: false },
     sheets: { active: 0, names: ['Sheet1', 'Data'] },
     status: '',
+    statusKind: 'info',
     ready: true,
+    dirty: false,
     revision: 0,
+    mutations: 0,
+    notify: vi.fn(),
+    fail: vi.fn(),
+    markDirty: vi.fn(),
+    touched: vi.fn(),
     actions: {
       open: vi.fn(async () => {}),
       save: vi.fn(async () => {}),
@@ -41,6 +48,11 @@ test('the Bold button emits a bold format spec', async () => {
 test('shows the loaded filename', () => {
   render(<Toolbar wb={makeWb()} onFormat={() => {}} />)
   expect(screen.getByText('book.json')).toBeInTheDocument()
+})
+
+test('marks the filename when there are unsaved changes', () => {
+  render(<Toolbar wb={makeWb({ dirty: true })} onFormat={() => {}} />)
+  expect(screen.getByText(/book\.json \*/)).toBeInTheDocument()
 })
 
 test('a single-sheet workbook shows a static label, not a dropdown', () => {

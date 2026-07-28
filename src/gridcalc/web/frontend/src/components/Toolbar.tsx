@@ -90,8 +90,11 @@ export function Toolbar({ wb, onFormat }: { wb: Workbook; onFormat: (spec: strin
       <SheetSelect wb={wb} />
 
       <span className="tool-spacer" />
-      <span className="tool-file">{wb.dims?.filename || '(demo)'}</span>
-      <span className="tool-status">{wb.status}</span>
+      {/* The unsaved marker matches the window title's trailing `*`. */}
+      <span className="tool-file">
+        {wb.dims?.filename || '(demo)'}
+        {wb.dirty ? ' *' : ''}
+      </span>
     </div>
   )
 }

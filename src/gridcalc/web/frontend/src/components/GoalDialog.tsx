@@ -10,10 +10,13 @@ export function GoalDialog({
   open,
   onOpenChange,
   activeRef,
+  onMutated,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   activeRef?: string
+  // An applied seek overwrote the variable cell; the grid must refetch.
+  onMutated?: () => void
 }) {
   const [cell, setCell] = useState('')
   const [target, setTarget] = useState('')
@@ -45,6 +48,7 @@ export function GoalDialog({
       setResult(res.error ?? 'failed')
       return
     }
+    if (res.applied) onMutated?.()
     setResult(
       res.converged
         ? `${varc} = ${fnum(res.var_value)}   (${cell} = ${fnum(res.formula_value)})`

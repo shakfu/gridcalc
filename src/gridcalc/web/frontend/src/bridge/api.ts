@@ -73,6 +73,7 @@ export const bridge: PywebviewApi = {
   open_dialog: () => api().open_dialog(),
   open_file: (path) => api().open_file(path),
   viewport: (r0, c0, rows, cols) => api().viewport(r0, c0, rows, cols),
+  stats: (r0, c0, r1, c1) => api().stats(r0, c0, r1, c1),
   cell_source: (r, c) => api().cell_source(r, c),
   set_cell: (r, c, text) => api().set_cell(r, c, text),
   clear_range: (r0, c0, r1, c1) => api().clear_range(r0, c0, r1, c1),
@@ -87,5 +88,10 @@ export const bridge: PywebviewApi = {
   goal_seek: (formula_ref, target, var_ref, lo, hi) =>
     api().goal_seek(formula_ref, target, var_ref, lo, hi),
   opt_sweep: (spec) => api().opt_sweep(spec),
+  list_models: () => api().list_models(),
+  save_model: (name, spec) => api().save_model(name, spec),
+  delete_model: (name) => api().delete_model(name),
+  run_model: (name, spec) => api().run_model(name, spec),
+  infer_model_spec: (r0, c0, r1, c1, sense) => api().infer_model_spec(r0, c0, r1, c1, sense),
   chart_data: (spec) => api().chart_data(spec),
 }

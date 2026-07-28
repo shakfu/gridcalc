@@ -14,16 +14,38 @@ export interface WorkbookActions {
   setDefaultFormat(fmt: string): Promise<void>
 }
 
+export type StatusKind = 'info' | 'error'
+
 export interface Workbook {
   dims: Dims | null
   sheets: Sheets | null
   status: string
+  statusKind: StatusKind
   ready: boolean
+  // True when the workbook has edits not yet written to disk.
+  dirty: boolean
   // Bumped whenever an out-of-grid action mutates cells (undo/redo), so the
   // grid knows to refetch its viewport without a full remount.
   revision: number
+  // Bumped on every mutation from any source, including the grid's own edits
+  // (which refetch themselves and so must not bump `revision`). Derived views
+  // like the status-bar aggregates watch this.
+  mutations: number
   actions: WorkbookActions
+  // The app-wide user-visible channel. Anything that fails -- a bridge
+  // rejection, a failed save -- reports here rather than dying silently.
+  notify(msg: string): void
+  fail(msg: string): void
+  markDirty(): void
+  // Something outside the grid wrote to the sheet -- an applied solve or goal
+  // seek. Unlike `markDirty` (the grid refetches itself after its own edits),
+  // this also bumps `revision` so the grid picks up cells it did not write.
+  touched(): void
 }
+
+// An error stays up long enough to read; a routine confirmation does not.
+const INFO_MS = 1800
+const ERROR_MS = 6000
 
 // Owns the workbook-level bridge state (dimensions, sheets, a transient status
 // line) and the actions the menubar/toolbar invoke. Actions that change the
@@ -33,83 +55,141 @@ export function useWorkbook(): Workbook {
   const [dims, setDims] = useState<Dims | null>(null)
   const [sheets, setSheets] = useState<Sheets | null>(null)
   const [status, setStatus] = useState('')
+  const [statusKind, setStatusKind] = useState<StatusKind>('info')
+  const [dirty, setDirty] = useState(false)
   const [revision, setRevision] = useState(0)
+  const [mutations, setMutations] = useState(0)
 
   const refresh = useCallback(async () => {
     const [d, s] = await Promise.all([bridge.dims(), bridge.sheets()])
     setDims(d)
     setSheets(s)
+    setDirty(d.dirty) // the engine is the authority whenever we ask it
   }, [])
 
-  const flash = useCallback((msg: string) => {
+  const show = useCallback((msg: string, kind: StatusKind) => {
     setStatus(msg)
+    setStatusKind(kind)
     if (msg) {
-      window.setTimeout(() => setStatus((cur) => (cur === msg ? '' : cur)), 1800)
+      const ms = kind === 'error' ? ERROR_MS : INFO_MS
+      window.setTimeout(() => setStatus((cur) => (cur === msg ? '' : cur)), ms)
     }
+  }, [])
+
+  const flash = useCallback((msg: string) => show(msg, 'info'), [show])
+  const fail = useCallback((msg: string) => show(msg, 'error'), [show])
+  const markDirty = useCallback(() => {
+    setDirty(true)
+    setMutations((n) => n + 1)
+  }, [])
+
+  const touched = useCallback(() => {
+    setDirty(true)
+    setMutations((n) => n + 1)
+    setRevision((n) => n + 1)
   }, [])
 
   useEffect(() => {
     let alive = true
     whenReady()
       .then(refresh)
-      .catch((e: unknown) => alive && setStatus(String(e)))
+      .catch((e: unknown) => alive && show(String(e), 'error'))
     return () => {
       alive = false
     }
-  }, [refresh])
+  }, [refresh, show])
+
+  // Same contract as the grid's guard: a rejected bridge call becomes a
+  // user-visible error instead of an unhandled rejection.
+  const guard = useCallback(
+    async <T,>(what: string, fn: () => Promise<T>): Promise<T | null> => {
+      try {
+        return await fn()
+      } catch (e) {
+        fail(`${what}: ${e instanceof Error ? e.message : String(e)}`)
+        return null
+      }
+    },
+    [fail],
+  )
 
   const actions = useMemo<WorkbookActions>(
     () => ({
       open: async () => {
-        const r = await bridge.open_dialog()
+        const r = await guard('open', () => bridge.open_dialog())
+        if (!r || r.cancelled) return
         if (r.ok) {
           await refresh()
+          setRevision((n) => n + 1)
           flash('opened')
-        } else if (r.error) {
-          flash('open failed')
+        } else {
+          fail(r.error ?? 'could not open that workbook')
         }
       },
       save: async () => {
-        let r = await bridge.save()
-        if (!r.ok && r.needs_path) r = await bridge.save_dialog()
+        let r = await guard('save', () => bridge.save())
+        if (r && !r.ok && r.needs_path) r = await guard('save', () => bridge.save_dialog())
+        if (!r || r.cancelled) return
         if (r.ok) {
           await refresh()
           flash('saved')
-        } else if (!r.cancelled) {
-          flash('save failed')
+        } else {
+          fail(r.error ?? 'could not save')
         }
       },
       saveAs: async () => {
-        const r = await bridge.save_dialog()
+        const r = await guard('save', () => bridge.save_dialog())
+        if (!r || r.cancelled) return
         if (r.ok) {
           await refresh()
           flash('saved')
+        } else {
+          fail(r.error ?? 'could not save')
         }
       },
       undo: async () => {
-        await bridge.undo()
+        await guard('undo', () => bridge.undo())
         await refresh()
         setRevision((n) => n + 1)
       },
       redo: async () => {
-        await bridge.redo()
+        await guard('redo', () => bridge.redo())
         await refresh()
         setRevision((n) => n + 1)
       },
       setSheet: async (idx: number) => {
-        setSheets(await bridge.set_active(idx))
+        const s = await guard('sheet', () => bridge.set_active(idx))
+        if (s) setSheets(s)
       },
       format: async (rect: Rect, spec: string) => {
-        await bridge.set_format(rect.r0, rect.c0, rect.r1, rect.c1, spec)
+        await guard('format', () => bridge.set_format(rect.r0, rect.c0, rect.r1, rect.c1, spec))
+        setDirty(true)
+        setMutations((n) => n + 1)
         setRevision((n) => n + 1) // re-fetch the viewport with the new formatting
       },
       setDefaultFormat: async (fmt: string) => {
-        await bridge.set_global_format(fmt)
+        await guard('format', () => bridge.set_global_format(fmt))
+        setDirty(true)
+        setMutations((n) => n + 1)
         setRevision((n) => n + 1)
       },
     }),
-    [refresh, flash],
+    [refresh, flash, fail, guard],
   )
 
-  return { dims, sheets, status, ready: Boolean(dims && sheets), revision, actions }
+  return {
+    dims,
+    sheets,
+    status,
+    statusKind,
+    ready: Boolean(dims && sheets),
+    dirty,
+    revision,
+    mutations,
+    actions,
+    notify: flash,
+    fail,
+    markDirty,
+    touched,
+  }
 }

@@ -1,11 +1,13 @@
 import {
   useCallback,
   useEffect,
+  useImperativeHandle,
   useMemo,
   useRef,
   useState,
   type KeyboardEvent,
   type MouseEvent,
+  type Ref,
 } from 'react'
 import { bridge } from '../bridge/api'
 import type { Viewport } from '../bridge/types'
@@ -17,11 +19,30 @@ import {
   cellRef,
   clamp,
   colName,
+  parseRef,
   rangeRef,
   selRect,
+  type CellAnnotation,
   type Cursor,
   type Selection,
 } from '../lib/grid'
+
+// The grid's imperative command set, handed up to the app so the menubar,
+// toolbar, and keyboard all drive one implementation. Cursor and selection
+// stay owned by the grid (they change on every mouse move, and lifting them
+// would re-render the whole shell); commands are how everything else acts on
+// them.
+export interface GridHandle {
+  copy(): void
+  cut(): void
+  paste(): void
+  clear(): void
+  fillDown(): void
+  fillRight(): void
+  edit(): void
+  goto(ref: string): boolean
+  focus(): void
+}
 
 interface GridProps {
   ncol: number
@@ -30,6 +51,13 @@ interface GridProps {
   // the grid refetches its viewport without losing scroll/cursor.
   revision: number
   onSelectionChange?: (sel: Selection) => void
+  // Solver output painted onto the sheet, keyed by A1 reference.
+  annotations?: Record<string, CellAnnotation>
+  // A bridge call failed; the app owns the user-visible channel for saying so.
+  onError?: (msg: string) => void
+  // A mutation succeeded, so the workbook now has unsaved changes.
+  onMutate?: () => void
+  ref?: Ref<GridHandle>
 }
 
 const MIN_COL_W = 28
@@ -37,9 +65,19 @@ const MIN_COL_W = 28
 // The virtualized spreadsheet grid. Only cells inside the scrolled viewport
 // enter the DOM (fetched from the engine on scroll). Column widths are
 // variable (drag a header's right edge to resize); row height is uniform.
-export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
+export function Grid({
+  ncol,
+  nrow,
+  revision,
+  onSelectionChange,
+  annotations,
+  onError,
+  onMutate,
+  ref,
+}: GridProps) {
   const scrollEl = useRef<HTMLDivElement>(null)
   const editorEl = useRef<HTMLInputElement>(null)
+  const barEl = useRef<HTMLInputElement>(null)
   const scrollPos = useRef({ top: 0, left: 0 })
 
   const [scroll, setScroll] = useState({ top: 0, left: 0 })
@@ -47,8 +85,12 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
   const [cur, setCur] = useState<Cursor>({ r: 0, c: 0 })
   const [anchor, setAnchor] = useState<Cursor>({ r: 0, c: 0 })
   const [editing, setEditing] = useState<Cursor | null>(null)
+  // An edit started from the formula bar keeps its caret there; the in-cell
+  // editor would otherwise autofocus and steal it mid-keystroke.
+  const [editInBar, setEditInBar] = useState(false)
   const [editValue, setEditValue] = useState('')
   const [source, setSource] = useState('')
+  const [nameDraft, setNameDraft] = useState<string | null>(null)
   const [colWidths, setColWidths] = useState<Map<number, number>>(new Map())
 
   // Refs mirroring state so window-level and async handlers read current values.
@@ -56,10 +98,50 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
   curRef.current = cur
   const anchorRef = useRef(anchor)
   anchorRef.current = anchor
+
+  // Cursor/anchor moves write through to the refs immediately rather than
+  // waiting for the re-render. Otherwise two commands issued in one tick
+  // (`goto('A4')` then `copy()`) would have the second act on the old cursor.
+  const putCur = useCallback((p: Cursor) => {
+    curRef.current = p
+    setCur(p)
+  }, [])
+  const putAnchor = useCallback((p: Cursor) => {
+    anchorRef.current = p
+    setAnchor(p)
+  }, [])
   const editValueRef = useRef(editValue)
   editValueRef.current = editValue
   const colWidthsRef = useRef(colWidths)
   colWidthsRef.current = colWidths
+  const editInBarRef = useRef(editInBar)
+  editInBarRef.current = editInBar
+  const onErrorRef = useRef(onError)
+  onErrorRef.current = onError
+  const onMutateRef = useRef(onMutate)
+  onMutateRef.current = onMutate
+
+  // A bridge call is a marshalled Python call and can reject. Unguarded, the
+  // rejection is swallowed and the user is left looking at a silently stale
+  // grid -- so every call routes failures to the app's status channel.
+  const guard = useCallback(async <T,>(what: string, fn: () => Promise<T>): Promise<T | null> => {
+    try {
+      return await fn()
+    } catch (e) {
+      onErrorRef.current?.(`${what}: ${e instanceof Error ? e.message : String(e)}`)
+      return null
+    }
+  }, [])
+
+  // Run a mutating bridge call, then tell the app the workbook changed.
+  const mutate = useCallback(
+    async <T,>(what: string, fn: () => Promise<T>): Promise<T | null> => {
+      const res = await guard(what, fn)
+      if (res !== null) onMutateRef.current?.()
+      return res
+    },
+    [guard],
+  )
 
   // Prefix sum of column left-edges: xs[c] is column c's left x (xs[0] = GW),
   // xs[ncol] the right edge of the sheet. Recomputed only when widths change.
@@ -102,8 +184,9 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
     const rows = Math.ceil(el.clientHeight / CH) + 2 * PAD + 1
     const c1 = Math.min(ncol, colAtX(left + el.clientWidth) + PAD + 1)
     const r1 = Math.min(nrow, r0 + rows)
-    setView(await bridge.viewport(r0, c0, r1 - r0, c1 - c0))
-  }, [ncol, nrow, colAtX])
+    const vp = await guard('viewport', () => bridge.viewport(r0, c0, r1 - r0, c1 - c0))
+    if (vp) setView(vp)
+  }, [ncol, nrow, colAtX, guard])
 
   const refresh = useCallback(async () => {
     dirty.current = true
@@ -119,9 +202,13 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
     }
   }, [doFetch])
 
-  const loadSource = useCallback(async (r: number, c: number) => {
-    setSource(await bridge.cell_source(r, c))
-  }, [])
+  const loadSource = useCallback(
+    async (r: number, c: number) => {
+      const s = await guard('cell', () => bridge.cell_source(r, c))
+      if (s !== null) setSource(s)
+    },
+    [guard],
+  )
 
   useEffect(() => {
     void refresh()
@@ -133,12 +220,8 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
 
   useEffect(() => {
     if (editing) return
-    let alive = true
-    void bridge.cell_source(cur.r, cur.c).then((s) => alive && setSource(s))
-    return () => {
-      alive = false
-    }
-  }, [cur, editing])
+    void loadSource(cur.r, cur.c)
+  }, [cur, editing, loadSource])
 
   useEffect(() => {
     if (!onSelectionChange) return
@@ -171,11 +254,11 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
     (r: number, c: number, extend: boolean) => {
       const nr = clamp(r, nrow)
       const nc = clamp(c, ncol)
-      setCur({ r: nr, c: nc })
-      if (!extend) setAnchor({ r: nr, c: nc })
+      putCur({ r: nr, c: nc })
+      if (!extend) putAnchor({ r: nr, c: nc })
       ensureVisible(nr, nc)
     },
-    [ncol, nrow, ensureVisible],
+    [ncol, nrow, ensureVisible, putCur, putAnchor],
   )
 
   // --- editing + formula point mode ---
@@ -192,41 +275,54 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
     pointing.current = false
   }
 
-  const beginEdit = useCallback(async (r: number, c: number, initial?: string) => {
-    setCur({ r, c })
-    setAnchor({ r, c })
-    resetPoint()
-    const src = initial !== undefined ? initial : await bridge.cell_source(r, c)
-    setEditValue(src)
-    setEditing({ r, c })
-  }, [])
+  const beginEdit = useCallback(
+    async (r: number, c: number, initial?: string, inBar = false) => {
+      putCur({ r, c })
+      putAnchor({ r, c })
+      resetPoint()
+      let src = initial
+      if (src === undefined) src = (await guard('cell', () => bridge.cell_source(r, c))) ?? ''
+      setEditValue(src)
+      setEditInBar(inBar)
+      setEditing({ r, c })
+    },
+    [guard, putCur, putAnchor],
+  )
 
   const commit = useCallback(
     async (move: 'down' | 'right' | 'none') => {
       const cell = editing
       if (!cell) return
       setEditing(null)
+      setEditInBar(false)
       resetPoint()
-      await bridge.set_cell(cell.r, cell.c, editValueRef.current)
+      await mutate('write cell', () => bridge.set_cell(cell.r, cell.c, editValueRef.current))
       await refresh()
       scrollEl.current?.focus()
       if (move === 'down') moveCursor(cell.r + 1, cell.c, false)
       else if (move === 'right') moveCursor(cell.r, cell.c + 1, false)
+      else void loadSource(cell.r, cell.c)
     },
-    [editing, refresh, moveCursor],
+    [editing, refresh, moveCursor, mutate, loadSource],
   )
 
   const cancelEdit = useCallback(() => {
     setEditing(null)
+    setEditInBar(false)
     resetPoint()
     scrollEl.current?.focus()
   }, [])
 
+  // Whichever input the current edit session lives in -- the in-cell editor or
+  // the formula bar. Point mode writes into it either way.
+  const activeEditor = () => (editInBarRef.current ? barEl.current : editorEl.current)
+
   useEffect(() => {
-    if (pendingCaret.current !== null && editorEl.current) {
+    const el = activeEditor()
+    if (pendingCaret.current !== null && el) {
       const caret = pendingCaret.current
-      editorEl.current.setSelectionRange(caret, caret)
-      editorEl.current.focus()
+      el.setSelectionRange(caret, caret)
+      el.focus()
       pendingCaret.current = null
     }
   }, [editValue])
@@ -234,7 +330,7 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
   const inFormula = () => editing !== null && editValueRef.current.startsWith('=')
 
   const insertPointRef = (text: string) => {
-    const el = editorEl.current
+    const el = activeEditor()
     if (!el) return
     if (pointStart.current === null) {
       pointStart.current = el.selectionStart ?? el.value.length
@@ -254,23 +350,32 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
       pointAnchor.current = { ...hit }
       insertPointRef(rangeRef(hit, hit))
     }
-    setCur({ ...hit })
-    setAnchor({ ...pointAnchor.current })
+    putCur({ ...hit })
+    putAnchor({ ...pointAnchor.current })
   }
 
   // --- clipboard + fill ---
   const lastCopyTsv = useRef<string | null>(null)
 
-  const copySelection = useCallback(async (cut: boolean) => {
-    const s = selRect(curRef.current, anchorRef.current)
-    const res = await bridge.copy(s.r0, s.c0, s.r1, s.c1, cut)
-    lastCopyTsv.current = res.tsv ?? null
-    try {
-      await navigator.clipboard.writeText(res.tsv ?? '')
-    } catch {
-      /* no OS clipboard */
-    }
-  }, [])
+  const copySelection = useCallback(
+    async (cut: boolean) => {
+      const s = selRect(curRef.current, anchorRef.current)
+      // A cut mutates (it clears the source on paste), a copy does not.
+      const run = cut ? mutate : guard
+      const res = await run(cut ? 'cut' : 'copy', () =>
+        bridge.copy(s.r0, s.c0, s.r1, s.c1, cut),
+      )
+      if (!res) return
+      lastCopyTsv.current = res.tsv ?? null
+      try {
+        await navigator.clipboard.writeText(res.tsv ?? '')
+      } catch {
+        /* no OS clipboard */
+      }
+      if (cut) await refresh()
+    },
+    [guard, mutate, refresh],
+  )
 
   const pasteAt = useCallback(async () => {
     let ext = ''
@@ -280,19 +385,59 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
       /* blocked */
     }
     const { r, c } = curRef.current
-    if (ext && ext !== lastCopyTsv.current) await bridge.paste_text(r, c, ext)
-    else await bridge.paste(r, c)
+    // Clipboard text that is not our own last copy came from another app, so
+    // it pastes verbatim; otherwise the internal buffer preserves formulas.
+    if (ext && ext !== lastCopyTsv.current) {
+      await mutate('paste', () => bridge.paste_text(r, c, ext))
+    } else {
+      await mutate('paste', () => bridge.paste(r, c))
+    }
     await refresh()
     await loadSource(r, c)
-  }, [refresh, loadSource])
+  }, [refresh, loadSource, mutate])
 
   const fillSelection = useCallback(
     async (direction: 'down' | 'right') => {
       const s = selRect(curRef.current, anchorRef.current)
-      await bridge.fill(s.r0, s.c0, s.r1, s.c1, direction)
+      await mutate('fill', () => bridge.fill(s.r0, s.c0, s.r1, s.c1, direction))
       await refresh()
     },
-    [refresh],
+    [refresh, mutate],
+  )
+
+  const clearSelection = useCallback(async () => {
+    const { r, c } = curRef.current
+    const s = selRect(curRef.current, anchorRef.current)
+    await mutate('clear', () => bridge.clear_range(s.r0, s.c0, s.r1, s.c1))
+    await refresh()
+    await loadSource(r, c)
+  }, [refresh, loadSource, mutate])
+
+  const gotoRef = useCallback(
+    (text: string): boolean => {
+      const hit = parseRef(text)
+      if (!hit || hit.r >= nrow || hit.c >= ncol) return false
+      moveCursor(hit.r, hit.c, false)
+      scrollEl.current?.focus()
+      return true
+    },
+    [moveCursor, ncol, nrow],
+  )
+
+  useImperativeHandle(
+    ref,
+    (): GridHandle => ({
+      copy: () => void copySelection(false),
+      cut: () => void copySelection(true),
+      paste: () => void pasteAt(),
+      clear: () => void clearSelection(),
+      fillDown: () => void fillSelection('down'),
+      fillRight: () => void fillSelection('right'),
+      edit: () => void beginEdit(curRef.current.r, curRef.current.c),
+      goto: gotoRef,
+      focus: () => scrollEl.current?.focus(),
+    }),
+    [copySelection, pasteAt, clearSelection, fillSelection, beginEdit, gotoRef],
   )
 
   // --- mouse ---
@@ -336,7 +481,7 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
         const s = selRect(curRef.current, anchorRef.current)
         const ff = fillFrom.current
         const dir = s.r1 > ff.r1 ? 'down' : s.c1 > ff.c1 ? 'right' : null
-        if (dir) void bridge.fill(s.r0, s.c0, s.r1, s.c1, dir).then(refresh)
+        if (dir) void fillSelection(dir)
       }
       if (resizing.current) {
         resizing.current = null
@@ -351,7 +496,7 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
-  }, [refresh])
+  }, [refresh, fillSelection])
 
   const onMouseDown = (e: MouseEvent) => {
     const hit = cellAt(e.clientX, e.clientY)
@@ -375,9 +520,9 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
       const ff = fillFrom.current
       const dR = hit.r - ff.r1
       const dC = hit.c - ff.c1
-      setAnchor({ r: ff.r0, c: ff.c0 })
-      if (Math.abs(dR) >= Math.abs(dC)) setCur({ r: Math.max(ff.r0, hit.r), c: ff.c1 })
-      else setCur({ r: ff.r1, c: Math.max(ff.c0, hit.c) })
+      putAnchor({ r: ff.r0, c: ff.c0 })
+      if (Math.abs(dR) >= Math.abs(dC)) putCur({ r: Math.max(ff.r0, hit.r), c: ff.c1 })
+      else putCur({ r: ff.r1, c: Math.max(ff.c0, hit.c) })
       return
     }
     if (pointing.current) {
@@ -437,14 +582,9 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
         void beginEdit(cur.r, cur.c)
         break
       case 'Delete':
-      case 'Backspace': {
-        const s = selRect(cur, anchor)
-        void bridge.clear_range(s.r0, s.c0, s.r1, s.c1).then(async () => {
-          await refresh()
-          await loadSource(cur.r, cur.c)
-        })
+      case 'Backspace':
+        void clearSelection()
         break
-      }
       default:
         if (e.key.length === 1) {
           void beginEdit(cur.r, cur.c, e.key)
@@ -511,6 +651,27 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
     return items
   }, [view, xs, nrow])
 
+  // Positioned like cells, but driven by the solve result rather than the
+  // viewport fetch. Off-screen annotations are skipped rather than clamped --
+  // scrolling to them brings them back.
+  const annotationLayer = useMemo(() => {
+    if (!annotations) return null
+    const items = []
+    for (const [a1, ann] of Object.entries(annotations)) {
+      const at = parseRef(a1)
+      if (!at || at.r >= nrow || at.c >= ncol) continue
+      items.push(
+        <div
+          key={a1}
+          className={'annot ' + ann.role}
+          title={ann.title}
+          style={{ left: xs[at.c], top: CH + at.r * CH, width: xs[at.c + 1] - xs[at.c] }}
+        />,
+      )
+    }
+    return items
+  }, [annotations, xs, ncol, nrow])
+
   const gutterLayer = useMemo(() => {
     if (!view) return null
     const items = []
@@ -527,8 +688,52 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
   return (
     <div className="grid">
       <div className="formula-bar">
-        <span className="name-box">{cellRef(cur.r, cur.c)}</span>
-        <span className="formula-src">{source}</span>
+        {/* Type a reference to jump; blurring without committing snaps back to
+            the cursor's own address. */}
+        <input
+          className="name-box"
+          aria-label="Cell reference"
+          value={nameDraft ?? cellRef(cur.r, cur.c)}
+          onChange={(e) => setNameDraft(e.target.value)}
+          onFocus={(e) => e.target.select()}
+          onBlur={() => setNameDraft(null)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              if (gotoRef(nameDraft ?? '')) setNameDraft(null)
+            } else if (e.key === 'Escape') {
+              setNameDraft(null)
+              scrollEl.current?.focus()
+            }
+            e.stopPropagation()
+          }}
+        />
+        {/* Editing here drives the same edit session as the in-cell editor, so
+            a formula can be written in whichever the user reaches for. */}
+        <input
+          ref={barEl}
+          className="formula-src"
+          aria-label="Formula"
+          value={editing ? editValue : source}
+          onChange={(e) => {
+            if (editing) {
+              setEditValue(e.target.value)
+              resetPoint()
+            } else {
+              void beginEdit(cur.r, cur.c, e.target.value, true)
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              void commit('down')
+            } else if (e.key === 'Escape') {
+              e.preventDefault()
+              cancelEdit()
+              void loadSource(cur.r, cur.c)
+            }
+            e.stopPropagation()
+          }}
+        />
       </div>
       <div
         className="grid-scroll"
@@ -542,6 +747,7 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
       >
         <div className="grid-canvas" style={{ width: xs[ncol], height: CH + nrow * CH }}>
           <div className="vline-layer">{vlineLayer}</div>
+          <div className="annot-layer">{annotationLayer}</div>
           <div className="cell-layer">{cellLayer}</div>
 
           {!single && (
@@ -580,7 +786,7 @@ export function Grid({ ncol, nrow, revision, onSelectionChange }: GridProps) {
           </div>
           <div className="corner" style={{ top: scroll.top, left: scroll.left }} />
 
-          {editing && (
+          {editing && !editInBar && (
             <input
               ref={editorEl}
               className="cell-editor"

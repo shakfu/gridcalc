@@ -15,6 +15,9 @@ from ..opt import (
     infer_model,
 )
 from ..opt import (
+    cells_to_spec as _cells_to_spec,
+)
+from ..opt import (
     parse_bounds as _parse_bounds,
 )
 from ..opt import (
@@ -194,31 +197,6 @@ def _write_sensitivity(
     g.recalc()
     g.dirty = 1
     return None
-
-
-def _cells_to_spec(cells: list[tuple[int, int]]) -> str:
-    """Render a cell list as a comma-separated spec string.
-
-    Inferred models are stored as specs, exactly like typed ones, so they
-    round-trip through the workbook JSON and can be re-run with `:opt` after
-    reopening. A contiguous single-column or single-row run collapses to
-    range syntax so the saved model stays readable.
-    """
-    if not cells:
-        return ""
-    cols = {c for c, _ in cells}
-    rows = {r for _, r in cells}
-    if len(cols) == 1:
-        rs = sorted(rows)
-        if rs == list(range(rs[0], rs[-1] + 1)) and len(rs) > 1:
-            c = next(iter(cols))
-            return f"{cellname(c, rs[0])}:{cellname(c, rs[-1])}"
-    if len(rows) == 1:
-        cs = sorted(cols)
-        if cs == list(range(cs[0], cs[-1] + 1)) and len(cs) > 1:
-            r = next(iter(rows))
-            return f"{cellname(cs[0], r)}:{cellname(cs[-1], r)}"
-    return ",".join(cellname(c, r) for c, r in cells)
 
 
 def _execute_selection(

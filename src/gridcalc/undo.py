@@ -16,7 +16,7 @@ UNDO_MAX = 64
 
 
 class UndoEntry:
-    __slots__ = ("cells", "cc", "cr", "is_grid", "fmt")
+    __slots__ = ("cells", "cc", "cr", "is_grid", "fmt", "sheet")
 
     def __init__(self) -> None:
         self.cells: list[tuple[int, int, Cell]] = []
@@ -27,6 +27,11 @@ class UndoEntry:
         # entry that predates the field / does not care about it. Grid-level
         # state, so it cannot ride along in the per-cell snapshots.
         self.fmt: str | None = None
+        # Name of the sheet the snapshot was taken from. Cell coordinates are
+        # per-sheet, so an entry restored onto a different active sheet would
+        # write real cells into the wrong tab. `_apply` switches back to this
+        # sheet first; None means "wherever we are" (a pre-sheet entry).
+        self.sheet: str | None = None
 
 
 class UndoManager:
@@ -39,6 +44,7 @@ class UndoManager:
         e.cc = g.cc
         e.cr = g.cr
         e.fmt = g.fmt
+        e.sheet = g._active.name
         for r in range(r1, r2 + 1):
             for c in range(c1, c2 + 1):
                 cl = g.cell(c, r)
@@ -71,6 +77,7 @@ class UndoManager:
         e.cc = g.cc
         e.cr = g.cr
         e.fmt = g.fmt
+        e.sheet = g._active.name
         self.undo_stack.append(e)
         if len(self.undo_stack) > UNDO_MAX:
             self.undo_stack.pop(0)
@@ -81,6 +88,7 @@ class UndoManager:
         e.cc = g.cc
         e.cr = g.cr
         e.fmt = g.fmt
+        e.sheet = g._active.name
         e.is_grid = True
         for (c, r), cl in g._cells.items():
             if cl.type != EMPTY:
@@ -95,12 +103,21 @@ class UndoManager:
             return
         e = from_stack[-1]
 
+        # Phase 0: go back to the sheet the snapshot came from. Cell keys are
+        # per-sheet, so restoring onto whichever tab happens to be active would
+        # write the old cells into the wrong sheet. Switching also puts the
+        # user's view where the change they are undoing actually happened.
+        if not self._enter_sheet(g, e):
+            from_stack.pop()  # its sheet is gone; the entry can never apply
+            return
+
         # Phase 1: capture the rollback snapshot. No mutation yet, so if
         # this raises the stacks and grid are untouched.
         re = UndoEntry()
         re.cc = g.cc
         re.cr = g.cr
         re.fmt = g.fmt
+        re.sheet = e.sheet
         re.is_grid = e.is_grid
         if e.is_grid:
             for (c, r), cl in g._cells.items():
@@ -147,6 +164,21 @@ class UndoManager:
         # Both phases succeeded; commit.
         from_stack.pop()
         to_stack.append(re)
+
+    @staticmethod
+    def _enter_sheet(g: Grid, e: UndoEntry) -> bool:
+        """Make ``e``'s sheet active. False if that sheet no longer exists.
+
+        An entry with no recorded sheet predates multi-sheet history and is
+        applied where it lands, as before.
+        """
+        if e.sheet is None or e.sheet == g._active.name:
+            return True
+        try:
+            g.set_active(e.sheet)
+        except (KeyError, IndexError):
+            return False
+        return True
 
     def undo(self, g: Grid) -> None:
         self._apply(g, self.undo_stack, self.redo_stack)

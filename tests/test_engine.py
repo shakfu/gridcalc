@@ -780,6 +780,115 @@ class TestFixrefs:
         assert g.cells[0][2].val == 30.0
 
 
+class TestNamedRangeStructuralEdits:
+    """A named range must follow its cells across insert/delete. When it did
+    not, `=SUM(Data)` kept summing the coordinates the range used to occupy --
+    a wrong answer with no error to notice it by."""
+
+    @staticmethod
+    def _named_grid():
+        g = make_grid()
+        g.setcell(0, 1, "10")  # A2
+        g.setcell(0, 2, "20")  # A3
+        g.names = [NamedRange("Data", 0, 1, 0, 2)]
+        g.setcell(2, 0, "=SUM(Data)")  # C1
+        g.recalc()
+        assert TestNamedRangeStructuralEdits._total(g) == 30.0
+        return g
+
+    @staticmethod
+    def _total(g):
+        """The `=SUM(Data)` cell's value, wherever the edit moved it to.
+
+        The formula rides the same inserts and deletes as the data, so pinning
+        the assertion to a fixed coordinate would test the wrong thing.
+        """
+        for (c, _r), cl in g._cells.items():
+            if c == 2 and cl.text == "=SUM(Data)":
+                return cl.val
+        raise AssertionError("the =SUM(Data) cell was deleted")
+
+    def test_insert_above_moves_the_range_with_its_cells(self):
+        g = self._named_grid()
+        g.insertrow(0)
+        g.recalc()
+        assert (g.names[0].r1, g.names[0].r2) == (2, 3)
+        assert self._total(g) == 30.0
+
+    def test_insert_inside_grows_the_range(self):
+        g = self._named_grid()
+        g.insertrow(2)  # between A2 and A3
+        g.recalc()
+        assert (g.names[0].r1, g.names[0].r2) == (1, 3)
+        assert self._total(g) == 30.0  # the blank row adds nothing
+
+    def test_insert_below_leaves_the_range_alone(self):
+        g = self._named_grid()
+        g.insertrow(5)
+        g.recalc()
+        assert (g.names[0].r1, g.names[0].r2) == (1, 2)
+        assert self._total(g) == 30.0
+
+    def test_delete_above_moves_the_range_up(self):
+        g = self._named_grid()
+        g.setcell(2, 8, "=SUM(Data)")  # keep a copy clear of the deleted row
+        g.deleterow(0)
+        g.recalc()
+        assert (g.names[0].r1, g.names[0].r2) == (0, 1)
+        assert self._total(g) == 30.0
+
+    def test_delete_inside_shrinks_the_range(self):
+        g = self._named_grid()
+        g.deleterow(1)  # removes A2 (the 10)
+        g.recalc()
+        assert (g.names[0].r1, g.names[0].r2) == (1, 1)
+        assert self._total(g) == 20.0
+
+    def test_deleting_every_row_of_a_range_drops_the_name(self):
+        g = self._named_grid()
+        g.deleterow(1)
+        g.deleterow(1)
+        g.recalc()
+        assert g.names == []  # nothing left to point at
+        # The formula now names something undefined, which is an error the
+        # user can see -- unlike silently summing the wrong cells.
+        assert math.isnan(self._total(g))
+
+    def test_columns_shift_the_same_way(self):
+        g = make_grid()
+        g.setcell(1, 0, "10")  # B1
+        g.setcell(2, 0, "20")  # C1
+        g.names = [NamedRange("Data", 1, 0, 2, 0)]
+        g.setcell(0, 5, "=SUM(Data)")
+        g.recalc()
+        assert g.cells[0][5].val == 30.0
+
+        g.insertcol(0)
+        g.recalc()
+        assert (g.names[0].c1, g.names[0].c2) == (2, 3)
+        assert g.cells[1][5].val == 30.0  # the formula moved right with it
+
+        g.deletecol(0)
+        g.recalc()
+        assert (g.names[0].c1, g.names[0].c2) == (1, 2)
+        assert g.cells[0][5].val == 30.0
+
+    def test_a_name_bound_to_another_sheet_does_not_move(self):
+        g = make_grid()
+        g.add_sheet("Data")
+        g.names = [NamedRange("Elsewhere", 0, 1, 0, 2, sheet="Data")]
+        g.insertrow(0)  # on Sheet1, the active one
+        assert (g.names[0].r1, g.names[0].r2) == (1, 2)
+
+    def test_a_sheet_agnostic_name_follows_the_active_sheet(self):
+        g = make_grid()
+        g.add_sheet("Data")
+        g.names = [NamedRange("Anywhere", 0, 1, 0, 2)]
+        g.set_active("Data")
+        g.insertrow(0)
+        assert (g.names[0].r1, g.names[0].r2) == (2, 3)
+
+
 class TestInsertDelete:
     def test_insert_row(self):
         g = make_grid()

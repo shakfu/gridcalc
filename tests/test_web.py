@@ -7,13 +7,14 @@ directly, exactly as the browser view would call it.
 
 from __future__ import annotations
 
+import math
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from gridcalc.engine import NCOL, NROW, Grid, Mode
+from gridcalc.engine import EMPTY, NCOL, NROW, Grid, Mode
 from gridcalc.loader import load_workbook
 from gridcalc.web import Api
 
@@ -861,6 +862,620 @@ def test_set_format_is_undoable() -> None:
     assert g.cell(0, 0).bold == 1 and g.cell(0, 0).italic == 1
     api.undo()
     assert g.cell(0, 0).bold == 0 and g.cell(0, 0).italic == 0
+
+
+# -- structural edits ---------------------------------------------------
+
+
+def test_insert_rows_shifts_cells_and_rewrites_references() -> None:
+    g = _grid()
+    g.setcell(0, 0, "10")
+    g.setcell(0, 1, "=A1*2")
+    g.recalc()
+    api = Api(g)
+
+    assert api.insert_rows(0, 1)["ok"] is True
+
+    assert g.cell(0, 0) is None or g.cell(0, 0).type == EMPTY  # blank row
+    assert g.cell(0, 1).val == 10.0
+    assert g.cell(0, 2).text == "=A2*2"  # the reference followed its target
+    assert g.cell(0, 2).val == 20.0
+
+
+def test_insert_rows_inserts_the_requested_count() -> None:
+    g = _grid()
+    g.setcell(0, 0, "10")
+    g.recalc()
+    api = Api(g)
+    api.insert_rows(0, 3)
+    assert g.cell(0, 3).val == 10.0
+
+
+def test_insert_cols_shifts_columns() -> None:
+    g = _grid()
+    g.setcell(0, 0, "10")
+    g.setcell(1, 0, "=A1+1")
+    g.recalc()
+    api = Api(g)
+    api.insert_cols(0, 1)
+    assert g.cell(1, 0).val == 10.0
+    assert g.cell(2, 0).text == "=B1+1"
+    assert g.cell(2, 0).val == 11.0
+
+
+def test_delete_rows_removes_a_span_bottom_up() -> None:
+    """Deleting 2..3 must not leave the second delete acting on a shifted
+    index -- the whole span goes, and row 4 slides up to take its place."""
+    g = _grid()
+    for r in range(5):
+        g.setcell(0, r, str(r))
+    g.recalc()
+    api = Api(g)
+
+    assert api.delete_rows(1, 2)["ok"] is True
+
+    assert g.cell(0, 0).val == 0.0
+    assert g.cell(0, 1).val == 3.0
+    assert g.cell(0, 2).val == 4.0
+    assert g.cell(0, 3) is None or g.cell(0, 3).type == EMPTY
+
+
+def test_delete_cols_removes_a_span() -> None:
+    g = _grid()
+    for c in range(4):
+        g.setcell(c, 0, str(c))
+    g.recalc()
+    api = Api(g)
+    api.delete_cols(2, 1)  # reversed corners normalize
+    assert g.cell(0, 0).val == 0.0
+    assert g.cell(1, 0).val == 3.0
+
+
+def test_delete_rows_defaults_to_a_single_row() -> None:
+    g = _grid()
+    g.setcell(0, 0, "0")
+    g.setcell(0, 1, "1")
+    g.recalc()
+    api = Api(g)
+    api.delete_rows(0)
+    assert g.cell(0, 0).val == 1.0
+
+
+def test_structural_edits_are_undoable() -> None:
+    g = _grid()
+    g.setcell(0, 0, "10")
+    g.setcell(0, 1, "=A1*2")
+    g.recalc()
+    api = Api(g)
+
+    api.delete_rows(0, 0)
+    assert g.cell(0, 1) is None or g.cell(0, 1).type == EMPTY  # row 1 slid up
+
+    api.undo()
+    assert g.cell(0, 0).val == 10.0
+    assert g.cell(0, 1).text == "=A1*2"
+    assert g.cell(0, 1).val == 20.0
+
+
+def test_structural_edits_reject_an_out_of_range_index() -> None:
+    api = Api(_grid())
+    assert api.insert_rows(NROW, 1)["ok"] is False
+    assert api.insert_cols(-1, 1)["ok"] is False
+    assert api.insert_rows(0, 0)["ok"] is False  # count must be positive
+
+
+def test_delete_rows_entirely_outside_the_sheet_is_rejected() -> None:
+    api = Api(_grid())
+    r = api.delete_rows(NROW + 5, NROW + 9)
+    assert r["ok"] is False and "nothing to delete" in r["error"]
+
+
+def test_insert_col_carries_saved_widths_with_their_columns() -> None:
+    """A width belongs to the column it was dragged on, so it has to travel
+    with that column -- otherwise every width right of an insert ends up on
+    its neighbour."""
+    g = _grid()
+    api = Api(g)
+    api.set_col_width(2, 140)
+    api.insert_cols(0, 1)
+    assert api.col_widths()["widths"] == {"3": 140}
+    api.delete_cols(0, 0)
+    assert api.col_widths()["widths"] == {"2": 140}
+
+
+def test_deleting_a_column_takes_its_width_with_it() -> None:
+    g = _grid()
+    api = Api(g)
+    api.set_col_width(2, 140)
+    api.delete_cols(2, 2)
+    assert api.col_widths()["widths"] == {}
+
+
+# -- named ranges and recalc --------------------------------------------
+
+
+def test_set_name_defines_a_range_formulas_can_use() -> None:
+    g = _grid()
+    g.setcell(0, 1, "10")
+    g.setcell(0, 2, "20")
+    g.recalc()
+    api = Api(g)
+
+    assert api.set_name("Data", "A2:A3")["ok"] is True
+    api.set_cell(0, 2, "=SUM(Data)")  # C1
+    assert g.cell(2, 0).val == 30.0
+
+
+def test_set_name_accepts_a_single_cell() -> None:
+    g = _grid()
+    api = Api(g)
+    api.set_name("Rate", "B7")
+    assert api.list_names()["names"] == [{"name": "Rate", "range": "B7", "sheet": ""}]
+
+
+def test_redefining_a_name_moves_it_rather_than_duplicating() -> None:
+    g = _grid()
+    api = Api(g)
+    api.set_name("Data", "A1:A2")
+    api.set_name("Data", "B1:B9")
+    assert api.list_names()["names"] == [{"name": "Data", "range": "B1:B9", "sheet": ""}]
+
+
+def test_a_name_that_reads_as_a_cell_reference_is_refused() -> None:
+    """`B7` as a name would make `=B7` ambiguous; better to refuse than to
+    invent a precedence rule the user has to learn."""
+    api = Api(_grid())
+    r = api.set_name("B7", "A1:A2")
+    assert r["ok"] is False and "cell reference" in r["error"]
+
+
+def test_name_syntax_is_validated() -> None:
+    api = Api(_grid())
+    assert api.set_name("9bad", "A1")["ok"] is False  # must start with a letter
+    assert api.set_name("has space", "A1")["ok"] is False
+    assert api.set_name("", "A1")["ok"] is False
+    assert api.set_name("ok_name2", "A1")["ok"] is True
+
+
+def test_set_name_rejects_a_bad_range() -> None:
+    api = Api(_grid())
+    r = api.set_name("Data", "not-a-range")
+    assert r["ok"] is False and "bad range" in r["error"]
+
+
+def test_names_are_listed_alphabetically() -> None:
+    api = Api(_grid())
+    api.set_name("zeta", "A1")
+    api.set_name("Alpha", "A2")
+    assert [n["name"] for n in api.list_names()["names"]] == ["Alpha", "zeta"]
+
+
+def test_delete_name_removes_it_and_leaves_users_in_error() -> None:
+    g = _grid()
+    g.setcell(0, 1, "10")
+    g.recalc()
+    api = Api(g)
+    api.set_name("Data", "A2")
+    api.set_cell(0, 2, "=SUM(Data)")
+    assert g.cell(2, 0).val == 10.0
+
+    assert api.delete_name("Data")["ok"] is True
+    assert api.list_names()["names"] == []
+    assert math.isnan(g.cell(2, 0).val)  # visible, not silently wrong
+
+
+def test_delete_unknown_name_reports() -> None:
+    api = Api(_grid())
+    r = api.delete_name("Nope")
+    assert r["ok"] is False and r["error"] == "no such name: Nope"
+
+
+def test_names_survive_a_save_and_reload(tmp_path) -> None:
+    g = _grid()
+    api = Api(g)
+    api.set_name("Data", "A2:A3")
+    path = tmp_path / "book.json"
+    api.save(str(path))
+    assert Api(load_workbook(str(path))).list_names()["names"] == [
+        {"name": "Data", "range": "A2:A3", "sheet": ""}
+    ]
+
+
+def test_set_name_respects_the_name_limit() -> None:
+    from gridcalc.engine import MAXNAMES
+
+    api = Api(_grid())
+    for i in range(MAXNAMES):
+        # Not "n0", "n1", ...: those parse as column-N cell references and are
+        # (correctly) refused by the name validator.
+        assert api.set_name(f"name{i}", "A1")["ok"] is True
+    r = api.set_name("one_too_many", "A1")
+    assert r["ok"] is False and "too many names" in r["error"]
+
+
+def test_recalc_recomputes_without_dirtying_the_workbook() -> None:
+    """Asking for the values you already had is not an edit -- this matches
+    the TUI's `!`, which likewise leaves the dirty flag alone."""
+    g = _grid()
+    g.setcell(0, 0, "2")
+    g.setcell(1, 0, "=A1*3")
+    g.recalc()
+    api = Api(g)
+    assert api.dims()["dirty"] is False
+    assert api.recalc()["ok"] is True
+    assert g.cell(1, 0).val == 6.0
+    assert api.dims()["dirty"] is False
+
+
+# -- search -------------------------------------------------------------
+
+
+def test_search_matches_text_and_computed_values() -> None:
+    """A formula is findable by its source *and* its result -- the client only
+    ever holds formatted text for the cells currently in view, so it cannot do
+    this itself."""
+    g = _grid()
+    g.setcell(0, 0, "hello world")
+    g.setcell(1, 0, "=21*2")
+    g.setcell(0, 1, "other")
+    g.recalc()
+    api = Api(g)
+
+    assert [m["ref"] for m in api.search("hello")["matches"]] == ["A1"]
+    assert [m["ref"] for m in api.search("21*2")["matches"]] == ["B1"]  # source
+    assert [m["ref"] for m in api.search("42")["matches"]] == ["B1"]  # value
+
+
+def test_search_is_case_insensitive_and_in_reading_order() -> None:
+    g = _grid()
+    g.setcell(2, 1, "Beta")  # C2
+    g.setcell(0, 0, "alpha")  # A1
+    g.setcell(1, 1, "ALPHABET")  # B2
+    g.recalc()
+    api = Api(g)
+    assert [m["ref"] for m in api.search("alpha")["matches"]] == ["A1", "B2"]
+
+
+def test_search_reports_coordinates_alongside_the_ref() -> None:
+    g = _grid()
+    g.setcell(2, 3, "target")
+    g.recalc()
+    assert Api(g).search("target")["matches"] == [{"r": 3, "c": 2, "ref": "C4"}]
+
+
+def test_empty_pattern_matches_nothing() -> None:
+    """An empty find box should report nothing, not every populated cell."""
+    g = _grid()
+    g.setcell(0, 0, "x")
+    g.recalc()
+    assert Api(g).search("")["total"] == 0
+
+
+def test_search_does_not_move_or_dirty_anything() -> None:
+    g = _grid()
+    g.setcell(0, 0, "x")
+    g.recalc()
+    api = Api(g)
+    before = (g.cc, g.cr)
+    api.search("x")
+    assert (g.cc, g.cr) == before
+    assert api.dims()["dirty"] is False
+
+
+def test_search_caps_the_returned_list_but_not_the_count() -> None:
+    """A capped list must not read as the whole story -- `total` stays true."""
+    from gridcalc.web import MAX_SEARCH_MATCHES
+
+    g = _grid()
+    n = MAX_SEARCH_MATCHES + 25  # more than one column holds (NROW is 1024)
+    for i in range(n):
+        g.setcell(i // NROW, i % NROW, "hit")
+    g.recalc()
+    res = Api(g).search("hit")
+    assert len(res["matches"]) == MAX_SEARCH_MATCHES
+    assert res["total"] == n
+    assert res["truncated"] is True
+
+
+# -- column widths ------------------------------------------------------
+
+
+def test_col_widths_start_empty_and_record_a_resize() -> None:
+    api = Api(_grid())
+    assert api.col_widths() == {"widths": {}}
+    assert api.set_col_width(1, 140)["ok"] is True
+    assert api.col_widths()["widths"] == {"1": 140}
+
+
+def test_set_col_width_rejects_a_bad_column_or_size() -> None:
+    api = Api(_grid())
+    assert api.set_col_width(NCOL, 100)["ok"] is False
+    assert api.set_col_width(0, 2)["ok"] is False  # narrower than the minimum
+    assert api.set_col_width(0, 99999)["ok"] is False
+    assert api.col_widths()["widths"] == {}
+
+
+def test_col_widths_are_per_sheet() -> None:
+    g = _grid()
+    api = Api(g)
+    api.set_col_width(0, 140)
+    api.add_sheet("Data")  # switches to it
+    assert api.col_widths()["widths"] == {}
+    api.set_col_width(0, 60)
+    api.set_active(0)
+    assert api.col_widths()["widths"] == {"0": 140}
+
+
+def test_col_widths_survive_a_save_and_reload(tmp_path) -> None:
+    g = _grid()
+    api = Api(g)
+    api.set_cell(0, 0, "1")
+    api.set_col_width(0, 140)
+    api.set_col_width(3, 60)
+    path = tmp_path / "book.json"
+    api.save(str(path))
+
+    reopened = Api(load_workbook(str(path)))
+    assert reopened.col_widths()["widths"] == {"0": 140, "3": 60}
+
+
+def test_a_workbook_with_no_widths_does_not_grow_a_widths_key(tmp_path) -> None:
+    """The field is additive: a workbook never touched by a graphical frontend
+    must serialize exactly as it did before."""
+    import json
+
+    g = _grid()
+    api = Api(g)
+    api.set_cell(0, 0, "1")
+    path = tmp_path / "book.json"
+    api.save(str(path))
+    data = json.loads(path.read_text())
+    assert all("widths" not in sheet for sheet in data["sheets"])
+
+
+def test_a_malformed_width_is_dropped_rather_than_trusted(tmp_path) -> None:
+    import json
+
+    g = _grid()
+    g.setcell(0, 0, "1")
+    g.recalc()
+    path = tmp_path / "book.json"
+    g.jsonsave(str(path))
+    data = json.loads(path.read_text())
+    data["sheets"][0]["widths"] = {"0": 140, "1": "wide", "2": 999999, "zz": 100, "-1": 50}
+    path.write_text(json.dumps(data))
+
+    reopened = Api(load_workbook(str(path)))
+    assert reopened.col_widths()["widths"] == {"0": 140}
+
+
+def test_setting_a_width_marks_the_workbook_dirty() -> None:
+    api = Api(_grid())
+    assert api.dims()["dirty"] is False
+    api.set_col_width(0, 140)
+    assert api.dims()["dirty"] is True
+
+
+# -- sheet management ---------------------------------------------------
+
+
+def test_add_sheet_appends_and_switches_to_it() -> None:
+    api = Api(_grid())
+    r = api.add_sheet("Data")
+    assert r["ok"] is True
+    assert r["names"] == ["Sheet1", "Data"]
+    assert r["active"] == 1
+    assert r["dirty"] is True
+
+
+def test_add_sheet_rejects_a_duplicate_name_and_reports_the_tab_list() -> None:
+    api = Api(_grid())
+    api.add_sheet("Data")
+    r = api.add_sheet("Data")
+    assert r["ok"] is False and "already exists" in r["error"]
+    assert r["names"] == ["Sheet1", "Data"]  # the client can still redraw
+
+
+def test_add_sheet_needs_a_name() -> None:
+    api = Api(_grid())
+    assert api.add_sheet("   ")["ok"] is False
+
+
+def test_delete_sheet_removes_it_and_keeps_the_active_index_valid() -> None:
+    api = Api(_grid())
+    api.add_sheet("Data")  # active -> 1
+    r = api.delete_sheet("Data")
+    assert r["ok"] is True
+    assert r["names"] == ["Sheet1"]
+    assert r["active"] == 0
+
+
+def test_delete_sheet_refuses_the_last_sheet() -> None:
+    api = Api(_grid())
+    r = api.delete_sheet("Sheet1")
+    assert r["ok"] is False and "last sheet" in r["error"]
+
+
+def test_delete_unknown_sheet_names_the_sheet_rather_than_raising_a_key() -> None:
+    api = Api(_grid())
+    api.add_sheet("Data")  # so the last-sheet guard is not what fires
+    r = api.delete_sheet("Nope")
+    assert r["ok"] is False and r["error"] == "no such sheet: Nope"
+
+
+def test_rename_sheet_rewrites_cross_sheet_references() -> None:
+    g = _grid()
+    api = Api(g)
+    api.add_sheet("Data")
+    g.set_active("Data")
+    g.setcell(0, 0, "7")
+    g.set_active("Sheet1")
+    g.setcell(0, 0, "=Data!A1*2")
+    g.recalc()
+    assert g.cell(0, 0).val == 14.0
+
+    r = api.rename_sheet("Data", "Inputs")
+    assert r["ok"] is True
+    assert r["names"] == ["Sheet1", "Inputs"]
+    assert g.cell(0, 0).text == "=Inputs!A1*2"
+    assert g.cell(0, 0).val == 14.0  # the graph was rebuilt, not left stale
+
+
+def test_rename_sheet_rejects_an_empty_or_taken_name() -> None:
+    api = Api(_grid())
+    api.add_sheet("Data")
+    assert api.rename_sheet("Data", "  ")["ok"] is False
+    assert api.rename_sheet("Data", "Sheet1")["ok"] is False
+    assert api.rename_sheet("Nope", "X")["error"] == "no such sheet: Nope"
+
+
+def test_move_sheet_reorders_and_keeps_the_same_sheet_active() -> None:
+    api = Api(_grid())
+    api.add_sheet("Data")  # active -> Data at index 1
+    r = api.move_sheet("Data", 0)
+    assert r["ok"] is True
+    assert r["names"] == ["Data", "Sheet1"]
+    assert r["active"] == 0  # Data followed the move
+
+
+def test_move_sheet_rejects_an_out_of_range_index() -> None:
+    api = Api(_grid())
+    api.add_sheet("Data")
+    r = api.move_sheet("Data", 9)
+    assert r["ok"] is False and "out of range" in r["error"]
+    assert r["names"] == ["Sheet1", "Data"]
+
+
+# -- close guard --------------------------------------------------------
+
+
+class _FakeWindow:
+    """Enough of a pywebview window for the close-guard tests.
+
+    `confirm_close` and `localization` are plain attributes on the real
+    `Window` too, read by its close handler at close time -- which is what
+    makes toggling them a valid way to arm the prompt.
+    """
+
+    def __init__(self) -> None:
+        self.confirm_close = False
+        self.localization: dict[str, str] = {
+            "global.quitConfirmation": "Do you really want to quit?"
+        }
+        self.title = ""
+
+    def set_title(self, t: str) -> None:
+        self.title = t
+
+
+def test_a_clean_workbook_closes_without_being_asked() -> None:
+    api = Api(_grid())
+    api._window = _FakeWindow()
+    api._sync_close_guard()
+    assert api._window.confirm_close is False
+
+
+def test_editing_arms_the_close_confirmation() -> None:
+    api = Api(_grid())
+    win = _FakeWindow()
+    api._window = win
+    api.set_cell(0, 0, "1")
+    assert win.confirm_close is True
+
+
+def test_the_close_prompt_names_the_workbook() -> None:
+    g = _grid()
+    g.filename = "/tmp/budget.json"
+    api = Api(g)
+    win = _FakeWindow()
+    api._window = win
+    api.set_cell(0, 0, "1")
+    assert "budget.json" in win.localization["global.quitConfirmation"]
+    assert "unsaved changes" in win.localization["global.quitConfirmation"]
+
+
+def test_saving_disarms_the_close_confirmation(tmp_path) -> None:
+    api = Api(_grid())
+    win = _FakeWindow()
+    api._window = win
+    api.set_cell(0, 0, "1")
+    assert win.confirm_close is True
+    api.save(str(tmp_path / "book.json"))
+    assert win.confirm_close is False
+
+
+def test_the_close_guard_never_calls_a_dialog_itself() -> None:
+    """Regression: asking from inside the close path deadlocked the app.
+
+    `create_confirmation_dialog` schedules its dialog onto the UI thread and
+    blocks waiting for it, so calling it *from* that thread -- which is where
+    a `closing` subscriber runs -- froze the window with no way out but a
+    force quit. The guard must only set flags the toolkit reads later.
+    """
+
+    class _ExplodingWindow(_FakeWindow):
+        def create_confirmation_dialog(self, *a: object, **k: object) -> bool:
+            raise AssertionError("the close guard must not open a dialog itself")
+
+    api = Api(_grid())
+    api._window = _ExplodingWindow()
+    api.set_cell(0, 0, "1")  # dirties, and so arms the guard
+    api._sync_close_guard()
+
+
+def test_the_close_guard_does_not_subscribe_to_the_closing_event() -> None:
+    """The other half of the same deadlock.
+
+    `closing` subscribers run synchronously on the UI thread, so anything
+    there that waits on the UI thread hangs the app. Checked against the
+    source because the failure is a freeze in a real window, which no unit
+    test can reproduce -- the mocked version of this passed while the app
+    locked up.
+    """
+    import ast
+
+    from gridcalc import web
+
+    tree = ast.parse(Path(web.__file__).with_suffix(".py").read_text())
+    # Attribute *accesses*, so the explanation in the docstrings does not
+    # itself trip the check.
+    attrs = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    assert "closing" not in attrs
+    assert "create_confirmation_dialog" not in attrs
+
+
+def test_confirm_close_is_a_real_settable_attribute_of_a_pywebview_window() -> None:
+    """Pins the assumption the guard rests on against the actual library.
+
+    Mocking a window is what let the previous, deadlocking guard look correct;
+    this asserts the flag exists on the real `Window` and can be toggled after
+    construction, which is what makes arming it at edit time work at all.
+    """
+    webview = pytest.importorskip("webview")
+
+    win = webview.create_window("probe", html="<p>probe</p>", hidden=True)
+    try:
+        assert win.confirm_close is False
+        win.confirm_close = True
+        assert win.confirm_close is True
+    finally:
+        webview.windows.clear()  # never started; drop it from the registry
+
+
+def test_the_close_guard_tolerates_a_window_that_rejects_the_flag() -> None:
+    """A toolkit that does not expose `confirm_close` must not break editing:
+    the guard is best-effort, and an edit failing because of it would be far
+    worse than a missing prompt."""
+
+    class _StubbornWindow(_FakeWindow):
+        def __setattr__(self, name: str, value: object) -> None:
+            if name == "confirm_close" and value is True:
+                raise RuntimeError("read-only")
+            super().__setattr__(name, value)
+
+    api = Api(_grid())
+    api._window = _StubbornWindow()
+    assert api.set_cell(0, 0, "1")["ok"] is True
 
 
 def test_load_html_returns_the_built_bundle_or_raises() -> None:

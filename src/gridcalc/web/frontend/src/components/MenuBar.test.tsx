@@ -11,6 +11,14 @@ function makeActions(): WorkbookActions {
     undo: vi.fn(async () => {}),
     redo: vi.fn(async () => {}),
     setSheet: vi.fn(async () => {}),
+    addSheet: vi.fn(async () => {}),
+    deleteSheet: vi.fn(async () => {}),
+    renameSheet: vi.fn(async () => {}),
+    moveSheet: vi.fn(async () => {}),
+    insertRows: vi.fn(async () => {}),
+    insertCols: vi.fn(async () => {}),
+    deleteRows: vi.fn(async () => {}),
+    deleteCols: vi.fn(async () => {}),
     format: vi.fn(async () => {}),
     setDefaultFormat: vi.fn(async () => {}),
   }
@@ -27,10 +35,23 @@ function makeCommands() {
   }
 }
 
+function makeStructure(rows = 1, cols = 1) {
+  return {
+    rows,
+    cols,
+    insertRows: vi.fn(),
+    insertCols: vi.fn(),
+    deleteRows: vi.fn(),
+    deleteCols: vi.fn(),
+  }
+}
+
 function renderMenu(over: Partial<Parameters<typeof MenuBar>[0]> = {}) {
   const props = {
     actions: makeActions(),
     commands: makeCommands(),
+    structure: makeStructure(),
+    sheets: { active: 0, names: ['Sheet1', 'Data'] },
     onAbout: vi.fn(),
     onOptimize: vi.fn(),
     onGoal: vi.fn(),
@@ -38,6 +59,9 @@ function renderMenu(over: Partial<Parameters<typeof MenuBar>[0]> = {}) {
     onChart: vi.fn(),
     onFormat: vi.fn(),
     onDefaultFormat: vi.fn(),
+    onAddSheet: vi.fn(),
+    onRenameSheet: vi.fn(),
+    onFind: vi.fn(),
     ...over,
   }
   render(<MenuBar {...props} />)
@@ -123,11 +147,77 @@ test('Data > Sweep invokes the sweep callback', async () => {
   expect(onSweep).toHaveBeenCalledOnce()
 })
 
-test('structural editing, which has no Api method yet, stays disabled', async () => {
-  renderMenu()
+test.each([
+  [/Insert Row Above/, 'insertRows'],
+  [/Insert Column Left/, 'insertCols'],
+  [/Delete Row/, 'deleteRows'],
+  [/Delete Column/, 'deleteCols'],
+] as const)('Insert > %s runs the structural command', async (label, cmd) => {
+  const structure = makeStructure()
+  renderMenu({ structure })
   const user = userEvent.setup()
   await user.click(screen.getByRole('menuitem', { name: 'Insert' }))
-  expect(await screen.findByRole('menuitem', { name: /Row/ })).toHaveAttribute('data-disabled')
+  await user.click(await screen.findByRole('menuitem', { name: label }))
+  expect(structure[cmd]).toHaveBeenCalledOnce()
+})
+
+test('structural items are disabled with nothing selected', async () => {
+  // There is no sensible place to insert without a selection, and silently
+  // acting on row 0 would be worse than saying so.
+  renderMenu({ structure: null })
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Insert' }))
+  expect(await screen.findByRole('menuitem', { name: /Insert Row/ })).toHaveAttribute(
+    'data-disabled',
+  )
+})
+
+test('structural labels count the selected span', async () => {
+  renderMenu({ structure: makeStructure(3, 2) })
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Insert' }))
+  expect(await screen.findByRole('menuitem', { name: 'Delete 3 Rows' })).toBeTruthy()
+  expect(await screen.findByRole('menuitem', { name: 'Insert 2 Columns Left' })).toBeTruthy()
+})
+
+test('Sheet > Delete removes the active sheet by name', async () => {
+  const { actions } = renderMenu({ sheets: { active: 1, names: ['Sheet1', 'Data'] } })
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Sheet' }))
+  await user.click(await screen.findByRole('menuitem', { name: 'Delete' }))
+  expect(actions.deleteSheet).toHaveBeenCalledWith('Data')
+})
+
+test('Sheet > Delete is disabled on a single-sheet workbook', async () => {
+  renderMenu({ sheets: { active: 0, names: ['Sheet1'] } })
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Sheet' }))
+  expect(await screen.findByRole('menuitem', { name: 'Delete' })).toHaveAttribute('data-disabled')
+})
+
+test('Sheet > Move Left is disabled on the first sheet and moves otherwise', async () => {
+  renderMenu({ sheets: { active: 0, names: ['Sheet1', 'Data'] } })
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Sheet' }))
+  expect(await screen.findByRole('menuitem', { name: 'Move Left' })).toHaveAttribute(
+    'data-disabled',
+  )
+})
+
+test('Sheet > Move Right reorders the active sheet', async () => {
+  const { actions } = renderMenu({ sheets: { active: 0, names: ['Sheet1', 'Data'] } })
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Sheet' }))
+  await user.click(await screen.findByRole('menuitem', { name: 'Move Right' }))
+  expect(actions.moveSheet).toHaveBeenCalledWith('Sheet1', 1)
+})
+
+test('Sheet > New opens the name dialog rather than acting immediately', async () => {
+  const { onAddSheet } = renderMenu()
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Sheet' }))
+  await user.click(await screen.findByRole('menuitem', { name: /New Sheet/ }))
+  expect(onAddSheet).toHaveBeenCalledOnce()
 })
 
 test('Edit items are enabled -- the commands behind them all exist', async () => {

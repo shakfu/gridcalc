@@ -33,6 +33,7 @@ CORE_MODULES = (
     "display.py",
     "loader.py",
     "undo.py",
+    "search.py",
     "opt.py",
     "goalseek.py",
     "config.py",

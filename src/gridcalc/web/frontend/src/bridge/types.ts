@@ -17,6 +17,13 @@ export interface Sheets {
   names: string[]
 }
 
+// The sheet-management methods return the new tab list along with the usual
+// ok/error, so one call both mutates and refreshes the tab strip.
+export interface SheetsResult extends Sheets {
+  ok?: boolean
+  error?: string
+}
+
 export interface OkResult {
   ok: boolean
   // Every mutating method reports the workbook's dirty state back, so the
@@ -66,6 +73,40 @@ export interface Viewport {
   rows: number
   cols: number
   cells: ViewportCell[]
+}
+
+// One search hit: zero-based coordinates plus the A1 form the client jumps to.
+export interface SearchMatch {
+  r: number
+  c: number
+  ref: string
+}
+
+// `total` is the true number of hits even when `matches` was capped, so the
+// counter never understates what is on the sheet.
+export interface SearchResult {
+  matches: SearchMatch[]
+  total: number
+  truncated: boolean
+}
+
+// A named range as the user would write it: `Data = A2:A3`. `sheet` is empty
+// for a sheet-agnostic name (one that resolves against the active sheet).
+export interface NamedRange {
+  name: string
+  range: string
+  sheet: string
+}
+
+export interface NamesResult {
+  names: NamedRange[]
+}
+
+// Per-column pixel widths for the active sheet, keyed by column index as a
+// string (JSON object keys are strings). Columns with no entry use the view's
+// own default width.
+export interface ColWidths {
+  widths: Record<string, number>
 }
 
 export interface CopyResult {
@@ -192,6 +233,21 @@ export interface PywebviewApi {
   dims(): Promise<Dims>
   sheets(): Promise<Sheets>
   set_active(idx: number): Promise<Sheets>
+  search(pattern: string): Promise<SearchResult>
+  recalc(): Promise<OkResult>
+  list_names(): Promise<NamesResult>
+  set_name(name: string, rng: string): Promise<OkResult & { name?: string; error?: string }>
+  delete_name(name: string): Promise<OkResult & { error?: string }>
+  col_widths(): Promise<ColWidths>
+  set_col_width(col: number, px: number): Promise<OkResult & { error?: string }>
+  add_sheet(name: string): Promise<SheetsResult>
+  delete_sheet(name: string): Promise<SheetsResult>
+  rename_sheet(old: string, name: string): Promise<SheetsResult>
+  move_sheet(name: string, index: number): Promise<SheetsResult>
+  insert_rows(at: number, count: number): Promise<OkResult & { error?: string }>
+  insert_cols(at: number, count: number): Promise<OkResult & { error?: string }>
+  delete_rows(r0: number, r1: number): Promise<OkResult & { error?: string }>
+  delete_cols(c0: number, c1: number): Promise<OkResult & { error?: string }>
   undo(): Promise<OkResult>
   redo(): Promise<OkResult>
   save(path?: string): Promise<SaveResult>

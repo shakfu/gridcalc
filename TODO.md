@@ -59,38 +59,30 @@ without building the consent UI first; that is a decision, not an oversight.
 
 - [ ] **Correctness loose ends.** Small, and worth clearing before more
   breadth:
-  (a) The **`NamedRange` structural-edit bug** below under Refactoring is a
-      hard prerequisite for structural edits in any frontend.
-  (b) **Dialog field focus guard.** `App.tsx`'s window-level Ctrl/Cmd handler
-      fires while a dialog text field has focus, so Ctrl+Z while typing a cell
-      ref in Goal Seek undoes the *workbook* rather than the field. The
-      in-cell editor is already protected by `stopPropagation`; the dialogs
-      are not. Observed by reading the handler, not yet reproduced in a real
-      webview.
-  (c) **Per-sheet view state.** `Grid` is keyed `${filename}:${active}`
-      (`App.tsx`), so switching sheets remounts it and discards column widths
-      (local `useState` in `Grid.tsx`), scroll position, and cursor. Keep a
-      per-sheet record instead of remounting. Column widths are also never
-      persisted to the workbook, unlike the TUI's `:width`.
-  (d) **Constrain `save` paths.** `Api.save` writes wherever the client asks
+  (a) **Per-sheet view state.** `Grid` is keyed `${filename}:${active}`
+      (`App.tsx`), so switching sheets remounts it and discards scroll
+      position and cursor. Keep a per-sheet record instead of remounting.
+      Column widths no longer suffer from this -- they are workbook state
+      (`Sheet.widths`) refetched on mount -- but scroll and cursor still do.
+  (b) **Constrain `save` paths.** `Api.save` writes wherever the client asks
       (`docs/web.md` §4). Blast radius is small while the client is in-process
       and local, but it is cheap to fix now and load-bearing if a served
       frontend is ever considered.
-- [ ] **Structural edits: insert / delete / move row and column.** The top of
-  the editing-parity list and the only Insert menu items still disabled.
-  `engine.insertrow`/`deleterow`/`swaprow` are ready, so this is an `Api`
-  method plus client UI. **Gated on the `NamedRange` fix** -- a row-editing
-  GUI makes that bug trivially easy to hit.
-- [ ] **Command palette (Ctrl-K) over the `:` command set.** Reuses the TUI's
-  mental model without forcing modal `:` typing into a GUI, and is the natural
-  home for commands that will never justify a menu item (`:width`, `:name`,
-  `:sort`, `:mode`). Materially cheaper now that the grid exposes an
-  imperative command handle (`GridHandle` in `Grid.tsx`) -- that was the
-  missing prerequisite. See `docs/web.md` §5d.
-- [ ] **Remaining editing parity.** Search, named-range management, sort,
-  sheet add/rename/delete/move. Each is an `Api` method over an existing
-  engine call plus client UI; none is architecturally interesting, which is
-  exactly why they should not be done ahead of the items above.
+- [ ] **Move row and column (`swaprow`/`swapcol`).** Insert and delete now
+  ship in both frontends; reordering does not. The engine primitives are
+  ready, so this is an `Api` method plus a client gesture (drag a header).
+- [ ] **Sort (`:sort`) in the web frontend.** The last plain editing-parity
+  gap, and the only one left needing real work rather than a registry entry:
+  the sort itself is ~100 lines inside `tui/commands.py:cmd_sort`, interleaved
+  with `show_error` and the curses selection. It needs promoting below the
+  view boundary the way `search.py` was, after which both frontends call one
+  implementation and the palette gets it for the cost of an entry.
+- [ ] **The code-block / formula-mode surface (`:e`, `:mode`).** Why a HYBRID
+  or PYTHON workbook opens in the web view with its code-dependent cells in an
+  error state and no indication why: `loader.load_workbook` is hardcoded to
+  `LoadPolicy.formulas_only()`. Not a plumbing job -- un-hardcoding it means
+  building the consent UI the security note above defers, so it wants a design
+  decision before code.
 - [ ] **Accessibility, and validating the reason web was chosen.**
   `docs/gui.md` justified the web bet partly on IME/CJK input and
   accessibility, and neither claim has been tested in a real webview -- only
@@ -151,28 +143,6 @@ without building the consent UI first; that is a decision, not an oversight.
 
 ## Refactoring & code quality
 
-- [ ] **BUG: named ranges are not shifted on structural edits.**
-  `insertrow`/`insertcol`/`deleterow`/`deletecol` (engine.py:2171+) move cells
-  and call `_shiftrefs` to rewrite cell-text references, but nothing adjusts
-  `NamedRange` coordinates in `g.names`. The name keeps pointing at the old
-  rectangle, so it silently reads the wrong cells -- wrong answers, no error.
-  Reproduced:
-
-  ```python
-  g.setcell(0, 1, "10"); g.setcell(0, 2, "20")     # A2, A3
-  g.names.append(NamedRange("Data", 0, 1, 0, 2))   # Data = A2:A3
-  g.setcell(2, 0, "=SUM(Data)"); g.recalc()        # -> 30
-  g.insertrow(0); g.recalc()                       # data moves to A3:A4
-  # =SUM(Data) is now 10: the name still covers rows 1..2
-  ```
-
-  Affects both frontends -- found while scoping the web view (`docs/web.md`
-  §4), but it is an engine bug and the TUI's `:ir`/`:dr`/`:ic`/`:dc`
-  (`tui/commands.py:1270+`) reach it today. A prerequisite for structural
-  editing in the web view. Needs tests covering insert and delete above,
-  below, and straddling a named range, plus the delete case where the range
-  loses its cells entirely (Excel collapses such a name to `#REF!`; decide
-  whether to match that or clamp).
 - [ ] **`Cell.ast` cache invalidates by text equality.** For very large
   sheets where many formulas share text, hashing the text would cut
   cache lookups; not a priority but worth measuring.

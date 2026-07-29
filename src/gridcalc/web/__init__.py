@@ -23,8 +23,10 @@ Design:
   frontend-neutral ``gridcalc.display.cell_text`` / ``cell_right_aligned``, so
   the web view and the curses TUI format cells identically.
 
-The ``Api`` methods cover the workbook (dims/sheets/open/save/undo), the grid
-(viewport/cell_source/set_cell/clear_range/copy/paste/fill/stats), and
+The ``Api`` methods cover the workbook (dims/sheets/open/save/undo and the
+sheet-management set add/delete/rename/move), the grid
+(viewport/cell_source/set_cell/clear_range/copy/paste/fill/stats plus the
+structural edits insert_rows/insert_cols/delete_rows/delete_cols), and
 optimization (solve_selection/solve_model/goal_seek/opt_sweep/chart_data). The
 React client wires them to a menubar, a virtualized grid, and the feature
 dialogs.
@@ -38,27 +40,38 @@ from __future__ import annotations
 
 import contextlib
 import math
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
 from .. import goalseek, opt
 from ..display import cell_clip_value, cell_right_aligned, cell_text
 from ..engine import (
+    COL_PX_MAX,
+    COL_PX_MIN,
     EMPTY,
     FORMULA,
     LABEL,
+    MAXNAMES,
     NCOL,
     NROW,
     NUM,
     SPILL,
     Grid,
+    NamedRange,
     adjust_refs,
     col_name,
     ref,
 )
 from ..loader import demo_grid, load_workbook
 from ..opt import OptError, OptModel, cells_to_spec, parse_bounds, parse_cells
+from ..search import find_matches
 from ..undo import UndoManager
+
+# Cap on how many search hits cross the bridge in one call. A pattern like
+# `1` can match most of a populated sheet; the client only ever shows one at
+# a time, and the true count rides along separately.
+MAX_SEARCH_MATCHES = 1000
 
 
 class Api:
@@ -384,6 +397,269 @@ class Api:
         g.recalc()
         return self._touch()
 
+    def recalc(self) -> dict[str, Any]:
+        """Recompute every formula (the TUI's ``!``).
+
+        Everything that writes a cell already recalculates, so this is for the
+        cases nothing else can know about: a volatile function like ``NOW`` or
+        ``RAND``, or a sheet the user wants to see re-derived after an import.
+        It does not dirty the workbook -- matching ``!`` -- because asking for
+        the values you already had is not an edit.
+        """
+        self._g.recalc()
+        return {"ok": True, "dirty": self._dirty}
+
+    # -- named ranges -------------------------------------------------------
+
+    def list_names(self) -> dict[str, Any]:
+        """Every named range in the workbook (the TUI's ``:names``)."""
+        return {
+            "names": [
+                {
+                    "name": nr.name,
+                    "range": self._range_a1(nr),
+                    "sheet": nr.sheet or "",
+                }
+                for nr in sorted(self._g.names, key=lambda n: n.name.lower())
+            ]
+        }
+
+    def set_name(self, name: str, rng: str) -> dict[str, Any]:
+        """Define or redefine a named range (the TUI's ``:name``).
+
+        Names must start with a letter and continue with letters, digits, or
+        underscores, and must not themselves read as a cell reference -- ``B7``
+        as a name would make ``=B7`` ambiguous, so it is refused rather than
+        resolved by some precedence rule the user would have to learn.
+        """
+        key = (name or "").strip()
+        if not self._valid_name(key):
+            return {"ok": False, "error": f"not a usable name: {name!r}"}
+        if self._parse_range(key) is not None:
+            return {"ok": False, "error": f"{key} is a cell reference, not a name"}
+        rect = self._parse_range(rng or "")
+        if rect is None:
+            return {"ok": False, "error": f"bad range: {rng}"}
+        c0, r0, c1, r1 = rect
+        for nr in self._g.names:
+            if nr.name == key:
+                nr.c1, nr.r1, nr.c2, nr.r2 = c0, r0, c1, r1
+                self._g.recalc()
+                return {**self._touch(), "name": key}
+        if len(self._g.names) >= MAXNAMES:
+            return {"ok": False, "error": f"too many names (limit {MAXNAMES})"}
+        self._g.names.append(NamedRange(key, c0, r0, c1, r1))
+        self._g.recalc()
+        return {**self._touch(), "name": key}
+
+    def delete_name(self, name: str) -> dict[str, Any]:
+        """Remove a named range (the TUI's ``:unname``).
+
+        Formulas still referencing it become unknown-name errors, which is the
+        visible outcome; nothing rewrites them, since guessing what the user
+        meant instead would be worse than saying it is gone.
+        """
+        for i, nr in enumerate(self._g.names):
+            if nr.name == name:
+                self._g.names.pop(i)
+                self._g.recalc()
+                return self._touch()
+        return {"ok": False, "error": f"no such name: {name}"}
+
+    @staticmethod
+    def _valid_name(name: str) -> bool:
+        """A letter, then letters/digits/underscores -- the TUI's rule."""
+        return bool(name) and name[0].isalpha() and all(ch.isalnum() or ch == "_" for ch in name)
+
+    def _range_a1(self, nr: NamedRange) -> str:
+        """Render a named range as ``A1`` or ``A1:B3``."""
+        start = self._a1((nr.c1, nr.r1))
+        if (nr.c1, nr.r1) == (nr.c2, nr.r2):
+            return start
+        return f"{start}:{self._a1((nr.c2, nr.r2))}"
+
+    def search(self, pattern: str) -> dict[str, Any]:
+        """Cells on the active sheet matching ``pattern`` (the TUI's ``/``).
+
+        Case-insensitive substring over both a cell's source text and a
+        formula's computed value, in reading order. Read-only -- it moves
+        nothing and does not dirty the workbook; the client drives its own
+        cursor from the returned refs.
+
+        Long result lists are truncated, and say so rather than quietly
+        handing back a short list: a pattern like ``1`` can match most of a
+        populated sheet, and shipping every hit across the bridge to render a
+        counter nobody reads is waste. ``total`` is always the true count.
+        """
+        hits = find_matches(self._g, pattern or "")
+        return {
+            "matches": [
+                {"r": r, "c": c, "ref": self._a1((c, r))} for c, r in hits[:MAX_SEARCH_MATCHES]
+            ],
+            "total": len(hits),
+            "truncated": len(hits) > MAX_SEARCH_MATCHES,
+        }
+
+    def col_widths(self) -> dict[str, Any]:
+        """The active sheet's saved per-column pixel widths.
+
+        Keys come back as strings because that is what they are in the JSON
+        and what a JS object gives back anyway; the client parses them. A
+        column with no entry uses the view's own default.
+        """
+        return {"widths": {str(c): w for c, w in self._g._active.widths.items()}}
+
+    def set_col_width(self, col: int, px: int) -> dict[str, Any]:
+        """Record a column's width after the user drags its edge.
+
+        Widths are per-sheet display state that the curses renderer has no way
+        to use (it lays columns out from the single uniform ``Grid.cw``), so
+        this is deliberately a view-level preference the workbook carries
+        rather than a shared setting. It changes no value, so no recalc -- but
+        it is a change to the file, hence the dirty mark.
+        """
+        c = int(col)
+        w = int(px)
+        if not (0 <= c < NCOL):
+            return {"ok": False, "error": f"no such column: {col}"}
+        if not (COL_PX_MIN <= w <= COL_PX_MAX):
+            return {"ok": False, "error": f"width out of range: {px}"}
+        self._g._active.widths[c] = w
+        return self._touch()
+
+    # -- structural edits -------------------------------------------------
+
+    def insert_rows(self, at: int, count: int = 1) -> dict[str, Any]:
+        """Insert ``count`` blank rows above row ``at``, shifting the rest down.
+
+        References in formulas are rewritten by the engine (``_shiftrefs``), so
+        a formula pointing below the insertion point follows its cell. Rows
+        pushed past the last row are dropped, matching the TUI's ``:insrow``.
+        """
+        return self._structural(int(at), int(count), self._g.insertrow, NROW)
+
+    def insert_cols(self, at: int, count: int = 1) -> dict[str, Any]:
+        """Insert ``count`` blank columns left of column ``at`` (``:inscol``)."""
+        return self._structural(int(at), int(count), self._g.insertcol, NCOL)
+
+    def delete_rows(self, r0: int, r1: int | None = None) -> dict[str, Any]:
+        """Delete rows ``r0..r1`` inclusive (``r1`` defaults to ``r0``).
+
+        Deleted bottom-up so each ``deleterow`` sees indices that have not yet
+        shifted -- the same order the TUI's ``:delrow`` uses over a selection.
+        """
+        a, b = self._span(r0, r1, NROW)
+        if a is None or b is None:
+            return {"ok": False, "error": "nothing to delete"}
+        return self._structural_range(range(b, a - 1, -1), self._g.deleterow)
+
+    def delete_cols(self, c0: int, c1: int | None = None) -> dict[str, Any]:
+        """Delete columns ``c0..c1`` inclusive (``:delcol``)."""
+        a, b = self._span(c0, c1, NCOL)
+        if a is None or b is None:
+            return {"ok": False, "error": "nothing to delete"}
+        return self._structural_range(range(b, a - 1, -1), self._g.deletecol)
+
+    @staticmethod
+    def _span(a: int, b: int | None, limit: int) -> tuple[int | None, int | None]:
+        """Normalize an inclusive index range, clamped to ``[0, limit)``."""
+        lo, hi = sorted((int(a), int(a if b is None else b)))
+        lo = max(0, lo)
+        hi = min(limit - 1, hi)
+        if hi < lo:
+            return None, None
+        return lo, hi
+
+    def _structural(
+        self, at: int, count: int, op: Callable[[int], None], limit: int
+    ) -> dict[str, Any]:
+        """Apply an insert ``count`` times at a single index."""
+        if not (0 <= at < limit):
+            return {"ok": False, "error": f"out of range: {at}"}
+        if count < 1:
+            return {"ok": False, "error": "count must be at least 1"}
+        return self._structural_range([at] * min(count, limit), op)
+
+    def _structural_range(
+        self, indices: Iterable[int], op: Callable[[int], None]
+    ) -> dict[str, Any]:
+        """Run a structural engine op over ``indices`` as one undo step.
+
+        Insert/delete rewrite references across the whole active sheet, so the
+        snapshot is grid-wide rather than a rectangle. One recalc at the end
+        covers every op in the batch.
+        """
+        g = self._g
+        self._undo.save_grid(g)
+        for i in indices:
+            op(i)
+        g.recalc()
+        return self._touch()
+
+    # -- sheet management -------------------------------------------------
+
+    def add_sheet(self, name: str) -> dict[str, Any]:
+        """Append a new empty sheet and switch to it.
+
+        The TUI's ``:sheet add`` deliberately does not switch; here the user
+        asked for a tab through the tab strip, so landing on it is the expected
+        outcome of the click.
+        """
+        new_name = (name or "").strip()
+        if not new_name:
+            return {"ok": False, "error": "a sheet needs a name", **self.sheets()}
+        try:
+            self._g.add_sheet(new_name)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), **self.sheets()}
+        self._g.set_active(len(self._g.sheets) - 1)
+        return {**self._touch(), **self.sheets()}
+
+    def delete_sheet(self, name: str) -> dict[str, Any]:
+        """Remove a sheet by name; the last remaining sheet cannot be removed."""
+        try:
+            self._g.remove_sheet(name)
+        except (ValueError, KeyError) as exc:
+            return {"ok": False, "error": self._sheet_error(exc, name), **self.sheets()}
+        self._g.recalc()
+        return {**self._touch(), **self.sheets()}
+
+    def rename_sheet(self, old: str, new: str) -> dict[str, Any]:
+        """Rename a sheet, rewriting formula text that references the old name.
+
+        Sheet identity is part of the dependency-graph keys, so the graph is
+        rebuilt before recalculating -- otherwise edges still pointing at the
+        old name would go stale. This mirrors ``cmd_sheet``'s rename path.
+        """
+        new_name = (new or "").strip()
+        if not new_name:
+            return {"ok": False, "error": "a sheet needs a name", **self.sheets()}
+        try:
+            self._g.rename_sheet(old, new_name)
+        except (ValueError, KeyError) as exc:
+            return {"ok": False, "error": self._sheet_error(exc, old), **self.sheets()}
+        self._g._dep_graph_built = False
+        self._g._rebuild_dep_graph()
+        self._g.recalc()
+        return {**self._touch(), **self.sheets()}
+
+    def move_sheet(self, name: str, index: int) -> dict[str, Any]:
+        """Reorder a sheet to zero-based ``index``; the active sheet follows."""
+        try:
+            self._g.move_sheet(name, int(index))
+        except (IndexError, KeyError, ValueError) as exc:
+            return {"ok": False, "error": self._sheet_error(exc, name), **self.sheets()}
+        return {**self._touch(), **self.sheets()}
+
+    @staticmethod
+    def _sheet_error(exc: Exception, name: str) -> str:
+        """``KeyError``/``IndexError`` carry only the bad key; say what failed."""
+        if isinstance(exc, KeyError):
+            return f"no such sheet: {name}"
+        if isinstance(exc, IndexError):
+            return f"index out of range: {exc}"
+        return str(exc)
+
     def save(self, path: str | None = None) -> dict[str, Any]:
         """Write the workbook to ``path`` or its current filename.
 
@@ -461,6 +737,45 @@ class Api:
         path = result if isinstance(result, str) else result[0]
         return self.open_file(path)
 
+    def _sync_close_guard(self) -> None:
+        """Arm or disarm pywebview's own close confirmation to match the
+        unsaved state, so closing a dirty workbook asks first.
+
+        The window carries a ``confirm_close`` flag that its close handler
+        reads *at close time*, and the prompt it produces runs modally on the
+        UI thread -- which is the only safe way to ask from there.
+
+        The obvious-looking alternative, subscribing to the ``closing`` event
+        and calling ``create_confirmation_dialog``, deadlocks: ``closing``
+        subscribers run synchronously on the UI thread, and that method
+        schedules its dialog *onto* the UI thread and then blocks waiting for
+        it. The thread ends up waiting on work only it can run, so the whole
+        application freezes with no way out but a force quit. Toggling the flag
+        hands the asking back to the toolkit, which does it on the right thread.
+
+        The message is customized through the window's localization table
+        (read at close time too) so the prompt names the workbook rather than
+        asking a generic "really quit?".
+        """
+        win = self._window
+        if win is None:
+            return  # headless (tests): nothing to guard
+        # The flag is what actually gates the close, so it is set on its own:
+        # the message is a nicety, and a window that will not take one must not
+        # cost us the guard.
+        with contextlib.suppress(Exception):
+            win.confirm_close = self._dirty
+        if not self._dirty:
+            return
+        name = getattr(self._g, "filename", "") or "This workbook"
+        # `localization` only exists once the GUI has initialized the window,
+        # which it has by the time a user can edit anything -- but a failure
+        # here just leaves the generic message set at creation.
+        with contextlib.suppress(Exception):
+            win.localization["global.quitConfirmation"] = (
+                f"{name} has unsaved changes. Close anyway and lose them?"
+            )
+
     def _retitle(self) -> None:
         """Best-effort window-title refresh; a trailing ``*`` means unsaved."""
         win = self._window
@@ -474,15 +789,17 @@ class Api:
     def _touch(self) -> dict[str, Any]:
         """Record that the workbook now differs from what is on disk.
 
-        Retitles only on the clean->dirty transition: every cell edit calls
-        this, and a native ``set_title`` per keystroke would be a bridge round
-        trip for nothing. Returned by the mutating methods so the client learns
-        the dirty state from the call it already made.
+        Retitles and arms the close guard only on the clean->dirty
+        transition: every cell edit calls this, and a native ``set_title`` per
+        keystroke would be a bridge round trip for nothing. Returned by the
+        mutating methods so the client learns the dirty state from the call it
+        already made.
         """
         self._g.dirty = 1
         if not self._dirty:
             self._dirty = True
             self._retitle()
+            self._sync_close_guard()
         return {"ok": True, "dirty": True}
 
     def _mark_clean(self) -> None:
@@ -490,6 +807,7 @@ class Api:
         self._g.dirty = 0
         self._dirty = False
         self._retitle()
+        self._sync_close_guard()
 
     def chart_data(self, spec: str) -> dict[str, Any]:
         """Chart-ready data for an A1 range like ``A4:D6``.
@@ -955,14 +1273,25 @@ def run(path: str | None = None) -> None:
     g = load_workbook(path) if path else demo_grid()
     api = Api(g)
     name = getattr(g, "filename", "") or "(demo)"
-    api._window = webview.create_window(
+    window = webview.create_window(
         f"gridcalc - {name}",
         html=_load_html(),
         js_api=api,
         width=1200,
         height=800,
         min_size=(640, 400),
+        # Off until there is unsaved work; `Api._sync_close_guard` turns it on
+        # and off as the workbook is edited and saved. The override is the
+        # fallback wording, replaced with one naming the file once the window
+        # is live.
+        confirm_close=False,
+        localization={
+            "global.quitConfirmation": "This workbook has unsaved changes. Close anyway?"
+        },
     )
+    if window is None:
+        raise OSError("could not create the webview window")
+    api._window = window
     webview.start()
 
 

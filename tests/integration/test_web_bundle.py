@@ -32,12 +32,15 @@ _MOCK_BRIDGE = """
   window.__calls = {
     open_dialog: 0, save: 0, set_active: [], set_cell: [], clear_range: [],
     copy: [], paste: [], paste_text: [], fill: [], solve: [], goal: [], chart: [],
-    set_format: [], set_global_format: [], save_model: []
+    set_format: [], set_global_format: [], save_model: [],
+    sheet_ops: [], structural: [], col_widths: [], search: [], undo_calls: 0, recalc: 0, names: []
   };
   const sheets = { active: 0, names: ['Sheet1', 'Data'] };
   const cells = new Map();
   const styles = new Map();
   const models = new Map();
+  const colWidths = {};
+  const namedRanges = {};
   let dirty = false;
   const touch = () => { dirty = true; return { ok: true, dirty: true }; };
   const k = (r, c) => r + ',' + c;
@@ -46,13 +49,114 @@ _MOCK_BRIDGE = """
    [4,0,'Gadget'],[4,1,'4'],[4,2,'9'],
    [5,0,'Gizmo'],[5,1,'7'],[5,2,'3.25']].forEach(([r,c,t]) => cells.set(k(r,c), t));
   const isNum = (s) => s !== '' && (!isNaN(Number(s)) || s.startsWith('='));
+  const colName = (c) => {
+    let s = ''; c += 1;
+    while (c > 0) { c -= 1; s = String.fromCharCode(65 + (c % 26)) + s; c = Math.floor(c / 26); }
+    return s;
+  };
+  // Structural edits, mock-side: slide every cell across the edit point so the
+  // rendered grid actually changes and the test can see it, not just count calls.
+  const shift = (axis, at, delta) => {
+    const moved = new Map();
+    for (const [key, text] of cells) {
+      const [r, c] = key.split(',').map(Number);
+      const along = axis === 'r' ? r : c;
+      if (delta < 0 && along >= at && along < at - delta) continue;
+      const to = along >= at ? along + delta : along;
+      moved.set(axis === 'r' ? k(to, c) : k(r, to), text);
+    }
+    cells.clear();
+    for (const [key, v] of moved) cells.set(key, v);
+  };
   window.pywebview = { api: {
     dims: async () => ({ ncol: 256, nrow: 1024, filename: 'book.json', dirty }),
     sheets: async () => ({ ...sheets }),
     set_active: async (i) => {
       window.__calls.set_active.push(i); sheets.active = i; return { ...sheets };
     },
-    undo: async () => touch(),
+    search: async (pattern) => {
+      const pat = (pattern || '').toLowerCase();
+      if (!pat) return { matches: [], total: 0, truncated: false };
+      const hits = [];
+      for (const [key, text] of cells) {
+        if (!text.toLowerCase().includes(pat)) continue;
+        const [r, c] = key.split(',').map(Number);
+        hits.push({ r, c, ref: colName(c) + (r + 1) });
+      }
+      hits.sort((a, b) => a.r - b.r || a.c - b.c);
+      window.__calls.search.push(pattern);
+      return { matches: hits, total: hits.length, truncated: false };
+    },
+    recalc: async () => { window.__calls.recalc++; return { ok: true, dirty }; },
+    list_names: async () => ({
+      names: Object.entries(namedRanges)
+        .map(([name, range]) => ({ name, range, sheet: '' }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    }),
+    set_name: async (name, rng) => {
+      window.__calls.names.push(['set', name, rng]);
+      if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name || '')) {
+        return { ok: false, error: "not a usable name: '" + name + "'" };
+      }
+      namedRanges[name] = rng; touch(); return { ok: true, name };
+    },
+    delete_name: async (name) => {
+      window.__calls.names.push(['del', name]);
+      if (!(name in namedRanges)) return { ok: false, error: 'no such name: ' + name };
+      delete namedRanges[name]; return touch();
+    },
+    col_widths: async () => ({ widths: { ...colWidths } }),
+    set_col_width: async (col, px) => {
+      window.__calls.col_widths.push([col, px]); colWidths[col] = px; return touch();
+    },
+    add_sheet: async (name) => {
+      window.__calls.sheet_ops.push(['add', name]);
+      if (sheets.names.includes(name)) {
+        return { ...sheets, ok: false, error: "sheet '" + name + "' already exists" };
+      }
+      sheets.names.push(name); sheets.active = sheets.names.length - 1;
+      touch(); return { ...sheets, ok: true };
+    },
+    delete_sheet: async (name) => {
+      window.__calls.sheet_ops.push(['del', name]);
+      const i = sheets.names.indexOf(name);
+      if (i < 0) return { ...sheets, ok: false, error: 'no such sheet: ' + name };
+      sheets.names.splice(i, 1);
+      if (sheets.active >= sheets.names.length) sheets.active = sheets.names.length - 1;
+      else if (sheets.active > i) sheets.active -= 1;
+      touch(); return { ...sheets, ok: true };
+    },
+    rename_sheet: async (old, name) => {
+      window.__calls.sheet_ops.push(['rename', old, name]);
+      const i = sheets.names.indexOf(old);
+      if (i < 0) return { ...sheets, ok: false, error: 'no such sheet: ' + old };
+      sheets.names[i] = name; touch(); return { ...sheets, ok: true };
+    },
+    move_sheet: async (name, index) => {
+      window.__calls.sheet_ops.push(['move', name, index]);
+      const i = sheets.names.indexOf(name);
+      const activeName = sheets.names[sheets.active];
+      sheets.names.splice(i, 1); sheets.names.splice(index, 0, name);
+      sheets.active = sheets.names.indexOf(activeName);
+      touch(); return { ...sheets, ok: true };
+    },
+    insert_rows: async (at, count) => {
+      window.__calls.structural.push(['insert_rows', at, count]);
+      shift('r', at, count); return touch();
+    },
+    insert_cols: async (at, count) => {
+      window.__calls.structural.push(['insert_cols', at, count]);
+      shift('c', at, count); return touch();
+    },
+    delete_rows: async (r0, r1) => {
+      window.__calls.structural.push(['delete_rows', r0, r1]);
+      shift('r', r0, -(r1 - r0 + 1)); return touch();
+    },
+    delete_cols: async (c0, c1) => {
+      window.__calls.structural.push(['delete_cols', c0, c1]);
+      shift('c', c0, -(c1 - c0 + 1)); return touch();
+    },
+    undo: async () => { window.__calls.undo_calls++; return touch(); },
     redo: async () => touch(),
     save: async () => { window.__calls.save++; return { ok: true, path: 'book.json' }; },
     save_dialog: async () => ({ ok: true, path: 'book.json' }),
@@ -469,6 +573,23 @@ def test_column_resize_widens_the_column(page) -> None:
     assert info["lineTracks"] is True
 
 
+def test_column_resize_persists_to_the_workbook(page) -> None:
+    """The width is workbook state, not session state -- without the write-back
+    a resize is lost the moment the sheet is reloaded."""
+    handle = page.locator(".col-resize").first
+    box = handle.bounding_box()
+    page.mouse.move(box["x"] + 3, box["y"] + 11)
+    page.mouse.down()
+    page.mouse.move(box["x"] + 3 + 50, box["y"] + 11)
+    page.mouse.up()
+    page.wait_for_function("() => window.__calls.col_widths.length === 1")
+    col, px = page.evaluate("() => window.__calls.col_widths[0]")
+    assert col == 0
+    assert px > 120
+    # Written once, on release -- not on every frame of the drag.
+    assert page.evaluate("() => window.__calls.col_widths.length") == 1
+
+
 # --- command layer, status bar (Phase 3) -----------------------------------
 
 
@@ -598,3 +719,281 @@ def test_reading_a_model_from_the_selection_does_not_solve(page) -> None:
     dialog.get_by_text(re.compile("read from")).wait_for()
     assert dialog.get_by_label("Objective").input_value() == "B2"
     assert page.get_by_test_id("solve-result").count() == 0
+
+
+# --- structural edits + sheet management -----------------------------------
+
+
+def test_insert_row_shifts_the_sheet_down(page) -> None:
+    page.get_by_text("Widget").click()  # A4
+    page.get_by_role("menuitem", name="Insert").click()
+    page.get_by_role("menuitem", name=re.compile("Insert Row Above")).click()
+    page.wait_for_function("() => window.__calls.structural.length === 1")
+    assert page.evaluate("() => window.__calls.structural[0]") == ["insert_rows", 3, 1]
+    # The grid refetched: A4 is now blank and Widget moved to A5.
+    page.get_by_text("Widget").click()
+    assert page.locator(".name-box").input_value() == "A5"
+
+
+def test_delete_row_removes_the_selected_row(page) -> None:
+    page.get_by_text("Widget").click()  # A4
+    page.get_by_role("menuitem", name="Insert").click()
+    page.get_by_role("menuitem", name=re.compile("^Delete Row")).click()
+    page.wait_for_function("() => window.__calls.structural.length === 1")
+    assert page.evaluate("() => window.__calls.structural[0]") == ["delete_rows", 3, 3]
+    page.get_by_text("Gadget").click()  # slid up into the freed row
+    assert page.locator(".name-box").input_value() == "A4"
+
+
+def test_insert_column_uses_the_selected_span(page) -> None:
+    """A two-column selection inserts two columns -- the menu says so, and the
+    call must agree with the label the user read."""
+    page.get_by_text("Item").click()  # A3
+    page.keyboard.press("Shift+ArrowRight")  # A3:B3
+    page.get_by_role("menuitem", name="Insert").click()
+    assert page.get_by_role("menuitem", name="Insert 2 Columns Left").is_visible()
+    page.get_by_role("menuitem", name="Insert 2 Columns Left").click()
+    page.wait_for_function("() => window.__calls.structural.length === 1")
+    assert page.evaluate("() => window.__calls.structural[0]") == ["insert_cols", 0, 2]
+
+
+def test_new_sheet_dialog_creates_and_switches_to_the_sheet(page) -> None:
+    page.get_by_role("menuitem", name="Sheet").click()
+    page.get_by_role("menuitem", name=re.compile("New Sheet")).click()
+    dialog = page.get_by_role("dialog")
+    dialog.get_by_role("textbox").fill("Budget")
+    dialog.get_by_role("button", name="Create").click()
+    page.wait_for_function(
+        '() => JSON.stringify(window.__calls.sheet_ops) === \'[["add","Budget"]]\''
+    )
+    # The tab strip picked up the new sheet and made it active.
+    page.get_by_label("Active sheet").click()
+    assert page.get_by_role("option", name="Budget").is_visible()
+
+
+def test_rename_dialog_starts_from_the_current_name(page) -> None:
+    page.get_by_role("menuitem", name="Sheet").click()
+    page.get_by_role("menuitem", name=re.compile("Rename")).click()
+    dialog = page.get_by_role("dialog")
+    assert dialog.get_by_role("textbox").input_value() == "Sheet1"
+    dialog.get_by_role("textbox").fill("Inputs")
+    dialog.get_by_role("button", name="Rename").click()
+    page.wait_for_function(
+        '() => JSON.stringify(window.__calls.sheet_ops) === \'[["rename","Sheet1","Inputs"]]\''
+    )
+
+
+def test_delete_sheet_removes_the_active_one(page) -> None:
+    page.get_by_label("Active sheet").click()
+    page.get_by_role("option", name="Data").click()
+    page.get_by_role("menuitem", name="Sheet").click()
+    page.get_by_role("menuitem", name="Delete").click()
+    page.wait_for_function(
+        '() => JSON.stringify(window.__calls.sheet_ops) === \'[["del","Data"]]\''
+    )
+
+
+def test_move_right_reorders_the_active_sheet(page) -> None:
+    page.get_by_role("menuitem", name="Sheet").click()
+    page.get_by_role("menuitem", name="Move Right").click()
+    page.wait_for_function(
+        '() => JSON.stringify(window.__calls.sheet_ops) === \'[["move","Sheet1",1]]\''
+    )
+    # The dropdown reflects the new order without a reload.
+    page.get_by_label("Active sheet").click()
+    options = page.get_by_role("option").all_text_contents()
+    assert options == ["Data", "Sheet1"]
+
+
+def test_a_failed_sheet_operation_reports_instead_of_failing_silently(page) -> None:
+    page.get_by_role("menuitem", name="Sheet").click()
+    page.get_by_role("menuitem", name=re.compile("New Sheet")).click()
+    dialog = page.get_by_role("dialog")
+    dialog.get_by_role("textbox").fill("Data")  # already exists
+    dialog.get_by_role("button", name="Create").click()
+    page.get_by_text(re.compile("already exists")).wait_for()
+
+
+# --- header selection, find, focus guard -----------------------------------
+
+
+def test_clicking_a_row_header_selects_the_whole_row(page) -> None:
+    """The gesture the Insert/Delete Row menu items are built around."""
+    page.locator(".gut", has_text="4").first.click()
+    assert page.locator(".name-box").input_value() == "A4"
+    page.get_by_role("menuitem", name="Insert").click()
+    # A whole-row selection spans every column, so the row count stays 1.
+    assert page.get_by_role("menuitem", name="Delete Row").is_visible()
+    page.keyboard.press("Escape")
+    assert "256 cells" in page.locator(".statusbar").text_content()
+
+
+def test_clicking_a_column_header_selects_the_whole_column(page) -> None:
+    page.locator(".hdr", has_text="B").first.click()
+    assert page.locator(".name-box").input_value() == "B1"
+    assert "1024 cells" in page.locator(".statusbar").text_content()
+
+
+def test_shift_clicking_a_row_header_extends_over_a_span(page) -> None:
+    page.locator(".gut", has_text="3").first.click()
+    page.locator(".gut", has_text="5").first.click(modifiers=["Shift"])
+    page.get_by_role("menuitem", name="Insert").click()
+    assert page.get_by_role("menuitem", name="Delete 3 Rows").is_visible()
+
+
+def test_a_row_header_selection_deletes_that_row(page) -> None:
+    page.locator(".gut", has_text="4").first.click()  # the Widget row
+    page.get_by_role("menuitem", name="Insert").click()
+    page.get_by_role("menuitem", name=re.compile("^Delete Row")).click()
+    page.wait_for_function("() => window.__calls.structural.length === 1")
+    assert page.evaluate("() => window.__calls.structural[0]") == ["delete_rows", 3, 3]
+
+
+def test_find_jumps_to_a_match_and_steps_through(page) -> None:
+    page.keyboard.press("Control+f")
+    find = page.get_by_label("Find", exact=True)
+    find.fill("g")  # Widget, Gadget, Gizmo, 'gridcalc demo'
+    page.wait_for_function("() => window.__calls.search.length > 0")
+    # Lands on the first hit without waiting for Enter.
+    assert page.locator(".name-box").input_value() == "A1"
+    find.press("Enter")
+    assert page.locator(".name-box").input_value() == "A4"
+    find.press("Shift+Enter")
+    assert page.locator(".name-box").input_value() == "A1"
+
+
+def test_find_reports_the_match_count_and_an_empty_result(page) -> None:
+    page.keyboard.press("Control+f")
+    find = page.get_by_label("Find", exact=True)
+    find.fill("Widget")
+    page.get_by_text("1 of 1").wait_for()
+    find.fill("nothing-matches-this")
+    page.get_by_text("no matches").wait_for()
+
+
+def test_find_closes_on_escape_and_returns_focus_to_the_grid(page) -> None:
+    page.keyboard.press("Control+f")
+    page.get_by_label("Find", exact=True).fill("Gadget")
+    page.get_by_label("Find", exact=True).press("Escape")
+    page.wait_for_selector(".findbar", state="detached")
+    # Focus is back on the sheet: arrow keys navigate rather than doing nothing.
+    before = page.locator(".name-box").input_value()
+    page.keyboard.press("ArrowDown")
+    assert page.locator(".name-box").input_value() != before
+
+
+def test_ctrl_z_in_a_dialog_field_does_not_undo_the_workbook(page) -> None:
+    """The field owns its own undo. Before the guard, fixing a typo while
+    typing a cell ref here reverted the sheet behind the dialog."""
+    page.get_by_role("menuitem", name="Data").click()
+    page.get_by_role("menuitem", name=re.compile("Goal Seek")).click()
+    field = page.get_by_role("dialog").get_by_placeholder("A1")
+    field.click()
+    field.type("B7")
+    page.keyboard.press("Control+z")
+    assert page.evaluate("() => window.__calls.undo_calls || 0") == 0
+
+
+def test_ctrl_z_on_the_grid_still_undoes(page) -> None:
+    """The guard must not have disarmed the shortcut everywhere."""
+    page.get_by_text("Widget").click()
+    page.keyboard.press("Control+z")
+    page.wait_for_function("() => window.__calls.undo_calls === 1")
+
+
+# --- command palette -------------------------------------------------------
+
+
+def _palette(page):
+    page.keyboard.press("Control+k")
+    return page.get_by_role("dialog")
+
+
+def test_palette_opens_and_lists_commands(page) -> None:
+    dialog = _palette(page)
+    assert dialog.get_by_role("option", name=re.compile("Undo")).is_visible()
+    assert dialog.get_by_role("option", name=re.compile("Goal seek")).is_visible()
+
+
+def test_palette_filters_as_you_type_and_runs_on_enter(page) -> None:
+    dialog = _palette(page)
+    dialog.get_by_label("Command").fill("save")
+    dialog.get_by_label("Command").press("Enter")
+    page.wait_for_function("() => window.__calls.save === 1")
+    page.wait_for_selector("[role='dialog']", state="detached")
+
+
+def test_palette_matches_a_scattered_subsequence(page) -> None:
+    """Typing letters that only appear in order still finds the command --
+    the reason to type into a palette rather than read a menu."""
+    dialog = _palette(page)
+    dialog.get_by_label("Command").fill("fld")  # F-i-L-l D-own
+    assert "Fill down" in dialog.get_by_role("option").first.text_content()
+
+
+def test_palette_arrow_keys_move_the_highlight(page) -> None:
+    dialog = _palette(page)
+    dialog.get_by_label("Command").fill("sheet")
+    first = dialog.get_by_role("option").first
+    assert first.get_attribute("aria-selected") == "true"
+    dialog.get_by_label("Command").press("ArrowDown")
+    assert first.get_attribute("aria-selected") == "false"
+    assert dialog.get_by_role("option").nth(1).get_attribute("aria-selected") == "true"
+
+
+def test_palette_reports_when_nothing_matches(page) -> None:
+    dialog = _palette(page)
+    dialog.get_by_label("Command").fill("zzzzzz")
+    assert dialog.get_by_text("No matching command").is_visible()
+
+
+def test_a_command_needing_a_value_prompts_for_it(page) -> None:
+    """The second step is what lets `:width`/`:name` live in the registry
+    without a bespoke dialog each."""
+    page.get_by_text("Widget").click()  # a selection for the name to cover
+    dialog = _palette(page)
+    dialog.get_by_label("Command").fill("define name")
+    dialog.get_by_label("Command").press("Enter")
+    field = dialog.get_by_label("Name")
+    field.fill("Revenue")
+    field.press("Enter")
+    page.wait_for_function("() => window.__calls.names.length === 1")
+    assert page.evaluate("() => window.__calls.names[0]") == ["set", "Revenue", "A4"]
+
+
+def test_escape_from_the_argument_step_returns_to_the_list(page) -> None:
+    dialog = _palette(page)
+    dialog.get_by_label("Command").fill("go to")
+    dialog.get_by_label("Command").press("Enter")
+    dialog.get_by_label("Reference").press("Escape")
+    # Back to the command list, not out of the palette entirely.
+    assert dialog.get_by_label("Command").is_visible()
+
+
+def test_palette_go_to_moves_the_cursor(page) -> None:
+    dialog = _palette(page)
+    dialog.get_by_label("Command").fill("go to")
+    dialog.get_by_label("Command").press("Enter")
+    field = dialog.get_by_label("Reference")
+    field.fill("C7")
+    field.press("Enter")
+    page.wait_for_selector("[role='dialog']", state="detached")
+    assert page.locator(".name-box").input_value() == "C7"
+
+
+def test_palette_recalculate_reaches_the_bridge(page) -> None:
+    dialog = _palette(page)
+    dialog.get_by_label("Command").fill("recalc")
+    dialog.get_by_label("Command").press("Enter")
+    page.wait_for_function("() => window.__calls.recalc === 1")
+
+
+def test_a_refused_command_reports_rather_than_failing_silently(page) -> None:
+    page.get_by_text("Widget").click()
+    dialog = _palette(page)
+    dialog.get_by_label("Command").fill("define name")
+    dialog.get_by_label("Command").press("Enter")
+    field = dialog.get_by_label("Name")
+    field.fill("9bad")
+    field.press("Enter")
+    page.get_by_text(re.compile("not a usable name")).wait_for()

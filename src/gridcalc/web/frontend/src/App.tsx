@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { MenuBar, type EditCommands } from './components/MenuBar'
+import { MenuBar, type EditCommands, type StructureCommands } from './components/MenuBar'
 import { Toolbar } from './components/Toolbar'
 import { StatusBar } from './components/StatusBar'
 import { AboutDialog } from './components/AboutDialog'
@@ -7,9 +7,21 @@ import { OptimizeDialog } from './components/OptimizeDialog'
 import { GoalDialog } from './components/GoalDialog'
 import { SweepDialog } from './components/SweepDialog'
 import { ChartDialog } from './components/ChartDialog'
+import { SheetDialog, type SheetMode } from './components/SheetDialog'
+import { FindBar } from './components/FindBar'
+import { CommandPalette } from './components/CommandPalette'
+import { buildRegistry } from './lib/registry'
 import { Grid, type GridHandle } from './components/Grid'
 import { useWorkbook } from './hooks/useWorkbook'
 import type { CellAnnotation, Selection } from './lib/grid'
+
+// Whether an event landed in something the user is typing into. `contentEditable`
+// counts: a rich-text host is still a field, even though it is not an <input>.
+function isTextField(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tag = target.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable
+}
 
 // The application shell: Radix menubar + toolbar wired to the workbook bridge, a
 // virtualized grid, a status bar, and the feature dialogs (optimize / goal seek
@@ -28,6 +40,10 @@ export function App() {
   const [goalOpen, setGoalOpen] = useState(false)
   const [sweepOpen, setSweepOpen] = useState(false)
   const [chartOpen, setChartOpen] = useState(false)
+  const [sheetOpen, setSheetOpen] = useState(false)
+  const [sheetMode, setSheetMode] = useState<SheetMode>('add')
+  const [findOpen, setFindOpen] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
   // Solver output painted on the sheet. Cleared when the workbook changes
   // underneath it, since an annotation describes one particular solution.
   const [annotations, setAnnotations] = useState<Record<string, CellAnnotation>>({})
@@ -66,18 +82,93 @@ export function App() {
     }
   }, [])
 
+  // Insert/delete row and column, scoped to the selection: the engine works one
+  // line at a time, so a multi-row selection becomes that many inserts, or one
+  // batched delete of the span.
+  const structure = useMemo<StructureCommands | null>(() => {
+    if (!selection) return null
+    const { r0, r1, c0, c1 } = selection
+    return {
+      rows: r1 - r0 + 1,
+      cols: c1 - c0 + 1,
+      insertRows: () => void wb.actions.insertRows(r0, r1 - r0 + 1),
+      insertCols: () => void wb.actions.insertCols(c0, c1 - c0 + 1),
+      deleteRows: () => void wb.actions.deleteRows(r0, r1),
+      deleteCols: () => void wb.actions.deleteCols(c0, c1),
+    }
+  }, [selection, wb.actions])
+
+  const openSheetDialog = useCallback((mode: SheetMode) => {
+    setSheetMode(mode)
+    setSheetOpen(true)
+  }, [])
+
+  // Rebuilt whenever anything a command closes over changes -- the selection
+  // it acts on, the sheet list it names, the enabled predicates. Cheap: it is
+  // a list of closures, built only when the palette is about to read it.
+  const registry = useMemo(
+    () =>
+      buildRegistry({
+        actions: wb.actions,
+        commands,
+        structure,
+        sheets: wb.sheets,
+        selection,
+        goto: (ref) => grid.current?.goto(ref),
+        openFind: () => setFindOpen(true),
+        openOptimize: () => setOptOpen(true),
+        openGoal: () => setGoalOpen(true),
+        openSweep: () => setSweepOpen(true),
+        openChart: () => setChartOpen(true),
+        openAbout: () => setAboutOpen(true),
+        addSheet: () => openSheetDialog('add'),
+        renameSheet: () => openSheetDialog('rename'),
+        onFormat: formatSel,
+        onDefaultFormat: (fmt) => void wb.actions.setDefaultFormat(fmt),
+        touched: wb.touched,
+        notify: wb.notify,
+        fail: wb.fail,
+      }),
+    [wb, commands, structure, selection, formatSel, openSheetDialog],
+  )
+
   const { fail } = wb
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return
       const k = e.key.toLowerCase()
+      // Open and save are app-level commands that no text field lays claim to,
+      // so they work wherever focus is. Undo/redo and the format toggles are
+      // different: an <input> handles Ctrl+Z itself, and Ctrl+B inside a dialog
+      // means nothing to the sheet behind it. Without this guard, fixing a typo
+      // while typing a cell ref in Goal Seek undid the *workbook*. The grid's
+      // own editors stop propagation themselves; a dialog cannot, because this
+      // listener is on the window.
       if (k === 'o') {
         e.preventDefault()
         void wb.actions.open()
-      } else if (k === 's') {
+        return
+      }
+      // Find is deliberately above the text-field guard: Ctrl+F while the find
+      // input already has focus should re-focus and select it, not fall
+      // through to the browser's own find.
+      if (k === 'f') {
+        e.preventDefault()
+        setFindOpen(true)
+        return
+      }
+      if (k === 'k') {
+        e.preventDefault()
+        setPaletteOpen(true)
+        return
+      }
+      if (k === 's') {
         e.preventDefault()
         void wb.actions.save()
-      } else if (k === 'z') {
+        return
+      }
+      if (isTextField(e.target)) return
+      if (k === 'z') {
         e.preventDefault()
         void (e.shiftKey ? wb.actions.redo() : wb.actions.undo())
       } else if (k === 'y') {
@@ -107,6 +198,8 @@ export function App() {
       <MenuBar
         actions={wb.actions}
         commands={commands}
+        structure={structure}
+        sheets={wb.sheets}
         onAbout={() => setAboutOpen(true)}
         onOptimize={() => setOptOpen(true)}
         onGoal={() => setGoalOpen(true)}
@@ -114,8 +207,21 @@ export function App() {
         onChart={() => setChartOpen(true)}
         onFormat={formatSel}
         onDefaultFormat={(fmt) => void wb.actions.setDefaultFormat(fmt)}
+        onAddSheet={() => openSheetDialog('add')}
+        onRenameSheet={() => openSheetDialog('rename')}
+        onFind={() => setFindOpen(true)}
       />
       <Toolbar wb={wb} onFormat={formatSel} />
+      <FindBar
+        open={findOpen}
+        onClose={() => {
+          setFindOpen(false)
+          grid.current?.focus()
+        }}
+        onGoto={(ref) => grid.current?.goto(ref)}
+        onError={wb.fail}
+        revision={wb.mutations}
+      />
       <main className="stage">
         {wb.ready && wb.dims && wb.sheets ? (
           <Grid
@@ -156,6 +262,14 @@ export function App() {
       />
       <SweepDialog open={sweepOpen} onOpenChange={setSweepOpen} />
       <ChartDialog open={chartOpen} onOpenChange={setChartOpen} rangeRef={selection?.ref} />
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} commands={registry} />
+      <SheetDialog
+        open={sheetOpen}
+        mode={sheetMode}
+        sheets={wb.sheets}
+        actions={wb.actions}
+        onOpenChange={setSheetOpen}
+      />
     </div>
   )
 }

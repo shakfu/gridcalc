@@ -1,31 +1,19 @@
-"""Grid text/value search -- pure helpers used by the search prompt."""
+"""Curses-facing search wrappers over the frontend-neutral `gridcalc.search`.
+
+The matching itself moved down to `gridcalc/search.py` so the web frontend can
+reuse it without importing `tui` (the same promotion `display.py` / `undo.py`
+got). What stays here is the part that is about *this* view: moving the grid
+cursor, and rendering the `[3/12]` position indicator into the status line.
+"""
 
 from __future__ import annotations
 
-import math
+from ..engine import Grid
+from ..search import find_matches, next_match
 
-from ..engine import EMPTY, FORMULA, NUM, Grid
-
-
-def _search_grid(g: Grid, pattern: str) -> list[tuple[int, int]]:
-    """Find all cells whose text or display value matches pattern (case-insensitive)."""
-    pat = pattern.lower()
-    matches: list[tuple[int, int]] = []
-    for (c, r), cl in sorted(g._cells.items(), key=lambda x: (x[0][1], x[0][0])):
-        if cl.type == EMPTY:
-            continue
-        text = cl.text.lower()
-        if pat in text:
-            matches.append((c, r))
-            continue
-        if cl.type in (NUM, FORMULA) and not math.isnan(cl.val):
-            if abs(cl.val) < 1e15 and cl.val == int(cl.val):
-                valstr = str(int(cl.val))
-            else:
-                valstr = f"{cl.val:g}"
-            if pat in valstr:
-                matches.append((c, r))
-    return matches
+# Retained under its historical private name: `tui/__init__.py` re-exports it
+# and a fair number of tests import it from there.
+_search_grid = find_matches
 
 
 def search_indicator(g: Grid, matches: list[tuple[int, int]]) -> str:
@@ -40,19 +28,7 @@ def search_indicator(g: Grid, matches: list[tuple[int, int]]) -> str:
 
 
 def search_next(g: Grid, matches: list[tuple[int, int]], forward: bool = True) -> None:
-    """Jump to the next (or previous) search match."""
-    if not matches:
-        return
-    cur = (g.cc, g.cr)
-    if forward:
-        for c, r in matches:
-            if (r, c) > (cur[1], cur[0]):
-                g.cc, g.cr = c, r
-                return
-        g.cc, g.cr = matches[0]
-    else:
-        for c, r in reversed(matches):
-            if (r, c) < (cur[1], cur[0]):
-                g.cc, g.cr = c, r
-                return
-        g.cc, g.cr = matches[-1]
+    """Jump the cursor to the next (or previous) search match."""
+    target = next_match(matches, (g.cc, g.cr), forward)
+    if target is not None:
+        g.cc, g.cr = target

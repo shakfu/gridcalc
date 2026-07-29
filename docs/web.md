@@ -26,8 +26,8 @@ where the work actually got to, so the two do not silently diverge.
   anticipated the renderer-agnostic `chart_data` shape would allow.
 - **P2 is partial.** Formula bar, per-cell and global number formats, styles,
   and a status bar with selection aggregates exist. Row/column insert-delete,
-  named ranges, search, sort, sheet management, column-width persistence, and
-  a command palette do **not**.
+  sheet add/rename/delete/reorder, persisted per-column widths, find, named
+  ranges, and a Ctrl-K command palette now ship too. Sort does **not**.
 - **P3 is untouched.** No frozen builds, no per-platform QA, no signing. The
   IME/CJK and accessibility claims from Section 5e remain unvalidated in a real
   webview; the grid still has no ARIA grid semantics.
@@ -114,13 +114,14 @@ UI, [E] needs engine/new work.
 | **`:opt` LP/MIP over selection / model** (`opt.solve`, `opt.sweep`, `opt.infer_model`) | **No** | [A][C] high value |
 | **`:goal` goal-seek** (`goalseek.seek`) | **No** | [A][C] high value |
 | Sensitivity / sweep report rendering | No | [A][C] |
-| Insert/delete/move row+col (`insertrow`/`deleterow`/`swaprow`, engine.py:2171+) | No | [A][C] |
+| Insert/delete row+col (`insertrow`/`deleterow`, engine.py:2171+) | Yes | move (`swaprow`) still open |
 | Replicate (`replicatecell`) beyond fill down/right | Partial (fill only) | [A][C] |
 | Per-cell + global number format / style (fmt/bold/underline/italic/fmtstr) | Read-only | [A][C] |
-| Column width, freeze titles (`:width`, `:tv/:th`) | No | [A][C] |
-| Named ranges (`:name`/`:names`/`:unname`) | No | [A][C] |
+| Column width (per-column, `Sheet.widths`) | Yes (web-only field) | -- |
+| Freeze titles (`:tv`/`:th`) | No | [A][C] |
+| Named ranges (`:name`/`:names`/`:unname`) | Yes (palette) | -- |
 | Sheet add/del/rename/move | Switch only | [A][C] |
-| Search (`/`, `n`, `N`) | No | [A][C] |
+| Search (`/`, `n`, `N`) | Yes (find bar) | -- |
 | Sort (`:sort`) | No | [A][C] |
 | Formula mode switch EXCEL/HYBRID/PYTHON (`:mode`) | No (implicit) | [A][C][E-security] |
 | Object editor for Vec/ndarray/DataFrame cells (`tui/objedit.py`) | No | [A][C] larger |
@@ -136,11 +137,6 @@ calls + build client UI." The engine is ready.
 
 These are latent bugs the spike has not tripped yet; a product will.
 
-- **Named ranges are not shifted on structural edits.** `_shiftrefs`
-  (engine.py:2137) rewrites cell-text refs on insert/delete but does not adjust
-  `NamedRange` coordinates in `g.names`. Insert a row above a named range and
-  the name silently points at the wrong cells. Pre-existing engine bug, not
-  web-specific, but a row/col-editing GUI makes it easy to hit.
 - **`save` trusts a client-supplied path** (`Api.save`, web/__init__.py). In
   the in-process desktop model the "client" is local so the blast radius is
   small, but any move toward a served frontend makes this arbitrary-path write.

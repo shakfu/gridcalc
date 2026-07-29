@@ -44,6 +44,11 @@ NROW = 1024
 MAXNAMES = 256
 MAXCODE = 8192
 CW_DEFAULT = 8
+# Bounds for `Sheet.widths`, the per-column pixel widths a graphical frontend
+# records. Wide enough to be usable, narrow enough that a corrupt or hostile
+# file cannot lay out a sheet kilometres across.
+COL_PX_MIN = 20
+COL_PX_MAX = 2000
 FILE_VERSION = 2
 
 EMPTY = 0
@@ -901,6 +906,27 @@ def _rewrite_sheet_prefix(text: str, old: str, new: str) -> str:
     return "".join(out)
 
 
+def _decode_widths(payload: Any) -> dict[int, int]:
+    """Parse a sheet's ``widths`` mapping from JSON, dropping anything odd.
+
+    Keys arrive as strings (JSON object keys always do) and both keys and
+    values come from a file the loader does not control, so entries that are
+    not in-range integers are skipped rather than trusted -- a malformed
+    width should cost the user that one column's size, not the workbook.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    out: dict[int, int] = {}
+    for key, value in payload.items():
+        try:
+            col, width = int(key), int(value)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= col < NCOL and COL_PX_MIN <= width <= COL_PX_MAX:
+            out[col] = width
+    return out
+
+
 class Sheet:
     """A single named sheet's cell store, cycle set, and cursor.
 
@@ -911,7 +937,7 @@ class Sheet:
     existing single-sheet code keeps working unchanged.
     """
 
-    __slots__ = ("name", "_cells", "_circular", "cc", "cr")
+    __slots__ = ("name", "_cells", "_circular", "cc", "cr", "widths")
 
     def __init__(self, name: str = "Sheet1") -> None:
         self.name: str = name
@@ -919,6 +945,14 @@ class Sheet:
         self._circular: set[tuple[int, int]] = set()
         self.cc: int = 0
         self.cr: int = 0
+        # Per-column display widths in pixels, keyed by column index; absent
+        # columns use the frontend's default. A *pixel* map is deliberately
+        # not the same thing as `Grid.cw`, which is a uniform width in
+        # character cells: the curses renderer lays columns out by multiplying
+        # that one number and has no notion of a per-column size, so it
+        # ignores this. Written by the web view, which does, and carried
+        # through save/load so a resize survives the session.
+        self.widths: dict[int, int] = {}
 
 
 class Grid:
@@ -934,6 +968,9 @@ class Grid:
         self.cw: int = CW_DEFAULT
         self.filename: str | None = None
         self.names: list[NamedRange] = []
+        # Named ranges bound into the PYTHON-mode eval globals on the last
+        # recalc, so a name that disappears can be unbound again.
+        self._injected_names: set[str] = set()
         # Workbook-persistent LP model definitions. Maps a user-chosen
         # name (or "default" for the convention slot) to an OptModel
         # holding the spec strings the user typed for sense/objective/
@@ -1416,6 +1453,16 @@ class Grid:
                     g[name] = Vec(cl.arr, cols=cl.arr_cols)
                 else:
                     g[name] = cl.val
+
+            # Unbind names that no longer exist. The eval globals persist
+            # across recalcs, so a name removed by `:unname` -- or dropped by a
+            # structural edit that deleted every row it covered -- would
+            # otherwise keep resolving to the Vec injected on the last pass,
+            # leaving formulas showing a stale answer instead of failing.
+            live = {nr.name for nr in self.names}
+            for stale in self._injected_names - live:
+                g.pop(stale, None)
+            self._injected_names = live
 
             # Inject named ranges (PYTHON mode). A sheet-qualified name reads
             # from that sheet; a sheet-agnostic one from the active sheet.
@@ -2168,6 +2215,78 @@ class Grid:
             if changed_flag:
                 cl.text = "".join(out)
 
+    def _shift_names(self, axis: str, pos: int, direction: int) -> None:
+        """Move named-range coordinates across an insert/delete.
+
+        The sibling of `_shiftrefs`: that rewrites references written in cell
+        text, this moves the rectangles held in `self.names`. Without it a name
+        keeps pointing at the coordinates it had before the edit, so it reads
+        the wrong cells and reports no error at all -- silently wrong answers,
+        the worst failure mode available.
+
+        Rules match a spreadsheet's: a line inserted *above* a range moves the
+        whole range down; one inserted *inside* it grows the range; deletes
+        mirror both. A delete that consumes every line of a range leaves
+        nothing to point at, so the name is dropped -- a formula using it then
+        fails as an unknown name, which is visible, rather than resolving to a
+        rectangle that no longer means anything. (Excel shows `#REF!` here; the
+        distinction is the error text, not the outcome.)
+
+        Only names resolving against the edited sheet move: sheet-qualified
+        ones bound elsewhere are untouched, and a sheet-agnostic name follows
+        the active sheet because that is where it resolves.
+        """
+        active = self._active.name
+        limit = NROW if axis == "R" else NCOL
+        kept: list[NamedRange] = []
+        for nr in self.names:
+            if nr.sheet is not None and nr.sheet != active:
+                kept.append(nr)
+                continue
+            lo, hi = (nr.r1, nr.r2) if axis == "R" else (nr.c1, nr.c2)
+            if direction > 0:
+                if pos <= lo:
+                    lo += 1
+                    hi += 1
+                elif pos <= hi:
+                    hi += 1
+                lo = min(lo, limit - 1)
+                hi = min(hi, limit - 1)
+            else:
+                if pos < lo:
+                    lo -= 1
+                    hi -= 1
+                elif pos <= hi:
+                    hi -= 1
+                if hi < lo:
+                    continue  # the range lost every line it covered
+            if axis == "R":
+                nr.r1, nr.r2 = lo, hi
+            else:
+                nr.c1, nr.c2 = lo, hi
+            kept.append(nr)
+        self.names = kept
+
+    def _shift_widths(self, pos: int, direction: int) -> None:
+        """Move per-column widths across a column insert/delete.
+
+        A width belongs to the column it was dragged on, so it has to travel
+        with that column -- otherwise inserting a column leaves every width to
+        the right attached to its neighbour. A deleted column's width goes with
+        it.
+        """
+        widths = self._active.widths
+        if not widths:
+            return
+        shifted: dict[int, int] = {}
+        for c, w in widths.items():
+            if direction < 0 and c == pos:
+                continue  # the column itself is gone
+            nc = c + direction if c >= pos else c
+            if 0 <= nc < NCOL:
+                shifted[nc] = w
+        self._active.widths = shifted
+
     def insertrow(self, at: int) -> None:
         self._drop_all_spills()
         new_cells: dict[tuple[int, int], Cell] = {}
@@ -2179,6 +2298,7 @@ class Grid:
                 new_cells[(c, r)] = cl
         self._cells = new_cells
         self._shiftrefs("R", at, +1)
+        self._shift_names("R", at, +1)
         self._rebuild_dep_graph()
         self.dirty = 1
 
@@ -2193,12 +2313,15 @@ class Grid:
                 new_cells[(c, r)] = cl
         self._cells = new_cells
         self._shiftrefs("C", at, +1)
+        self._shift_names("C", at, +1)
+        self._shift_widths(at, +1)
         self._rebuild_dep_graph()
         self.dirty = 1
 
     def deleterow(self, at: int) -> None:
         self._drop_all_spills()
         self._shiftrefs("R", at, -1)
+        self._shift_names("R", at, -1)
         new_cells: dict[tuple[int, int], Cell] = {}
         for (c, r), cl in self._cells.items():
             if r == at:
@@ -2214,6 +2337,8 @@ class Grid:
     def deletecol(self, at: int) -> None:
         self._drop_all_spills()
         self._shiftrefs("C", at, -1)
+        self._shift_names("C", at, -1)
+        self._shift_widths(at, -1)
         new_cells: dict[tuple[int, int], Cell] = {}
         for (c, r), cl in self._cells.items():
             if c == at:
@@ -2447,6 +2572,7 @@ class Grid:
                     final_name = f"{name}_{suffix}"
                     suffix += 1
                 sh = Sheet(name=final_name)
+                sh.widths = _decode_widths(entry.get("widths"))
                 self.sheets.append(sh)
                 self.active = len(self.sheets) - 1
                 cells_payload = entry.get("cells", [])
@@ -2562,9 +2688,14 @@ class Grid:
         # round-trip restores the user's view even when sheet order
         # changes.
         out["active"] = self._active.name
-        out["sheets"] = [
-            {"name": s.name, "cells": self._encode_sheet_rows(s._cells)} for s in self.sheets
-        ]
+        out["sheets"] = []
+        for s in self.sheets:
+            entry: dict[str, Any] = {"name": s.name, "cells": self._encode_sheet_rows(s._cells)}
+            if s.widths:
+                # Omitted when empty, so a workbook never touched by a
+                # graphical frontend serializes exactly as it did before.
+                entry["widths"] = {str(c): w for c, w in sorted(s.widths.items())}
+            out["sheets"].append(entry)
 
         try:
             with open(filename, "w") as f:

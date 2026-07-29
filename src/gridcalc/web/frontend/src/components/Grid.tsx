@@ -218,6 +218,22 @@ export function Grid({
     scrollEl.current?.focus()
   }, [])
 
+  // Column widths are per-sheet workbook state, so they are fetched here
+  // rather than passed down: the app remounts this component per sheet, which
+  // makes mount exactly the moment the right set is known.
+  useEffect(() => {
+    let alive = true
+    void guard('column widths', () => bridge.col_widths()).then((r) => {
+      if (!alive || !r) return
+      const m = new Map<number, number>()
+      for (const [c, w] of Object.entries(r.widths)) m.set(Number(c), w)
+      if (m.size) setColWidths(m)
+    })
+    return () => {
+      alive = false
+    }
+  }, [guard])
+
   useEffect(() => {
     if (editing) return
     void loadSource(cur.r, cur.c)
@@ -484,11 +500,17 @@ export function Grid({
         if (dir) void fillSelection(dir)
       }
       if (resizing.current) {
+        const { col } = resizing.current
         resizing.current = null
+        // Persist on release, not on every mousemove: a drag is dozens of
+        // frames and each bridge call is a round trip into Python.
+        const w = colWidthsRef.current.get(col)
+        if (w !== undefined) void guard('column width', () => bridge.set_col_width(col, w))
         void refresh() // the visible column range may have changed
       }
       dragging.current = false
       pointing.current = false
+      lineDrag.current = null
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
@@ -496,7 +518,46 @@ export function Grid({
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
-  }, [refresh, fillSelection])
+  }, [refresh, fillSelection, guard])
+
+  // Selecting a whole row or column by its header. This is the gesture the
+  // Insert/Delete Row+Column menu items are built around -- they act on the
+  // selection and label themselves with its span, so without it the only way
+  // to delete three rows is to drag across three rows of cells.
+  //
+  // The selection runs to the last row/column rather than being a distinct
+  // "whole line" mode: everything downstream (stats, clear, format, the
+  // structural edits) already takes a rectangle, so a full-extent rectangle
+  // needs no new concept anywhere else.
+  const selectLine = useCallback(
+    (axis: 'row' | 'col', index: number, extend: boolean) => {
+      if (editing) void commit('none')
+      // The cursor lands on the near end (A4 for row 4) and the anchor holds
+      // the far end, matching a spreadsheet: the selection covers the line, but
+      // the *active* cell is the one you would start typing into. Shift-click
+      // leaves the anchor alone so the run extends from where it started.
+      if (axis === 'row') {
+        if (!extend) putAnchor({ r: index, c: ncol - 1 })
+        putCur({ r: index, c: 0 })
+      } else {
+        if (!extend) putAnchor({ r: nrow - 1, c: index })
+        putCur({ r: 0, c: index })
+      }
+      scrollEl.current?.focus()
+    },
+    [editing, commit, putAnchor, putCur, ncol, nrow],
+  )
+
+  // A drag across headers extends the run, mirroring a cell drag.
+  const lineDrag = useRef<'row' | 'col' | null>(null)
+
+  const startLineSelect = (axis: 'row' | 'col', index: number) => (e: MouseEvent) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation() // not a cell click, and on a column header not a resize
+    selectLine(axis, index, e.shiftKey)
+    lineDrag.current = axis
+  }
 
   const onMouseDown = (e: MouseEvent) => {
     const hit = cellAt(e.clientX, e.clientY)
@@ -622,7 +683,15 @@ export function Grid({
     const items = []
     for (let c = view.c0; c < view.c0 + view.cols; c++) {
       items.push(
-        <div key={c} className="hdr" style={{ left: xs[c], width: xs[c + 1] - xs[c] }}>
+        <div
+          key={c}
+          className="hdr"
+          style={{ left: xs[c], width: xs[c + 1] - xs[c] }}
+          onMouseDown={startLineSelect('col', c)}
+          onMouseEnter={() => {
+            if (lineDrag.current === 'col') selectLine('col', c, true)
+          }}
+        >
           {colName(c)}
         </div>,
       )
@@ -636,7 +705,7 @@ export function Grid({
       )
     }
     return items
-  }, [view, xs, startResize])
+  }, [view, xs, startResize, startLineSelect, selectLine])
 
   // Vertical gridlines at the real column boundaries so they track resizing
   // (the horizontal lines come from the canvas background, since rows are
@@ -677,13 +746,21 @@ export function Grid({
     const items = []
     for (let r = view.r0; r < view.r0 + view.rows; r++) {
       items.push(
-        <div key={r} className="gut" style={{ top: CH + r * CH }}>
+        <div
+          key={r}
+          className="gut"
+          style={{ top: CH + r * CH }}
+          onMouseDown={startLineSelect('row', r)}
+          onMouseEnter={() => {
+            if (lineDrag.current === 'row') selectLine('row', r, true)
+          }}
+        >
           {r + 1}
         </div>,
       )
     }
     return items
-  }, [view])
+  }, [view, startLineSelect, selectLine])
 
   return (
     <div className="grid">

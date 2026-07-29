@@ -126,6 +126,139 @@ button {
   border-bottom: 1px solid var(--border-soft);
 }
 
+/* Command palette. Anchored near the top rather than centred: the list grows
+   downward as the query loosens, and a centred box would jump as it does. */
+.palette {
+  position: fixed;
+  top: 12vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, 92vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--chrome);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
+  z-index: 50;
+}
+
+.palette-input {
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 15px;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  outline: none;
+}
+
+.palette-arg {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px 0;
+}
+
+.palette-list {
+  max-height: 46vh;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+}
+
+.palette-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.palette-item.is-active {
+  background: var(--accent);
+  color: var(--chrome);
+}
+
+/* The group reads as a breadcrumb, so it is fixed-width and muted -- it
+   should orient without competing with the command name. */
+.palette-group {
+  flex: none;
+  width: 6.5em;
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
+.palette-item.is-active .palette-group,
+.palette-item.is-active .palette-hint {
+  color: inherit;
+  opacity: 0.75;
+}
+
+.palette-title {
+  flex: 1;
+}
+
+.palette-hint {
+  flex: none;
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
+.palette-empty {
+  padding: 10px;
+  color: var(--muted);
+  list-style: none;
+}
+
+/* Visually hidden but present for screen readers -- Radix requires a Title. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Find bar: a second, transient chrome row under the toolbar. It shares the
+   toolbar's metrics so opening it does not visibly shift the grid's rhythm. */
+.findbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 10px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.find-input {
+  width: 220px;
+  padding: 3px 6px;
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.find-count {
+  min-width: 9ch; /* reserved so the buttons do not jog as the count changes */
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.find-note {
+  color: var(--muted);
+  font-style: italic;
+}
+
 .tool-btn,
 .select-trigger {
   display: inline-flex;
@@ -674,6 +807,11 @@ table.sens tr.breakpoint td {
   height: 22px;
   line-height: 22px;
   background: var(--hdr-bg);
+  /* Clicking a header selects the whole row/column, so it has to look like a
+     control. Text selection is off because dragging across headers extends
+     the selection and would otherwise also drag-select the labels. */
+  cursor: pointer;
+  user-select: none;
 }
 
 .hdr {

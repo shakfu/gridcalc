@@ -88,8 +88,13 @@ engine and formats cells exactly as the terminal does.
   It covers cell editing (in-cell or from the formula bar), navigation and
   selection, copy/cut/paste, fill, undo/redo, and per-cell and workbook number
   formats. A status bar reports the selection's aggregates and an
-  unsaved-changes marker. Structural edits (insert/delete row and column),
-  search, and named ranges are terminal-only for now.
+  unsaved-changes marker. Insert and delete row and column act on the
+  selection, and sheets can be added, renamed, deleted, and reordered. Dragging
+  a column edge resizes it and the width is saved with the workbook; clicking a
+  row or column header selects it. Ctrl-F finds text or computed values, and
+  Ctrl-K opens a command palette covering the whole command set -- including
+  the ones with no menu home, such as column width, named ranges, and manual
+  recalculation. Sort is terminal-only for now.
 
   Optimization is where it goes beyond the terminal. `Optimize` reads a model
   off a selected block or loads one saved in the workbook (the same models

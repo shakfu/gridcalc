@@ -1,5 +1,6 @@
 import type {
   ChartData,
+  ColWidths,
   Dims,
   GoalResult,
   OpenResult,
@@ -8,8 +9,12 @@ import type {
   InferResult,
   ModelSpec,
   ModelsResult,
+  NamesResult,
   SaveModelResult,
   SavedModel,
+  SearchMatch,
+  SearchResult,
+  SheetsResult,
   SolveResult,
   Stats,
   SweepResult,
@@ -120,6 +125,32 @@ export function installMockBridge(): void {
   }
   const styles = new Map<string, Style>()
   const models = new Map<string, SavedModel>()
+  const colWidths = new Map<number, number>()
+  const names = new Map<string, string>() // name -> A1 range
+
+  // Structural edits, mock-side: move every cell (and its style) across the
+  // insertion/deletion point. `delta > 0` inserts blank lines at `at`, `delta
+  // < 0` deletes `|delta|` of them starting there. The real engine also
+  // rewrites formula references; the mock stores source text verbatim and
+  // never evaluates, so there is nothing here to rewrite.
+  const shift = (axis: 'r' | 'c', at: number, delta: number) => {
+    const moved = new Map<string, string>()
+    const movedStyles = new Map<string, Style>()
+    for (const [k, text] of cells) {
+      const [r, c] = k.split(',').map(Number)
+      const along = axis === 'r' ? r : c
+      if (delta < 0 && along >= at && along < at - delta) continue // deleted
+      const shifted = along >= at ? along + delta : along
+      const nk = axis === 'r' ? key(shifted, c) : key(r, shifted)
+      moved.set(nk, text)
+      const st = styles.get(k)
+      if (st) movedStyles.set(nk, st)
+    }
+    cells.clear()
+    styles.clear()
+    for (const [k, v] of moved) cells.set(k, v)
+    for (const [k, v] of movedStyles) styles.set(k, v)
+  }
 
   let clip: {
     r0: number
@@ -135,6 +166,114 @@ export function installMockBridge(): void {
       set_active: async (idx: number): Promise<Sheets> => {
         if (idx >= 0 && idx < sheets.names.length) sheets.active = idx
         return { ...sheets }
+      },
+      search: async (pattern: string): Promise<SearchResult> => {
+        const pat = (pattern ?? '').toLowerCase()
+        if (!pat) return { matches: [], total: 0, truncated: false }
+        const hits: SearchMatch[] = []
+        for (const [k, text] of cells) {
+          if (!text.toLowerCase().includes(pat)) continue
+          const [r, c] = k.split(',').map(Number)
+          hits.push({ r, c, ref: `${colLetter(c)}${r + 1}` })
+        }
+        hits.sort((a, b) => a.r - b.r || a.c - b.c)
+        return { matches: hits, total: hits.length, truncated: false }
+      },
+      recalc: async () => ({ ok: true, dirty: dims.dirty }),
+      list_names: async (): Promise<NamesResult> => ({
+        names: [...names.entries()]
+          .map(([name, range]) => ({ name, range, sheet: '' }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      }),
+      set_name: async (name: string, rng: string) => {
+        const key = (name ?? '').trim()
+        if (!key || !/^[A-Za-z][A-Za-z0-9_]*$/.test(key)) {
+          return { ok: false, error: `not a usable name: '${name}'` }
+        }
+        if (/^[A-Za-z]{1,2}\d+$/.test(key)) {
+          return { ok: false, error: `${key} is a cell reference, not a name` }
+        }
+        names.set(key, rng)
+        touch()
+        return { ok: true, name: key }
+      },
+      delete_name: async (name: string) => {
+        if (!names.has(name)) return { ok: false, error: `no such name: ${name}` }
+        names.delete(name)
+        return touch()
+      },
+      col_widths: async (): Promise<ColWidths> => ({
+        widths: Object.fromEntries([...colWidths].map(([c, w]) => [String(c), w])),
+      }),
+      set_col_width: async (col: number, px: number) => {
+        colWidths.set(col, px)
+        return touch()
+      },
+      add_sheet: async (name: string): Promise<SheetsResult> => {
+        const n = (name ?? '').trim()
+        if (!n) return { ...sheets, ok: false, error: 'a sheet needs a name' }
+        if (sheets.names.includes(n)) {
+          return { ...sheets, ok: false, error: `sheet '${n}' already exists` }
+        }
+        sheets.names.push(n)
+        sheets.active = sheets.names.length - 1
+        touch()
+        return { ...sheets, ok: true }
+      },
+      delete_sheet: async (name: string): Promise<SheetsResult> => {
+        const i = sheets.names.indexOf(name)
+        if (i < 0) return { ...sheets, ok: false, error: `no such sheet: ${name}` }
+        if (sheets.names.length <= 1) {
+          return { ...sheets, ok: false, error: 'cannot remove the last sheet' }
+        }
+        sheets.names.splice(i, 1)
+        if (sheets.active >= sheets.names.length) sheets.active = sheets.names.length - 1
+        else if (sheets.active > i) sheets.active -= 1
+        touch()
+        return { ...sheets, ok: true }
+      },
+      rename_sheet: async (old: string, name: string): Promise<SheetsResult> => {
+        const n = (name ?? '').trim()
+        const i = sheets.names.indexOf(old)
+        if (!n) return { ...sheets, ok: false, error: 'a sheet needs a name' }
+        if (i < 0) return { ...sheets, ok: false, error: `no such sheet: ${old}` }
+        if (n !== old && sheets.names.includes(n)) {
+          return { ...sheets, ok: false, error: `sheet '${n}' already exists` }
+        }
+        sheets.names[i] = n
+        touch()
+        return { ...sheets, ok: true }
+      },
+      move_sheet: async (name: string, index: number): Promise<SheetsResult> => {
+        const i = sheets.names.indexOf(name)
+        if (i < 0) return { ...sheets, ok: false, error: `no such sheet: ${name}` }
+        if (index < 0 || index >= sheets.names.length) {
+          return { ...sheets, ok: false, error: `index out of range: ${index}` }
+        }
+        const activeName = sheets.names[sheets.active]
+        sheets.names.splice(i, 1)
+        sheets.names.splice(index, 0, name)
+        sheets.active = sheets.names.indexOf(activeName)
+        touch()
+        return { ...sheets, ok: true }
+      },
+      insert_rows: async (at: number, count: number) => {
+        shift('r', at, Math.max(1, count))
+        return touch()
+      },
+      insert_cols: async (at: number, count: number) => {
+        shift('c', at, Math.max(1, count))
+        return touch()
+      },
+      delete_rows: async (r0: number, r1: number) => {
+        const [a, b] = [Math.min(r0, r1), Math.max(r0, r1)]
+        shift('r', a, -(b - a + 1))
+        return touch()
+      },
+      delete_cols: async (c0: number, c1: number) => {
+        const [a, b] = [Math.min(c0, c1), Math.max(c0, c1)]
+        shift('c', a, -(b - a + 1))
+        return touch()
       },
       undo: async () => touch(),
       redo: async () => touch(),

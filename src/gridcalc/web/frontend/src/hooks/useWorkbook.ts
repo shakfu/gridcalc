@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { bridge, whenReady } from '../bridge/api'
-import type { Dims, Sheets } from '../bridge/types'
+import type { Dims, Sheets, SheetsResult } from '../bridge/types'
 import type { Rect } from '../lib/grid'
 
 export interface WorkbookActions {
@@ -10,6 +10,14 @@ export interface WorkbookActions {
   undo(): Promise<void>
   redo(): Promise<void>
   setSheet(idx: number): Promise<void>
+  addSheet(name: string): Promise<void>
+  deleteSheet(name: string): Promise<void>
+  renameSheet(old: string, name: string): Promise<void>
+  moveSheet(name: string, index: number): Promise<void>
+  insertRows(at: number, count: number): Promise<void>
+  insertCols(at: number, count: number): Promise<void>
+  deleteRows(r0: number, r1: number): Promise<void>
+  deleteCols(c0: number, c1: number): Promise<void>
   format(rect: Rect, spec: string): Promise<void>
   setDefaultFormat(fmt: string): Promise<void>
 }
@@ -113,6 +121,43 @@ export function useWorkbook(): Workbook {
     [fail],
   )
 
+  // The sheet-management calls all return the new tab list alongside ok/error,
+  // so one round trip both mutates and refreshes the tab strip. Switching tabs
+  // changes which cells every coordinate refers to, so the grid must refetch.
+  const sheetOp = useCallback(
+    async (what: string, fn: () => Promise<SheetsResult>) => {
+      const r = await guard(what, fn)
+      if (!r) return
+      setSheets({ active: r.active, names: r.names })
+      if (r.ok === false) {
+        fail(r.error ?? 'sheet operation failed')
+        return
+      }
+      setDirty(true)
+      setMutations((n) => n + 1)
+      setRevision((n) => n + 1)
+    },
+    [guard, fail],
+  )
+
+  // Insert/delete row and column. Every cell below or right of the edit moves,
+  // and the engine rewrites formula references to match, so the whole viewport
+  // is stale afterwards -- hence the `revision` bump rather than a local patch.
+  const structural = useCallback(
+    async (what: string, fn: () => Promise<{ ok: boolean; error?: string }>) => {
+      const r = await guard(what, fn)
+      if (!r) return
+      if (!r.ok) {
+        fail(r.error ?? `${what} failed`)
+        return
+      }
+      setDirty(true)
+      setMutations((n) => n + 1)
+      setRevision((n) => n + 1)
+    },
+    [guard, fail],
+  )
+
   const actions = useMemo<WorkbookActions>(
     () => ({
       open: async () => {
@@ -161,6 +206,20 @@ export function useWorkbook(): Workbook {
         const s = await guard('sheet', () => bridge.set_active(idx))
         if (s) setSheets(s)
       },
+      addSheet: (name: string) => sheetOp('sheet', () => bridge.add_sheet(name)),
+      deleteSheet: (name: string) => sheetOp('sheet', () => bridge.delete_sheet(name)),
+      renameSheet: (old: string, name: string) =>
+        sheetOp('sheet', () => bridge.rename_sheet(old, name)),
+      moveSheet: (name: string, index: number) =>
+        sheetOp('sheet', () => bridge.move_sheet(name, index)),
+      insertRows: (at: number, count: number) =>
+        structural('insert row', () => bridge.insert_rows(at, count)),
+      insertCols: (at: number, count: number) =>
+        structural('insert column', () => bridge.insert_cols(at, count)),
+      deleteRows: (r0: number, r1: number) =>
+        structural('delete row', () => bridge.delete_rows(r0, r1)),
+      deleteCols: (c0: number, c1: number) =>
+        structural('delete column', () => bridge.delete_cols(c0, c1)),
       format: async (rect: Rect, spec: string) => {
         await guard('format', () => bridge.set_format(rect.r0, rect.c0, rect.r1, rect.c1, spec))
         setDirty(true)
@@ -174,7 +233,7 @@ export function useWorkbook(): Workbook {
         setRevision((n) => n + 1)
       },
     }),
-    [refresh, flash, fail, guard],
+    [refresh, flash, fail, guard, sheetOp, structural],
   )
 
   return {

@@ -210,6 +210,75 @@ class TestUndoManagerSaveRegion:
         assert len(undo.undo_stack) == 64
 
 
+class TestUndoManagerAcrossSheets:
+    """Cell coordinates are per-sheet, so history has to remember which sheet
+    a snapshot came from -- otherwise an undo taken after switching tabs
+    restores the old cells into whichever sheet happens to be active."""
+
+    def test_undo_restores_to_the_sheet_the_edit_happened_on(self):
+        g = Grid()
+        g.add_sheet("Data")
+        g.setcell(0, 0, "10")  # on Sheet1
+        undo = UndoManager()
+        undo.save_cell(g, 0, 0)
+        g.setcell(0, 0, "20")
+        g.set_active("Data")
+        g.setcell(0, 0, "999")  # a real value on the other sheet
+
+        undo.undo(g)
+
+        assert g.active == 0  # followed the entry back to Sheet1
+        assert g.sheets[0]._cells[(0, 0)].val == 10.0
+        assert g.sheets[1]._cells[(0, 0)].val == 999.0  # untouched
+
+    def test_grid_wide_undo_does_not_wipe_another_sheet(self):
+        g = Grid()
+        g.add_sheet("Data")
+        g.setcell(0, 0, "10")
+        undo = UndoManager()
+        undo.save_grid(g)  # is_grid entries clear_all() before restoring
+        g.setcell(1, 0, "extra")
+        g.set_active("Data")
+        g.setcell(0, 0, "keepme")
+
+        undo.undo(g)
+
+        assert g.sheets[1]._cells[(0, 0)].text == "keepme"
+        assert g.sheets[0]._cells[(0, 0)].val == 10.0
+        assert (1, 0) not in g.sheets[0]._cells
+
+    def test_redo_returns_to_that_sheet_too(self):
+        g = Grid()
+        g.add_sheet("Data")
+        g.setcell(0, 0, "10")
+        undo = UndoManager()
+        undo.save_cell(g, 0, 0)
+        g.setcell(0, 0, "20")
+        undo.undo(g)
+        g.set_active("Data")
+
+        undo.redo(g)
+
+        assert g.active == 0
+        assert g.sheets[0]._cells[(0, 0)].val == 20.0
+
+    def test_entry_for_a_deleted_sheet_is_dropped_not_misapplied(self):
+        g = Grid()
+        g.add_sheet("Data")
+        g.set_active("Data")
+        g.setcell(0, 0, "10")
+        undo = UndoManager()
+        undo.save_cell(g, 0, 0)
+        g.setcell(0, 0, "20")
+        g.remove_sheet("Data")
+        g.setcell(0, 0, "sheet1 value")
+
+        undo.undo(g)
+
+        assert g.cells[0][0].text == "sheet1 value"  # not clobbered
+        assert undo.undo_stack == []  # the unusable entry is gone
+
+
 # -- cmdexec tests using a mock stdscr --
 
 

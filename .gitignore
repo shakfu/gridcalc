@@ -16,8 +16,12 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Anchored to the repo root: these are distutils/setuptools build output. A
+# bare `lib/` matches at any depth, which silently hid the whole of
+# src/gridcalc/web/frontend/src/lib/ (the client's command registry, grid
+# constants, and formatters) from version control.
+/lib/
+/lib64/
 parts/
 sdist/
 var/

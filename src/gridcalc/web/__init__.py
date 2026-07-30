@@ -40,10 +40,11 @@ from __future__ import annotations
 
 import contextlib
 import math
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from .. import commands as shared
 from .. import goalseek, opt
 from ..display import cell_clip_value, cell_right_aligned, cell_text
 from ..engine import (
@@ -52,13 +53,11 @@ from ..engine import (
     EMPTY,
     FORMULA,
     LABEL,
-    MAXNAMES,
     NCOL,
     NROW,
     NUM,
     SPILL,
     Grid,
-    NamedRange,
     adjust_refs,
     col_name,
     ref,
@@ -182,55 +181,47 @@ class Api:
         return self._touch()
 
     def clear_range(self, r0: int, c0: int, r1: int, c1: int) -> dict[str, Any]:
-        """Blank every cell in a rectangle, then recalc once (Delete on a
-        selection)."""
-        g = self._g
-        ra, rb = sorted((int(r0), int(r1)))
-        ca, cb = sorted((int(c0), int(c1)))
-        self._undo.save_region(g, ca, ra, cb, rb)
-        for r in range(max(0, ra), min(NROW, rb + 1)):
-            for c in range(max(0, ca), min(NCOL, cb + 1)):
-                g.setcell(c, r, "")
-        g.recalc()
-        return self._touch()
+        """Blank every cell in a rectangle (Delete on a selection).
+
+        A thin wrapper over the shared ``blank`` command rather than its own
+        loop: this is the keyboard's entry point, which carries an explicit
+        rectangle instead of the current selection, but the work is the same
+        work.
+        """
+        return self._run_shared_rect("blank", (), r0, c0, r1, c1)
 
     def set_format(self, r0: int, c0: int, r1: int, c1: int, spec: str) -> dict[str, Any]:
         """Apply a format ``spec`` to every non-empty cell in a rectangle.
 
-        ``spec`` matches the TUI's ``:format``: style toggles from ``bui`` (bold
-        / underline / italic), a single number-format char from ``LRIGD$%*``
-        (left/right/integer/general/use-global/currency/percent/bar), or a
-        Python-style number spec (``,.2f``, ``.1%``). Number formats bake into
-        the displayed text via ``cell_text``; styles come back in ``viewport``.
-        Formatting changes no values, so there is no recalc.
+        ``spec`` is the same one ``:format`` takes -- style toggles from
+        ``bui``, a single number-format char from ``LRIGD$%*``, or a Python
+        spec like ``,.2f`` -- because it runs the same shared command. Number
+        formats bake into the displayed text via ``cell_text``; the style flags
+        come back in ``viewport``. Formatting changes no values, so no recalc.
         """
-        g = self._g
+        return self._run_shared_rect("format", (spec or "",), r0, c0, r1, c1)
+
+    def _run_shared_rect(
+        self, name: str, args: Iterable[str], r0: int, c0: int, r1: int, c1: int
+    ) -> dict[str, Any]:
+        """Run a shared command against an explicit rectangle.
+
+        The toolbar and keyboard act on a rectangle they already know, rather
+        than on "the selection" -- so they get a normalized, clamped rect built
+        here instead of each call site repeating it.
+        """
         ra, rb = sorted((int(r0), int(r1)))
         ca, cb = sorted((int(c0), int(c1)))
-        s = spec or ""
-        self._undo.save_region(g, ca, ra, cb, rb)
-        style = bool(s) and all(ch in "bui" for ch in s)
-        single = len(s) == 1 and s.upper() in "LRIGD$%*"
-        for r in range(max(0, ra), min(NROW, rb + 1)):
-            for c in range(max(0, ca), min(NCOL, cb + 1)):
-                cl = g.cell(c, r)
-                if cl is None or cl.type == EMPTY:
-                    continue
-                if style:
-                    for ch in s:
-                        if ch == "b":
-                            cl.bold = 1 - cl.bold
-                        elif ch == "u":
-                            cl.underline = 1 - cl.underline
-                        elif ch == "i":
-                            cl.italic = 1 - cl.italic
-                elif single:
-                    cl.fmt = s.upper()
-                    cl.fmtstr = ""
-                elif s:
-                    cl.fmtstr = s[:31]
-                    cl.fmt = ""
-        return self._touch()
+        rect = (
+            max(0, min(NCOL - 1, ca)),
+            max(0, min(NROW - 1, ra)),
+            max(0, min(NCOL - 1, cb)),
+            max(0, min(NROW - 1, rb)),
+        )
+        result = shared.run(name, self._g, self._undo, list(args), rect)
+        if not result.ok:
+            return {"ok": False, "error": result.message}
+        return self._touch() if result.changed else {"ok": True, "dirty": self._dirty}
 
     def set_global_format(self, fmt: str) -> dict[str, Any]:
         """Set the workbook's default number format (the TUI's ``:gformat``).
@@ -397,86 +388,53 @@ class Api:
         g.recalc()
         return self._touch()
 
-    def recalc(self) -> dict[str, Any]:
-        """Recompute every formula (the TUI's ``!``).
+    # -- shared commands ----------------------------------------------------
 
-        Everything that writes a cell already recalculates, so this is for the
-        cases nothing else can know about: a volatile function like ``NOW`` or
-        ``RAND``, or a sheet the user wants to see re-derived after an import.
-        It does not dirty the workbook -- matching ``!`` -- because asking for
-        the values you already had is not an edit.
+    def list_commands(self) -> dict[str, Any]:
+        """The shared command registry as data, for building the palette.
+
+        The client renders whatever this returns, so a command registered in
+        `gridcalc.commands` appears in the palette without a second edit here
+        or in the TypeScript -- which is the point of the registry.
         """
-        self._g.recalc()
-        return {"ok": True, "dirty": self._dirty}
+        return {"commands": shared.describe()}
 
-    # -- named ranges -------------------------------------------------------
+    def run_command(
+        self,
+        name: str,
+        args: list[str] | None = None,
+        selection: dict[str, int] | None = None,
+    ) -> dict[str, Any]:
+        """Run a shared command by name (the same one ``:``-dispatch runs).
 
-    def list_names(self) -> dict[str, Any]:
-        """Every named range in the workbook (the TUI's ``:names``)."""
-        return {
-            "names": [
-                {
-                    "name": nr.name,
-                    "range": self._range_a1(nr),
-                    "sheet": nr.sheet or "",
-                }
-                for nr in sorted(self._g.names, key=lambda n: n.name.lower())
-            ]
+        ``selection`` arrives row-first (``{r0, c0, r1, c1}``) like the rest of
+        this bridge and is converted to the registry's column-first tuple here
+        -- one place, because that mismatch has caused bugs before.
+
+        A command that reports ``changed`` dirties the workbook; one that only
+        answers a question (``names``, ``mode`` with no argument) does not, so
+        listing named ranges cannot make a saved file look modified.
+        """
+        rect: tuple[int, int, int, int] | None = None
+        if selection is not None:
+            with contextlib.suppress(KeyError, TypeError, ValueError):
+                rect = (
+                    int(selection["c0"]),
+                    int(selection["r0"]),
+                    int(selection["c1"]),
+                    int(selection["r1"]),
+                )
+        result = shared.run(name, self._g, self._undo, list(args or ()), rect)
+        out: dict[str, Any] = {
+            "ok": result.ok,
+            "message": result.message,
+            "changed": result.changed,
+            "lines": list(result.lines),
         }
-
-    def set_name(self, name: str, rng: str) -> dict[str, Any]:
-        """Define or redefine a named range (the TUI's ``:name``).
-
-        Names must start with a letter and continue with letters, digits, or
-        underscores, and must not themselves read as a cell reference -- ``B7``
-        as a name would make ``=B7`` ambiguous, so it is refused rather than
-        resolved by some precedence rule the user would have to learn.
-        """
-        key = (name or "").strip()
-        if not self._valid_name(key):
-            return {"ok": False, "error": f"not a usable name: {name!r}"}
-        if self._parse_range(key) is not None:
-            return {"ok": False, "error": f"{key} is a cell reference, not a name"}
-        rect = self._parse_range(rng or "")
-        if rect is None:
-            return {"ok": False, "error": f"bad range: {rng}"}
-        c0, r0, c1, r1 = rect
-        for nr in self._g.names:
-            if nr.name == key:
-                nr.c1, nr.r1, nr.c2, nr.r2 = c0, r0, c1, r1
-                self._g.recalc()
-                return {**self._touch(), "name": key}
-        if len(self._g.names) >= MAXNAMES:
-            return {"ok": False, "error": f"too many names (limit {MAXNAMES})"}
-        self._g.names.append(NamedRange(key, c0, r0, c1, r1))
-        self._g.recalc()
-        return {**self._touch(), "name": key}
-
-    def delete_name(self, name: str) -> dict[str, Any]:
-        """Remove a named range (the TUI's ``:unname``).
-
-        Formulas still referencing it become unknown-name errors, which is the
-        visible outcome; nothing rewrites them, since guessing what the user
-        meant instead would be worse than saying it is gone.
-        """
-        for i, nr in enumerate(self._g.names):
-            if nr.name == name:
-                self._g.names.pop(i)
-                self._g.recalc()
-                return self._touch()
-        return {"ok": False, "error": f"no such name: {name}"}
-
-    @staticmethod
-    def _valid_name(name: str) -> bool:
-        """A letter, then letters/digits/underscores -- the TUI's rule."""
-        return bool(name) and name[0].isalpha() and all(ch.isalnum() or ch == "_" for ch in name)
-
-    def _range_a1(self, nr: NamedRange) -> str:
-        """Render a named range as ``A1`` or ``A1:B3``."""
-        start = self._a1((nr.c1, nr.r1))
-        if (nr.c1, nr.r1) == (nr.c2, nr.r2):
-            return start
-        return f"{start}:{self._a1((nr.c2, nr.r2))}"
+        if result.changed:
+            out.update(self._touch())
+            out["ok"] = result.ok  # `_touch` reports ok=True unconditionally
+        return out
 
     def search(self, pattern: str) -> dict[str, Any]:
         """Cells on the active sheet matching ``pattern`` (the TUI's ``/``).
@@ -525,75 +483,6 @@ class Api:
         if not (COL_PX_MIN <= w <= COL_PX_MAX):
             return {"ok": False, "error": f"width out of range: {px}"}
         self._g._active.widths[c] = w
-        return self._touch()
-
-    # -- structural edits -------------------------------------------------
-
-    def insert_rows(self, at: int, count: int = 1) -> dict[str, Any]:
-        """Insert ``count`` blank rows above row ``at``, shifting the rest down.
-
-        References in formulas are rewritten by the engine (``_shiftrefs``), so
-        a formula pointing below the insertion point follows its cell. Rows
-        pushed past the last row are dropped, matching the TUI's ``:insrow``.
-        """
-        return self._structural(int(at), int(count), self._g.insertrow, NROW)
-
-    def insert_cols(self, at: int, count: int = 1) -> dict[str, Any]:
-        """Insert ``count`` blank columns left of column ``at`` (``:inscol``)."""
-        return self._structural(int(at), int(count), self._g.insertcol, NCOL)
-
-    def delete_rows(self, r0: int, r1: int | None = None) -> dict[str, Any]:
-        """Delete rows ``r0..r1`` inclusive (``r1`` defaults to ``r0``).
-
-        Deleted bottom-up so each ``deleterow`` sees indices that have not yet
-        shifted -- the same order the TUI's ``:delrow`` uses over a selection.
-        """
-        a, b = self._span(r0, r1, NROW)
-        if a is None or b is None:
-            return {"ok": False, "error": "nothing to delete"}
-        return self._structural_range(range(b, a - 1, -1), self._g.deleterow)
-
-    def delete_cols(self, c0: int, c1: int | None = None) -> dict[str, Any]:
-        """Delete columns ``c0..c1`` inclusive (``:delcol``)."""
-        a, b = self._span(c0, c1, NCOL)
-        if a is None or b is None:
-            return {"ok": False, "error": "nothing to delete"}
-        return self._structural_range(range(b, a - 1, -1), self._g.deletecol)
-
-    @staticmethod
-    def _span(a: int, b: int | None, limit: int) -> tuple[int | None, int | None]:
-        """Normalize an inclusive index range, clamped to ``[0, limit)``."""
-        lo, hi = sorted((int(a), int(a if b is None else b)))
-        lo = max(0, lo)
-        hi = min(limit - 1, hi)
-        if hi < lo:
-            return None, None
-        return lo, hi
-
-    def _structural(
-        self, at: int, count: int, op: Callable[[int], None], limit: int
-    ) -> dict[str, Any]:
-        """Apply an insert ``count`` times at a single index."""
-        if not (0 <= at < limit):
-            return {"ok": False, "error": f"out of range: {at}"}
-        if count < 1:
-            return {"ok": False, "error": "count must be at least 1"}
-        return self._structural_range([at] * min(count, limit), op)
-
-    def _structural_range(
-        self, indices: Iterable[int], op: Callable[[int], None]
-    ) -> dict[str, Any]:
-        """Run a structural engine op over ``indices`` as one undo step.
-
-        Insert/delete rewrite references across the whole active sheet, so the
-        snapshot is grid-wide rather than a rectangle. One recalc at the end
-        covers every op in the batch.
-        """
-        g = self._g
-        self._undo.save_grid(g)
-        for i in indices:
-            op(i)
-        g.recalc()
         return self._touch()
 
     # -- sheet management -------------------------------------------------

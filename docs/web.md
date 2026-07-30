@@ -27,7 +27,9 @@ where the work actually got to, so the two do not silently diverge.
 - **P2 is partial.** Formula bar, per-cell and global number formats, styles,
   and a status bar with selection aggregates exist. Row/column insert-delete,
   sheet add/rename/delete/reorder, persisted per-column widths, find, named
-  ranges, and a Ctrl-K command palette now ship too. Sort does **not**.
+  ranges, sort, formula-mode switching, freeze panes, and a Ctrl-K command
+  palette now ship too -- the last several came free with the shared command
+  registry (`gridcalc/commands.py`), which both frontends dispatch by name.
 - **P3 is untouched.** No frozen builds, no per-platform QA, no signing. The
   IME/CJK and accessibility claims from Section 5e remain unvalidated in a real
   webview; the grid still has no ARIA grid semantics.
@@ -106,24 +108,26 @@ Engine support already exists for nearly all of this; the gap is `Api` surface
 + client UI, not core work. Legend: [A] needs `Api` method, [C] needs client
 UI, [E] needs engine/new work.
 
+**The shared-command rows are no longer maintained by hand.** Commands in
+`gridcalc/commands.py` are dispatched by name from both frontends, and
+`tests/test_docs_conformance.py` fails if one of them is shadowed in the TUI or
+dropped by the web bridge. What remains below is the part that is *not* shared:
+per-frontend interaction, and capabilities one side simply does not have.
+
 | TUI capability | Web today | Gap |
 |---|---|---|
 | Cell edit, nav, selection, copy/cut/paste, fill | Yes | -- |
 | Undo/redo, save, open, paste-in | Yes | -- |
-| Bar chart from range | Yes (inline SVG) | depth only |
-| **`:opt` LP/MIP over selection / model** (`opt.solve`, `opt.sweep`, `opt.infer_model`) | **No** | [A][C] high value |
-| **`:goal` goal-seek** (`goalseek.seek`) | **No** | [A][C] high value |
-| Sensitivity / sweep report rendering | No | [A][C] |
-| Insert/delete row+col (`insertrow`/`deleterow`, engine.py:2171+) | Yes | move (`swaprow`) still open |
-| Replicate (`replicatecell`) beyond fill down/right | Partial (fill only) | [A][C] |
-| Per-cell + global number format / style (fmt/bold/underline/italic/fmtstr) | Read-only | [A][C] |
-| Column width (per-column, `Sheet.widths`) | Yes (web-only field) | -- |
-| Freeze titles (`:tv`/`:th`) | No | [A][C] |
-| Named ranges (`:name`/`:names`/`:unname`) | Yes (palette) | -- |
-| Sheet add/del/rename/move | Switch only | [A][C] |
+| Per-cell + global number format / style | Yes | -- |
+| Row/column header selection | Yes | -- |
 | Search (`/`, `n`, `N`) | Yes (find bar) | -- |
-| Sort (`:sort`) | No | [A][C] |
-| Formula mode switch EXCEL/HYBRID/PYTHON (`:mode`) | No (implicit) | [A][C][E-security] |
+| Sheet add/del/rename/move | Yes | -- |
+| Column width | Yes, per-column pixels | diverges from `:width` (uniform chars) by design |
+| `:opt` LP/MIP, `:goal`, sensitivity, sweep | Yes | -- |
+| Bar chart from range | Yes (inline SVG) | depth only |
+| Shared registry (`:b :f :gf :ir :ic :dr :dc :name :names :unname :sort :mode :title :recalc`) | Yes, by name | enforced by test |
+| Replicate (`replicatecell`) beyond fill down/right | Partial (fill only) | [A][C] |
+| Move row/column (`swaprow`/`swapcol`) | No | registry entry + drag gesture |
 | Object editor for Vec/ndarray/DataFrame cells (`tui/objedit.py`) | No | [A][C] larger |
 | xlsx / csv / pandas import-export | save by ext; open JSON/xlsx/csv | [A] pandas, dialogs |
 | Code block edit (`:e`) + trust prompt | No | [E-security] gated on 5a |

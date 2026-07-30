@@ -21,6 +21,7 @@ import curses
 import sys
 from collections.abc import Callable
 
+from .. import commands as shared
 from ..config import emit_warnings, load_config
 from ..display import fmt_float, fmtcell
 from ..engine import (
@@ -48,30 +49,20 @@ from ..sandbox import (
 )
 from . import _state
 from .commands import (
-    cmd_blank,
     cmd_clear,
     cmd_csv,
     cmd_edit,
-    cmd_format,
-    cmd_gformat,
-    cmd_mode,
-    cmd_name,
-    cmd_names,
     cmd_open,
     cmd_pd,
     cmd_quit,
     cmd_save,
     cmd_savequit,
     cmd_sheet,
-    cmd_sort,
-    cmd_title,
-    cmd_unname,
     cmd_view,
     cmd_width,
     cmd_xlsx,
     cmdexec,
     movecmd,
-    name_set,
     replcmd,
     selectrange,
     trust_prompt,
@@ -512,7 +503,9 @@ def mainloop(stdscr: curses.window, g: Grid) -> None:
                 g._cells.pop((g.cc, g.cr), None)
             g.recalc()
         elif ch == ord("!"):
-            g.recalc()
+            # Same command object `:recalc` runs, so the key and the command
+            # cannot drift apart.
+            shared.run("recalc", g, undo)
         elif ch == ord(":"):
             if cmdline(stdscr, g, undo):
                 break
@@ -665,16 +658,10 @@ __all__ = [
     "_parse_cells",
     "_resolved_keymap",
     "_search_grid",
-    "cmd_blank",
     "cmd_clear",
     "cmd_csv",
     "cmd_edit",
-    "cmd_format",
-    "cmd_gformat",
     "cmd_goal",
-    "cmd_mode",
-    "cmd_name",
-    "cmd_names",
     "cmd_open",
     "cmd_opt",
     "cmd_pd",
@@ -682,9 +669,6 @@ __all__ = [
     "cmd_save",
     "cmd_savequit",
     "cmd_sheet",
-    "cmd_sort",
-    "cmd_title",
-    "cmd_unname",
     "cmd_view",
     "cmd_width",
     "cmd_xlsx",
@@ -698,7 +682,6 @@ __all__ = [
     "main",
     "mainloop",
     "movecmd",
-    "name_set",
     "nav",
     "obj_editor",
     "replcmd",

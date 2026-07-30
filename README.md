@@ -4,13 +4,14 @@
 [![Python](https://img.shields.io/pypi/pyversions/gridcalc)](https://pypi.org/project/gridcalc/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A programmable terminal spreadsheet for developers and technical users, with Excel-ish formulas, Python escape hatches, XLSX interop, goal seek, and LP/MIP solving.
+A programmable spreadsheet for developers and technical users, with Excel-ish formulas, Python escape hatches, XLSX interop, goal seek, and LP/MIP solving. It ships **two frontends over one engine**: a curses terminal app, and a desktop window that renders the same workbook in a webview.
 
 Inspired by Serge Zaitsev's [kalk](https://github.com/zserge/kalk).
 
 ```sh
 pip install gridcalc
-gridcalc budget.json
+gridcalc budget.json        # terminal
+gridcalc-web budget.json    # desktop window  (needs the [web] extra -- see below)
 ```
 
 ---
@@ -34,6 +35,11 @@ gridcalc budget.json
 - **Vim-style command line** (`:w`, `:e`, `:q`, `/search`, `y/p`, visual
   selection, undo), with **system-clipboard copy/paste** -- yank pushes
   values as TSV, paste pulls TSV in from other apps.
+- **A desktop app as well as a terminal one** -- the same engine behind a
+  mouse-driven grid with menus, a Ctrl-K command palette, and solver results
+  painted onto the sheet. Most `:` commands are a
+  [shared registry](src/gridcalc/commands.py) both frontends dispatch, so they
+  behave identically in each. See [Desktop app](#desktop-app-web-frontend).
 
 Try it on the provided examples:
 
@@ -70,48 +76,78 @@ The `[extras]` bundle enables, all at once:
 - `pd.DataFrame(...)`, `:pd load/save`, DataFrame cell display.
 - Pygments syntax-highlight in the load-time trust prompt.
 
-### Experimental GUI (preview)
+## Desktop app (web frontend)
 
-A frontend spike lives behind an optional extra (it is not the product;
-see [`docs/gui.md`](docs/gui.md) for the direction). It reuses the headless
-engine and formats cells exactly as the terminal does.
+An editable grid in a native desktop window, driven by the same engine as the
+terminal app. The engine runs in-process on CPython -- keeping the C++
+extensions -- and a [pywebview](https://pywebview.flowrl.com/) window renders a
+viewport over it, calling Python directly across the `js_api` bridge. There is
+no server, no port, and no HTTP.
 
-- **Web** (`gridcalc[web]`, the current direction) -- an editable grid in a
-  desktop [pywebview](https://pywebview.flowrl.com/) window. The engine runs
-  in-process on CPython; the browser view bridges to it directly (no server).
+Both frontends read and write the same files, format cells through the same
+code, and share most of the `:` command set through a
+[frontend-neutral registry](src/gridcalc/commands.py) -- so `:sort` in the
+terminal and `Sort rows` in the palette are one implementation, not two that
+drift. A conformance test fails if either frontend loses a shared command.
 
-  ```sh
-  pip install 'gridcalc[web]'
-  gridcalc-web                    # demo workbook, or: gridcalc-web book.json
-  ```
+```sh
+pip install 'gridcalc[web]'
+gridcalc-web                    # demo workbook, or: gridcalc-web book.json
+```
 
-  It covers cell editing (in-cell or from the formula bar), navigation and
-  selection, copy/cut/paste, fill, undo/redo, and per-cell and workbook number
-  formats. A status bar reports the selection's aggregates and an
-  unsaved-changes marker. Insert and delete row and column act on the
-  selection, and sheets can be added, renamed, deleted, and reordered. Dragging
-  a column edge resizes it and the width is saved with the workbook; clicking a
-  row or column header selects it. Ctrl-F finds text or computed values, and
-  Ctrl-K opens a command palette covering the whole command set -- including
-  the ones with no menu home, such as column width, named ranges, and manual
-  recalculation. Sort is terminal-only for now.
+> **From a source checkout, build the UI bundle first:** `make web-build`
+> compiles the React client into `src/gridcalc/web/static/index.html`, which
+> `gridcalc-web` loads. It is a build artifact and is not in git, so a checkout
+> that has not run it exits with a message telling you to. The release wheels do
+> not currently run this step either -- if `gridcalc-web` reports a missing
+> bundle after a `pip install`, build from source until that is fixed.
 
-  Optimization is where it goes beyond the terminal. `Optimize` reads a model
-  off a selected block or loads one saved in the workbook (the same models
-  `:opt run` executes), solves it, and then **paints the result onto the
-  sheet** -- objective, decision cells, and each constraint marked binding or
-  slack, with shadow prices and ranging in the hover text. `Goal Seek` and a
-  parametric `Sweep` (plotting the objective against a constraint's
-  right-hand side, breakpoints marked) round it out.
+**Editing.** In-cell and formula-bar editing, keyboard navigation, rectangular
+selection by drag or shift-click, and clicking a row or column header to select
+the whole line. Copy/cut/paste (formula references adjust, `$` absolutes do
+not), fill down and right, undo/redo, insert and delete rows and columns sized
+to the selection. Sheets can be added, renamed, deleted, and reordered. Column
+edges drag to resize and the width is saved with the workbook. A status bar
+reports the selection's aggregates and an unsaved-changes marker; closing with
+unsaved work asks first.
 
-The extra pulls a native webview stack, kept out of the lean terminal build on
-purpose; the curses app has no such dependency.
+**Formula point mode** works as it does in the terminal: while typing a `=`
+formula, clicking or dragging on the grid inserts the reference at the caret.
+
+**Ctrl-K opens a command palette** over the whole command set, matched on
+subsequences (`fld` finds `Fill down`). It is the home for commands no menu
+would justify -- column width, named ranges, sort, formula mode, freeze panes,
+manual recalculation -- and prompts for arguments the way the `:` line does.
+**Ctrl-F** finds text *or computed values*, so a formula is findable by its
+result as well as its source.
+
+**Optimization is where it goes past the terminal.** `Optimize` reads a model
+off a selected block or loads one saved in the workbook (the same models
+`:opt run` executes), solves it, and then **paints the result onto the sheet**:
+the objective, the decision cells, and each constraint marked binding or slack,
+with shadow prices and RHS ranging in the hover text. A shadow price means
+considerably more sitting on the constraint row it belongs to than in a column
+of cell references. `Goal Seek` and a parametric `Sweep` -- the objective
+plotted against a constraint's right-hand side, breakpoints marked -- round it
+out.
+
+**Not there yet:** the object editor for Vec/ndarray/DataFrame cells, code-block
+editing (`:e`), pandas import/export, and `:move`/`:replicate`. Workbooks in
+HYBRID or PYTHON mode load *formulas only* -- their code block is never
+executed, so code-dependent cells show an error state until a trust flow
+exists. See [`docs/web.md`](docs/web.md) for the full parity table and
+[`docs/gui.md`](docs/gui.md) for why this direction was chosen.
+
+The `[web]` extra pulls a native webview stack, deliberately kept out of the
+lean terminal build; the curses app has no such dependency.
 
 ## Quick tour
 
 Cells hold a number, a label (any non-`=`-prefixed string), or a formula
 (prefixed with `=`). Arrow keys move; `Enter` commits and moves down;
-`Tab` commits and moves right.
+`Tab` commits and moves right. The rest of this guide shows the terminal
+frontend, but the model, formulas, file format, and most commands are the same
+in the [desktop app](#desktop-app-web-frontend).
 
 ```text
         A          B          C
@@ -648,6 +684,7 @@ File          :w [file]   :wq   :q   :q!   :o file   :e
 Edit          :b   :clear   :dr   :dc   :ir   :ic   :m   :r
               :sort [col] [desc]   yank/paste: y/p (syncs system clipboard)
               undo/redo: u / Ctrl-R   (aliases: Ctrl-Z / Ctrl-Y)
+              :recalc (or !) recompute every formula
 Format        :f <spec>   :gf <spec>   :width <n>   Ctrl-B / Ctrl-U
 Search        /pattern   n   N
 Sheets        :sheets (picker)   :sheet [name|N|add|del|rename|move]
@@ -657,7 +694,7 @@ Import/export :csv save/load   :xlsx save/load   :pd save/load
 Optimization  :opt   :opt def   :opt run   :opt sens   :opt sweep
               :opt list   :opt undef
               :goal <cell> = <target> by <cell> [in <lo>:<hi>]
-View          :view   E   :tv/:th/:tb/:tn (lock title rows/cols)
+View          :view   E   :title <v|h|b|n>  (aliases :tv/:th/:tb/:tn)
 ```
 
 ## Limitations
@@ -683,7 +720,13 @@ make test       # unit tests
 make test-tty   # PTY-driven curses integration tests (slow, requires xterm-256color)
 make lint       # ruff check
 make typecheck  # mypy
-make qa         # lint + typecheck + test + format
+make qa         # lint + typecheck + test + format (Python and TypeScript)
+
+make web-build  # compile the desktop app's React client into web/static/
+make web-run    # launch the desktop app (needs web-build first)
+make web-dev    # Vite dev server with HMR, against a mock bridge
+make web-jstest # vitest suite for the client
+make test-web   # Playwright tests driving the built bundle in headless Chromium
 
 make wheel       # cpXX-cpXX wheel for current Python
 make wheel-abi3  # single cp312-abi3 wheel (Python>=3.12)

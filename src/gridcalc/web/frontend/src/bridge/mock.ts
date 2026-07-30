@@ -8,8 +8,9 @@ import type {
   Sheets,
   InferResult,
   ModelSpec,
+  CommandRun,
+  CommandsResult,
   ModelsResult,
-  NamesResult,
   SaveModelResult,
   SavedModel,
   SearchMatch,
@@ -179,28 +180,86 @@ export function installMockBridge(): void {
         hits.sort((a, b) => a.r - b.r || a.c - b.c)
         return { matches: hits, total: hits.length, truncated: false }
       },
-      recalc: async () => ({ ok: true, dirty: dims.dirty }),
-      list_names: async (): Promise<NamesResult> => ({
-        names: [...names.entries()]
-          .map(([name, range]) => ({ name, range, sheet: '' }))
-          .sort((a, b) => a.name.localeCompare(b.name)),
+      // A small stand-in for `gridcalc.commands`: enough entries, in the same
+      // shape, for the palette to render and be driven in tests. The real
+      // behaviour lives in Python -- the mock only has to be shaped like it.
+      list_commands: async (): Promise<CommandsResult> => ({
+        commands: [
+          { name: 'blank', aliases: ['b'], title: 'Clear cells', group: 'Edit', needs_selection: true, args: [] },
+          { name: 'insrow', aliases: ['ir'], title: 'Insert rows', group: 'Insert', needs_selection: true, args: [] },
+          { name: 'inscol', aliases: ['ic'], title: 'Insert columns', group: 'Insert', needs_selection: true, args: [] },
+          { name: 'delrow', aliases: ['dr'], title: 'Delete rows', group: 'Insert', needs_selection: true, args: [] },
+          { name: 'delcol', aliases: ['dc'], title: 'Delete columns', group: 'Insert', needs_selection: true, args: [] },
+          { name: 'sort', aliases: [], title: 'Sort rows', group: 'Data', needs_selection: true,
+            args: [
+              { name: 'column', help: 'column letter', required: false, kind: 'ref', choices: [] },
+              { name: 'direction', help: 'asc or desc', required: false, kind: 'choice', choices: ['asc', 'desc'] },
+            ] },
+          { name: 'name', aliases: [], title: 'Define name for selection', group: 'Name', needs_selection: true,
+            args: [
+              { name: 'name', help: 'the name to define', required: true, kind: 'text', choices: [] },
+              { name: 'range', help: 'defaults to the selection', required: false, kind: 'range', choices: [] },
+            ] },
+          { name: 'names', aliases: [], title: 'List named ranges', group: 'Name', needs_selection: false, args: [] },
+          { name: 'unname', aliases: [], title: 'Delete named range', group: 'Name', needs_selection: false,
+            args: [{ name: 'name', help: 'the name to remove', required: true, kind: 'text', choices: [] }] },
+          { name: 'mode', aliases: [], title: 'Formula mode', group: 'Data', needs_selection: false,
+            args: [{ name: 'mode', help: 'excel, hybrid, python', required: false, kind: 'choice', choices: ['excel', 'hybrid', 'python'] }] },
+          { name: 'recalc', aliases: [], title: 'Recalculate', group: 'Data', needs_selection: false, args: [] },
+        ],
       }),
-      set_name: async (name: string, rng: string) => {
-        const key = (name ?? '').trim()
-        if (!key || !/^[A-Za-z][A-Za-z0-9_]*$/.test(key)) {
-          return { ok: false, error: `not a usable name: '${name}'` }
+      run_command: async (
+        name: string,
+        args?: string[],
+        selection?: { r0: number; c0: number; r1: number; c1: number } | null,
+      ): Promise<CommandRun> => {
+        // Structural commands move cells, so the mock moves them too -- a
+        // palette test should be able to see the grid change, not just that a
+        // call happened.
+        const sel = selection ?? { r0: 0, c0: 0, r1: 0, c1: 0 }
+        const rows = sel.r1 - sel.r0 + 1
+        const cols = sel.c1 - sel.c0 + 1
+        if (name === 'insrow') shift('r', sel.r0, rows)
+        else if (name === 'inscol') shift('c', sel.c0, cols)
+        else if (name === 'delrow') shift('r', sel.r0, -rows)
+        else if (name === 'delcol') shift('c', sel.c0, -cols)
+        else if (name === 'blank') {
+          for (let r = sel.r0; r <= sel.r1; r++) {
+            for (let c = sel.c0; c <= sel.c1; c++) cells.delete(key(r, c))
+          }
         }
-        if (/^[A-Za-z]{1,2}\d+$/.test(key)) {
-          return { ok: false, error: `${key} is a cell reference, not a name` }
+        if (name === 'names') {
+          const lines = [...names.entries()].map(([n, r]) => `${n} = ${r}`).sort()
+          return {
+            ok: true,
+            changed: false,
+            lines,
+            message: lines.length ? lines.join('  ') : 'no named ranges',
+          }
         }
-        names.set(key, rng)
+        if (name === 'name') {
+          const key = (args?.[0] ?? '').trim()
+          if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(key)) {
+            return { ok: false, changed: false, lines: [], message: `not a usable name: '${key}'` }
+          }
+          names.set(key, args?.[1] ?? 'A1')
+          touch()
+          return { ok: true, changed: true, lines: [], message: `${key} set`, dirty: true }
+        }
+        if (name === 'unname') {
+          const key = args?.[0] ?? ''
+          if (!names.has(key)) {
+            return { ok: false, changed: false, lines: [], message: `no such name: ${key}` }
+          }
+          names.delete(key)
+          touch()
+          return { ok: true, changed: true, lines: [], message: `removed ${key}`, dirty: true }
+        }
+        if (name === 'recalc') {
+          return { ok: true, changed: false, lines: [], message: 'recalculated' }
+        }
         touch()
-        return { ok: true, name: key }
-      },
-      delete_name: async (name: string) => {
-        if (!names.has(name)) return { ok: false, error: `no such name: ${name}` }
-        names.delete(name)
-        return touch()
+        return { ok: true, changed: true, lines: [], message: `${name} ran`, dirty: true }
       },
       col_widths: async (): Promise<ColWidths> => ({
         widths: Object.fromEntries([...colWidths].map(([c, w]) => [String(c), w])),
@@ -256,24 +315,6 @@ export function installMockBridge(): void {
         sheets.active = sheets.names.indexOf(activeName)
         touch()
         return { ...sheets, ok: true }
-      },
-      insert_rows: async (at: number, count: number) => {
-        shift('r', at, Math.max(1, count))
-        return touch()
-      },
-      insert_cols: async (at: number, count: number) => {
-        shift('c', at, Math.max(1, count))
-        return touch()
-      },
-      delete_rows: async (r0: number, r1: number) => {
-        const [a, b] = [Math.min(r0, r1), Math.max(r0, r1)]
-        shift('r', a, -(b - a + 1))
-        return touch()
-      },
-      delete_cols: async (c0: number, c1: number) => {
-        const [a, b] = [Math.min(c0, c1), Math.max(c0, c1)]
-        shift('c', a, -(b - a + 1))
-        return touch()
       },
       undo: async () => touch(),
       redo: async () => touch(),

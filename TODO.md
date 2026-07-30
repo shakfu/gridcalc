@@ -70,13 +70,13 @@ without building the consent UI first; that is a decision, not an oversight.
       frontend is ever considered.
 - [ ] **Move row and column (`swaprow`/`swapcol`).** Insert and delete now
   ship in both frontends; reordering does not. The engine primitives are
-  ready, so this is an `Api` method plus a client gesture (drag a header).
-- [ ] **Sort (`:sort`) in the web frontend.** The last plain editing-parity
-  gap, and the only one left needing real work rather than a registry entry:
-  the sort itself is ~100 lines inside `tui/commands.py:cmd_sort`, interleaved
-  with `show_error` and the curses selection. It needs promoting below the
-  view boundary the way `search.py` was, after which both frontends call one
-  implementation and the palette gets it for the cost of an entry.
+  ready, so this is a `gridcalc/commands.py` entry (which both frontends then
+  get) plus a client gesture -- dragging a header.
+- [ ] **Migrate the remaining shareable commands into the registry.** `:width`
+  is the interesting one: the TUI means a uniform width in character cells and
+  the web view means pixels per column, so it needs a decision about what the
+  shared command *is* before it can move. `:csv`/`:xlsx`/`:pd` could share
+  their load/save bodies with the path prompt left to each frontend.
 - [ ] **The code-block / formula-mode surface (`:e`, `:mode`).** Why a HYBRID
   or PYTHON workbook opens in the web view with its code-dependent cells in an
   error state and no indication why: `loader.load_workbook` is hardcoded to

@@ -90,16 +90,39 @@ export interface SearchResult {
   truncated: boolean
 }
 
-// A named range as the user would write it: `Data = A2:A3`. `sheet` is empty
-// for a sheet-agnostic name (one that resolves against the active sheet).
-export interface NamedRange {
+// One entry of the shared command registry (`gridcalc.commands`), as data.
+// The palette renders whatever arrives here, so a command registered on the
+// Python side needs no edit in this file beyond the shape it already has.
+export interface SharedArg {
   name: string
-  range: string
-  sheet: string
+  help: string
+  required: boolean
+  kind: string
+  choices: string[]
 }
 
-export interface NamesResult {
-  names: NamedRange[]
+export interface SharedCommand {
+  name: string
+  aliases: string[]
+  title: string
+  group: string
+  needs_selection: boolean
+  args: SharedArg[]
+}
+
+export interface CommandsResult {
+  commands: SharedCommand[]
+}
+
+// What a shared command reports back. `lines` is the list form for commands
+// that answer with a listing; `changed` is false for a query, so the client
+// knows not to mark the workbook dirty.
+export interface CommandRun {
+  ok: boolean
+  message: string
+  changed: boolean
+  lines: string[]
+  dirty?: boolean
 }
 
 // Per-column pixel widths for the active sheet, keyed by column index as a
@@ -234,20 +257,18 @@ export interface PywebviewApi {
   sheets(): Promise<Sheets>
   set_active(idx: number): Promise<Sheets>
   search(pattern: string): Promise<SearchResult>
-  recalc(): Promise<OkResult>
-  list_names(): Promise<NamesResult>
-  set_name(name: string, rng: string): Promise<OkResult & { name?: string; error?: string }>
-  delete_name(name: string): Promise<OkResult & { error?: string }>
+  list_commands(): Promise<CommandsResult>
+  run_command(
+    name: string,
+    args?: string[],
+    selection?: { r0: number; c0: number; r1: number; c1: number } | null,
+  ): Promise<CommandRun>
   col_widths(): Promise<ColWidths>
   set_col_width(col: number, px: number): Promise<OkResult & { error?: string }>
   add_sheet(name: string): Promise<SheetsResult>
   delete_sheet(name: string): Promise<SheetsResult>
   rename_sheet(old: string, name: string): Promise<SheetsResult>
   move_sheet(name: string, index: number): Promise<SheetsResult>
-  insert_rows(at: number, count: number): Promise<OkResult & { error?: string }>
-  insert_cols(at: number, count: number): Promise<OkResult & { error?: string }>
-  delete_rows(r0: number, r1: number): Promise<OkResult & { error?: string }>
-  delete_cols(c0: number, c1: number): Promise<OkResult & { error?: string }>
   undo(): Promise<OkResult>
   redo(): Promise<OkResult>
   save(path?: string): Promise<SaveResult>
@@ -259,8 +280,14 @@ export interface PywebviewApi {
   cell_source(r: number, c: number): Promise<string>
   set_cell(r: number, c: number, text: string): Promise<OkResult>
   clear_range(r0: number, c0: number, r1: number, c1: number): Promise<OkResult>
-  set_format(r0: number, c0: number, r1: number, c1: number, spec: string): Promise<OkResult>
-  set_global_format(fmt: string): Promise<OkResult>
+  set_format(
+    r0: number,
+    c0: number,
+    r1: number,
+    c1: number,
+    spec: string,
+  ): Promise<OkResult & { error?: string }>
+  set_global_format(fmt: string): Promise<OkResult & { error?: string }>
   copy(r0: number, c0: number, r1: number, c1: number, cut: boolean): Promise<CopyResult>
   paste(r: number, c: number): Promise<OkResult>
   paste_text(r: number, c: number, text: string): Promise<OkResult>

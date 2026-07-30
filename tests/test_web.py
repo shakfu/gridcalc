@@ -7,7 +7,6 @@ directly, exactly as the browser view would call it.
 
 from __future__ import annotations
 
-import math
 import subprocess
 import sys
 from pathlib import Path
@@ -864,247 +863,127 @@ def test_set_format_is_undoable() -> None:
     assert g.cell(0, 0).bold == 0 and g.cell(0, 0).italic == 0
 
 
-# -- structural edits ---------------------------------------------------
+# -- shared commands ----------------------------------------------------
+#
+# The behaviour of each command is tested in `test_commands.py`, against the
+# registry. What matters here is only what this bridge adds: the coordinate
+# conversion, the dirty propagation, and the shape the client receives.
 
 
-def test_insert_rows_shifts_cells_and_rewrites_references() -> None:
+def test_list_commands_exposes_the_whole_registry() -> None:
+    """The client builds its palette from this, so a command registered in
+    `gridcalc.commands` must arrive here without another edit."""
+    from gridcalc import commands as shared
+
+    exposed = Api(_grid()).list_commands()["commands"]
+    assert {c["name"] for c in exposed} == {c.name for c in shared.COMMANDS}
+
+
+def test_run_command_converts_the_selection_to_column_first() -> None:
+    """The bridge speaks row-first and the registry column-first. Getting this
+    backwards would silently act on the transposed rectangle, so it is pinned:
+    B3:D5 row-first must reach the command as B3:D5, not C2:E4.
+    """
+    g = _grid()
+    api = Api(g)
+    r = api.run_command("name", ["Block"], {"r0": 2, "c0": 1, "r1": 4, "c1": 3})
+    assert r["ok"] is True
+    assert "B3:D5" in r["message"]
+
+
+def test_run_command_reports_a_mutation_as_dirty() -> None:
+    g = _grid()
+    g.setcell(0, 0, "1")
+    g.recalc()
+    api = Api(g)
+    assert api.dims()["dirty"] is False
+    r = api.run_command("blank", [], {"r0": 0, "c0": 0, "r1": 0, "c1": 0})
+    assert r["changed"] is True and r["dirty"] is True
+    assert api.dims()["dirty"] is True
+
+
+def test_a_query_command_does_not_dirty_the_workbook() -> None:
+    """Listing named ranges must not make a saved file look modified."""
+    api = Api(_grid())
+    r = api.run_command("names")
+    assert r["ok"] is True and r["changed"] is False
+    assert api.dims()["dirty"] is False
+
+
+def test_run_command_returns_list_output_for_a_listing() -> None:
+    api = Api(_grid())
+    api.run_command("name", ["Alpha", "A1:A3"])
+    r = api.run_command("names")
+    assert r["lines"] == ["Alpha = A1:A3"]
+
+
+def test_run_command_reports_a_refusal_without_mutating() -> None:
+    api = Api(_grid())
+    r = api.run_command("name", ["9bad", "A1"])
+    assert r["ok"] is False and "not a usable name" in r["message"]
+    assert api.dims()["dirty"] is False
+
+
+def test_run_command_with_no_selection_uses_the_cursor() -> None:
+    g = _grid()
+    g.setcell(0, 0, "x")
+    g.recalc()
+    g.cc, g.cr = 0, 0
+    assert Api(g).run_command("blank")["ok"] is True
+    assert g.cell(0, 0) is None or g.cell(0, 0).type == EMPTY
+
+
+def test_run_command_tolerates_a_malformed_selection() -> None:
+    """A partial selection object from the client must not raise across the
+    bridge -- it falls back to the cursor."""
+    g = _grid()
+    g.setcell(0, 0, "x")
+    g.recalc()
+    assert Api(g).run_command("blank", [], {"r0": 0})["ok"] is True
+
+
+def test_run_command_rejects_an_unknown_name() -> None:
+    r = Api(_grid()).run_command("nonesuch")
+    assert r["ok"] is False and "unknown command" in r["message"]
+
+
+def test_structural_edits_reach_the_registry_through_the_bridge() -> None:
     g = _grid()
     g.setcell(0, 0, "10")
     g.setcell(0, 1, "=A1*2")
     g.recalc()
     api = Api(g)
-
-    assert api.insert_rows(0, 1)["ok"] is True
-
-    assert g.cell(0, 0) is None or g.cell(0, 0).type == EMPTY  # blank row
+    assert api.run_command("insrow", [], {"r0": 0, "c0": 0, "r1": 0, "c1": 0})["ok"] is True
     assert g.cell(0, 1).val == 10.0
-    assert g.cell(0, 2).text == "=A2*2"  # the reference followed its target
-    assert g.cell(0, 2).val == 20.0
+    assert g.cell(0, 2).text == "=A2*2"
 
 
-def test_insert_rows_inserts_the_requested_count() -> None:
+def test_set_format_and_clear_range_run_the_shared_commands() -> None:
+    """Both are keyboard entry points carrying an explicit rectangle rather
+    than the selection, but they must not be a second implementation."""
     g = _grid()
-    g.setcell(0, 0, "10")
+    g.setcell(0, 0, "5")
     g.recalc()
     api = Api(g)
-    api.insert_rows(0, 3)
-    assert g.cell(0, 3).val == 10.0
+    api.set_format(0, 0, 0, 0, "$")
+    assert g.cell(0, 0).fmt == "$"
+    api.clear_range(0, 0, 0, 0)
+    assert g.cell(0, 0) is None or g.cell(0, 0).type == EMPTY
 
 
-def test_insert_cols_shifts_columns() -> None:
+def test_set_format_reports_a_refusal() -> None:
     g = _grid()
-    g.setcell(0, 0, "10")
-    g.setcell(1, 0, "=A1+1")
+    g.setcell(0, 0, "5")
     g.recalc()
-    api = Api(g)
-    api.insert_cols(0, 1)
-    assert g.cell(1, 0).val == 10.0
-    assert g.cell(2, 0).text == "=B1+1"
-    assert g.cell(2, 0).val == 11.0
+    assert Api(g).set_format(0, 0, 0, 0, "")["ok"] is False
 
 
-def test_delete_rows_removes_a_span_bottom_up() -> None:
-    """Deleting 2..3 must not leave the second delete acting on a shifted
-    index -- the whole span goes, and row 4 slides up to take its place."""
+def test_set_format_clamps_an_out_of_bounds_rectangle() -> None:
     g = _grid()
-    for r in range(5):
-        g.setcell(0, r, str(r))
+    g.setcell(0, 0, "5")
     g.recalc()
-    api = Api(g)
-
-    assert api.delete_rows(1, 2)["ok"] is True
-
-    assert g.cell(0, 0).val == 0.0
-    assert g.cell(0, 1).val == 3.0
-    assert g.cell(0, 2).val == 4.0
-    assert g.cell(0, 3) is None or g.cell(0, 3).type == EMPTY
-
-
-def test_delete_cols_removes_a_span() -> None:
-    g = _grid()
-    for c in range(4):
-        g.setcell(c, 0, str(c))
-    g.recalc()
-    api = Api(g)
-    api.delete_cols(2, 1)  # reversed corners normalize
-    assert g.cell(0, 0).val == 0.0
-    assert g.cell(1, 0).val == 3.0
-
-
-def test_delete_rows_defaults_to_a_single_row() -> None:
-    g = _grid()
-    g.setcell(0, 0, "0")
-    g.setcell(0, 1, "1")
-    g.recalc()
-    api = Api(g)
-    api.delete_rows(0)
-    assert g.cell(0, 0).val == 1.0
-
-
-def test_structural_edits_are_undoable() -> None:
-    g = _grid()
-    g.setcell(0, 0, "10")
-    g.setcell(0, 1, "=A1*2")
-    g.recalc()
-    api = Api(g)
-
-    api.delete_rows(0, 0)
-    assert g.cell(0, 1) is None or g.cell(0, 1).type == EMPTY  # row 1 slid up
-
-    api.undo()
-    assert g.cell(0, 0).val == 10.0
-    assert g.cell(0, 1).text == "=A1*2"
-    assert g.cell(0, 1).val == 20.0
-
-
-def test_structural_edits_reject_an_out_of_range_index() -> None:
-    api = Api(_grid())
-    assert api.insert_rows(NROW, 1)["ok"] is False
-    assert api.insert_cols(-1, 1)["ok"] is False
-    assert api.insert_rows(0, 0)["ok"] is False  # count must be positive
-
-
-def test_delete_rows_entirely_outside_the_sheet_is_rejected() -> None:
-    api = Api(_grid())
-    r = api.delete_rows(NROW + 5, NROW + 9)
-    assert r["ok"] is False and "nothing to delete" in r["error"]
-
-
-def test_insert_col_carries_saved_widths_with_their_columns() -> None:
-    """A width belongs to the column it was dragged on, so it has to travel
-    with that column -- otherwise every width right of an insert ends up on
-    its neighbour."""
-    g = _grid()
-    api = Api(g)
-    api.set_col_width(2, 140)
-    api.insert_cols(0, 1)
-    assert api.col_widths()["widths"] == {"3": 140}
-    api.delete_cols(0, 0)
-    assert api.col_widths()["widths"] == {"2": 140}
-
-
-def test_deleting_a_column_takes_its_width_with_it() -> None:
-    g = _grid()
-    api = Api(g)
-    api.set_col_width(2, 140)
-    api.delete_cols(2, 2)
-    assert api.col_widths()["widths"] == {}
-
-
-# -- named ranges and recalc --------------------------------------------
-
-
-def test_set_name_defines_a_range_formulas_can_use() -> None:
-    g = _grid()
-    g.setcell(0, 1, "10")
-    g.setcell(0, 2, "20")
-    g.recalc()
-    api = Api(g)
-
-    assert api.set_name("Data", "A2:A3")["ok"] is True
-    api.set_cell(0, 2, "=SUM(Data)")  # C1
-    assert g.cell(2, 0).val == 30.0
-
-
-def test_set_name_accepts_a_single_cell() -> None:
-    g = _grid()
-    api = Api(g)
-    api.set_name("Rate", "B7")
-    assert api.list_names()["names"] == [{"name": "Rate", "range": "B7", "sheet": ""}]
-
-
-def test_redefining_a_name_moves_it_rather_than_duplicating() -> None:
-    g = _grid()
-    api = Api(g)
-    api.set_name("Data", "A1:A2")
-    api.set_name("Data", "B1:B9")
-    assert api.list_names()["names"] == [{"name": "Data", "range": "B1:B9", "sheet": ""}]
-
-
-def test_a_name_that_reads_as_a_cell_reference_is_refused() -> None:
-    """`B7` as a name would make `=B7` ambiguous; better to refuse than to
-    invent a precedence rule the user has to learn."""
-    api = Api(_grid())
-    r = api.set_name("B7", "A1:A2")
-    assert r["ok"] is False and "cell reference" in r["error"]
-
-
-def test_name_syntax_is_validated() -> None:
-    api = Api(_grid())
-    assert api.set_name("9bad", "A1")["ok"] is False  # must start with a letter
-    assert api.set_name("has space", "A1")["ok"] is False
-    assert api.set_name("", "A1")["ok"] is False
-    assert api.set_name("ok_name2", "A1")["ok"] is True
-
-
-def test_set_name_rejects_a_bad_range() -> None:
-    api = Api(_grid())
-    r = api.set_name("Data", "not-a-range")
-    assert r["ok"] is False and "bad range" in r["error"]
-
-
-def test_names_are_listed_alphabetically() -> None:
-    api = Api(_grid())
-    api.set_name("zeta", "A1")
-    api.set_name("Alpha", "A2")
-    assert [n["name"] for n in api.list_names()["names"]] == ["Alpha", "zeta"]
-
-
-def test_delete_name_removes_it_and_leaves_users_in_error() -> None:
-    g = _grid()
-    g.setcell(0, 1, "10")
-    g.recalc()
-    api = Api(g)
-    api.set_name("Data", "A2")
-    api.set_cell(0, 2, "=SUM(Data)")
-    assert g.cell(2, 0).val == 10.0
-
-    assert api.delete_name("Data")["ok"] is True
-    assert api.list_names()["names"] == []
-    assert math.isnan(g.cell(2, 0).val)  # visible, not silently wrong
-
-
-def test_delete_unknown_name_reports() -> None:
-    api = Api(_grid())
-    r = api.delete_name("Nope")
-    assert r["ok"] is False and r["error"] == "no such name: Nope"
-
-
-def test_names_survive_a_save_and_reload(tmp_path) -> None:
-    g = _grid()
-    api = Api(g)
-    api.set_name("Data", "A2:A3")
-    path = tmp_path / "book.json"
-    api.save(str(path))
-    assert Api(load_workbook(str(path))).list_names()["names"] == [
-        {"name": "Data", "range": "A2:A3", "sheet": ""}
-    ]
-
-
-def test_set_name_respects_the_name_limit() -> None:
-    from gridcalc.engine import MAXNAMES
-
-    api = Api(_grid())
-    for i in range(MAXNAMES):
-        # Not "n0", "n1", ...: those parse as column-N cell references and are
-        # (correctly) refused by the name validator.
-        assert api.set_name(f"name{i}", "A1")["ok"] is True
-    r = api.set_name("one_too_many", "A1")
-    assert r["ok"] is False and "too many names" in r["error"]
-
-
-def test_recalc_recomputes_without_dirtying_the_workbook() -> None:
-    """Asking for the values you already had is not an edit -- this matches
-    the TUI's `!`, which likewise leaves the dirty flag alone."""
-    g = _grid()
-    g.setcell(0, 0, "2")
-    g.setcell(1, 0, "=A1*3")
-    g.recalc()
-    api = Api(g)
-    assert api.dims()["dirty"] is False
-    assert api.recalc()["ok"] is True
-    assert g.cell(1, 0).val == 6.0
-    assert api.dims()["dirty"] is False
+    assert Api(g).set_format(-5, -5, NROW + 9, NCOL + 9, "b")["ok"] is True
+    assert g.cell(0, 0).bold == 1
 
 
 # -- search -------------------------------------------------------------

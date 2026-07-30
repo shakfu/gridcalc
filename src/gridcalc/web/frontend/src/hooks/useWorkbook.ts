@@ -14,10 +14,10 @@ export interface WorkbookActions {
   deleteSheet(name: string): Promise<void>
   renameSheet(old: string, name: string): Promise<void>
   moveSheet(name: string, index: number): Promise<void>
-  insertRows(at: number, count: number): Promise<void>
-  insertCols(at: number, count: number): Promise<void>
-  deleteRows(r0: number, r1: number): Promise<void>
-  deleteCols(c0: number, c1: number): Promise<void>
+  // Run a command from the shared registry (`gridcalc.commands`). One action
+  // covers every such command, so adding one to the registry needs no new
+  // action here -- which is the point of the registry.
+  runCommand(name: string, args?: string[], rect?: Rect | null): Promise<void>
   format(rect: Rect, spec: string): Promise<void>
   setDefaultFormat(fmt: string): Promise<void>
 }
@@ -140,22 +140,32 @@ export function useWorkbook(): Workbook {
     [guard, fail],
   )
 
-  // Insert/delete row and column. Every cell below or right of the edit moves,
-  // and the engine rewrites formula references to match, so the whole viewport
-  // is stale afterwards -- hence the `revision` bump rather than a local patch.
-  const structural = useCallback(
-    async (what: string, fn: () => Promise<{ ok: boolean; error?: string }>) => {
-      const r = await guard(what, fn)
+  // Every shared command goes through here. A command that reports `changed`
+  // may have moved cells anywhere (insert/delete rewrite references across the
+  // sheet, a sort reorders rows), so the viewport is refetched wholesale rather
+  // than patched; a query only reports its message.
+  const runShared = useCallback(
+    async (name: string, args: string[], rect: Rect | null) => {
+      const r = await guard(name, () =>
+        bridge.run_command(
+          name,
+          args,
+          rect ? { r0: rect.r0, c0: rect.c0, r1: rect.r1, c1: rect.c1 } : null,
+        ),
+      )
       if (!r) return
       if (!r.ok) {
-        fail(r.error ?? `${what} failed`)
+        fail(r.message || `${name} failed`)
         return
       }
-      setDirty(true)
-      setMutations((n) => n + 1)
-      setRevision((n) => n + 1)
+      if (r.changed) {
+        setDirty(true)
+        setMutations((n) => n + 1)
+        setRevision((n) => n + 1)
+      }
+      if (r.message) flash(r.message)
     },
-    [guard, fail],
+    [guard, fail, flash],
   )
 
   const actions = useMemo<WorkbookActions>(
@@ -212,14 +222,8 @@ export function useWorkbook(): Workbook {
         sheetOp('sheet', () => bridge.rename_sheet(old, name)),
       moveSheet: (name: string, index: number) =>
         sheetOp('sheet', () => bridge.move_sheet(name, index)),
-      insertRows: (at: number, count: number) =>
-        structural('insert row', () => bridge.insert_rows(at, count)),
-      insertCols: (at: number, count: number) =>
-        structural('insert column', () => bridge.insert_cols(at, count)),
-      deleteRows: (r0: number, r1: number) =>
-        structural('delete row', () => bridge.delete_rows(r0, r1)),
-      deleteCols: (c0: number, c1: number) =>
-        structural('delete column', () => bridge.delete_cols(c0, c1)),
+      runCommand: (name: string, args: string[] = [], rect: Rect | null = null) =>
+        runShared(name, args, rect),
       format: async (rect: Rect, spec: string) => {
         await guard('format', () => bridge.set_format(rect.r0, rect.c0, rect.r1, rect.c1, spec))
         setDirty(true)
@@ -233,7 +237,7 @@ export function useWorkbook(): Workbook {
         setRevision((n) => n + 1)
       },
     }),
-    [refresh, flash, fail, guard, sheetOp, structural],
+    [refresh, flash, fail, guard, sheetOp, runShared],
   )
 
   return {

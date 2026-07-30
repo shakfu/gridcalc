@@ -14,6 +14,8 @@ import { buildRegistry } from './lib/registry'
 import { Grid, type GridHandle } from './components/Grid'
 import { useWorkbook } from './hooks/useWorkbook'
 import type { CellAnnotation, Selection } from './lib/grid'
+import type { SharedCommand } from './bridge/types'
+import { bridge } from './bridge/api'
 
 // Whether an event landed in something the user is typing into. `contentEditable`
 // counts: a rich-text host is still a field, even though it is not an <input>.
@@ -44,6 +46,9 @@ export function App() {
   const [sheetMode, setSheetMode] = useState<SheetMode>('add')
   const [findOpen, setFindOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  // The shared command registry, fetched once. The palette is built from it,
+  // so a command added on the Python side needs no change here.
+  const [sharedCommands, setSharedCommands] = useState<SharedCommand[]>([])
   // Solver output painted on the sheet. Cleared when the workbook changes
   // underneath it, since an annotation describes one particular solution.
   const [annotations, setAnnotations] = useState<Record<string, CellAnnotation>>({})
@@ -91,10 +96,12 @@ export function App() {
     return {
       rows: r1 - r0 + 1,
       cols: c1 - c0 + 1,
-      insertRows: () => void wb.actions.insertRows(r0, r1 - r0 + 1),
-      insertCols: () => void wb.actions.insertCols(c0, c1 - c0 + 1),
-      deleteRows: () => void wb.actions.deleteRows(r0, r1),
-      deleteCols: () => void wb.actions.deleteCols(c0, c1),
+      // Straight to the shared registry, so the menu, the palette and the
+      // TUI's `:ir`/`:dr` are one implementation.
+      insertRows: () => void wb.actions.runCommand('insrow', [], selection),
+      insertCols: () => void wb.actions.runCommand('inscol', [], selection),
+      deleteRows: () => void wb.actions.runCommand('delrow', [], selection),
+      deleteCols: () => void wb.actions.runCommand('delcol', [], selection),
     }
   }, [selection, wb.actions])
 
@@ -114,6 +121,8 @@ export function App() {
         structure,
         sheets: wb.sheets,
         selection,
+        shared: sharedCommands,
+        runShared: (name, args) => void wb.actions.runCommand(name, args, selection),
         goto: (ref) => grid.current?.goto(ref),
         openFind: () => setFindOpen(true),
         openOptimize: () => setOptOpen(true),
@@ -129,10 +138,26 @@ export function App() {
         notify: wb.notify,
         fail: wb.fail,
       }),
-    [wb, commands, structure, selection, formatSel, openSheetDialog],
+    [wb, commands, structure, selection, sharedCommands, formatSel, openSheetDialog],
   )
 
-  const { fail } = wb
+  const { fail, ready } = wb
+  useEffect(() => {
+    if (!ready) return
+    let alive = true
+    bridge
+      .list_commands()
+      .then((r) => alive && setSharedCommands(r.commands))
+      .catch(() => {
+        // A palette missing its shared half is worth saying so: the menus still
+        // work, but half the commands would silently not be there.
+        if (alive) fail('could not load the command registry')
+      })
+    return () => {
+      alive = false
+    }
+  }, [ready, fail])
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return

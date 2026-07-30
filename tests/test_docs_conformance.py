@@ -84,7 +84,24 @@ def _documented_commands(text: str) -> set[str]:
 
 
 def _dispatched_commands() -> set[str]:
-    """Command names `cmdexec` compares `cmd` against."""
+    """Every command name the TUI can reach.
+
+    Dispatch is two-part since the shared registry landed: `cmdexec` still
+    name-matches the view-owned commands (those whose body is interaction --
+    `:e`, `:view`, `:sheets`, ...), while the frontend-neutral ones come from
+    `gridcalc.commands` and never appear as a literal here. Both halves count,
+    or the README check would demand that shared commands be re-listed in the
+    dispatcher just to be seen.
+    """
+    from gridcalc import commands as shared
+    from gridcalc.tui.commands import _ARG_ALIASES
+
+    names = set(shared.BY_NAME) | set(_ARG_ALIASES)
+    return names | _name_matched_commands()
+
+
+def _name_matched_commands() -> set[str]:
+    """Command names `cmdexec` compares `cmd` against directly."""
     tree = ast.parse(COMMANDS_PY.read_text(encoding="utf-8"))
     fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "cmdexec")
     names: set[str] = set()
@@ -118,6 +135,52 @@ def test_dispatched_commands_are_documented() -> None:
         f"cmdexec handles commands the README never mentions: {undocumented}. "
         "Either document them or add them to UNDOCUMENTED_ALIASES."
     )
+
+
+def test_no_view_owned_command_shadows_a_shared_one() -> None:
+    """The parity guarantee, TUI half -- and the way it can actually break.
+
+    Both frontends dispatch shared commands *by name*, so a registry entry is
+    reachable by construction; asserting that would be a tautology. The real
+    hazard is shadowing: `cmdexec` tries the shared registry first, so a
+    view-owned branch matching the same name is dead code, and whichever of the
+    two implementations the author meant to keep, one of them is now a lie.
+    """
+    from gridcalc import commands as shared
+
+    clash = sorted(_name_matched_commands() & set(shared.BY_NAME))
+    assert not clash, (
+        f"cmdexec name-matches commands the shared registry already owns: {clash}. "
+        "The registry runs first, so these branches are unreachable -- delete "
+        "them, or rename the shared command if they were meant to differ."
+    )
+
+
+def test_the_web_bridge_exposes_the_registry_unfiltered() -> None:
+    """The parity guarantee, web half.
+
+    The client builds its palette from `Api.list_commands`, so the bridge is
+    where the web frontend could still lose a command -- by filtering the list,
+    or by drifting to a hardcoded one. This pins that it forwards the registry
+    whole. (That the *client* then renders one entry per descriptor is asserted
+    in the vitest suite, which is where that code lives.)
+    """
+    from gridcalc import commands as shared
+    from gridcalc.engine import Grid
+    from gridcalc.web import Api
+
+    exposed = {c["name"] for c in Api(Grid()).list_commands()["commands"]}
+    assert exposed == {c.name for c in shared.COMMANDS}
+
+
+def test_shared_commands_are_documented_in_the_readme() -> None:
+    """A shared command is user-facing in both frontends, so it needs to be in
+    the command reference like any other."""
+    documented = _documented_commands(_readme_text())
+    from gridcalc import commands as shared
+
+    undocumented = sorted(c.name for c in shared.COMMANDS if not (set(c.names) & documented))
+    assert not undocumented, f"shared commands the README never mentions: {undocumented}"
 
 
 # -- keybinding conformance --

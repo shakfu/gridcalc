@@ -9,27 +9,21 @@ from __future__ import annotations
 
 import contextlib
 import curses
-import math
 import os
 import subprocess
 import tempfile
 from collections.abc import Callable
+from typing import Any
 
+from .. import commands as shared
 from ..engine import (
-    EMPTY,
     FORMULA,
     MAXCODE,
     MAXIN,
-    MAXNAMES,
     NCOL,
     NROW,
-    NUM,
-    Cell,
     Grid,
-    Mode,
-    NamedRange,
     _is_dataframe,
-    cellname,
     col_name,
     ref,
 )
@@ -381,24 +375,6 @@ def cmd_open(stdscr: curses.window, g: Grid, args: str) -> bool:
     return False
 
 
-def cmd_blank(
-    g: Grid,
-    undo: UndoManager,
-    sel: tuple[int, int, int, int] | None = None,
-) -> bool:
-    if sel:
-        c1, r1, c2, r2 = sel
-        undo.save_region(g, c1, r1, c2, r2)
-        for r in range(r1, r2 + 1):
-            for c in range(c1, c2 + 1):
-                g.setcell(c, r, "")
-    else:
-        undo.save_cell(g, g.cc, g.cr)
-        g.setcell(g.cc, g.cr, "")
-    g.recalc()
-    return False
-
-
 def cmd_clear(stdscr: curses.window, g: Grid, undo: UndoManager) -> bool:
     stdscr.addnstr(curses.LINES - 1, 0, "Clear entire sheet? (y/N)", curses.COLS - 1)
     stdscr.clrtoeol()
@@ -409,62 +385,6 @@ def cmd_clear(stdscr: curses.window, g: Grid, undo: UndoManager) -> bool:
         g.clear_all()
         g.dirty = 1
     return False
-
-
-def _apply_fmt_to_range(
-    g: Grid,
-    undo: UndoManager,
-    c1: int,
-    r1: int,
-    c2: int,
-    r2: int,
-    fmt_arg: str,
-) -> bool:
-    """Apply a format string to all non-empty cells in a range.
-
-    fmt_arg is a resolved format: a style string like "bui", a single
-    format char like "$", or a Python format spec like ",.2f".
-    Returns True if applied, False if invalid.
-    """
-    all_style = all(ch in "bui" for ch in fmt_arg)
-    if all_style:
-        undo.save_region(g, c1, r1, c2, r2)
-        for r in range(r1, r2 + 1):
-            for c in range(c1, c2 + 1):
-                cl = g.cell(c, r)
-                if not cl or cl.type == EMPTY:
-                    continue
-                for ch in fmt_arg:
-                    if ch == "b":
-                        cl.bold = 1 - cl.bold
-                    elif ch == "u":
-                        cl.underline = 1 - cl.underline
-                    elif ch == "i":
-                        cl.italic = 1 - cl.italic
-        return True
-
-    if len(fmt_arg) == 1 and fmt_arg.upper() in "LRIGD$%*":
-        undo.save_region(g, c1, r1, c2, r2)
-        fmt_ch = fmt_arg.upper()
-        for r in range(r1, r2 + 1):
-            for c in range(c1, c2 + 1):
-                cl = g.cell(c, r)
-                if not cl or cl.type == EMPTY:
-                    continue
-                cl.fmt = fmt_ch
-                cl.fmtstr = ""
-        return True
-
-    # Python format spec
-    undo.save_region(g, c1, r1, c2, r2)
-    for r in range(r1, r2 + 1):
-        for c in range(c1, c2 + 1):
-            cl = g.cell(c, r)
-            if not cl or cl.type == EMPTY:
-                continue
-            cl.fmtstr = fmt_arg[:31]
-            cl.fmt = ""
-    return True
 
 
 _FORMAT_OPTIONS = [
@@ -545,49 +465,6 @@ def _resolve_fmt(stdscr: curses.window, args: str) -> str | None:
     return None
 
 
-def cmd_format(
-    stdscr: curses.window,
-    g: Grid,
-    undo: UndoManager,
-    args: str,
-    sel: tuple[int, int, int, int] | None = None,
-) -> bool:
-    if sel:
-        c1, r1, c2, r2 = sel
-    else:
-        cl = g.cell(g.cc, g.cr)
-        if not cl or cl.type == EMPTY:
-            return False
-        c1, r1, c2, r2 = g.cc, g.cr, g.cc, g.cr
-
-    fmt = _resolve_fmt(stdscr, args)
-    if fmt is None:
-        return False
-
-    if not _apply_fmt_to_range(g, undo, c1, r1, c2, r2, fmt):
-        show_error(
-            stdscr,
-            "Invalid format. Use: b u i L R I G D $ % * or Python spec",
-        )
-    return False
-
-
-def cmd_gformat(stdscr: curses.window, g: Grid, args: str) -> bool:
-    if args:
-        ch = args[0].upper()
-    else:
-        stdscr.addnstr(curses.LINES - 1, 0, "Global format: L R I G D $ % *", curses.COLS - 1)
-        stdscr.clrtoeol()
-        stdscr.refresh()
-        k = stdscr.getch()
-        ch = chr(k).upper() if 32 <= k < 127 else ""
-    if ch in "LRIGD$%*":
-        g.fmt = ch
-    else:
-        show_error(stdscr, "Invalid format. Use: L R I G D $ % *")
-    return False
-
-
 def cmd_width(stdscr: curses.window, g: Grid, args: str) -> bool:
     s = args.strip() if args else ""
     if not s:
@@ -610,90 +487,6 @@ def cmd_width(stdscr: curses.window, g: Grid, args: str) -> bool:
         g.cw = w
     else:
         show_error(stdscr, "Invalid width. Use 4-40.")
-    return False
-
-
-def name_set(g: Grid, name: str, c1: int, r1: int, c2: int, r2: int) -> None:
-    idx = -1
-    for i, nr in enumerate(g.names):
-        if nr.name == name:
-            idx = i
-            break
-    if idx < 0 and len(g.names) < MAXNAMES:
-        g.names.append(NamedRange(name, c1, r1, c2, r2))
-    elif idx >= 0:
-        g.names[idx].c1 = c1
-        g.names[idx].r1 = r1
-        g.names[idx].c2 = c2
-        g.names[idx].r2 = r2
-    g.dirty = 1
-    g.recalc()
-
-
-def cmd_name(stdscr: curses.window, g: Grid, args: str) -> bool:
-    nbuf = ""
-    if args:
-        parts = args.split(None, 1)
-        nbuf = parts[0]
-        if len(parts) > 1:
-            rest = parts[1]
-            r = ref(rest)
-            if r:
-                n, c1, r1 = r
-                c2, r2 = c1, r1
-                remainder = rest[n:]
-                if remainder.startswith(":"):
-                    r3 = ref(remainder[1:])
-                    if r3:
-                        _, c2, r2 = r3
-                name_set(g, nbuf, c1, r1, c2, r2)
-                return False
-    else:
-        entered = _line_input(
-            stdscr,
-            curses.LINES - 1,
-            prefix="Name: ",
-            accept=lambda ch, buf: ch.isalpha() or (bool(buf) and (ch.isalnum() or ch == "_")),
-            allow_empty=False,
-        )
-        if entered is None:
-            return False
-        nbuf = entered
-
-    result = selectrange(stdscr, g, "Range:", g.cc, g.cr)
-    if result:
-        c1, r1, c2, r2 = result
-        name_set(g, nbuf, c1, r1, c2, r2)
-    return False
-
-
-def cmd_names(stdscr: curses.window, g: Grid) -> bool:
-    stdscr.erase()
-    stdscr.attron(curses.A_BOLD)
-    stdscr.addnstr(0, 0, f"Named Ranges ({len(g.names)})", curses.COLS - 1)
-    stdscr.attroff(curses.A_BOLD)
-    for i, nr in enumerate(g.names):
-        a = cellname(nr.c1, nr.r1)
-        stdscr.addnstr(i + 1, 0, f"  {nr.name} = {a}:{col_name(nr.c2)}{nr.r2 + 1}", curses.COLS - 1)
-    stdscr.addnstr(len(g.names) + 2, 0, "Press any key.", curses.COLS - 1)
-    stdscr.refresh()
-    stdscr.getch()
-    return False
-
-
-def cmd_unname(stdscr: curses.window, g: Grid, args: str) -> bool:
-    nbuf = args.strip() if args else ""
-    if not nbuf:
-        entered = _line_input(stdscr, curses.LINES - 1, prefix="Remove name: ", allow_empty=False)
-        if entered is None:
-            return False
-        nbuf = entered
-
-    for i, nr in enumerate(g.names):
-        if nr.name == nbuf:
-            g.names.pop(i)
-            g.dirty = 1
-            break
     return False
 
 
@@ -857,31 +650,6 @@ def cmd_view(stdscr: curses.window, g: Grid) -> bool:
     return False
 
 
-def cmd_mode(stdscr: curses.window, g: Grid, args: str) -> bool:
-    arg = args.strip()
-    if not arg:
-        show_error(stdscr, f"mode: {g.mode.name.lower()} ({int(g.mode)})")
-        return False
-    parsed = Mode.parse(arg)
-    if parsed is None:
-        show_error(stdscr, "Invalid mode. Use: 1|excel, 2|hybrid, 3|python")
-        return False
-    if parsed == g.mode:
-        return False
-    errors = g.validate_for_mode(parsed)
-    if errors:
-        show_error(
-            stdscr,
-            f"Cannot switch to {parsed.name}: {len(errors)} issue(s). First: {errors[0]}",
-        )
-        return False
-    g.mode = parsed
-    g._apply_mode_libs()
-    g.recalc()
-    g.dirty = 1
-    return False
-
-
 def cmd_sheet(stdscr: curses.window, g: Grid, args: str) -> bool:
     """Multi-sheet management.
 
@@ -996,115 +764,6 @@ def cmd_sheets(stdscr: curses.window, g: Grid) -> bool:
     return False
 
 
-def cmd_title(g: Grid, args: str) -> bool:
-    ch = args[0].upper() if args else ""
-    if ch == "V":
-        g.tc = g.cc + 1
-        g.tr = 0
-        g.cc += 1
-    elif ch == "H":
-        g.tr = g.cr + 1
-        g.tc = 0
-        g.cr += 1
-    elif ch == "B":
-        g.tc = g.cc + 1
-        g.tr = g.cr + 1
-        g.cc += 1
-        g.cr += 1
-    elif ch == "N":
-        g.tc = g.tr = 0
-        g.vc = g.vr = 0
-    return False
-
-
-def cmd_sort(
-    stdscr: curses.window,
-    g: Grid,
-    undo: UndoManager,
-    args: str,
-    sel: tuple[int, int, int, int] | None = None,
-) -> bool:
-    """Sort rows by a column. Usage: :sort [col] [desc]"""
-    parts = args.strip().split()
-
-    if sel:
-        c1, r1, c2, r2 = sel
-    else:
-        # Find data extent
-        maxr = -1
-        maxc = -1
-        for (c, r), cl in g._cells.items():
-            if cl.type != EMPTY:
-                if r > maxr:
-                    maxr = r
-                if c > maxc:
-                    maxc = c
-        if maxr < 0:
-            return False
-        c1, r1, c2, r2 = 0, 0, maxc, maxr
-
-    # Determine sort column
-    if parts:
-        col_str = parts[0].upper()
-        r_parsed = ref(col_str + "1")
-        if r_parsed:
-            sort_col = r_parsed[1]
-        else:
-            show_error(stdscr, f"Invalid column: {parts[0]}")
-            return False
-    else:
-        sort_col = sel[0] if sel else g.cc
-
-    descending = len(parts) > 1 and parts[1].lower() in ("desc", "d", "reverse", "r")
-
-    if sort_col < c1 or sort_col > c2:
-        show_error(stdscr, f"Column {col_name(sort_col)} is outside the range")
-        return False
-
-    undo.save_grid(g)
-
-    # Collect rows as lists of cell snapshots
-    row_data: list[tuple[float, str, int, list[tuple[int, Cell | None]]]] = []
-    for r in range(r1, r2 + 1):
-        sort_cl = g.cell(sort_col, r)
-        if sort_cl and sort_cl.type in (NUM, FORMULA):
-            sort_val = sort_cl.val if not math.isnan(sort_cl.val) else float("inf")
-        else:
-            sort_val = float("inf")
-        sort_text = sort_cl.text if sort_cl and sort_cl.type != EMPTY else ""
-        cells_in_row: list[tuple[int, Cell | None]] = []
-        for c in range(c1, c2 + 1):
-            maybe = g.cell(c, r)
-            cells_in_row.append((c, maybe.snapshot() if maybe else None))
-        row_data.append((sort_val, sort_text, r, cells_in_row))
-
-    # Sort: numbers first (by value), then labels (alphabetically), then empties
-    def sort_key(
-        item: tuple[float, str, int, list[tuple[int, Cell | None]]],
-    ) -> tuple[int, float, str]:
-        val, text, _, _ = item
-        if val < float("inf"):
-            return (0, val, "")
-        if text:
-            return (1, 0.0, text.lower())
-        return (2, 0.0, "")
-
-    row_data.sort(key=sort_key, reverse=descending)
-
-    # Write sorted rows back
-    for new_r_offset, (_, _, _, cells_in_row) in enumerate(row_data):
-        target_r = r1 + new_r_offset
-        for c, snap in cells_in_row:
-            if snap is None:
-                g._cells.pop((c, target_r), None)
-            else:
-                dst = g._ensure_cell(c, target_r)
-                dst.copy_from(snap)
-    g.recalc()
-    g.dirty = 1
-    return False
-
-
 def _io_command(
     stdscr: curses.window,
     g: Grid,
@@ -1216,6 +875,112 @@ def cmd_csv(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> boo
     )
 
 
+# Sentinel distinguishing "not a shared command" from "cancelled at a prompt",
+# since both would otherwise be None.
+_NOT_SHARED: Any = object()
+
+# Terminal shorthands that are the same shared command with the argument baked
+# in. `:tv` is `:title v`; there is no reason for the registry to carry four
+# near-identical entries just because the keyboard shorthand predates it.
+_ARG_ALIASES: dict[str, tuple[str, list[str]]] = {
+    "tv": ("title", ["v"]),
+    "th": ("title", ["h"]),
+    "tb": ("title", ["b"]),
+    "tn": ("title", ["n"]),
+}
+
+
+def _resolve_shared_args(
+    stdscr: curses.window,
+    g: Grid,
+    cmd: str,
+    args: str,
+    sel: tuple[int, int, int, int] | None,
+) -> Any:
+    """Collect a shared command's arguments the way a terminal collects them.
+
+    Returns the argument list, ``None`` if the user cancelled a prompt, or
+    ``_NOT_SHARED`` when the name is not in the registry (so `cmdexec` falls
+    through to the view-owned commands).
+
+    This is the whole of what the TUI still owns for these commands: a status
+    line prompt, a format picker, a range selector. The operation itself is in
+    `gridcalc.commands`.
+    """
+    alias, prefix = _ARG_ALIASES.get(cmd, (cmd, []))
+    found = shared.lookup(alias)
+    if found is None:
+        return _NOT_SHARED
+    # Branch on the *canonical* name: `:f` and `:format` are the same command,
+    # and matching on whatever the user typed would skip the prompt for one.
+    name = found.name
+    argv = prefix + args.split()
+    if argv:
+        return argv
+
+    # No arguments given: prompt for the ones this command cannot do without.
+    if name == "format":
+        fmt = _resolve_fmt(stdscr, args)
+        return None if fmt is None else [fmt]
+    if name == "gformat":
+        stdscr.addnstr(curses.LINES - 1, 0, "Global format: L R I G D $ % *", curses.COLS - 1)
+        stdscr.clrtoeol()
+        stdscr.refresh()
+        k = stdscr.getch()
+        return [chr(k)] if 32 <= k < 127 else []
+    if name == "name":
+        entered = _line_input(
+            stdscr,
+            curses.LINES - 1,
+            prefix="Name: ",
+            accept=lambda ch, buf: ch.isalpha() or (bool(buf) and (ch.isalnum() or ch == "_")),
+            allow_empty=False,
+        )
+        if entered is None:
+            return None
+        picked = selectrange(stdscr, g, "Range:", g.cc, g.cr)
+        if picked is None:
+            return None
+        c1, r1, c2, r2 = picked
+        return [entered, shared.range_a1(c1, r1, c2, r2)]
+    if name == "unname":
+        entered = _line_input(stdscr, curses.LINES - 1, prefix="Remove name: ", allow_empty=False)
+        return None if entered is None else [entered]
+    if name == "title":
+        return []  # `:title` with no argument reports its usage via the command
+    return argv
+
+
+def _run_shared(
+    stdscr: curses.window,
+    g: Grid,
+    undo: UndoManager,
+    cmd: str,
+    argv: list[str],
+    sel: tuple[int, int, int, int] | None,
+) -> bool:
+    """Run a shared command and present its result in the terminal.
+
+    Presentation follows the convention this frontend has always had: a
+    failure and a *query* both stop for a keypress so they can be read, while
+    a mutation says nothing -- the redrawn grid is the feedback. (The web view
+    shows every message, because it has a status bar that does not block; that
+    difference is exactly the kind the registry leaves to each frontend.)
+
+    Always returns False: none of the shared commands quit the application.
+    """
+    result = shared.run(_ARG_ALIASES.get(cmd, (cmd, []))[0], g, undo, argv, sel)
+    if result.changed:
+        g.dirty = 1
+    if not result.ok:
+        show_error(stdscr, result.message)
+    elif result.lines:
+        pager(stdscr, f"Named ranges ({len(result.lines)})", list(result.lines))
+    elif result.message and not result.changed:
+        show_error(stdscr, result.message)
+    return False
+
+
 def cmdexec(
     stdscr: curses.window,
     g: Grid,
@@ -1231,6 +996,16 @@ def cmdexec(
     cmd = parts[0].lower()
     args = parts[1] if len(parts) > 1 else ""
 
+    # Shared commands first. `gridcalc.commands` owns the operation; this
+    # layer's job is to collect the arguments a terminal collects (a prompt on
+    # the status line, a range picker) and to present the result. A command
+    # that needs no prompting falls straight through to `_run_shared`.
+    resolved = _resolve_shared_args(stdscr, g, cmd, args, sel)
+    if resolved is not _NOT_SHARED:
+        if resolved is None:
+            return False  # the user cancelled at a prompt
+        return _run_shared(stdscr, g, undo, cmd, resolved, sel)
+
     if cmd in ("q", "quit"):
         return cmd_quit(stdscr, g)
     if cmd == "q!":
@@ -1243,14 +1018,8 @@ def cmdexec(
         return cmd_edit(stdscr, g)
     if cmd in ("o", "open"):
         return cmd_open(stdscr, g, args)
-    if cmd in ("b", "blank"):
-        return cmd_blank(g, undo, sel=sel)
     if cmd == "clear":
         return cmd_clear(stdscr, g, undo)
-    if cmd in ("f", "format"):
-        return cmd_format(stdscr, g, undo, args, sel=sel)
-    if cmd in ("gf", "gformat"):
-        return cmd_gformat(stdscr, g, args)
     if cmd == "width":
         return cmd_width(stdscr, g, args)
     if cmd in ("view", "v"):
@@ -1261,40 +1030,10 @@ def cmdexec(
         return cmd_xlsx(stdscr, g, undo, args)
     if cmd == "pd":
         return cmd_pd(stdscr, g, undo, args)
-    if cmd == "sort":
-        return cmd_sort(stdscr, g, undo, args, sel=sel)
     if cmd == "opt":
         return cmd_opt(stdscr, g, undo, args, sel=sel)
     if cmd == "goal":
         return cmd_goal(stdscr, g, undo, args)
-    if cmd in ("dr", "delrow"):
-        undo.save_grid(g)
-        if sel:
-            for r in range(sel[3], sel[1] - 1, -1):
-                g.deleterow(r)
-        else:
-            g.deleterow(g.cr)
-        g.recalc()
-        return False
-    if cmd in ("dc", "delcol"):
-        undo.save_grid(g)
-        if sel:
-            for c in range(sel[2], sel[0] - 1, -1):
-                g.deletecol(c)
-        else:
-            g.deletecol(g.cc)
-        g.recalc()
-        return False
-    if cmd in ("ir", "insrow"):
-        undo.save_grid(g)
-        g.insertrow(g.cr)
-        g.recalc()
-        return False
-    if cmd in ("ic", "inscol"):
-        undo.save_grid(g)
-        g.insertcol(g.cc)
-        g.recalc()
-        return False
     if cmd in ("m", "move"):
         undo.save_grid(g)
         movecmd(stdscr, g, undo)
@@ -1303,24 +1042,6 @@ def cmdexec(
         undo.save_grid(g)
         replcmd(stdscr, g, undo)
         return False
-    if cmd == "name":
-        return cmd_name(stdscr, g, args)
-    if cmd == "names":
-        return cmd_names(stdscr, g)
-    if cmd == "unname":
-        return cmd_unname(stdscr, g, args)
-    if cmd == "tv":
-        return cmd_title(g, "v")
-    if cmd == "th":
-        return cmd_title(g, "h")
-    if cmd == "tb":
-        return cmd_title(g, "b")
-    if cmd == "tn":
-        return cmd_title(g, "n")
-    if cmd == "title":
-        return cmd_title(g, args)
-    if cmd == "mode":
-        return cmd_mode(stdscr, g, args)
     if cmd in ("sheet", "s"):
         return cmd_sheet(stdscr, g, args)
     if cmd == "sheets":

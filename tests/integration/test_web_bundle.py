@@ -33,7 +33,7 @@ _MOCK_BRIDGE = """
     open_dialog: 0, save: 0, set_active: [], set_cell: [], clear_range: [],
     copy: [], paste: [], paste_text: [], fill: [], solve: [], goal: [], chart: [],
     set_format: [], set_global_format: [], save_model: [],
-    sheet_ops: [], structural: [], col_widths: [], search: [], undo_calls: 0, recalc: 0, names: []
+    sheet_ops: [], structural: [], col_widths: [], search: [], undo_calls: 0, commands: []
   };
   const sheets = { active: 0, names: ['Sheet1', 'Data'] };
   const cells = new Map();
@@ -87,23 +87,52 @@ _MOCK_BRIDGE = """
       window.__calls.search.push(pattern);
       return { matches: hits, total: hits.length, truncated: false };
     },
-    recalc: async () => { window.__calls.recalc++; return { ok: true, dirty }; },
-    list_names: async () => ({
-      names: Object.entries(namedRanges)
-        .map(([name, range]) => ({ name, range, sheet: '' }))
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    }),
-    set_name: async (name, rng) => {
-      window.__calls.names.push(['set', name, rng]);
-      if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name || '')) {
-        return { ok: false, error: "not a usable name: '" + name + "'" };
+    list_commands: async () => ({ commands: [
+      { name: 'blank', aliases: ['b'], title: 'Clear cells', group: 'Edit',
+        needs_selection: true, args: [] },
+      { name: 'insrow', aliases: ['ir'], title: 'Insert rows', group: 'Insert',
+        needs_selection: true, args: [] },
+      { name: 'inscol', aliases: ['ic'], title: 'Insert columns', group: 'Insert',
+        needs_selection: true, args: [] },
+      { name: 'delrow', aliases: ['dr'], title: 'Delete rows', group: 'Insert',
+        needs_selection: true, args: [] },
+      { name: 'delcol', aliases: ['dc'], title: 'Delete columns', group: 'Insert',
+        needs_selection: true, args: [] },
+      { name: 'sort', aliases: [], title: 'Sort rows', group: 'Data', needs_selection: true,
+        args: [{ name: 'column', help: 'column letter', required: false, kind: 'ref', choices: [] },
+               { name: 'direction', help: 'asc or desc', required: false, kind: 'choice',
+                 choices: ['asc', 'desc'] }] },
+      { name: 'name', aliases: [], title: 'Define name for selection', group: 'Name',
+        needs_selection: true,
+        args: [{ name: 'name', help: 'the name to define', required: true,
+                 kind: 'text', choices: [] },
+               { name: 'range', help: 'defaults to the selection', required: false,
+                 kind: 'range', choices: [] }] },
+      { name: 'names', aliases: [], title: 'List named ranges', group: 'Name',
+        needs_selection: false, args: [] },
+      { name: 'recalc', aliases: [], title: 'Recalculate', group: 'Data',
+        needs_selection: false, args: [] },
+    ] }),
+    run_command: async (name, args, selection) => {
+      window.__calls.commands.push([name, args || [], selection]);
+      if (name === 'name' && !/^[A-Za-z][A-Za-z0-9_]*$/.test((args || [])[0] || '')) {
+        return { ok: false, changed: false, lines: [],
+                 message: "not a usable name: '" + ((args || [])[0] || '') + "'" };
       }
-      namedRanges[name] = rng; touch(); return { ok: true, name };
-    },
-    delete_name: async (name) => {
-      window.__calls.names.push(['del', name]);
-      if (!(name in namedRanges)) return { ok: false, error: 'no such name: ' + name };
-      delete namedRanges[name]; return touch();
+      if (name === 'names') {
+        return { ok: true, changed: false, lines: ['Demo = A1'], message: 'Demo=A1' };
+      }
+      if (name === 'recalc') {
+        return { ok: true, changed: false, lines: [], message: 'recalculated' };
+      }
+      const sel = selection || { r0: 0, c0: 0, r1: 0, c1: 0 };
+      const rows = sel.r1 - sel.r0 + 1, cols = sel.c1 - sel.c0 + 1;
+      if (name === 'insrow') shift('r', sel.r0, rows);
+      else if (name === 'inscol') shift('c', sel.c0, cols);
+      else if (name === 'delrow') shift('r', sel.r0, -rows);
+      else if (name === 'delcol') shift('c', sel.c0, -cols);
+      touch();
+      return { ok: true, changed: true, lines: [], message: name + ' ran', dirty: true };
     },
     col_widths: async () => ({ widths: { ...colWidths } }),
     set_col_width: async (col, px) => {
@@ -139,22 +168,6 @@ _MOCK_BRIDGE = """
       sheets.names.splice(i, 1); sheets.names.splice(index, 0, name);
       sheets.active = sheets.names.indexOf(activeName);
       touch(); return { ...sheets, ok: true };
-    },
-    insert_rows: async (at, count) => {
-      window.__calls.structural.push(['insert_rows', at, count]);
-      shift('r', at, count); return touch();
-    },
-    insert_cols: async (at, count) => {
-      window.__calls.structural.push(['insert_cols', at, count]);
-      shift('c', at, count); return touch();
-    },
-    delete_rows: async (r0, r1) => {
-      window.__calls.structural.push(['delete_rows', r0, r1]);
-      shift('r', r0, -(r1 - r0 + 1)); return touch();
-    },
-    delete_cols: async (c0, c1) => {
-      window.__calls.structural.push(['delete_cols', c0, c1]);
-      shift('c', c0, -(c1 - c0 + 1)); return touch();
     },
     undo: async () => { window.__calls.undo_calls++; return touch(); },
     redo: async () => touch(),
@@ -728,8 +741,10 @@ def test_insert_row_shifts_the_sheet_down(page) -> None:
     page.get_by_text("Widget").click()  # A4
     page.get_by_role("menuitem", name="Insert").click()
     page.get_by_role("menuitem", name=re.compile("Insert Row Above")).click()
-    page.wait_for_function("() => window.__calls.structural.length === 1")
-    assert page.evaluate("() => window.__calls.structural[0]") == ["insert_rows", 3, 1]
+    page.wait_for_function("() => window.__calls.commands.length === 1")
+    name, args, sel = page.evaluate("() => window.__calls.commands[0]")
+    assert name == "insrow" and args == []
+    assert (sel["r0"], sel["r1"]) == (3, 3)
     # The grid refetched: A4 is now blank and Widget moved to A5.
     page.get_by_text("Widget").click()
     assert page.locator(".name-box").input_value() == "A5"
@@ -739,8 +754,9 @@ def test_delete_row_removes_the_selected_row(page) -> None:
     page.get_by_text("Widget").click()  # A4
     page.get_by_role("menuitem", name="Insert").click()
     page.get_by_role("menuitem", name=re.compile("^Delete Row")).click()
-    page.wait_for_function("() => window.__calls.structural.length === 1")
-    assert page.evaluate("() => window.__calls.structural[0]") == ["delete_rows", 3, 3]
+    page.wait_for_function("() => window.__calls.commands.length === 1")
+    name, _, sel = page.evaluate("() => window.__calls.commands[0]")
+    assert name == "delrow" and (sel["r0"], sel["r1"]) == (3, 3)
     page.get_by_text("Gadget").click()  # slid up into the freed row
     assert page.locator(".name-box").input_value() == "A4"
 
@@ -753,8 +769,9 @@ def test_insert_column_uses_the_selected_span(page) -> None:
     page.get_by_role("menuitem", name="Insert").click()
     assert page.get_by_role("menuitem", name="Insert 2 Columns Left").is_visible()
     page.get_by_role("menuitem", name="Insert 2 Columns Left").click()
-    page.wait_for_function("() => window.__calls.structural.length === 1")
-    assert page.evaluate("() => window.__calls.structural[0]") == ["insert_cols", 0, 2]
+    page.wait_for_function("() => window.__calls.commands.length === 1")
+    name, _, sel = page.evaluate("() => window.__calls.commands[0]")
+    assert name == "inscol" and (sel["c0"], sel["c1"]) == (0, 1)
 
 
 def test_new_sheet_dialog_creates_and_switches_to_the_sheet(page) -> None:
@@ -845,8 +862,9 @@ def test_a_row_header_selection_deletes_that_row(page) -> None:
     page.locator(".gut", has_text="4").first.click()  # the Widget row
     page.get_by_role("menuitem", name="Insert").click()
     page.get_by_role("menuitem", name=re.compile("^Delete Row")).click()
-    page.wait_for_function("() => window.__calls.structural.length === 1")
-    assert page.evaluate("() => window.__calls.structural[0]") == ["delete_rows", 3, 3]
+    page.wait_for_function("() => window.__calls.commands.length === 1")
+    name, _, sel = page.evaluate("() => window.__calls.commands[0]")
+    assert name == "delrow" and (sel["r0"], sel["r1"]) == (3, 3)
 
 
 def test_find_jumps_to_a_match_and_steps_through(page) -> None:
@@ -957,8 +975,9 @@ def test_a_command_needing_a_value_prompts_for_it(page) -> None:
     field = dialog.get_by_label("Name")
     field.fill("Revenue")
     field.press("Enter")
-    page.wait_for_function("() => window.__calls.names.length === 1")
-    assert page.evaluate("() => window.__calls.names[0]") == ["set", "Revenue", "A4"]
+    page.wait_for_function("() => window.__calls.commands.length === 1")
+    name, args, _ = page.evaluate("() => window.__calls.commands[0]")
+    assert name == "name" and args == ["Revenue"]
 
 
 def test_escape_from_the_argument_step_returns_to_the_list(page) -> None:
@@ -985,7 +1004,7 @@ def test_palette_recalculate_reaches_the_bridge(page) -> None:
     dialog = _palette(page)
     dialog.get_by_label("Command").fill("recalc")
     dialog.get_by_label("Command").press("Enter")
-    page.wait_for_function("() => window.__calls.recalc === 1")
+    page.wait_for_function("() => window.__calls.commands.some(c => c[0] === 'recalc')")
 
 
 def test_a_refused_command_reports_rather_than_failing_silently(page) -> None:

@@ -98,9 +98,10 @@ gridcalc-web                    # demo workbook, or: gridcalc-web book.json
 > **From a source checkout, build the UI bundle first:** `make web-build`
 > compiles the React client into `src/gridcalc/web/static/index.html`, which
 > `gridcalc-web` loads. It is a build artifact and is not in git, so a checkout
-> that has not run it exits with a message telling you to. The release wheels do
-> not currently run this step either -- if `gridcalc-web` reports a missing
-> bundle after a `pip install`, build from source until that is fixed.
+> that has not run it exits with a message telling you to. Released wheels and
+> sdists ship the bundle already built -- `make wheel`/`make sdist` and every CI
+> build job compile it first, and the release pipeline fails if a distribution
+> is missing it.
 
 **Editing.** In-cell and formula-bar editing, keyboard navigation, rectangular
 selection by drag or shift-click, and clicking a row or column header to select

@@ -96,7 +96,11 @@ web-qa:
 qa: lint typecheck test web-qa format
 
 # Build wheel (per-version, current Python)
-wheel:
+# The web UI bundle is a build artifact that must be present in the source
+# tree before packaging, since `wheel.packages` copies whatever is there. CI
+# does the same via .github/actions/build-web-ui -- keep the two in step, or a
+# locally built wheel will differ from a released one.
+wheel: web-build
 	@uv build --wheel
 
 # Build a stable-ABI wheel (cp312-abi3). Installs unchanged on
@@ -105,7 +109,7 @@ wheel:
 # nanobind module to STABLE_ABI mode (Limited API SO); `wheel.py-api=cp312`
 # tells scikit-build-core to tag the wheel as `cp312-abi3-<platform>`
 # instead of the running Python's per-version tag.
-wheel-abi3:
+wheel-abi3: web-build
 	@uv build --wheel \
 	    --config-setting=cmake.define.GRIDCALC_STABLE_ABI=ON \
 	    --config-setting=wheel.py-api=cp312
@@ -118,7 +122,7 @@ build-abi3:
 	    --config-setting=wheel.py-api=cp312
 
 # Build source distribution
-sdist:
+sdist: web-build
 	@uv build --sdist
 
 # Check distributions with twine

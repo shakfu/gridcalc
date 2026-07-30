@@ -1,0 +1,45 @@
+name: Build web UI bundle
+description: >
+  Compile the desktop app's React client into src/gridcalc/web/static/index.html
+  so the packaged distribution contains it.
+
+# The bundle is a build artifact, not a tracked file (.gitignore), so a fresh
+# checkout has none -- and `gridcalc-web` then exits telling the user to run
+# `make web-build`. Every sdist/wheel job therefore runs this *before* building,
+# because `wheel.packages = ["src/gridcalc"]` copies whatever is in the source
+# tree at that moment.
+#
+# Deliberately a host step rather than a cibuildwheel `before-all`: cibuildwheel
+# copies the project into its manylinux container, so a bundle built here comes
+# along for the ride. Installing Node inside each container instead would be
+# slower and would have to be repeated per Python version.
+runs:
+  using: composite
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+        cache: npm
+        cache-dependency-path: src/gridcalc/web/frontend/package-lock.json
+
+    - name: Install client dependencies
+      shell: bash
+      working-directory: src/gridcalc/web/frontend
+      run: npm ci
+
+    - name: Build the bundle
+      shell: bash
+      working-directory: src/gridcalc/web/frontend
+      run: npm run build
+
+    - name: Verify the bundle landed where the package expects it
+      shell: bash
+      run: |
+        bundle=src/gridcalc/web/static/index.html
+        test -s "$bundle" || { echo "::error::$bundle was not produced"; exit 1; }
+        grep -q 'id="root"' "$bundle" || {
+          echo "::error::$bundle has no React mount point -- build produced junk"
+          exit 1
+        }
+        echo "bundle ok: $(wc -c < "$bundle") bytes"

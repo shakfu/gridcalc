@@ -33,6 +33,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Build web UI bundle
+        uses: ./.github/actions/build-web-ui
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
@@ -51,6 +54,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Build web UI bundle
+        uses: ./.github/actions/build-web-ui
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.4.1
@@ -73,6 +79,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Build web UI bundle
+        uses: ./.github/actions/build-web-ui
+
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.4.1
         env:
@@ -90,6 +99,9 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Build web UI bundle
+        uses: ./.github/actions/build-web-ui
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.4.1
@@ -113,6 +125,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Build web UI bundle
+        uses: ./.github/actions/build-web-ui
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.4.1
@@ -175,6 +190,46 @@ jobs:
           echo ""
           echo "=== Wheel count: $(ls dist/*.whl 2>/dev/null | wc -l) ==="
           echo "=== Sdist count: $(ls dist/*.tar.gz 2>/dev/null | wc -l) ==="
+
+      # Guards the failure this was written after: `wheel.packages` collection
+      # consults .gitignore, and the web UI bundle is a gitignored build
+      # artifact -- so the one file `gridcalc-web` needs was silently the one
+      # file left out, while ~350 kB of client TypeScript sources shipped in its
+      # place. Checked on the finished artifacts rather than the source tree,
+      # because that is where the mistake was invisible.
+      - name: Verify every distribution carries the web UI bundle
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys, tarfile, zipfile
+
+          BUNDLE = "gridcalc/web/static/index.html"
+          problems = []
+
+          for whl in sorted(pathlib.Path("dist").glob("*.whl")):
+              names = zipfile.ZipFile(whl).namelist()
+              if BUNDLE not in names:
+                  problems.append(f"{whl.name}: missing {BUNDLE}")
+              stowaways = [n for n in names if "/web/frontend/" in n]
+              if stowaways:
+                  problems.append(
+                      f"{whl.name}: ships {len(stowaways)} client source files "
+                      f"(e.g. {stowaways[0]})"
+                  )
+
+          for sdist in sorted(pathlib.Path("dist").glob("*.tar.gz")):
+              names = tarfile.open(sdist).getnames()
+              # An sdist must be buildable, so it keeps the client sources -- but
+              # it needs the bundle too, or a wheel built from it has no UI.
+              if not any(n.endswith("src/" + BUNDLE) for n in names):
+                  problems.append(f"{sdist.name}: missing src/{BUNDLE}")
+
+          if problems:
+              print("::error::distribution contents are wrong")
+              for p in problems:
+                  print("  -", p)
+              sys.exit(1)
+          print("all distributions carry the bundle and no client sources")
+          PY
 
       - name: Upload combined artifacts
         uses: actions/upload-artifact@v4

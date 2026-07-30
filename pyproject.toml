@@ -92,9 +92,17 @@ cmake.args = []
 cmake.define = {}
 cmake.build-type = "Release"
 cmake.source-dir = "."
-sdist.include = []
+# The web UI bundle is a build artifact and is gitignored, and
+# scikit-build-core's file collection consults .gitignore -- so without an
+# explicit entry the one file `gridcalc-web` needs is the one file left out of
+# the distribution. Naming the exact source force-includes it.
+sdist.include = ["src/gridcalc/web/static/index.html"]
 sdist.exclude = []
-wheel.exclude = []
+wheel.force-include = {"src/gridcalc/web/static/index.html" = "gridcalc/web/static/index.html"}
+# The client's TypeScript sources belong in the sdist (it has to be buildable)
+# but not in a wheel, which only ever loads the compiled bundle. Leaving them in
+# shipped ~350 kB of .tsx, tests, and a 136 kB package-lock.json to every user.
+wheel.exclude = ["gridcalc/web/frontend/**"]
 
 [tool.ruff]
 target-version = "py310"

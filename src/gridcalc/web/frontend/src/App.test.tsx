@@ -8,6 +8,12 @@ beforeEach(() => {
   installMockBridge()
 })
 
+// The toolbar's active-sheet dropdown, which is how a sheet is switched.
+async function toSheet(user: ReturnType<typeof userEvent.setup>, name: string) {
+  await user.click(screen.getByRole('combobox', { name: 'Active sheet' }))
+  await user.click(await screen.findByRole('option', { name }))
+}
+
 test('boots the chrome and renders the grid over the bridge', async () => {
   render(<App />)
   // Menubar + toolbar are present.
@@ -67,6 +73,25 @@ test('the status bar summarizes the selection', async () => {
   await waitFor(() => expect(screen.getByText('sum 21')).toBeInTheDocument())
 })
 
+test('the cursor survives a round trip through another sheet', async () => {
+  // Switching sheets remounts the grid, so without a per-sheet stash every tab
+  // switch used to land back on A1.
+  const { container } = render(<App />)
+  await waitFor(() => expect(container.querySelector('.cell-layer')).toHaveTextContent('Widget'))
+  const nameBox = () => (container.querySelector('.name-box') as HTMLInputElement).value
+  const user = userEvent.setup()
+
+  ;(container.querySelector('.grid-scroll') as HTMLElement).focus()
+  await user.keyboard('{ArrowDown}{ArrowDown}{ArrowRight}')
+  expect(nameBox()).toBe('B3')
+
+  await toSheet(user, 'Data')
+  await waitFor(() => expect(nameBox()).toBe('A1')) // never visited, so it starts at A1
+
+  await toSheet(user, 'Sheet1')
+  await waitFor(() => expect(nameBox()).toBe('B3'))
+})
+
 test('a solve paints the sheet, and editing clears it again', async () => {
   const { container } = render(<App />)
   await waitFor(() => expect(container.querySelector('.cell-layer')).toHaveTextContent('Widget'))
@@ -84,4 +109,28 @@ test('a solve paints the sheet, and editing clears it again', async () => {
   scroll.focus()
   await user.keyboard('{Delete}')
   await waitFor(() => expect(container.querySelectorAll('.annot').length).toBe(0))
+})
+
+test('a solve does not follow the user to another sheet', async () => {
+  // Annotations are addressed in A1 and painted by position, so leaving them
+  // up across a tab switch would mark cells that had nothing to do with the
+  // solve -- worse than merely stale.
+  const { container } = render(<App />)
+  await waitFor(() => expect(container.querySelector('.cell-layer')).toHaveTextContent('Widget'))
+
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Data' }))
+  await user.click(await screen.findByRole('menuitem', { name: /Optimize/ }))
+  await user.click(screen.getByRole('button', { name: 'Solve selection' }))
+  await screen.findByTestId('solve-result')
+  await waitFor(() => expect(container.querySelectorAll('.annot').length).toBeGreaterThan(0))
+
+  await user.keyboard('{Escape}') // close the dialog
+  await toSheet(user, 'Data')
+  await waitFor(() => expect(container.querySelectorAll('.annot').length).toBe(0))
+
+  // And they do not come back on the way home: the solve is over, not paused.
+  await toSheet(user, 'Sheet1')
+  await waitFor(() => expect(container.querySelector('.cell-layer')).toHaveTextContent('Widget'))
+  expect(container.querySelectorAll('.annot').length).toBe(0)
 })

@@ -13,7 +13,7 @@ import { CommandPalette } from './components/CommandPalette'
 import { buildRegistry } from './lib/registry'
 import { Grid, type GridHandle } from './components/Grid'
 import { useWorkbook } from './hooks/useWorkbook'
-import type { CellAnnotation, Selection } from './lib/grid'
+import type { CellAnnotation, Selection, SheetView } from './lib/grid'
 import type { SharedCommand } from './bridge/types'
 import { bridge } from './bridge/api'
 
@@ -53,12 +53,40 @@ export function App() {
   // underneath it, since an annotation describes one particular solution.
   const [annotations, setAnnotations] = useState<Record<string, CellAnnotation>>({})
 
+  // Kept as one function because the invalidation rule is one rule, applied
+  // from two places. Nothing is written when there is nothing painted, so a
+  // clear on an unannotated sheet is not a re-render.
+  const clearAnnotations = useCallback(() => {
+    setAnnotations((a) => (Object.keys(a).length ? {} : a))
+  }, [])
+
+  // Where each sheet was last left. A ref rather than state: it is written on
+  // the way out of a sheet and read on the way in, so re-rendering the shell
+  // for it would be pure waste. Keyed by sheet *name*, so the entry follows a
+  // sheet across a reorder and survives a rename (which does not remount the
+  // grid, the tab index being unchanged); the filename keeps a newly-opened
+  // workbook from inheriting the previous one's positions. The two halves
+  // are joined on NUL, which neither a path nor a sheet name can contain, so
+  // no pair of them can collide on one key.
+  const sheetViews = useRef(new Map<string, SheetView>())
+  const sheetName = wb.sheets ? (wb.sheets.names[wb.sheets.active] ?? '') : ''
+  const viewKey = wb.dims ? `${wb.dims.filename}\u0000${sheetName}` : ''
+
   // An edit invalidates the last solve: shadow prices describe the sheet as it
   // was solved, so keeping them painted after a change would be a lie.
   const onGridMutate = useCallback(() => {
     wb.markDirty()
-    setAnnotations((a) => (Object.keys(a).length ? {} : a))
-  }, [wb])
+    clearAnnotations()
+  }, [wb, clearAnnotations])
+
+  // So does leaving the sheet. Annotations are addressed in A1 but painted by
+  // position, and an A1 reference names a different cell on a different sheet
+  // -- so carrying them across a tab switch does not merely show a stale
+  // result, it shows it against the wrong cells. Driven by the same key the
+  // view state is stashed under, so opening another workbook clears them too.
+  useEffect(() => {
+    clearAnnotations()
+  }, [viewKey, clearAnnotations])
 
   const formatSel = useCallback(
     (spec: string) => {
@@ -259,6 +287,8 @@ export function App() {
             annotations={annotations}
             onError={wb.fail}
             onMutate={onGridMutate}
+            initialView={sheetViews.current.get(viewKey) ?? null}
+            onViewChange={(v) => sheetViews.current.set(viewKey, v)}
           />
         ) : (
           <p className="note">connecting to engine...</p>

@@ -223,3 +223,6 @@ src/gridcalc/web/static/
 .claude
 CLAUDE.md
 AGENTS.md
+
+# Screenshots, logs and the derived workbook written by scripts/drive_web.py.
+/scripts/out/

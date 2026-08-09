@@ -14,8 +14,9 @@ where the work actually got to, so the two do not silently diverge.
   type-check and test gate (`make web-qa`, now part of `make qa`), not the
   inline `_HTML` string Section 5c describes. There is an error/notification
   channel (Section 5d), plus a React error boundary and an
-  `unhandledrejection` handler. Constraining `save` paths (Section 4) and the
-  `NamedRange` structural-edit bug are **still open**.
+  `unhandledrejection` handler. The `NamedRange` structural-edit bug is fixed
+  and per-sheet view state is kept across a tab switch; constraining `save`
+  paths (Section 4) is **still open**.
 - **P1 is done and then some.** `:opt`/`:goal` reached the GUI, and beyond the
   original sketch: persisted named models (the `:opt def/run/list/undef`
   surface, which Appendix A explicitly deferred as "not core P1"), a

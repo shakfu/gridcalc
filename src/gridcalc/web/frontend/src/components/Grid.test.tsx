@@ -224,6 +224,59 @@ test('solver annotations are painted on the sheet, with hover detail', async () 
   expect((container.querySelector('.annot.binding') as HTMLElement).style.top).toBe('66px')
 })
 
+test('a restored view state puts the cursor, selection and scroll back', async () => {
+  // The grid is remounted per sheet, so restoring on mount is the whole
+  // mechanism by which a sheet switch stops resetting to A1.
+  const viewport = vi.fn(window.pywebview!.api.viewport)
+  window.pywebview!.api.viewport = viewport
+
+  const { container, nameBox } = renderGrid({
+    initialView: { cur: { r: 99, c: 10 }, anchor: { r: 97, c: 10 }, top: 2200, left: 1000 },
+  })
+  await waitFor(() => expect(viewport).toHaveBeenCalled())
+
+  expect(nameBox()).toBe('K100')
+  expect(container.querySelector('.sel-rect')).toBeInTheDocument() // the anchor came back too
+
+  // Scroll offsets are restored before the first fetch, so the rows requested
+  // are the ones around the restored position -- not row 0. (jsdom has no
+  // layout, so `scrollTop` itself is unobservable; what the grid *asks the
+  // engine for* is the part that matters and is testable.)
+  const [r0, c0] = viewport.mock.calls[0]
+  expect(r0).toBe(95) // (2200 - CH) / CH, less the overscan
+  expect(c0).toBe(6) // column at x=1000, less the overscan
+})
+
+test('leaving the grid reports where the sheet was left', async () => {
+  const onViewChange = vi.fn()
+  const { container, scroll, unmount } = renderGrid({
+    onViewChange,
+    initialView: { cur: { r: 0, c: 0 }, anchor: { r: 0, c: 0 }, top: 440, left: 0 },
+  })
+  // Row 16 is the first fetched at this offset, which is also the proof that
+  // the restored scroll drove the fetch.
+  await waitFor(() => expect(container.querySelector('.gut')).toHaveTextContent('16'))
+  scroll.focus()
+  await userEvent.setup().keyboard('{ArrowDown}{ArrowDown}{Shift>}{ArrowRight}{/Shift}')
+
+  expect(onViewChange).not.toHaveBeenCalled() // nothing to stash until it leaves
+  unmount()
+  expect(onViewChange).toHaveBeenCalledWith({
+    cur: { r: 2, c: 1 },
+    anchor: { r: 2, c: 0 },
+    top: 440,
+    left: 0,
+  })
+})
+
+test('a restored cursor is clamped to the sheet rather than trusted', async () => {
+  const { cells, nameBox } = renderGrid({
+    initialView: { cur: { r: 5000, c: 900 }, anchor: { r: 5000, c: 900 }, top: 0, left: 0 },
+  })
+  await waitFor(() => cells().getByText('gridcalc demo'))
+  expect(nameBox()).toBe('IV1024') // the last cell of a 256x1024 sheet
+})
+
 test('an annotation outside the sheet is skipped rather than misplaced', async () => {
   const { container, cells } = renderGrid({
     annotations: {

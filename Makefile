@@ -1,7 +1,8 @@
 .PHONY: all sync build rebuild test test-stdlib lint format typecheck qa clean  \
        distclean wheel wheel-abi3 build-abi3 sdist dist dist-abi3 check \
        publish-test publish upgrade coverage coverage-html docs release \
-       bench bench-clean web-build web-dev web-jstest web-qa web-run help
+       bench bench-clean web-build web-dev web-jstest web-qa web-run \
+       web-drive help
 
 # Default target
 all: build
@@ -55,6 +56,16 @@ web-jstest:
 web-run:
 	@GRIDCALC_SANDBOX=1 uv run gridcalc-web
 
+# Launch the real app and drive it, with screenshots into scripts/out/.
+# `CHECK=sheets` (default) verifies a sheet switch preserves cursor and scroll;
+# `CHECK=solve` verifies a solve paints the grid and that leaving clears it.
+# Deliberately not part of `make qa`: it needs a display and is a driver rather
+# than a test. It is the only layer that runs the shipped bundle in the real
+# webview -- jsdom does no layout, and the Playwright suite is Chromium.
+CHECK ?= sheets
+web-drive:
+	@GRIDCALC_SANDBOX=1 uv run --extra web python scripts/drive_web.py $(CHECK)
+
 # Run tests in an isolated environment without the optional extras
 # (numpy / pandas). Verifies the optional-dep skipif guards work and
 # the core engine operates without any third-party runtime deps.
@@ -66,11 +77,11 @@ test-stdlib:
 
 # Lint with ruff
 lint:
-	@uv run ruff check --fix src/ tests/
+	@uv run ruff check --fix src/ tests/ scripts/
 
 # Format with ruff
 format:
-	@uv run ruff format src/ tests/
+	@uv run ruff format src/ tests/ scripts/
 
 # Type check with mypy
 typecheck:

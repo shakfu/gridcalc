@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## [0.3.2]
+
+### Added
+
+- **`make web-drive` -- a driver that runs the real web app and screenshots it.** Both automated layers guarding the web frontend run against a substitute: vitest in jsdom, which does no layout and reports `scrollTop` as a permanent zero, and the Chromium bundle suite against a mocked bridge. Neither can answer "does it actually sit where it should, in the production webview". `scripts/drive_web.py` mirrors `web.run()` -- same window, same real `Api` over a real workbook -- but hands `webview.start` a driver thread that drives the live webview through `evaluate_js` and captures the screen at each step. It is not a test and is excluded from `make qa`: it needs a display and is not deterministic enough to gate a build. Two checks ship with it, `CHECK=sheets` and `CHECK=solve`, both written while verifying the fixes below.
+
+  The reason it is committed rather than thrown away is its header. Scripting this particular UI has four non-obvious traps, each of which reads as an app bug until you find it: keydowns dispatched in one synchronous loop all read the same pre-render state, so only the last appears to take; Radix's Select and Menubar ignore synthesized pointer sequences and must be driven by keyboard; Radix mounts dropdown content in a portal a tick after the trigger fires, so a typeahead sent too early is dropped silently; and React ignores a plain `input.value = x`. `scripts/` joins `make lint` and `make format`, since a script outside the quality gate is the liability `docs/web.md` already complains about elsewhere. It is not under `make typecheck`, which would mostly be arguing with the pywebview stubs.
+
+### Fixed
+
+- **Switching sheets in the web frontend no longer throws away where you were.** The grid is remounted per sheet, and a remount reset the cursor, the selection and the scroll offset to A1 -- so returning to a sheet you were working three hundred rows down landed you at the top of it. The remount stays, because it is what makes mount the moment the incoming sheet's column widths are known and what keeps the outgoing sheet's cells from being painted under the new sheet's addresses; the view state is carried across it instead, stashed per sheet by the app.
+
+  Keyed by sheet name rather than tab index, since an index does not identify a sheet across a reorder, and prefixed with the filename so a newly-opened workbook cannot inherit the previous one's positions. Two ordering details are load-bearing: the scroll offset is restored before the mount effect that focuses the grid (focusing a container the browser considers scrolled-away scrolls it back), and the fetch position is seeded from the same state, so the first viewport request asks for the restored rows rather than row 0. 5 new tests -- 3 on `Grid`, 1 on `App`, 1 in the Chromium bundle suite, that last one because jsdom does no layout and its `scrollTop` is a permanent zero. All five were checked against the unfixed code.
+
+- **A solve no longer follows the user to another sheet.** The marks a solve paints onto the grid -- objective, decision cells, binding constraints and their shadow prices -- were cleared by an edit but not by a sheet change. They are *addressed* in A1 and *painted* by position, and an A1 reference names a different cell on every sheet, so a tab switch did not merely show a stale result: it put the previous sheet's shadow prices on cells that had nothing to do with the model, hover text included. The rule was already right and only its second trigger was missing; both now clear through one function, keyed on workbook and sheet, so opening a different workbook clears them too. 1 new `App` test. Pre-existing since the annotation layer landed, and found by the view-state work above rather than caused by it.
+
 ## [0.3.1]
 
 ### Fixed

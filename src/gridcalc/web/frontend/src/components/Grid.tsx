@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -25,6 +26,7 @@ import {
   type CellAnnotation,
   type Cursor,
   type Selection,
+  type SheetView,
 } from '../lib/grid'
 
 // The grid's imperative command set, handed up to the app so the menubar,
@@ -57,10 +59,22 @@ interface GridProps {
   onError?: (msg: string) => void
   // A mutation succeeded, so the workbook now has unsaved changes.
   onMutate?: () => void
+  // Where this sheet was last left. Read once, at mount; `null` starts at A1.
+  initialView?: SheetView | null
+  // Handed the view state as the grid goes away, for the app to stash against
+  // the sheet this instance was showing.
+  onViewChange?: (view: SheetView) => void
   ref?: Ref<GridHandle>
 }
 
 const MIN_COL_W = 28
+
+// A restored cursor is clamped to the sheet rather than trusted: it was
+// recorded against a sheet of the same dimensions, but nothing guarantees the
+// one being entered has them.
+function restoreCursor(p: Cursor | undefined, nrow: number, ncol: number): Cursor {
+  return p ? { r: clamp(p.r, nrow), c: clamp(p.c, ncol) } : { r: 0, c: 0 }
+}
 
 // The virtualized spreadsheet grid. Only cells inside the scrolled viewport
 // enter the DOM (fetched from the engine on scroll). Column widths are
@@ -73,17 +87,27 @@ export function Grid({
   annotations,
   onError,
   onMutate,
+  initialView,
+  onViewChange,
   ref,
 }: GridProps) {
   const scrollEl = useRef<HTMLDivElement>(null)
   const editorEl = useRef<HTMLInputElement>(null)
   const barEl = useRef<HTMLInputElement>(null)
-  const scrollPos = useRef({ top: 0, left: 0 })
 
-  const [scroll, setScroll] = useState({ top: 0, left: 0 })
+  // Mount is exactly when the incoming sheet's state is known -- the app
+  // remounts this component per sheet -- so the prop is read once and later
+  // changes are deliberately ignored. Same reasoning as the column widths
+  // fetched below.
+  const start = useRef(initialView ?? null)
+  const scrollPos = useRef({ top: start.current?.top ?? 0, left: start.current?.left ?? 0 })
+
+  const [scroll, setScroll] = useState(scrollPos.current)
   const [view, setView] = useState<Viewport | null>(null)
-  const [cur, setCur] = useState<Cursor>({ r: 0, c: 0 })
-  const [anchor, setAnchor] = useState<Cursor>({ r: 0, c: 0 })
+  const [cur, setCur] = useState<Cursor>(() => restoreCursor(start.current?.cur, nrow, ncol))
+  const [anchor, setAnchor] = useState<Cursor>(() =>
+    restoreCursor(start.current?.anchor, nrow, ncol),
+  )
   const [editing, setEditing] = useState<Cursor | null>(null)
   // An edit started from the formula bar keeps its caret there; the in-cell
   // editor would otherwise autofocus and steal it mid-keystroke.
@@ -120,6 +144,8 @@ export function Grid({
   onErrorRef.current = onError
   const onMutateRef = useRef(onMutate)
   onMutateRef.current = onMutate
+  const onViewChangeRef = useRef(onViewChange)
+  onViewChangeRef.current = onViewChange
 
   // A bridge call is a marshalled Python call and can reject. Unguarded, the
   // rejection is swallowed and the user is left looking at a silently stale
@@ -214,9 +240,39 @@ export function Grid({
     void refresh()
   }, [refresh, revision])
 
+  // Put the scroll offset back before paint, and before the focus below: the
+  // browser scrolls a focused container into view, which on a fresh element
+  // would undo the restore. The first viewport fetch already reads the right
+  // region, since `scrollPos` was seeded from the same state.
+  useLayoutEffect(() => {
+    const el = scrollEl.current
+    const v = start.current
+    if (!el || !v) return
+    el.scrollTop = v.top
+    el.scrollLeft = v.left
+  }, [])
+
   useEffect(() => {
     scrollEl.current?.focus()
   }, [])
+
+  // Report where the sheet was left as this instance goes away. Switching
+  // sheets remounts the grid, so without this the cursor, the selection and
+  // the scroll offset would reset to A1 on every tab switch. The callback is
+  // read from a ref, which still holds the closure from this instance's last
+  // render -- and so names the sheet it was actually showing, not the one
+  // being switched to.
+  useEffect(
+    () => () => {
+      onViewChangeRef.current?.({
+        cur: curRef.current,
+        anchor: anchorRef.current,
+        top: scrollPos.current.top,
+        left: scrollPos.current.left,
+      })
+    },
+    [],
+  )
 
   // Column widths are per-sheet workbook state, so they are fetched here
   // rather than passed down: the app remounts this component per sheet, which

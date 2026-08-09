@@ -26,6 +26,17 @@ export function cellRef(r: number, c: number): string {
   return colName(c) + (r + 1)
 }
 
+// Where the user was left on a sheet: the cursor, the anchor its selection
+// extends from, and the scroll offset. The grid is remounted per sheet, so
+// this is exactly what a remount would otherwise throw away; the app stashes
+// one of these per sheet and hands it back on the way in.
+export interface SheetView {
+  cur: Cursor
+  anchor: Cursor
+  top: number
+  left: number
+}
+
 export interface Rect {
   r0: number
   c0: number

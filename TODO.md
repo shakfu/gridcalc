@@ -59,12 +59,7 @@ without building the consent UI first; that is a decision, not an oversight.
 
 - [ ] **Correctness loose ends.** Small, and worth clearing before more
   breadth:
-  (a) **Per-sheet view state.** `Grid` is keyed `${filename}:${active}`
-      (`App.tsx`), so switching sheets remounts it and discards scroll
-      position and cursor. Keep a per-sheet record instead of remounting.
-      Column widths no longer suffer from this -- they are workbook state
-      (`Sheet.widths`) refetched on mount -- but scroll and cursor still do.
-  (b) **Constrain `save` paths.** `Api.save` writes wherever the client asks
+  (a) **Constrain `save` paths.** `Api.save` writes wherever the client asks
       (`docs/web.md` §4). Blast radius is small while the client is in-process
       and local, but it is cheap to fix now and load-bearing if a served
       frontend is ever considered.

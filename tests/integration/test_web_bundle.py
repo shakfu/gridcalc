@@ -369,10 +369,36 @@ def test_toolbar_save_button_calls_the_bridge(page) -> None:
     page.wait_for_function("() => window.__calls.save === 1")
 
 
-def test_sheet_select_switches_the_active_sheet(page) -> None:
+def _switch_sheet(page, name: str) -> None:
     page.get_by_label("Active sheet").click()
-    page.get_by_role("option", name="Data").click()
+    page.get_by_role("option", name=name).click()
+
+
+def test_sheet_select_switches_the_active_sheet(page) -> None:
+    _switch_sheet(page, "Data")
     page.wait_for_function("() => JSON.stringify(window.__calls.set_active) === '[1]'")
+
+
+def test_sheet_switch_preserves_scroll_and_cursor(page) -> None:
+    """A sheet switch remounts the grid; where the user was must come back.
+
+    The vitest suite covers the same restore, but jsdom does no layout and its
+    ``scrollTop`` is a permanent zero -- so it can only assert which rows the
+    grid *asks the bridge* for. A real browser is where the restored scroll
+    offset itself is observable.
+    """
+    page.locator(".cell-layer").get_by_text("Widget").click()  # A4
+    page.locator(".grid-scroll").evaluate("el => { el.scrollTop = 1100 }")
+    page.wait_for_function("() => document.querySelector('.grid-scroll').scrollTop === 1100")
+
+    _switch_sheet(page, "Data")
+    # A sheet not visited yet starts at the top, not wherever the last one was.
+    page.wait_for_function("() => document.querySelector('.name-box').value === 'A1'")
+    assert page.locator(".grid-scroll").evaluate("el => el.scrollTop") == 0
+
+    _switch_sheet(page, "Sheet1")
+    page.wait_for_function("() => document.querySelector('.name-box').value === 'A4'")
+    assert page.locator(".grid-scroll").evaluate("el => el.scrollTop") == 1100
 
 
 def test_help_about_opens_a_modal_dialog(page) -> None:

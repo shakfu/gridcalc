@@ -14,15 +14,20 @@ jobs:
     name: QA (lint, typecheck, test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
 
       - name: Set up Python
         run: uv python install 3.12
+
+      # The package force-includes the web bundle, which is gitignored, so any
+      # install from a fresh checkout fails until this has run.
+      - name: Build web UI bundle
+        uses: ./.github/actions/build-web-ui
 
       - name: Install dependencies
         run: uv sync --dev
@@ -56,15 +61,18 @@ jobs:
         python-version: ["3.10", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
+
+      - name: Build web UI bundle
+        uses: ./.github/actions/build-web-ui
 
       - name: Install dependencies
         run: uv sync
@@ -76,7 +84,7 @@ jobs:
         run: uv run pytest tests/ -v
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.os }}-py${{ matrix.python-version }}
           path: dist/*.whl
@@ -88,7 +96,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: all-wheels
           pattern: wheel-*
@@ -98,7 +106,7 @@ jobs:
         run: ls -la all-wheels/
 
       - name: Upload combined artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: all-wheels
           path: all-wheels/

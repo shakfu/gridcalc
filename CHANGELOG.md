@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+## [0.3.3]
+
+### Added
+
+- **A documentation site, and the end of the 585-line README.** `make docs` builds an MkDocs site (Material theme, `mkdocs.yml` at the root) from `docs/`; `make docs-serve` previews it with live reload, `make docs-deploy` publishes it to `gh-pages`, `make docs-clean` removes the build. The README had been the user manual and had grown past the length anyone reads in a scroll: install, tour, formulas, three-mode semantics, the entire optimization chapter with sensitivity and sweeps, formatting, import/export, the file format, config, and a command reference, in one file with in-page anchors doing the work of navigation. Those are now pages -- `index`, `install`, `tour`, `desktop`, `guide/{modes,formulas,sheets,optimization,goal-seek,formatting,import-export,config}`, `reference/{commands,file-format,limitations}` -- and the README is a ~110-line landing page that links to them. Nothing is documented twice: the prose moved rather than being copied, which is the only version of this split that does not immediately start drifting.
+
+  The seven design notes stay flat at the top of `docs/` and are grouped by the nav instead of being moved into a subdirectory. CHANGELOG, TODO, and source comments cite them by repo-relative path (`docs/topological.md`, `docs/web.md`, and so on) in dozens of places, most of it history that should not be rewritten to tidy a directory listing. The changelog is pulled into the site by a pymdownx snippet include rather than copied under `docs/`.
+
+  `reference/api/` is generated from the docstrings by mkdocstrings, covering `engine`, `formula`, `opt`, `goalseek`, `config`, and `sandbox`. `tui/`, `web/`, and the ~5000-line `libs/xlsx.py` are deliberately excluded: the first two are internal to their frontends, and a wall of one-line signatures describes the function library far worse than `docs/function_coverage.md` already does. Because mkdocstrings reads the sources statically through griffe, building the docs needs neither the compiled `_core`/`_opt` extensions nor an importable install.
+
+  `tests/test_docs_conformance.py` moved with the prose. It parses the manual for every `:` command and every key and asserts the dispatcher implements each one, and vice versa -- the guard that exists because the `u`/`Ctrl-R` undo bug shipped out of exactly that drift -- so trimming the README would have quietly gutted it. It now reads README plus `docs/index|install|tour|desktop.md`, `docs/guide/*.md`, and `docs/reference/*.md`, globbed so a new page is covered the moment it lands. Design notes, the changelog, and the generated API pages are excluded: a command named in a proposal or a release note is not a promise to the user. The retargeted parsers were diffed against the old README's and extract exactly the same sets -- no command, plain key, or Ctrl binding gained or lost -- which is the evidence that the split dropped nothing the tests were watching.
+
+  The site builds under `--strict`, so a broken cross-reference fails rather than shipping. That caught two on the first run. Docs dependencies live in a `docs` dependency group rather than `dev` -- `uv run --group docs` pulls them only when a docs target runs, keeping them out of the test and QA path -- and `mkdocs` is capped below 2.0, which Material's own release notes say removes the plugin system that mkdocstrings, search, and the theme all depend on. Nothing in CI publishes: `docs-deploy` commits and pushes, and that stays a deliberate manual step.
+
+### Fixed
+
+- **Resizing a column in the web frontend now marks the workbook unsaved.** Column widths are per-sheet state the workbook carries -- `Api.set_col_width` ends in `_touch()` and its docstring says so -- but the drag path in `Grid.tsx` persisted the width through `guard`, which only routes bridge rejections to the status channel, instead of `mutate`, which additionally tells the app the workbook changed. So the width was saved into the model and the dirty marker stayed clear: resize a column, see no unsaved indicator, close, and the close-confirmation never fires on a change that was real. The command-palette route to the same operation had always called `touched()` on success, which is why this only ever reproduced by dragging. 1 new `Grid` test, driving a real mousedown/mousemove/mouseup on the resize handle and asserting both the notification and the persisted width; it was checked against the unfixed code.
+
+### Changed
+
+- **`make docs` no longer points at a Sphinx build that never existed.** The target ran `sphinx-build -b html docs/ docs/_build/html`, but `sphinx` was not in any dependency group and `docs/` held no `conf.py`, no `index.rst`, and no toctree -- so the target had never once worked, and adding the dependency would only have installed a builder for a documentation tree that was not there. It is now the MkDocs build described above.
+
+- **Ruff's project config excludes `thirdparty/`.** The Make and CI commands scope Ruff to the owned paths (`src/`, `tests/`, `scripts/`), so the vendored HiGHS and OpenXLSX checkouts were never linted there -- but a bare `uv run ruff check`, which is what an editor integration and a new contributor both run, reported 110 errors from HiGHS's Python example scripts. Config that only tells the truth when invoked through the Makefile is a trap; `[tool.ruff]` now carries the exclusion itself.
+
 ## [0.3.2]
 
 ### Added

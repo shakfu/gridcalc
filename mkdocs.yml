@@ -1,0 +1,135 @@
+site_name: gridcalc
+site_description: >-
+  A programmable spreadsheet for developers, with Excel-compatible formulas,
+  Python escape hatches, xlsx interop, goal seek, and LP/MIP solving --
+  in the terminal and on the desktop.
+site_url: https://shakfu.github.io/gridcalc/
+repo_url: https://github.com/shakfu/gridcalc
+repo_name: shakfu/gridcalc
+edit_uri: edit/main/docs/
+copyright: MIT licensed
+
+# The design notes under docs/ are cross-referenced from CHANGELOG.md, TODO.md
+# and source comments by their repo-relative paths (`docs/topological.md`), so
+# they stay flat at the top of docs/ and are grouped by the nav rather than by
+# being moved into a subdirectory.
+nav:
+  - Home: index.md
+  - Install: install.md
+  - Quick tour: tour.md
+  - Desktop app: desktop.md
+  - Guide:
+      - Formula modes: guide/modes.md
+      - Formulas: guide/formulas.md
+      - Multi-sheet workbooks: guide/sheets.md
+      - Optimization: guide/optimization.md
+      - Goal seek: guide/goal-seek.md
+      - Formatting: guide/formatting.md
+      - Import and export: guide/import-export.md
+      - Configuration: guide/config.md
+  - Reference:
+      - Command reference: reference/commands.md
+      - File format: reference/file-format.md
+      - Limitations: reference/limitations.md
+      - Excel function coverage: function_coverage.md
+      - Python API:
+          - Overview: reference/api/index.md
+          - engine: reference/api/engine.md
+          - formula: reference/api/formula.md
+          - opt: reference/api/opt.md
+          - goalseek: reference/api/goalseek.md
+          - config: reference/api/config.md
+          - sandbox: reference/api/sandbox.md
+  - Design notes:
+      - Topological recalc: topological.md
+      - 2D Vec: 2d-vec-design.md
+      - Security plan: security-plan.md
+      - Keybindings: keybindings.md
+      - Web frontend: web.md
+      - GUI direction: gui.md
+  - Development: development.md
+  - Changelog: changelog.md
+
+theme:
+  name: material
+  features:
+    - content.action.edit
+    - content.code.copy
+    - navigation.instant
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.suggest
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            # The docstrings in this codebase are prose that explains why a
+            # thing works the way it does, so they are worth reading in full
+            # and worth reading next to the source.
+            docstring_style: google
+            heading_level: 3
+            members_order: source
+            merge_init_into_class: true
+            separate_signature: true
+            show_if_no_docstring: false
+            show_root_heading: true
+            show_root_full_path: false
+            show_signature_annotations: true
+            show_source: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            signature_crossrefs: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      # Lets changelog.md pull in the repo-root CHANGELOG.md rather than
+      # keeping a second copy of it under docs/.
+      base_path: [.]
+      check_paths: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+# Broken internal links and orphaned pages are build failures, not warnings:
+# the docs are split across a dozen files that link to each other constantly.
+strict: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/shakfu/gridcalc
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/gridcalc/

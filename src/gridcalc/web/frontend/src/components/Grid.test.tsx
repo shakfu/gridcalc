@@ -1,8 +1,10 @@
 import { createRef } from 'react'
-import { act, render, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Grid, type GridHandle } from './Grid'
+import { bridge } from '../bridge/api'
 import { installMockBridge } from '../bridge/mock'
+import { CW } from '../lib/grid'
 
 beforeEach(() => {
   window.pywebview = undefined
@@ -201,6 +203,24 @@ test('a mutation notifies the app, a plain move does not', async () => {
 
   await user.keyboard('{Delete}')
   await waitFor(() => expect(onMutate).toHaveBeenCalled())
+})
+
+test('releasing a column-resize drag persists the width and marks the workbook dirty', async () => {
+  const onMutate = vi.fn()
+  const { container, cells } = renderGrid({ onMutate })
+  await waitFor(() => cells().getByText('gridcalc demo'))
+
+  // Widths are per-sheet workbook state, so the release is a mutation: the
+  // drag path used to persist without telling the app, leaving the dirty mark
+  // clear over a real change.
+  const handle = container.querySelector('.col-resize') as HTMLElement
+  fireEvent.mouseDown(handle, { clientX: 100 })
+  fireEvent.mouseMove(window, { clientX: 160 })
+  fireEvent.mouseUp(window)
+
+  await waitFor(() => expect(onMutate).toHaveBeenCalled())
+  const { widths } = await bridge.col_widths()
+  expect(Number(widths['0'])).toBe(CW + 60)
 })
 
 test('solver annotations are painted on the sheet, with hover detail', async () => {

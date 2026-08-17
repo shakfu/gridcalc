@@ -127,11 +127,11 @@ per-frontend interaction, and capabilities one side simply does not have.
 | `:opt` LP/MIP, `:goal`, sensitivity, sweep | Yes | -- |
 | Bar chart from range | Yes (inline SVG) | depth only |
 | Shared registry (`:b :f :gf :ir :ic :dr :dc :name :names :unname :sort :mode :title :recalc`) | Yes, by name | enforced by test |
-| Replicate (`replicatecell`) beyond fill down/right | Partial (fill only) | [A][C] |
+| Replicate (`replicatecell`) beyond fill down/right | Partial (fill only) | `[A]` `[C]` |
 | Move row/column (`swaprow`/`swapcol`) | No | registry entry + drag gesture |
-| Object editor for Vec/ndarray/DataFrame cells (`tui/objedit.py`) | No | [A][C] larger |
-| xlsx / csv / pandas import-export | save by ext; open JSON/xlsx/csv | [A] pandas, dialogs |
-| Code block edit (`:e`) + trust prompt | No | [E-security] gated on 5a |
+| Object editor for Vec/ndarray/DataFrame cells (`tui/objedit.py`) | No | `[A]` `[C]` larger |
+| xlsx / csv / pandas import-export | save by ext; open JSON/xlsx/csv | `[A]` pandas, dialogs |
+| Code block edit (`:e`) + trust prompt | No | `[E-security]` gated on 5a |
 
 Takeaway: two clusters carry most of the product value -- **optimization
 (`:opt`/`:goal`)** and **format/structure editing (rows, cols, styles, named

@@ -1,6 +1,7 @@
 .PHONY: all sync build rebuild test test-stdlib lint format typecheck qa clean  \
        distclean wheel wheel-abi3 build-abi3 sdist dist dist-abi3 check \
-       publish-test publish upgrade coverage coverage-html docs release \
+       publish-test publish upgrade coverage coverage-html release \
+       docs docs-serve docs-deploy docs-clean \
        bench bench-clean web-build web-dev web-jstest web-qa web-run \
        web-drive help
 
@@ -179,9 +180,30 @@ bench:
 bench-clean:
 	@rm -f bench_*.json bench_*.json.out
 
-# Build documentation (requires sphinx in dev dependencies)
+# Documentation site (MkDocs + Material + mkdocstrings). The dependencies are
+# in the `docs` dependency group rather than `dev`, so they are pulled only
+# when a docs target runs. `docs` is a directory as well as a target name, so
+# these are declared .PHONY at the top of the file -- without that, make sees
+# an up-to-date directory and does nothing.
+#
+# Build strictly: a broken cross-reference is a real defect in a site whose
+# pages link to each other constantly, and the split of README.md into pages
+# makes that easy to do by accident.
 docs:
-	@uv run sphinx-build -b html docs/ docs/_build/html
+	@uv run --group docs mkdocs build --strict
+	@echo "Site: site/index.html"
+
+# Live-reloading preview.
+docs-serve:
+	@uv run --group docs mkdocs serve
+
+# Publish to the gh-pages branch. This commits and pushes -- a deliberate
+# manual step, which is why no CI workflow does it.
+docs-deploy:
+	@uv run --group docs mkdocs gh-deploy --strict
+
+docs-clean:
+	@rm -rf site/
 
 # Create a release (bump version, tag, push)
 release:
@@ -227,7 +249,10 @@ help:
 	@echo "  upgrade      - Upgrade all dependencies"
 	@echo "  coverage     - Run tests with coverage"
 	@echo "  coverage-html- Generate HTML coverage report"
-	@echo "  docs         - Build documentation with Sphinx"
+	@echo "  docs         - Build the MkDocs site into site/"
+	@echo "  docs-serve   - Preview the docs with live reload"
+	@echo "  docs-deploy  - Publish the docs to the gh-pages branch"
+	@echo "  docs-clean   - Remove the built site"
 	@echo "  release      - Bump version, tag, and prepare release"
 	@echo "  clean        - Remove build artifacts"
 	@echo "  distclean    - Remove all generated files"

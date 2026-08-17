@@ -1,6 +1,6 @@
 [project]
 name = "gridcalc"
-version = "0.3.2"
+version = "0.3.3"
 description = "A terminal / web spreadsheet powered by Python formulas"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -72,6 +72,19 @@ dev = [
     "twine>=6.2.0",
     "types-Pygments>=2.15",
 ]
+# The documentation site (`make docs`). Kept out of `dev` because it is a
+# large tree of unrelated packages that neither the test suite nor the QA
+# gate needs; `uv run --group docs` pulls it only when the site is built.
+# mkdocstrings reads the sources statically (griffe), so building the docs
+# does not require the compiled `_core`/`_opt` extensions.
+docs = [
+    # Capped below 2.0: mkdocs-material's own release notes say MkDocs 2.0
+    # removes the plugin system entirely, which would take mkdocstrings, the
+    # search plugin, and the theme with it.
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.27",
+]
 
 [project.scripts]
 gridcalc = "gridcalc.tui:main"
@@ -107,6 +120,11 @@ wheel.exclude = ["gridcalc/web/frontend/**"]
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+# `thirdparty/` holds vendored HiGHS and OpenXLSX checkouts, whose Python
+# example scripts are not ours to lint. The Make targets scope Ruff to the
+# owned paths anyway; this keeps a bare `ruff check` (and editor integrations,
+# which read this config and not the Makefile) reporting the same thing.
+exclude = ["thirdparty"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "S"]

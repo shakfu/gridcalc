@@ -1,0 +1,2402 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A programmable spreadsheet for developers, with Excel-compatible formulas, Python escape hatches, xlsx interop, goal seek, and LP/MIP solving -- in the terminal and on the desktop.">
+      
+      
+      
+        <link rel="canonical" href="https://shakfu.github.io/gridcalc/topological/">
+      
+      
+        <link rel="prev" href="../reference/api/sandbox/">
+      
+      
+        <link rel="next" href="../2d-vec-design/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Topological recalc - gridcalc</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#topological-recalc" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="gridcalc" class="md-header__button md-logo" aria-label="gridcalc" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            gridcalc
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Topological recalc
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/shakfu/gridcalc" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    shakfu/gridcalc
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="gridcalc" class="md-nav__button md-logo" aria-label="gridcalc" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    gridcalc
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/shakfu/gridcalc" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    shakfu/gridcalc
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tour/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick tour
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../desktop/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Desktop app
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/modes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Formula modes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/formulas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Formulas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/sheets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-sheet workbooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/optimization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Optimization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/goal-seek/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Goal seek
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/formatting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Formatting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/import-export/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Import and export
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/commands/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Command reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/file-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    File format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/limitations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Limitations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../function_coverage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Excel function coverage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_5" id="__nav_6_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Python API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/api/engine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/api/formula/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    formula
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/api/opt/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    opt
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/api/goalseek/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    goalseek
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/api/config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/api/sandbox/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sandbox
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design notes
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design notes
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Topological recalc
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Topological recalc
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#why" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-recalc-works-today" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How recalc works today
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#whats-already-in-place" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's already in place
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#proposed-design" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Proposed design
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Proposed design">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#two-indexes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two indexes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#static-dependency-extraction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Static dependency extraction
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recalc-as-graph-traversal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recalc as graph traversal
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bulk-edits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bulk edits
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cost-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cost comparison
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hard-parts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hard parts
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Hard parts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-dynamic-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Dynamic references
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-range-explosion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Range explosion
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-named-ranges-and-py" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Named ranges and py.*
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-edits-to-the-graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Edits to the graph
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-python-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. PYTHON mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#implementation-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implementation plan
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Implementation plan">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#phase-a-graph-construction-no-behaviour-change" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase A: graph construction (no behaviour change)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-b-topo-recalc-excel-only-full-sheet-rebuild" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase B: topo recalc, EXCEL only, full-sheet rebuild
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-c-incremental-recalc-on-edits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase C: incremental recalc on edits
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-d-hybrid-cycle-reporting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase D: HYBRID + cycle reporting
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-e-range-aggregation-only-if-needed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase E: range aggregation (only if needed)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#open-questions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Open questions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-to-actually-do-this" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to actually do this
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2d-vec-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2D Vec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security-plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../keybindings/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keybindings
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../web/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Web frontend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GUI direction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#why" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-recalc-works-today" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How recalc works today
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#whats-already-in-place" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's already in place
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#proposed-design" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Proposed design
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Proposed design">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#two-indexes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two indexes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#static-dependency-extraction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Static dependency extraction
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recalc-as-graph-traversal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recalc as graph traversal
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bulk-edits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bulk edits
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cost-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cost comparison
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hard-parts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hard parts
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Hard parts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-dynamic-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Dynamic references
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-range-explosion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Range explosion
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-named-ranges-and-py" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Named ranges and py.*
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-edits-to-the-graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Edits to the graph
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-python-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. PYTHON mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#implementation-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implementation plan
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Implementation plan">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#phase-a-graph-construction-no-behaviour-change" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase A: graph construction (no behaviour change)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-b-topo-recalc-excel-only-full-sheet-rebuild" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase B: topo recalc, EXCEL only, full-sheet rebuild
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-c-incremental-recalc-on-edits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase C: incremental recalc on edits
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-d-hybrid-cycle-reporting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase D: HYBRID + cycle reporting
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-e-range-aggregation-only-if-needed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase E: range aggregation (only if needed)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#open-questions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Open questions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-to-actually-do-this" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to actually do this
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/shakfu/gridcalc/edit/main/docs/topological.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="topological-recalc">Topological recalc<a class="headerlink" href="#topological-recalc" title="Permanent link">&para;</a></h1>
+<p>Design note for replacing the fixed-point recalc loop with a dependency-graph driven traversal. Status: <strong>proposal, not implemented</strong>. Linked from <code>TODO.md</code> under Performance.</p>
+<h2 id="why">Why<a class="headerlink" href="#why" title="Permanent link">&para;</a></h2>
+<p><code>xlsxload</code> on a 5000-cell sheet now runs in ~12 ms end-to-end. The breakdown:</p>
+<ul>
+<li>
+<p>C++ xlsx parse via <code>_core.xlsx_read</code>: ~4 ms</p>
+</li>
+<li>
+<p><code>Grid.setcells_bulk</code> (writes + single recalc): ~8 ms</p>
+</li>
+</ul>
+<p>Of the 8 ms, the actual cell writes are ~1 ms; the rest is <strong>one pass through every formula in the sheet</strong>. For sheets with many formulas (or edits that change a value referenced by deep chains), recalc dominates, and the cost is bounded only by <code>range(100)</code> in the loop below.</p>
+<p>Topological recalc replaces this with a graph traversal that touches only the transitive closure of cells affected by a change.</p>
+<h2 id="how-recalc-works-today">How recalc works today<a class="headerlink" href="#how-recalc-works-today" title="Permanent link">&para;</a></h2>
+<p><code>Grid.recalc()</code> in EXCEL/HYBRID mode dispatches to <code>_recalc_formula()</code> (<code>src/gridcalc/engine.py:929</code>). The hot loop:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">100</span><span class="p">):</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">changed_cells</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="k">for</span> <span class="p">(</span><span class="n">fc</span><span class="p">,</span> <span class="n">fr</span><span class="p">),</span> <span class="n">cl</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cells</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>        <span class="k">if</span> <span class="n">cl</span><span class="o">.</span><span class="n">type</span> <span class="o">!=</span> <span class="n">FORMULA</span><span class="p">:</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>            <span class="k">continue</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>        <span class="c1"># parse if AST stale (text-keyed cache on Cell.ast_text)</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>        <span class="k">if</span> <span class="n">cl</span><span class="o">.</span><span class="n">ast</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">cl</span><span class="o">.</span><span class="n">ast_text</span> <span class="o">!=</span> <span class="n">cl</span><span class="o">.</span><span class="n">text</span><span class="p">:</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>            <span class="n">cl</span><span class="o">.</span><span class="n">ast</span> <span class="o">=</span> <span class="n">parse</span><span class="p">(</span><span class="n">cl</span><span class="o">.</span><span class="n">text</span><span class="o">.</span><span class="n">lstrip</span><span class="p">(</span><span class="s2">&quot;=&quot;</span><span class="p">))</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="n">oldval</span> <span class="o">=</span> <span class="n">cl</span><span class="o">.</span><span class="n">val</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        <span class="n">result</span> <span class="o">=</span> <span class="n">evaluate</span><span class="p">(</span><span class="n">cl</span><span class="o">.</span><span class="n">ast</span><span class="p">,</span> <span class="n">env</span><span class="p">)</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_store_formula_result</span><span class="p">(</span><span class="n">cl</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        <span class="k">if</span> <span class="n">cl</span><span class="o">.</span><span class="n">val</span> <span class="o">!=</span> <span class="n">oldval</span> <span class="ow">or</span> <span class="n">matrix_changed</span><span class="p">:</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>            <span class="n">changed_cells</span><span class="o">.</span><span class="n">add</span><span class="p">((</span><span class="n">fc</span><span class="p">,</span> <span class="n">fr</span><span class="p">))</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="n">changed_cells</span><span class="p">:</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        <span class="k">break</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="k">if</span> <span class="n">changed_cells</span><span class="p">:</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">_circular</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="n">changed_cells</span><span class="p">)</span>
+</code></pre></div>
+<p><strong>Properties of the current design:</strong></p>
+<ul>
+<li>
+<p>Every formula evaluates at least once per <code>recalc()</code> call.</p>
+</li>
+<li>
+<p>Every formula evaluates again on each subsequent pass until no value changes — fixed-point iteration.</p>
+</li>
+<li>
+<p>A 100-iteration cap prevents infinite loops; cells still differing after 100 passes are flagged as <code>_circular</code>.</p>
+</li>
+<li>
+<p>AST parsing is already cached per cell, keyed on text equality (<code>engine.py:952</code>). The cache survives across recalc calls.</p>
+</li>
+</ul>
+<p><strong>Cost.</strong> For <code>F</code> formula cells settling in <code>P</code> passes, evaluation count is <code>F * P</code>. Long dependency chains (<code>A1 -&gt; B1 -&gt; C1 -&gt; ...</code> of length L) need at least L passes to fully propagate. A sheet with 1000 chained formulas could legitimately need 1000 passes — capped at 100, so it doesn't converge and falsely registers as circular.</p>
+<h2 id="whats-already-in-place">What's already in place<a class="headerlink" href="#whats-already-in-place" title="Permanent link">&para;</a></h2>
+<p>The evaluator already collects per-cell read sets — <code>Env.refs_used</code> (<code>src/gridcalc/formula/evaluator.py:38</code>):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">Env</span><span class="p">:</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">refs_used</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">get_cell</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">c</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">r</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">object</span><span class="p">:</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">refs_used</span><span class="o">.</span><span class="n">add</span><span class="p">((</span><span class="n">c</span><span class="p">,</span> <span class="n">r</span><span class="p">))</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">cell_value</span><span class="p">(</span><span class="n">c</span><span class="p">,</span> <span class="n">r</span><span class="p">)</span>
+</code></pre></div>
+<p>Every <code>CellRef</code> and <code>RangeRef</code> resolution flows through <code>get_cell</code>, so after <code>evaluate(ast, env)</code> returns, <code>env.refs_used</code> is the <strong>set of cells the formula actually read on this evaluation</strong>. Today this set is discarded.</p>
+<p>The AST nodes are also already structured for static analysis (<code>src/gridcalc/formula/ast_nodes.py:29</code>):</p>
+<ul>
+<li>
+<p><code>CellRef(col, row, abs_col, abs_row)</code> — a single cell.</p>
+</li>
+<li>
+<p><code>RangeRef(start: CellRef, end: CellRef)</code> — a rectangular range.</p>
+</li>
+<li>
+<p><code>Call(name, args)</code> / <code>PyCall(...)</code> / <code>BinOp</code> / <code>UnaryOp</code> / etc.</p>
+</li>
+</ul>
+<p>Walking the AST without evaluating gives the static dependency set for most cells.</p>
+<h2 id="proposed-design">Proposed design<a class="headerlink" href="#proposed-design" title="Permanent link">&para;</a></h2>
+<h3 id="two-indexes">Two indexes<a class="headerlink" href="#two-indexes" title="Permanent link">&para;</a></h3>
+<ul>
+<li>
+<p><strong>forward</strong>: <code>dep_of: dict[(c,r), set[(c,r)]]</code> — which cells does this formula read? Populated when a formula is parsed/edited.</p>
+</li>
+<li>
+<p><strong>reverse</strong>: <code>subscribers: dict[(c,r), set[(c,r)]]</code> — which formulas read this cell? Maintained as the inverse of <code>dep_of</code>.</p>
+</li>
+</ul>
+<p>For a formula cell <code>D5 = A1 + B2 + SUM(C1:C3)</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>dep_of[D5]      = {A1, B2, C1, C2, C3}
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>subscribers[A1] += {D5}
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>subscribers[B2] += {D5}
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>subscribers[C1] += {D5}
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>subscribers[C2] += {D5}
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>subscribers[C3] += {D5}
+</code></pre></div>
+<h3 id="static-dependency-extraction">Static dependency extraction<a class="headerlink" href="#static-dependency-extraction" title="Permanent link">&para;</a></h3>
+<p>Walk the cached AST in a function <code>_extract_refs(node) -&gt; set[(c,r)]</code>:</p>
+<ul>
+<li>
+<p><code>CellRef</code> -&gt; <code>{(node.col, node.row)}</code>.</p>
+</li>
+<li>
+<p><code>RangeRef</code> -&gt; the rectangular set (or a symbolic range entry — see "range explosion" below).</p>
+</li>
+<li>
+<p><code>Call</code>/<code>BinOp</code>/<code>UnaryOp</code>/<code>Percent</code>/<code>PyCall</code> -&gt; union of children's refs.</p>
+</li>
+<li>
+<p>Names (named ranges) -&gt; resolve via the named-range table; treat as the underlying range.</p>
+</li>
+</ul>
+<p>This is pure-AST analysis; <strong>no evaluation</strong>.</p>
+<h3 id="recalc-as-graph-traversal">Recalc as graph traversal<a class="headerlink" href="#recalc-as-graph-traversal" title="Permanent link">&para;</a></h3>
+<p>When cell <code>X</code> changes:</p>
+<ol>
+<li>
+<p><strong>Compute closure.</strong> BFS from <code>X</code> across <code>subscribers</code>. Result is the set of cells transitively affected by <code>X</code>.</p>
+</li>
+<li>
+<p><strong>Topological sort</strong> of the closure (Kahn's algorithm or DFS). The sort keys are the edges from <code>dep_of</code> restricted to the closure.</p>
+</li>
+<li>
+<p><strong>Evaluate in topo order.</strong> Each cell sees up-to-date inputs; one evaluation per cell.</p>
+</li>
+<li>
+<p><strong>Cycle detection</strong> is structural: if Kahn's algorithm leaves unvisited nodes, those nodes form a strongly-connected component. Mark them <code>#REF!</code> (cycle) — no need to "fail to converge in 100 iterations" as a proxy for cycle detection.</p>
+</li>
+</ol>
+<h3 id="bulk-edits">Bulk edits<a class="headerlink" href="#bulk-edits" title="Permanent link">&para;</a></h3>
+<p><code>setcells_bulk</code> (or any multi-cell change) computes the <strong>union</strong> of closures over all changed cells, sorts that union once, and evaluates. For an <code>xlsxload</code> of pure values with no inter-cell refs, the union closure is empty — recalc cost approaches zero.</p>
+<h2 id="cost-comparison">Cost comparison<a class="headerlink" href="#cost-comparison" title="Permanent link">&para;</a></h2>
+<p>For a sheet with <code>F</code> formula cells, <code>E</code> total dependency edges, edit affecting <code>K</code> cells in the transitive closure:</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Today</th>
+<th>Topological</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Evaluations per edit</td>
+<td><code>F * P</code></td>
+<td><code>K</code></td>
+</tr>
+<tr>
+<td>Worst case</td>
+<td><code>100 * F</code></td>
+<td><code>O(F + E)</code> (whole sheet)</td>
+</tr>
+<tr>
+<td>Cycle detection</td>
+<td>"didn't converge" (false positives possible)</td>
+<td>structural (exact)</td>
+</tr>
+<tr>
+<td>Convergence cap</td>
+<td>100 iterations</td>
+<td>none</td>
+</tr>
+<tr>
+<td>Determinism</td>
+<td>depends on dict iteration order across passes</td>
+<td>topo order is canonical</td>
+</tr>
+</tbody>
+</table>
+<p>For typical edits where <code>K &lt;&lt; F</code>, the speedup is <code>F * P / K</code> — potentially three orders of magnitude on large sheets.</p>
+<h2 id="hard-parts">Hard parts<a class="headerlink" href="#hard-parts" title="Permanent link">&para;</a></h2>
+<p>The work isn't just "build a DAG." Several subtleties:</p>
+<h3 id="1-dynamic-references">1. Dynamic references<a class="headerlink" href="#1-dynamic-references" title="Permanent link">&para;</a></h3>
+<p>Some functions read cells whose addresses depend on a <strong>value</strong>, not text:</p>
+<ul>
+<li>
+<p><code>INDIRECT(A1)</code> — reads whatever cell <code>A1</code> names (e.g. <code>"B7"</code>). Already deliberately unsupported (<code>TODO.md:128</code>); leave it that way for the topo path.</p>
+</li>
+<li>
+<p><code>OFFSET(A1, B1, 0)</code> — reads a cell offset by <code>B1</code>'s value.</p>
+</li>
+<li>
+<p><code>INDEX(A:Z, row, col)</code> — reads a cell whose row/col are values.</p>
+</li>
+</ul>
+<p>For these, static <code>_extract_refs</code> cannot know the read set. Two options:</p>
+<p><strong>(a) Conservative fallback.</strong> Mark cells containing dynamic-ref functions as "always recompute" — they're pinned to every recalc and their outputs are downstream-broadcast. Equivalent to today's behaviour for those specific cells.</p>
+<p><strong>(b) Two-phase evaluation.</strong> Evaluate the cell to learn its <code>refs_used</code>, then re-add edges if the read set changed. Requires re-running topo sort when edges change mid-recalc; loses some of the benefit but bounds cost more tightly than the conservative path.</p>
+<p>Recommendation: start with <strong>(a)</strong> since <code>OFFSET</code>/<code>INDEX</code> are uncommon and the fallback is simple. Revisit if profiling shows them hot.</p>
+<h3 id="2-range-explosion">2. Range explosion<a class="headerlink" href="#2-range-explosion" title="Permanent link">&para;</a></h3>
+<p><code>SUM(A1:Z1000)</code> adds 26 000 reverse-index entries. Pathological cases (<code>SUM(A:A)</code> over a whole column) blow up to <code>NROW = 1024</code> entries.</p>
+<p>Three mitigations, in increasing complexity:</p>
+<ul>
+<li>
+<p><strong>Sparse store.</strong> Only insert subscribers for cells that <em>actually exist</em> in <code>Grid._cells</code>. A 26 000-cell range over an empty area adds nothing. Most large ranges in practice are sparse.</p>
+</li>
+<li>
+<p><strong>Interval representation.</strong> Store ranges as <code>(c1, r1, c2, r2) -&gt; {subscribers}</code>; query "who subscribes to cell (c,r)?" by intersecting against all stored rectangles. R-tree or per-column interval tree if rectangles get numerous.</p>
+</li>
+<li>
+<p><strong>Aggregation node.</strong> Insert a synthetic node <code>RangeNode(A1:Z1000)</code> with one outgoing edge to each subscriber and incoming edges from the range cells. A change to any covered cell dirties the range node once, which dirties subscribers once.</p>
+</li>
+</ul>
+<p>Recommendation: ship with the <strong>sparse store</strong> approach; it covers the common case and degrades gracefully. Aggregation nodes are correct but add complexity — defer until a real workload demands them.</p>
+<h3 id="3-named-ranges-and-py">3. Named ranges and <code>py.*</code><a class="headerlink" href="#3-named-ranges-and-py" title="Permanent link">&para;</a></h3>
+<p>Named ranges are static (<code>NamedRange.c1, r1, c2, r2</code>) — resolve at extraction time, no special handling.</p>
+<p>The <code>py.*</code> gateway in HYBRID mode calls user code. User code receives the <code>Env</code> and can call <code>env.get_cell</code> arbitrarily. Two options:</p>
+<ul>
+<li>
+<p>Treat any cell containing a <code>PyCall</code> as <strong>always-recompute</strong> (same fallback as dynamic refs). Cheap and correct.</p>
+</li>
+<li>
+<p>Track <code>refs_used</code> from the <code>py.*</code> execution and treat them as edges, with the caveat that subsequent calls might read different cells. More expensive bookkeeping.</p>
+</li>
+</ul>
+<p>Start with always-recompute.</p>
+<h3 id="4-edits-to-the-graph">4. Edits to the graph<a class="headerlink" href="#4-edits-to-the-graph" title="Permanent link">&para;</a></h3>
+<p>Operations that mutate the graph:</p>
+<ul>
+<li>
+<p><strong>Cell text changes.</strong> Old <code>dep_of[X]</code> is removed from each <code>subscribers[d]</code>; new <code>dep_of[X]</code> is computed from the new AST and re-added. <code>setcell</code> and <code>setcells_bulk</code> call this.</p>
+</li>
+<li>
+<p><strong>Cell deletion.</strong> Drop the cell from both indexes; downstream subscribers see <code>None</code>/zero (existing behaviour).</p>
+</li>
+<li>
+<p><strong>Insert/delete row or column.</strong> <code>_adjust_refs</code> already rewrites CellRef/RangeRef coordinates throughout the grid; the graph indexes must be rebuilt or remapped in lockstep. Easiest: rebuild from scratch after structural edits — they're rare and already O(N) in ref-rewriting cost.</p>
+</li>
+<li>
+<p><strong>Replicate.</strong> Same as multi-cell setcell — call the bulk add.</p>
+</li>
+</ul>
+<h3 id="5-python-mode">5. PYTHON mode<a class="headerlink" href="#5-python-mode" title="Permanent link">&para;</a></h3>
+<p><code>Grid.mode == PYTHON</code> uses Python <code>eval()</code> on raw text. No AST, no <code>refs_used</code>, no static extraction. Topo recalc therefore can't see dependencies and the fixed-point loop has to stay for this mode -- only EXCEL/HYBRID get the graph-driven traversal. (PYTHON mode was previously called <code>LEGACY</code>; the rename doesn't change its semantics.)</p>
+<h2 id="implementation-plan">Implementation plan<a class="headerlink" href="#implementation-plan" title="Permanent link">&para;</a></h2>
+<p>Phased to minimise risk; each phase is independently shippable.</p>
+<h3 id="phase-a-graph-construction-no-behaviour-change">Phase A: graph construction (no behaviour change)<a class="headerlink" href="#phase-a-graph-construction-no-behaviour-change" title="Permanent link">&para;</a></h3>
+<ul>
+<li>
+<p>Add <code>Grid._dep_of</code> and <code>Grid._subscribers</code> as empty dicts.</p>
+</li>
+<li>
+<p>Add <code>_extract_refs(ast, named) -&gt; set[(c,r)]</code> walking the AST.</p>
+</li>
+<li>
+<p>Hook <code>setcell</code> / <code>setcells_bulk</code> / cell-clear to maintain the indexes alongside the existing recalc.</p>
+</li>
+<li>
+<p>Add a <code>make qa</code> invariant: after recalc, every <code>(c, r)</code> in <code>_dep_of[X]</code> has <code>X in _subscribers[(c, r)]</code>.</p>
+</li>
+</ul>
+<p>Keep using fixed-point recalc; the graph is built but not yet consulted. This ships safely and gives us telemetry on graph size.</p>
+<h3 id="phase-b-topo-recalc-excel-only-full-sheet-rebuild">Phase B: topo recalc, EXCEL only, full-sheet rebuild<a class="headerlink" href="#phase-b-topo-recalc-excel-only-full-sheet-rebuild" title="Permanent link">&para;</a></h3>
+<ul>
+<li>
+<p>Implement <code>_recalc_topo(dirty: set[(c,r)] | None = None)</code> that does
+  the closure + topo sort + evaluation.</p>
+</li>
+<li>
+<p>If <code>dirty is None</code>, treat all formula cells as dirty (matches current <code>recalc()</code> semantics for a freshly loaded grid).</p>
+</li>
+<li>
+<p>Gate behind a feature flag (<code>Grid._use_topo_recalc = True</code>) so we can A/B test on the same sheet.</p>
+</li>
+<li>
+<p>Cells with <code>PyCall</code> or dynamic-ref functions get added to the dirty set unconditionally (always-recompute fallback).</p>
+</li>
+</ul>
+<p>Run the existing test suite under both engines; any divergence is a bug in the new path.</p>
+<h3 id="phase-c-incremental-recalc-on-edits">Phase C: incremental recalc on edits<a class="headerlink" href="#phase-c-incremental-recalc-on-edits" title="Permanent link">&para;</a></h3>
+<ul>
+<li>
+<p><code>setcell</code> passes <code>dirty={(c, r)}</code> to <code>_recalc_topo</code>; closure traversal handles propagation.</p>
+</li>
+<li>
+<p><code>setcells_bulk</code> unions the dirty set across all writes, calls <code>_recalc_topo</code> once.</p>
+</li>
+</ul>
+<p>This is where the user-visible perf win lands.</p>
+<h3 id="phase-d-hybrid-cycle-reporting">Phase D: HYBRID + cycle reporting<a class="headerlink" href="#phase-d-hybrid-cycle-reporting" title="Permanent link">&para;</a></h3>
+<ul>
+<li>
+<p>Apply the same path to HYBRID mode (same evaluator).</p>
+</li>
+<li>
+<p>Replace the "didn't converge in 100 iterations" cycle marker with the structural SCC detection from topo sort. Surface a clearer <code>#REF!</code> value for cells in actual cycles.</p>
+</li>
+</ul>
+<h3 id="phase-e-range-aggregation-only-if-needed">Phase E: range aggregation (only if needed)<a class="headerlink" href="#phase-e-range-aggregation-only-if-needed" title="Permanent link">&para;</a></h3>
+<p>Only revisit if profiling shows large ranges as a hot spot. Sparse subscribers should cover the common case.</p>
+<h2 id="open-questions">Open questions<a class="headerlink" href="#open-questions" title="Permanent link">&para;</a></h2>
+<ul>
+<li>
+<p><strong>Granularity of "changed".</strong> Today the loop checks <code>cl.val != oldval</code> after evaluation. With topo, do we still check that, or trust the static graph? Static is faster but propagates on edits that don't actually change a downstream value. Probably keep the value-equality check at the leaf to short-circuit no-op propagation; it's cheap.</p>
+</li>
+<li>
+<p><strong>Volatile functions</strong> (<code>NOW()</code>, <code>RAND()</code>, <code>TODAY()</code>). Excel marks these as volatile and recomputes on every recalc. We don't have them yet; if/when we do, they're equivalent to the always-recompute fallback.</p>
+</li>
+<li>
+<p><strong>Concurrency.</strong> None of this is thread-safe. The TUI is single-threaded; not a current concern.</p>
+</li>
+</ul>
+<h2 id="when-to-actually-do-this">When to actually do this<a class="headerlink" href="#when-to-actually-do-this" title="Permanent link">&para;</a></h2>
+<p>Defer until at least one of:</p>
+<ul>
+<li>
+<p><code>xlsxload</code> of a real workbook exceeds ~1 second.</p>
+</li>
+<li>
+<p>Long formula chains (&gt;30 deep) start hitting the 100-iteration cap.</p>
+</li>
+<li>
+<p>An interactive edit takes &gt;50 ms to settle on a sheet a user cares about.</p>
+</li>
+</ul>
+<p>Until then, the fixed-point loop is fine and the engineering cost isn't earned. CI + wheel matrix have higher near-term leverage; revisit this when a real workload presses on the recalc ceiling.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      MIT licensed
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/shakfu/gridcalc" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://pypi.org/project/gridcalc/" target="_blank" rel="noopener" title="pypi.org" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.8 200.5c-7.7-30.9-22.3-54.2-53.4-54.2h-40.1v47.4c0 36.8-31.2 67.8-66.8 67.8H172.7c-29.2 0-53.4 25-53.4 54.3v101.8c0 29 25.2 46 53.4 54.3 33.8 9.9 66.3 11.7 106.8 0 26.9-7.8 53.4-23.5 53.4-54.3v-40.7H226.2v-13.6h160.2c31.1 0 42.6-21.7 53.4-54.2 11.2-33.5 10.7-65.7 0-108.6M286.2 444.7a20.4 20.4 0 1 1 0-40.7 20.4 20.4 0 1 1 0 40.7M167.8 248.1h106.8c29.7 0 53.4-24.5 53.4-54.3V91.9c0-29-24.4-50.7-53.4-55.6-35.8-5.9-74.7-5.6-106.8.1-45.2 8-53.4 24.7-53.4 55.6v40.7h106.9v13.6h-147c-31.1 0-58.3 18.7-66.8 54.2-9.8 40.7-10.2 66.1 0 108.6 7.6 31.6 25.7 54.2 56.8 54.2H101v-48.8c0-35.3 30.5-66.4 66.8-66.4m-6.6-183.4a20.4 20.4 0 1 1 0 40.8 20.4 20.4 0 1 1 0-40.8"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["content.action.edit", "content.code.copy", "navigation.instant", "navigation.sections", "navigation.top", "navigation.tracking", "search.highlight", "search.suggest", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,1952 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A programmable spreadsheet for developers, with Excel-compatible formulas, Python escape hatches, xlsx interop, goal seek, and LP/MIP solving -- in the terminal and on the desktop.">
+      
+      
+      
+        <link rel="canonical" href="https://shakfu.github.io/gridcalc/function_coverage/">
+      
+      
+        <link rel="prev" href="../reference/limitations/">
+      
+      
+        <link rel="next" href="../reference/api/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Excel function coverage - gridcalc</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#excel-function-coverage" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="gridcalc" class="md-header__button md-logo" aria-label="gridcalc" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            gridcalc
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Excel function coverage
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/shakfu/gridcalc" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    shakfu/gridcalc
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="gridcalc" class="md-nav__button md-logo" aria-label="gridcalc" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    gridcalc
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/shakfu/gridcalc" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    shakfu/gridcalc
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tour/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick tour
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../desktop/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Desktop app
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/modes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Formula modes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/formulas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Formulas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/sheets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-sheet workbooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/optimization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Optimization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/goal-seek/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Goal seek
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/formatting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Formatting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/import-export/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Import and export
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/commands/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Command reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/file-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    File format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/limitations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Limitations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Excel function coverage
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Excel function coverage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#currently-implemented" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Currently implemented
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gaps-by-tractability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gaps — by tractability
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Gaps — by tractability">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#mechanical-low-risk-hours-to-days-of-effort" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mechanical (low risk, hours-to-days of effort)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#architectural-blockers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architectural blockers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tricky-but-tractable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tricky-but-tractable
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_5" id="__nav_6_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Python API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/api/engine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/api/formula/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    formula
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/api/opt/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    opt
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/api/goalseek/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    goalseek
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/api/config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/api/sandbox/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sandbox
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design notes
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design notes
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../topological/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Topological recalc
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2d-vec-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2D Vec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security-plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../keybindings/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keybindings
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../web/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Web frontend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GUI direction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#currently-implemented" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Currently implemented
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gaps-by-tractability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gaps — by tractability
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Gaps — by tractability">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#mechanical-low-risk-hours-to-days-of-effort" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mechanical (low risk, hours-to-days of effort)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#architectural-blockers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architectural blockers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tricky-but-tractable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tricky-but-tractable
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/shakfu/gridcalc/edit/main/docs/function_coverage.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="excel-function-coverage">Excel function coverage<a class="headerlink" href="#excel-function-coverage" title="Permanent link">&para;</a></h1>
+<p>Status of EXCEL/HYBRID-mode function library against Microsoft's documented Excel function set. Implemented functions live in <code>src/gridcalc/libs/xlsx.py</code> (registered via <code>BUILTINS</code>) plus a handful of bare aggregates and trig in <code>src/gridcalc/engine.py</code> (<code>_make_eval_globals</code>).</p>
+<p><strong>As of last audit: 405 names in <code>xlsx.BUILTINS</code> (plus <code>LET</code>/<code>LAMBDA</code>, handled in the evaluator) plus 8 aggregates (<code>SUM</code>/<code>AVG</code>/<code>MIN</code>/<code>MAX</code>/<code>COUNT</code>/<code>ABS</code>/<code>SQRT</code>/<code>INT</code>) and ~23 math constants/funcs in the engine globals — call it ~415 unique Excel-callable names</strong> out of ~480–500. Practical coverage is the overwhelming majority of formulas seen in real workbooks, and all four architectural lifts have landed. The 2D-aware return types (<code>TRANSPOSE</code>, <code>LINEST</code>/<code>LOGEST</code>, <code>HSTACK</code>/<code>VSTACK</code>, <code>CHOOSEROWS</code>/<code>CHOOSECOLS</code>, multi-regressor <code>TREND</code>/<code>GROWTH</code>, reshape functions, <code>FREQUENCY</code>) run on the <code>Vec</code> <code>cols</code> machinery and spill into neighbour cells. The full statistical-distribution suite, the complex-number (<code>IM*</code>) family, numeral conversion (<code>ROMAN</code>/<code>ARABIC</code>/<code>BASE</code>/<code>DECIMAL</code>), the entire bond/Treasury finance family (coupon <code>PRICE</code>/<code>YIELD</code>/<code>DURATION</code>, the <code>COUP*</code> schedule functions, discounted and at-maturity securities, T-bills), unit conversion (<code>CONVERT</code>), the fringe stats (<code>SKEW.P</code>/<code>F.TEST</code>), the lexical-scope family (<code>LET</code>/<code>LAMBDA</code>/<code>MAP</code>/<code>REDUCE</code>/<code>SCAN</code>/<code>BYROW</code>/<code>BYCOL</code>/<code>MAKEARRAY</code>), and the reference value type (<code>OFFSET</code>/<code>FORMULATEXT</code>/<code>AREAS</code>/<code>LOOKUP</code>) are all covered. What remains is out of scope by design (external I/O, cube/OLAP, <code>INDIRECT</code>).</p>
+<h2 id="currently-implemented">Currently implemented<a class="headerlink" href="#currently-implemented" title="Permanent link">&para;</a></h2>
+<p>Broad-enough categories. (Full registered list is the source of truth — read <code>xlsx.BUILTINS</code> if in doubt.)</p>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Functions</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Aggregates</td>
+<td><code>SUM</code>, <code>AVG</code>/<code>AVERAGE</code>, <code>AVERAGEA</code>, <code>MIN</code>, <code>MINA</code>, <code>MAX</code>, <code>MAXA</code>, <code>COUNT</code>, <code>COUNTA</code>, <code>COUNTBLANK</code>, <code>MEDIAN</code>, <code>LARGE</code>, <code>SMALL</code>, <code>SUMPRODUCT</code>, <code>PRODUCT</code></td>
+</tr>
+<tr>
+<td>Conditional aggregates</td>
+<td><code>SUMIF</code>, <code>COUNTIF</code>, <code>AVERAGEIF</code>, <code>SUMIFS</code>, <code>COUNTIFS</code>, <code>AVERAGEIFS</code>, <code>MAXIFS</code>, <code>MINIFS</code></td>
+</tr>
+<tr>
+<td>Logical</td>
+<td><code>IF</code>, <code>AND</code>, <code>OR</code>, <code>NOT</code>, <code>IFERROR</code>, <code>IFS</code>, <code>SWITCH</code>, <code>IFNA</code>, <code>XOR</code></td>
+</tr>
+<tr>
+<td>Math</td>
+<td><code>ABS</code>, <code>INT</code>, <code>SQRT</code>, <code>MOD</code>, <code>POWER</code>, <code>SIGN</code>, <code>ROUND</code>, <code>ROUNDUP</code>, <code>ROUNDDOWN</code>, <code>CEILING</code>, <code>CEILING.MATH</code>, <code>FLOOR</code>, <code>FLOOR.MATH</code>, <code>MROUND</code>, <code>ODD</code>, <code>EVEN</code>, <code>FACT</code>, <code>GCD</code>, <code>LCM</code>, <code>TRUNC</code>, <code>QUOTIENT</code>, <code>COMBIN</code>, <code>COMBINA</code>, <code>PERMUT</code>, <code>PERMUTATIONA</code>, <code>MULTINOMIAL</code>, <code>RADIANS</code>, <code>DEGREES</code>, <code>SUMSQ</code>, <code>SUMX2MY2</code>, <code>SUMX2PY2</code>, <code>SUMXMY2</code>, <code>ERF</code>, <code>ERFC</code>, <code>GAMMA</code>, <code>GAMMALN</code>, <code>GAMMALN.PRECISE</code>, <code>PHI</code>, <code>STANDARDIZE</code></td>
+</tr>
+<tr>
+<td>Trig (engine globals)</td>
+<td><code>pi</code>, <code>e</code>, <code>sin</code>, <code>cos</code>, <code>tan</code>, <code>asin</code>, <code>acos</code>, <code>atan</code>, <code>atan2</code>, <code>exp</code>, <code>log</code>, <code>log2</code>, <code>log10</code>, <code>floor</code>, <code>ceil</code>, <code>fabs</code>, <code>degrees</code>, <code>radians</code>, <code>fsum</code>, <code>isnan</code>, <code>isinf</code></td>
+</tr>
+<tr>
+<td>Hyperbolic</td>
+<td><code>SINH</code>, <code>COSH</code>, <code>TANH</code>, <code>ASINH</code>, <code>ACOSH</code>, <code>ATANH</code></td>
+</tr>
+<tr>
+<td>Bitwise</td>
+<td><code>BITAND</code>, <code>BITOR</code>, <code>BITXOR</code>, <code>BITLSHIFT</code>, <code>BITRSHIFT</code></td>
+</tr>
+<tr>
+<td>Random (volatile)</td>
+<td><code>RAND</code>, <code>RANDBETWEEN</code>, <code>RANDARRAY</code></td>
+</tr>
+<tr>
+<td>Lookup</td>
+<td><code>VLOOKUP</code>, <code>HLOOKUP</code>, <code>INDEX</code>, <code>MATCH</code>, <code>XLOOKUP</code>, <code>XMATCH</code>, <code>CHOOSE</code>, <code>LOOKUP</code> (vector + array)</td>
+</tr>
+<tr>
+<td>Reference</td>
+<td><code>ROW</code>, <code>COLUMN</code>, <code>ROWS</code>, <code>COLUMNS</code>, <code>ADDRESS</code>, <code>OFFSET</code>, <code>FORMULATEXT</code>, <code>AREAS</code>, <code>ISREF</code></td>
+</tr>
+<tr>
+<td>Text</td>
+<td><code>CONCAT</code>, <code>CONCATENATE</code>, <code>LEFT</code>, <code>RIGHT</code>, <code>MID</code>, <code>LEN</code>, <code>TRIM</code>, <code>UPPER</code>, <code>LOWER</code>, <code>PROPER</code>, <code>SUBSTITUTE</code>, <code>REPT</code>, <code>EXACT</code>, <code>FIND</code>, <code>SEARCH</code>, <code>REPLACE</code>, <code>TEXTJOIN</code>, <code>TEXTSPLIT</code>, <code>TEXTBEFORE</code>, <code>TEXTAFTER</code>, <code>CHAR</code>, <code>CODE</code>, <code>VALUE</code>, <code>TEXT</code>, <code>CLEAN</code>, <code>NUMBERVALUE</code>, <code>FIXED</code>, <code>DOLLAR</code>, <code>T</code>, <code>UNICHAR</code>, <code>UNICODE</code></td>
+</tr>
+<tr>
+<td>Date/time</td>
+<td><code>NOW</code>, <code>TODAY</code>, <code>DATE</code>, <code>TIME</code>, <code>DATEVALUE</code>, <code>TIMEVALUE</code>, <code>YEAR</code>, <code>MONTH</code>, <code>DAY</code>, <code>HOUR</code>, <code>MINUTE</code>, <code>SECOND</code>, <code>WEEKDAY</code>, <code>WEEKNUM</code>, <code>ISOWEEKNUM</code>, <code>EDATE</code>, <code>EOMONTH</code>, <code>DATEDIF</code>, <code>DAYS</code>, <code>DAYS360</code>, <code>YEARFRAC</code>, <code>NETWORKDAYS</code>, <code>NETWORKDAYS.INTL</code>, <code>WORKDAY</code>, <code>WORKDAY.INTL</code></td>
+</tr>
+<tr>
+<td>Information</td>
+<td><code>ISNUMBER</code>, <code>ISTEXT</code>, <code>ISBLANK</code>, <code>ISERROR</code>, <code>ISNA</code>, <code>ISERR</code>, <code>ISLOGICAL</code>, <code>ISEVEN</code>, <code>ISODD</code>, <code>ISFORMULA</code>, <code>ISREF</code>, <code>ISNONTEXT</code>, <code>NA</code>, <code>N</code>, <code>TYPE</code>, <code>ERROR.TYPE</code></td>
+</tr>
+<tr>
+<td>Statistical (descriptive)</td>
+<td><code>STDEV</code>/<code>STDEV.S</code>/<code>STDEV.P</code>, <code>STDEVP</code>, <code>VAR</code>/<code>VAR.S</code>/<code>VAR.P</code>, <code>VARP</code>, <code>CORREL</code>, <code>COVAR</code>, <code>COVARIANCE.P</code>/<code>COVARIANCE.S</code>, <code>RANK</code>/<code>RANK.EQ</code>/<code>RANK.AVG</code>, <code>PERCENTILE</code>/<code>PERCENTILE.INC</code>/<code>PERCENTILE.EXC</code>, <code>QUARTILE</code>/<code>QUARTILE.INC</code>/<code>QUARTILE.EXC</code>, <code>MODE</code>/<code>MODE.SNGL</code>/<code>MODE.MULT</code>, <code>GEOMEAN</code>, <code>HARMEAN</code>, <code>AVEDEV</code>, <code>DEVSQ</code>, <code>SLOPE</code>, <code>INTERCEPT</code>, <code>RSQ</code>, <code>STEYX</code>, <code>SKEW</code>, <code>KURT</code>, <code>PERCENTRANK</code></td>
+</tr>
+<tr>
+<td>Statistical (distributions)</td>
+<td><code>NORM.DIST</code>/<code>NORM.INV</code>, <code>NORM.S.DIST</code>/<code>NORM.S.INV</code>, <code>T.DIST</code>/<code>T.DIST.2T</code>/<code>T.DIST.RT</code>/<code>T.INV</code>/<code>T.INV.2T</code>, <code>F.DIST</code>/<code>F.DIST.RT</code>/<code>F.INV</code>/<code>F.INV.RT</code>, <code>CHISQ.DIST</code>/<code>CHISQ.DIST.RT</code>/<code>CHISQ.INV</code>/<code>CHISQ.INV.RT</code>, <code>GAMMA.DIST</code>/<code>GAMMA.INV</code>, <code>BETA.DIST</code>/<code>BETA.INV</code>, <code>LOGNORM.DIST</code>/<code>LOGNORM.INV</code>, <code>WEIBULL.DIST</code>, <code>BINOM.DIST</code>/<code>BINOM.INV</code>, <code>NEGBINOM.DIST</code>, <code>POISSON.DIST</code>, <code>EXPON.DIST</code>, <code>HYPGEOM.DIST</code>, <code>CONFIDENCE.NORM</code>/<code>CONFIDENCE.T</code>, plus pre-2010 aliases (<code>NORMDIST</code>, <code>NORMSDIST</code>, <code>TDIST</code>, <code>TINV</code>, <code>FDIST</code>, <code>FINV</code>, <code>CHIDIST</code>, <code>CHIINV</code>, <code>GAMMADIST</code>, <code>GAMMAINV</code>, <code>BETADIST</code>, <code>BETAINV</code>, <code>LOGNORMDIST</code>, <code>LOGINV</code>, <code>WEIBULL</code>, <code>BINOMDIST</code>, <code>CRITBINOM</code>, <code>NEGBINOMDIST</code>, <code>HYPGEOMDIST</code>, <code>POISSON</code>, <code>EXPONDIST</code>, <code>CONFIDENCE</code>)</td>
+</tr>
+<tr>
+<td>Statistical (tests)</td>
+<td><code>CHISQ.TEST</code>, <code>T.TEST</code>, <code>Z.TEST</code>, <code>PROB</code>, plus aliases <code>CHITEST</code>, <code>TTEST</code>, <code>ZTEST</code></td>
+</tr>
+<tr>
+<td>Statistical (fringe)</td>
+<td><code>FISHER</code>, <code>FISHERINV</code>, <code>TRIMMEAN</code>, <code>PEARSON</code> (= <code>CORREL</code>), <code>SKEW.P</code>, <code>F.TEST</code></td>
+</tr>
+<tr>
+<td>Forecasting (scalar)</td>
+<td><code>FORECAST</code>, <code>FORECAST.LINEAR</code>, <code>TREND</code> (scalar/1D new-x only)</td>
+</tr>
+<tr>
+<td>Array (spilling)</td>
+<td><code>FREQUENCY</code> (counts into bins), plus <code>TREND</code>/<code>GROWTH</code>/<code>LINEST</code>/<code>SEQUENCE</code>/<code>SORT</code>/<code>FILTER</code>/<code>UNIQUE</code>/... which now spill</td>
+</tr>
+<tr>
+<td>Database (D-functions)</td>
+<td><code>DSUM</code>, <code>DAVERAGE</code>, <code>DCOUNT</code>, <code>DCOUNTA</code>, <code>DGET</code>, <code>DMAX</code>, <code>DMIN</code>, <code>DPRODUCT</code>, <code>DSTDEV</code>, <code>DSTDEVP</code>, <code>DVAR</code>, <code>DVARP</code></td>
+</tr>
+<tr>
+<td>Financial</td>
+<td><code>PV</code>, <code>FV</code>, <code>PMT</code>, <code>NPER</code>, <code>RATE</code>, <code>NPV</code>, <code>IRR</code>, <code>IPMT</code>, <code>PPMT</code>, <code>SLN</code>, <code>SYD</code>, <code>DB</code>, <code>DDB</code>, <code>VDB</code> (integer periods), <code>EFFECT</code>, <code>NOMINAL</code>, <code>CUMIPMT</code>, <code>CUMPRINC</code>, <code>MIRR</code>, <code>XNPV</code>, <code>XIRR</code>, <code>RRI</code>, <code>PDURATION</code>, <code>ISPMT</code>, <code>DOLLARDE</code>, <code>DOLLARFR</code></td>
+</tr>
+<tr>
+<td>Financial — bonds</td>
+<td><code>PRICE</code>, <code>YIELD</code>, <code>DURATION</code>, <code>MDURATION</code>, <code>ACCRINT</code>, <code>ACCRINTM</code>, <code>DISC</code>, <code>PRICEDISC</code>, <code>YIELDDISC</code>, <code>PRICEMAT</code>, <code>YIELDMAT</code>, <code>RECEIVED</code>, <code>INTRATE</code>, <code>COUPPCD</code>, <code>COUPNCD</code>, <code>COUPNUM</code>, <code>COUPDAYBS</code>, <code>COUPDAYS</code>, <code>COUPDAYSNC</code></td>
+</tr>
+<tr>
+<td>Financial — Treasury</td>
+<td><code>TBILLEQ</code>, <code>TBILLPRICE</code>, <code>TBILLYIELD</code></td>
+</tr>
+<tr>
+<td>Engineering — number-base</td>
+<td><code>DEC2BIN</code>, <code>DEC2OCT</code>, <code>DEC2HEX</code>, <code>BIN2DEC</code>, <code>OCT2DEC</code>, <code>HEX2DEC</code>, <code>BIN2OCT</code>, <code>BIN2HEX</code>, <code>OCT2BIN</code>, <code>OCT2HEX</code>, <code>HEX2BIN</code>, <code>HEX2OCT</code></td>
+</tr>
+<tr>
+<td>Engineering — comparison</td>
+<td><code>DELTA</code>, <code>GESTEP</code></td>
+</tr>
+<tr>
+<td>Engineering — unit conversion</td>
+<td><code>CONVERT</code> (mass, distance, time, pressure, force, energy, power, magnetism, temperature, volume, area, speed, information; SI + binary prefixes)</td>
+</tr>
+<tr>
+<td>Engineering — complex</td>
+<td><code>COMPLEX</code>, <code>IMREAL</code>, <code>IMAGINARY</code>, <code>IMABS</code>, <code>IMARGUMENT</code>, <code>IMCONJUGATE</code>, <code>IMSUM</code>, <code>IMSUB</code>, <code>IMPRODUCT</code>, <code>IMDIV</code>, <code>IMPOWER</code>, <code>IMSQRT</code>, <code>IMEXP</code>, <code>IMLN</code>, <code>IMLOG10</code>, <code>IMLOG2</code>, <code>IMSIN</code>, <code>IMCOS</code>, <code>IMTAN</code>, <code>IMSINH</code>, <code>IMCOSH</code>, <code>IMSEC</code>, <code>IMCSC</code>, <code>IMCOT</code>, <code>IMSECH</code>, <code>IMCSCH</code></td>
+</tr>
+<tr>
+<td>Numeral conversion</td>
+<td><code>ROMAN</code> (classic form), <code>ARABIC</code>, <code>BASE</code>, <code>DECIMAL</code></td>
+</tr>
+<tr>
+<td>Lexical scope (Excel 365)</td>
+<td><code>LET</code>, <code>LAMBDA</code> (evaluator), <code>MAP</code>, <code>REDUCE</code>, <code>SCAN</code>, <code>BYROW</code>, <code>BYCOL</code>, <code>MAKEARRAY</code></td>
+</tr>
+<tr>
+<td>Excel 365 dynamic-array (1D-only)</td>
+<td><code>FILTER</code>, <code>SORT</code>, <code>UNIQUE</code>, <code>SEQUENCE</code>, <code>RANDARRAY</code>, <code>XLOOKUP</code>, <code>XMATCH</code></td>
+</tr>
+</tbody>
+</table>
+<p>Dynamic-array results now <strong>spill</strong> into adjacent cells (EXCEL/HYBRID mode): a multi-cell result fills a rectangle anchored at the formula cell, a bare reference reads the anchor's top-left scalar, and the whole array is reached with the <code>A1#</code> spill-range operator. A blocked rectangle yields <code>#SPILL!</code>. See the "Spill" note below.</p>
+<h2 id="gaps-by-tractability">Gaps — by tractability<a class="headerlink" href="#gaps-by-tractability" title="Permanent link">&para;</a></h2>
+<h3 id="mechanical-low-risk-hours-to-days-of-effort">Mechanical (low risk, hours-to-days of effort)<a class="headerlink" href="#mechanical-low-risk-hours-to-days-of-effort" title="Permanent link">&para;</a></h3>
+<p>The mechanical batches are effectively exhausted. What is left is either out of scope or blocked on an architectural change (below).</p>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Missing</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Hyperlinks/external</td>
+<td><code>HYPERLINK</code>, <code>IMAGE</code>, <code>WEBSERVICE</code>, <code>FILTERXML</code>, <code>ENCODEURL</code>, <code>RTD</code></td>
+<td>Defer indefinitely — out of scope for a local TUI.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="architectural-blockers">Architectural blockers<a class="headerlink" href="#architectural-blockers" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>Blocks</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2D-aware result type — DONE</td>
+<td><code>TRANSPOSE</code>, <code>HSTACK</code>/<code>VSTACK</code>, <code>LINEST</code>/<code>LOGEST</code>, multi-regressor <code>TREND</code>/<code>GROWTH</code>, <code>CHOOSEROWS</code>/<code>CHOOSECOLS</code>, <code>WRAPROWS</code>/<code>WRAPCOLS</code>, <code>TAKE</code>/<code>DROP</code>/<code>EXPAND</code>/<code>TOROW</code>/<code>TOCOL</code>, <code>FREQUENCY</code> all landed on the <code>Vec</code> <code>cols</code> machinery, and results now spill into neighbour cells.</td>
+<td>Complete.</td>
+</tr>
+<tr>
+<td>Spilled results — DONE</td>
+<td>Excel spill semantics for <code>FILTER</code>/<code>SORT</code>/<code>UNIQUE</code>/<code>SEQUENCE</code>/<code>RANDARRAY</code>/<code>FREQUENCY</code>/the 2D-aware functions</td>
+<td>Landed: results spill into neighbour cells (<code>SPILL</code> cell type), <code>A1#</code> spill-range operator, <code>#SPILL!</code> on blockage, bounded-fixpoint recalc, and the TUI (cyan spill tint, scalar anchor display, status-bar provenance).</td>
+</tr>
+<tr>
+<td>Reference value type — DONE</td>
+<td><code>OFFSET</code>, <code>LOOKUP</code>, <code>AREAS</code>, <code>FORMULATEXT</code></td>
+<td>Landed: a <code>Reference</code> value (a location) flows through the evaluator and materialises (<code>_deref</code>) wherever a value is expected. <code>OFFSET</code> returns one; <code>ROW</code>/<code>COLUMN</code>/<code>ROWS</code>/<code>COLUMNS</code>/<code>ISREF</code> consume one via <code>Env.resolve_ref</code>. <code>INDIRECT</code> stays omitted — a string-built reference defeats static dep analysis.</td>
+</tr>
+<tr>
+<td>Closures / let-binding — DONE</td>
+<td><code>LET</code>, <code>LAMBDA</code>, <code>MAP</code>, <code>REDUCE</code>, <code>SCAN</code>, <code>BYROW</code>, <code>BYCOL</code>, <code>MAKEARRAY</code> all shipped. <code>LambdaValue</code> closes over the <code>LET</code> scope stack; a new <code>Apply</code> node + parser postfix layer gives direct <code>LAMBDA(...)(...)</code> application.</td>
+<td>Recursion is not supported (would need Name-Manager lambdas and a lazy <code>IF</code>; <code>IF</code> here is an eager builtin). Lambda results do not spill — consumed via <code>INDEX</code>/<code>SUM</code>.</td>
+</tr>
+<tr>
+<td>Multi-sheet model</td>
+<td><code>SHEET</code>, <code>SHEETS</code>, cross-sheet refs in <code>INDIRECT</code></td>
+<td>Single-sheet today.</td>
+</tr>
+<tr>
+<td>Cube / OLAP</td>
+<td><code>CUBEMEMBER</code>, <code>CUBEVALUE</code>, etc.</td>
+<td>Out of scope.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="tricky-but-tractable">Tricky-but-tractable<a class="headerlink" href="#tricky-but-tractable" title="Permanent link">&para;</a></h3>
+<ul>
+<li>
+<p><strong><code>TEXTSPLIT</code> with <code>pad_with</code></strong> — current implementation flattens 2D splits and ignores <code>pad_with</code>. Once 2D Vecs are real this becomes meaningful.</p>
+</li>
+<li>
+<p><strong><code>VDB</code> fractional periods</strong> — current implementation returns <code>#NUM!</code> for non-integer <code>start</code>/<code>end</code>. Excel's actual algorithm prorates partial periods; documented well in MS reference but tedious.</p>
+</li>
+<li>
+<p><strong><code>XIRR</code> convergence on hard cases</strong> — current Newton step caps at 100 iterations with a single guess. Excel uses bisection fallback. Adequate for typical workbooks; switch to bisection if a user reports convergence failure.</p>
+</li>
+<li>
+<p><strong>Distribution inverses by bisection</strong> — <code>F.INV</code>/<code>CHISQ.INV</code>/<code>GAMMA.INV</code>/<code>BETA.INV</code> use 200-step bisection on the CDF (1e-12 in p). ~10 decimal digits of accuracy in x, matching Excel's documented precision. Newton would be faster but the CDF is already an iterative approximation, so the payoff is small.</p>
+</li>
+<li>
+<p><strong><code>CHISQ.TEST</code> on 2D contingency tables</strong> — current implementation treats inputs as 1D arrays with <code>df = n - 1</code>. Excel's 2D form computes <code>df = (rows-1)(cols-1)</code> from row/column sums. Needs 2D Vec to fix cleanly.</p>
+</li>
+<li>
+<p><strong><code>ACCRINT</code> actual/actual quasi-coupon</strong> — accrued interest is computed as <code>par * rate * YEARFRAC(start, settlement, basis)</code>, exact for the 30/360 and actual/360-365 bases. Excel's basis-1 form sums over quasi-coupon periods of varying length; the difference is tiny (and bounded by this library's <code>YEARFRAC</code> basis-1 approximation). Fix together with a Excel-exact actual/actual <code>YEARFRAC</code>.</p>
+</li>
+<li>
+<p><strong><code>YIELD</code>/<code>YIELDMAT</code> by bisection</strong> — invert <code>PRICE</code>/<code>PRICEMAT</code> with a bracketing bisection (200 steps, 1e-10 in price). Round-trips to ~1e-8 in yield. Excel uses Newton; the payoff over an already-cheap bisection is negligible for a coupon bond.</p>
+</li>
+<li>
+<p><strong><code>PRICE</code> single final period</strong> — when settlement is inside the last coupon period (<code>COUPNUM == 1</code>), the final stub discounts with simple interest, matching Excel; earlier periods use compound discounting.</p>
+</li>
+<li>
+<p><strong><code>CONVERT</code> unit table</strong> — covers all thirteen Excel categories (mass, distance, time, pressure, force, energy, power, magnetism, temperature, volume, area, speed, information) with SI decimal prefixes and binary prefixes for <code>bit</code>/<code>byte</code>. Prefixes on temperature units and the most exotic cubic/area variants (<code>ly3</code>, <code>Nmi3</code>, <code>Pica2</code>, ...) are omitted; add entries to <code>_CONVERT_UNITS</code> if a workbook needs them.</p>
+</li>
+<li>
+<p><strong><code>LAMBDA</code> recursion</strong> — a self-referential lambda cannot terminate: <code>IF</code> is an eager builtin that evaluates both branches, and gridcalc's named ranges model only cell references, so there is no global lambda name to recurse through. The evaluator already resolves a syntactic named <code>LAMBDA</code> dynamically per call, so recursion would work once a lazy <code>IF</code> and Name-Manager lambdas exist.</p>
+</li>
+<li>
+<p><strong>Spill</strong> — the anchor keeps the whole array in <code>arr</code> and its own displayed value is the top-left scalar; the extra elements materialise as <code>SPILL</code> cells (a new cell type) owned by the anchor. Reads follow Excel: <code>A1</code> is the scalar, <code>A1#</code> is the array. <code>#SPILL!</code> on a blocked or off-sheet rectangle; a blocked anchor is re-attempted on any edit, since it has no dependency on what blocks it. Recalc is a bounded fixpoint because spill shape is only known post-evaluation — a spill can create/destroy cells whose consumers were not in the current pass. Not persisted (rebuilt from the anchor on load). The TUI paints the spill block in a subtle cyan tint, shows the anchor's scalar instead of the <code>[n]</code> array badge, and names a spilled cell's origin in the status bar. Spilling is EXCEL/HYBRID only; PYTHON mode keeps arrays in one cell (and keeps the badge).</p>
+</li>
+</ul>
+<h2 id="summary">Summary<a class="headerlink" href="#summary" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>Count</th>
+<th>Effort</th>
+<th>Priority</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Implemented</td>
+<td>~415</td>
+<td>done</td>
+<td>—</td>
+</tr>
+<tr>
+<td>External I/O / cube, <code>INDIRECT</code></td>
+<td>many</td>
+<td>—</td>
+<td>out of scope / by design</td>
+</tr>
+</tbody>
+</table>
+<p>The mechanical batches are exhausted and <strong>all four architectural lifts have now landed</strong>: the 2D-aware result type unblocked the <code>LINEST</code>/<code>TRANSPOSE</code>/stacking families (and <code>FREQUENCY</code>); lexical scope brought <code>LET</code>/<code>LAMBDA</code>/<code>MAP</code>/<code>REDUCE</code>/<code>SCAN</code>/<code>BYROW</code>/<code>BYCOL</code>/<code>MAKEARRAY</code>; cell spill lets dynamic-array results write into neighbour cells with the <code>A1#</code> operator and <code>#SPILL!</code> semantics (engine and TUI); and the reference value type brought <code>OFFSET</code>/<code>FORMULATEXT</code>/<code>AREAS</code>/<code>LOOKUP</code> with a <code>Reference</code> that materialises wherever a value is expected. What remains is out of scope by design: external I/O (<code>WEBSERVICE</code>, <code>RTD</code>, hyperlinks), cube/OLAP, and <code>INDIRECT</code> (a string-built reference defeats the static dependency analysis the topological recalc depends on). Coverage is now the overwhelming majority of Excel's function set; drive any further additions by a concrete workbook need.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      MIT licensed
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/shakfu/gridcalc" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://pypi.org/project/gridcalc/" target="_blank" rel="noopener" title="pypi.org" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.8 200.5c-7.7-30.9-22.3-54.2-53.4-54.2h-40.1v47.4c0 36.8-31.2 67.8-66.8 67.8H172.7c-29.2 0-53.4 25-53.4 54.3v101.8c0 29 25.2 46 53.4 54.3 33.8 9.9 66.3 11.7 106.8 0 26.9-7.8 53.4-23.5 53.4-54.3v-40.7H226.2v-13.6h160.2c31.1 0 42.6-21.7 53.4-54.2 11.2-33.5 10.7-65.7 0-108.6M286.2 444.7a20.4 20.4 0 1 1 0-40.7 20.4 20.4 0 1 1 0 40.7M167.8 248.1h106.8c29.7 0 53.4-24.5 53.4-54.3V91.9c0-29-24.4-50.7-53.4-55.6-35.8-5.9-74.7-5.6-106.8.1-45.2 8-53.4 24.7-53.4 55.6v40.7h106.9v13.6h-147c-31.1 0-58.3 18.7-66.8 54.2-9.8 40.7-10.2 66.1 0 108.6 7.6 31.6 25.7 54.2 56.8 54.2H101v-48.8c0-35.3 30.5-66.4 66.8-66.4m-6.6-183.4a20.4 20.4 0 1 1 0 40.8 20.4 20.4 0 1 1 0-40.8"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["content.action.edit", "content.code.copy", "navigation.instant", "navigation.sections", "navigation.top", "navigation.tracking", "search.highlight", "search.suggest", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

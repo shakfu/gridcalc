@@ -561,7 +561,10 @@ export function Grid({
         // Persist on release, not on every mousemove: a drag is dozens of
         // frames and each bridge call is a round trip into Python.
         const w = colWidthsRef.current.get(col)
-        if (w !== undefined) void guard('column width', () => bridge.set_col_width(col, w))
+        // A width is per-sheet state the workbook carries, so the release is a
+        // mutation: without this the dirty mark stays clear and the user can
+        // close over an unsaved resize.
+        if (w !== undefined) void mutate('column width', () => bridge.set_col_width(col, w))
         void refresh() // the visible column range may have changed
       }
       dragging.current = false
@@ -574,7 +577,7 @@ export function Grid({
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
-  }, [refresh, fillSelection, guard])
+  }, [refresh, fillSelection, mutate])
 
   // Selecting a whole row or column by its header. This is the gesture the
   // Insert/Delete Row+Column menu items are built around -- they act on the

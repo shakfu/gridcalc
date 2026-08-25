@@ -61,6 +61,7 @@ export function ChartDialog({
           <div className="field-row">
             <span className="field-label">Range</span>
             <input
+              aria-label="Range"
               value={spec}
               onChange={(e) => setSpec(e.target.value)}
               onKeyDown={(e) => {

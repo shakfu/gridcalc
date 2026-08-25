@@ -140,16 +140,26 @@ export function OptimizeDialog({
     }
   }
 
+  // Models are workbook state -- `jsonsave` serializes them -- so the bridge
+  // marks the workbook dirty on save and delete. Announcing that here keeps the
+  // status bar in step with the native close guard, which the bridge has
+  // already armed; without it the status bar reported a clean workbook and
+  // closing then asked about unsaved work, and a user trusting the status bar
+  // could discard a model they had just defined.
   const save = async () => {
     const res = await bridge.save_model(model.name, toSpec(model))
     setNote(res.ok ? `saved ${res.name ?? model.name}` : (res.error ?? 'could not save the model'))
-    if (res.ok) await refreshModels()
+    if (res.ok) {
+      onMutated?.()
+      await refreshModels()
+    }
   }
 
   const remove = async () => {
     const res = await bridge.delete_model(model.name)
     setNote(res.ok ? `deleted ${model.name}` : (res.error ?? 'could not delete'))
     if (res.ok) {
+      onMutated?.()
       setModel(EMPTY)
       await refreshModels()
     }

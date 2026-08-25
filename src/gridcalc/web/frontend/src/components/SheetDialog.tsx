@@ -57,6 +57,7 @@ export function SheetDialog({
           <div className="field-row">
             <span className="field-label">Name</span>
             <input
+              aria-label="Name"
               autoFocus
               value={name}
               onChange={(e) => setName(e.target.value)}

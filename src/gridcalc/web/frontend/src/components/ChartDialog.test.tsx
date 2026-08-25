@@ -20,3 +20,9 @@ test('a bad range shows an error', async () => {
   await userEvent.setup().click(screen.getByRole('button', { name: 'Draw' }))
   await waitFor(() => expect(screen.getByText(/bad range/)).toBeInTheDocument())
 })
+
+// See GoalDialog: labelled by adjacent text only.
+test('the range field has an accessible name', () => {
+  render(<ChartDialog open onOpenChange={() => {}} rangeRef="A4:C6" />)
+  expect(screen.getByLabelText('Range')).toHaveValue('A4:C6')
+})

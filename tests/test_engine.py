@@ -506,6 +506,103 @@ class TestJsonLoad:
         assert g.cw == 12
 
 
+class TestLoadReplacesTheWorkbook:
+    """A load replaces the open workbook; it must not merge into it.
+
+    The v1 path wrote its cells into whichever sheet was already open, so
+    anything outside the incoming payload survived and a second workbook
+    silently inherited the first one's data. The code path was worse: a file
+    whose code the policy refused kept the *previous* workbook's code, and its
+    functions stayed callable -- exactly what refusing to load code prevents.
+    """
+
+    def test_v1_load_drops_cells_outside_the_payload(self, tmp_path):
+        f = tmp_path / "v1.json"
+        f.write_text('{"cells": [[1, 2]]}')  # only A1 and B1
+        g = make_grid()
+        g.setcell(0, 0, "111")
+        g.setcell(5, 5, "stale")  # far outside the incoming payload
+        g.recalc()
+
+        assert g.jsonload(str(f)) == 0
+        assert g.cell(0, 0).val == 1.0
+        assert g.cell(5, 5) is None
+
+    def test_v2_load_drops_cells_outside_the_payload(self, tmp_path):
+        f = tmp_path / "v2.json"
+        f.write_text('{"version": 2, "sheets": [{"name": "S", "cells": [[7]]}]}')
+        g = make_grid()
+        g.setcell(5, 5, "stale")
+        g.recalc()
+
+        assert g.jsonload(str(f)) == 0
+        assert g.cell(0, 0).val == 7.0
+        assert g.cell(5, 5) is None
+
+    def test_load_clears_names_models_libs_and_requires(self, tmp_path):
+        f = tmp_path / "bare.json"
+        f.write_text('{"cells": [[1]]}')
+        g = make_grid()
+        g.names.append(NamedRange(name="old", c1=0, r1=0, c2=0, r2=0))
+        g.models["old"] = None
+        g.libs = ["xlsx"]
+        g.requires = ["math"]
+        g.recalc()
+
+        assert g.jsonload(str(f)) == 0
+        assert g.names == []
+        assert g.models == {}
+        assert g.requires == []
+
+    def test_refused_code_does_not_inherit_the_previous_workbook(self, tmp_path):
+        """`formulas_only()` means "do not run this file's code". It must not
+        leave the previously loaded workbook's code running in its place."""
+        from gridcalc.sandbox import LoadPolicy
+
+        f = tmp_path / "wb.json"
+        f.write_text(r'{"code": "def f():\n    return 1\n", "cells": [[5]]}')
+        g = make_grid()
+        g.mode = Mode.PYTHON
+        g.code = "def f():\n    return 99\n"
+        g.recalc()
+        g.setcell(0, 0, "=f()")
+        g.recalc()
+        assert g.cell(0, 0).val == 99.0  # the old code answers before the load
+
+        assert g.jsonload(str(f), LoadPolicy.formulas_only()) == 0
+        g.setcell(0, 0, "=f()")
+        g.recalc()
+        assert g.code == ""
+        assert g.cell(0, 0).err is not None  # neither workbook's `f` survives
+
+    def test_approved_code_is_still_loaded(self, tmp_path):
+        """The reset must not break the permitted path."""
+        from gridcalc.sandbox import LoadPolicy
+
+        f = tmp_path / "wb.json"
+        f.write_text(r'{"code": "def f():\n    return 1\n", "cells": [[5]]}')
+        g = make_grid()
+        g.mode = Mode.PYTHON
+        assert g.jsonload(str(f), LoadPolicy.trust_all()) == 0
+        g.setcell(0, 0, "=f()")
+        g.recalc()
+        assert g.cell(0, 0).val == 1.0
+
+    def test_a_rejected_file_leaves_the_workbook_untouched(self, tmp_path):
+        """The reset sits after every failure return, so a file that is refused
+        must not clear the workbook the user still has open."""
+        f = tmp_path / "bad.json"
+        f.write_text("[]")  # valid JSON, not a workbook
+        g = make_grid()
+        g.setcell(0, 0, "keep")
+        g.names.append(NamedRange(name="keep", c1=0, r1=0, c2=0, r2=0))
+        g.recalc()
+
+        assert g.jsonload(str(f)) == -1
+        assert g.cell(0, 0).text == "keep"
+        assert [n.name for n in g.names] == ["keep"]
+
+
 class TestJsonSave:
     def test_basic(self, tmp_path):
         g = make_grid()

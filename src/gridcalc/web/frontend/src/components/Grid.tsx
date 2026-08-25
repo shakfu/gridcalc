@@ -937,6 +937,7 @@ export function Grid({
           {editing && !editInBar && (
             <input
               ref={editorEl}
+              aria-label={`Edit ${cellRef(editing.r, editing.c)}`}
               className="cell-editor"
               style={{ left: colX(editing.c), top: CH + editing.r * CH, width: colW(editing.c) }}
               value={editValue}

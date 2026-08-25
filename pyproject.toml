@@ -1,6 +1,6 @@
 [project]
 name = "gridcalc"
-version = "0.3.3"
+version = "0.4.0"
 description = "A terminal / web spreadsheet powered by Python formulas"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -92,19 +92,21 @@ export function SweepDialog({
           </div>
           <div className="field-row">
             <span className="field-label">Objective</span>
-            <input value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="B2" />
+            <input aria-label="Objective" value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="B2" />
             <span className="field-label">Vars</span>
-            <input value={vars} onChange={(e) => setVars(e.target.value)} placeholder="A2:A3" />
+            <input aria-label="Vars" value={vars} onChange={(e) => setVars(e.target.value)} placeholder="A2:A3" />
           </div>
           <div className="field-row">
             <span className="field-label">Constraints</span>
             <input
+              aria-label="Constraints"
               value={constraints}
               onChange={(e) => setConstraints(e.target.value)}
               placeholder="C2:C4"
             />
             <span className="field-label">Sweep</span>
             <input
+              aria-label="Sweep constraint"
               value={constraint}
               onChange={(e) => setConstraint(e.target.value)}
               placeholder="C3"
@@ -112,11 +114,11 @@ export function SweepDialog({
           </div>
           <div className="field-row">
             <span className="field-label">RHS from</span>
-            <input value={lo} onChange={(e) => setLo(e.target.value)} placeholder="0" />
+            <input aria-label="RHS from" value={lo} onChange={(e) => setLo(e.target.value)} placeholder="0" />
             <span className="field-label">to</span>
-            <input value={hi} onChange={(e) => setHi(e.target.value)} placeholder="24" />
+            <input aria-label="RHS to" value={hi} onChange={(e) => setHi(e.target.value)} placeholder="24" />
             <span className="field-label">Steps</span>
-            <input value={steps} onChange={(e) => setSteps(e.target.value)} placeholder="10" />
+            <input aria-label="Steps" value={steps} onChange={(e) => setSteps(e.target.value)} placeholder="10" />
             <button className="btn-primary" onClick={() => void run()} disabled={busy}>
               Run
             </button>

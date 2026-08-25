@@ -96,7 +96,14 @@ export function OptimizeDialog({
   const solveSelection = () =>
     selection &&
     run(() =>
-      bridge.solve_selection(selection.r0, selection.c0, selection.r1, selection.c1, model.sense),
+      bridge.solve_selection(
+        selection.r0,
+        selection.c0,
+        selection.r1,
+        selection.c1,
+        model.sense,
+        applyToSheet,
+      ),
     )
 
   const solveModel = () =>

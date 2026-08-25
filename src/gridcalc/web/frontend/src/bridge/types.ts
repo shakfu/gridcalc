@@ -292,7 +292,14 @@ export interface PywebviewApi {
   paste(r: number, c: number): Promise<OkResult>
   paste_text(r: number, c: number, text: string): Promise<OkResult>
   fill(r0: number, c0: number, r1: number, c1: number, direction: 'down' | 'right'): Promise<OkResult>
-  solve_selection(r0: number, c0: number, r1: number, c1: number, sense: string): Promise<SolveResult>
+  solve_selection(
+    r0: number,
+    c0: number,
+    r1: number,
+    c1: number,
+    sense: string,
+    apply: boolean,
+  ): Promise<SolveResult>
   solve_model(spec: ModelSpec): Promise<SolveResult>
   goal_seek(
     formula_ref: string,

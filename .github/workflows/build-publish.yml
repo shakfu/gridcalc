@@ -203,12 +203,24 @@ jobs:
           import pathlib, sys, tarfile, zipfile
 
           BUNDLE = "gridcalc/web/static/index.html"
+          # `make build` writes a placeholder carrying this marker when the real
+          # bundle is absent, so that packaging (which force-includes the file)
+          # can run at all. Present-but-placeholder must fail exactly like
+          # missing, or a release ships a distribution whose UI cannot open.
+          PLACEHOLDER = b"gridcalc:placeholder-bundle"
           problems = []
 
           for whl in sorted(pathlib.Path("dist").glob("*.whl")):
-              names = zipfile.ZipFile(whl).namelist()
+              zf = zipfile.ZipFile(whl)
+              names = zf.namelist()
               if BUNDLE not in names:
                   problems.append(f"{whl.name}: missing {BUNDLE}")
+              else:
+                  blob = zf.read(BUNDLE)
+                  if PLACEHOLDER in blob:
+                      problems.append(f"{whl.name}: {BUNDLE} is the placeholder, not a build")
+                  elif b'id="root"' not in blob:
+                      problems.append(f"{whl.name}: {BUNDLE} has no React mount point")
               stowaways = [n for n in names if "/web/frontend/" in n]
               if stowaways:
                   problems.append(
@@ -217,11 +229,18 @@ jobs:
                   )
 
           for sdist in sorted(pathlib.Path("dist").glob("*.tar.gz")):
-              names = tarfile.open(sdist).getnames()
+              tf = tarfile.open(sdist)
+              names = tf.getnames()
               # An sdist must be buildable, so it keeps the client sources -- but
               # it needs the bundle too, or a wheel built from it has no UI.
-              if not any(n.endswith("src/" + BUNDLE) for n in names):
+              hits = [n for n in names if n.endswith("src/" + BUNDLE)]
+              if not hits:
                   problems.append(f"{sdist.name}: missing src/{BUNDLE}")
+              else:
+                  member = tf.extractfile(hits[0])
+                  blob = member.read() if member else b""
+                  if PLACEHOLDER in blob:
+                      problems.append(f"{sdist.name}: src/{BUNDLE} is the placeholder, not a build")
 
           if problems:
               print("::error::distribution contents are wrong")

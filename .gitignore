@@ -212,9 +212,10 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Web frontend (React/Vite). node_modules and the build output are generated;
-# package-lock.json IS committed for reproducible installs. The build output
-# (static/index.html) is produced by `make web-build` and shipped in the wheel.
+# Web frontend (React/Vite, built with Bun). node_modules and the build output
+# are generated; bun.lock IS committed for reproducible installs. The build
+# output (static/index.html) is produced by `make web-build` and shipped in the
+# wheel.
 src/gridcalc/web/frontend/node_modules/
 src/gridcalc/web/frontend/dist/
 src/gridcalc/web/static/
@@ -226,3 +227,5 @@ AGENTS.md
 
 # Screenshots, logs and the derived workbook written by scripts/drive_web.py.
 /scripts/out/
+
+REVIEW.md

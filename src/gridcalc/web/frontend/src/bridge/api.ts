@@ -92,7 +92,8 @@ export const bridge: PywebviewApi = {
   paste: (r, c) => api().paste(r, c),
   paste_text: (r, c, text) => api().paste_text(r, c, text),
   fill: (r0, c0, r1, c1, direction) => api().fill(r0, c0, r1, c1, direction),
-  solve_selection: (r0, c0, r1, c1, sense) => api().solve_selection(r0, c0, r1, c1, sense),
+  solve_selection: (r0, c0, r1, c1, sense, apply) =>
+    api().solve_selection(r0, c0, r1, c1, sense, apply),
   solve_model: (spec) => api().solve_model(spec),
   goal_seek: (formula_ref, target, var_ref, lo, hi) =>
     api().goal_seek(formula_ref, target, var_ref, lo, hi),

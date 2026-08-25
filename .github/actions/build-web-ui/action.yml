@@ -11,27 +11,30 @@ description: >
 #
 # Deliberately a host step rather than a cibuildwheel `before-all`: cibuildwheel
 # copies the project into its manylinux container, so a bundle built here comes
-# along for the ride. Installing Node inside each container instead would be
-# slower and would have to be repeated per Python version.
+# along for the ride. Installing the toolchain inside each container instead
+# would be slower and would have to be repeated per Python version.
+#
+# Bun is both the package manager and the runtime here, so no Node is set up.
+# `--bun` on the build is load-bearing: without it `bun run` follows the
+# `#!/usr/bin/env node` shebang in node_modules/.bin and needs a Node that this
+# job deliberately does not install.
 runs:
   using: composite
   steps:
-    - name: Set up Node
-      uses: actions/setup-node@v7
+    - name: Set up Bun
+      uses: oven-sh/setup-bun@v2
       with:
-        node-version: "22"
-        cache: npm
-        cache-dependency-path: src/gridcalc/web/frontend/package-lock.json
+        bun-version: "1.4.0"
 
     - name: Install client dependencies
       shell: bash
       working-directory: src/gridcalc/web/frontend
-      run: npm ci
+      run: bun install --frozen-lockfile
 
     - name: Build the bundle
       shell: bash
       working-directory: src/gridcalc/web/frontend
-      run: npm run build
+      run: bun --bun run build
 
     - name: Verify the bundle landed where the package expects it
       shell: bash

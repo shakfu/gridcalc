@@ -259,9 +259,10 @@ test('a restored view state puts the cursor, selection and scroll back', async (
   expect(container.querySelector('.sel-rect')).toBeInTheDocument() // the anchor came back too
 
   // Scroll offsets are restored before the first fetch, so the rows requested
-  // are the ones around the restored position -- not row 0. (jsdom has no
-  // layout, so `scrollTop` itself is unobservable; what the grid *asks the
-  // engine for* is the part that matters and is testable.)
+  // are the ones around the restored position -- not row 0. (happy-dom does no
+  // layout -- every box measures zero -- so `scrollTop` is a stored number with
+  // no scrolling behind it; what the grid *asks the engine for* is the part
+  // that matters and is testable.)
   const [r0, c0] = viewport.mock.calls[0]
   expect(r0).toBe(95) // (2200 - CH) / CH, less the overscan
   expect(c0).toBe(6) // column at x=1000, less the overscan

@@ -121,9 +121,18 @@ web-drive:
 # the core engine operates without any third-party runtime deps.
 # Pygments arrives transitively via pytest -- harmless; tui.py guards
 # its use with try/except.
+#
+# `--no-cache` is not optional here. uv keys its built-wheel cache for a local
+# path on the project metadata, not on the source files, so editing
+# src/gridcalc/*.py does NOT invalidate it: without this the target happily
+# reinstalls a wheel built hours ago and reports a pass for code that is no
+# longer in the tree. (`--refresh`, `--refresh-package` and `--reinstall` all
+# fail to evict it; only `--no-cache` does.) The price is a full C++ rebuild --
+# about 50s against ~2s cached -- which is why this is an occasional gate and
+# not part of `make qa`.
 test-stdlib:
-	@GRIDCALC_SANDBOX=1 uv run --isolated --no-project --with pytest --with . \
-		pytest tests/ -v
+	@GRIDCALC_SANDBOX=1 uv run --isolated --no-project --no-cache \
+		--with pytest --with . pytest tests/ -v
 
 # Lint with ruff
 lint:

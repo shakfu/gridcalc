@@ -297,12 +297,22 @@ def _insert_lines(ctx: Context, axis: str) -> Result:
     limit = NROW if axis == "row" else NCOL
     if not (0 <= at < limit):
         return fail(f"out of range: {at}")
+    word = "row" if axis == "row" else "column"
+    # Check the whole insert before touching anything: the sheet is a fixed
+    # NROW x NCOL grid, so an insert near the end used to push the last lines
+    # off the edge and drop them while still reporting success. Refusing
+    # up-front also keeps this all-or-nothing -- no half-applied insert, and no
+    # undo entry recorded for an edit that never happened.
+    if not g.can_insert("R" if axis == "row" else "C", at, count):
+        return fail(
+            f"cannot insert {count} {word}{'s' if count > 1 else ''}: "
+            f"that would push data off the end of the sheet"
+        )
     ctx.undo.save_grid(g)
     op = g.insertrow if axis == "row" else g.insertcol
     for _ in range(count):
         op(at)
     g.recalc()
-    word = "row" if axis == "row" else "column"
     return ok(f"inserted {count} {word}{'s' if count > 1 else ''}", changed=True)
 
 

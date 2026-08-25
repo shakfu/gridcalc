@@ -14,7 +14,7 @@ import math
 import pytest
 
 from gridcalc import commands as shared
-from gridcalc.engine import EMPTY, MAXNAMES, NROW, Grid, Mode
+from gridcalc.engine import EMPTY, MAXNAMES, NCOL, NROW, Grid, Mode
 from gridcalc.undo import UndoManager
 
 
@@ -211,6 +211,45 @@ def test_structural_edits_are_undoable() -> None:
 def test_insert_out_of_range_is_refused() -> None:
     r = _run(_grid(), "insrow", sel=(0, NROW + 5, 0, NROW + 5))
     assert r.ok is False and "out of range" in r.message
+
+
+def test_insert_is_refused_when_it_would_push_data_off_the_sheet() -> None:
+    """The sheet is a fixed grid, so an insert near the end has nowhere to put
+    the last lines. It used to drop them and report success; now it refuses and
+    changes nothing."""
+    g = _grid()
+    g.setcell(0, NROW - 1, "keep me")
+    g.recalc()
+    undo = UndoManager()
+    r = shared.run("insrow", g, undo, [], (0, 0, 0, 0))
+    assert r.ok is False
+    assert "push data off" in r.message
+    assert g.cell(0, NROW - 1).text == "keep me"  # untouched
+    assert undo.undo_stack == []  # and no history entry for a non-edit
+
+
+def test_column_insert_is_refused_when_it_would_push_data_off_the_sheet() -> None:
+    g = _grid()
+    g.setcell(NCOL - 1, 0, "keep me")
+    g.recalc()
+    undo = UndoManager()
+    r = shared.run("inscol", g, undo, [], (0, 0, 0, 0))
+    assert r.ok is False
+    assert g.cell(NCOL - 1, 0).text == "keep me"
+    assert undo.undo_stack == []
+
+
+def test_a_multi_line_insert_is_all_or_nothing() -> None:
+    """A three-row selection inserts three rows; if only two would fit, none go
+    in -- a partially applied insert is worse than a refused one."""
+    g = _grid()
+    g.setcell(0, NROW - 2, "a")  # two rows from the end, so 3 cannot fit
+    g.recalc()
+    undo = UndoManager()
+    r = shared.run("insrow", g, undo, [], (0, 0, 0, 2))  # spans 3 rows
+    assert r.ok is False
+    assert g.cell(0, NROW - 2).text == "a"
+    assert undo.undo_stack == []
 
 
 def test_column_insert_carries_saved_widths_with_their_columns() -> None:

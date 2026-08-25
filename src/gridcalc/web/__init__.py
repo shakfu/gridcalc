@@ -118,8 +118,13 @@ class Api:
         Empty cells are omitted; the client fills gaps as blank.
         """
         g = self._g
-        r0 = max(0, int(r0))
-        c0 = max(0, int(c0))
+        # Clamp the origin to the sheet *before* deriving the ends. Clamping
+        # only at zero let an out-of-range origin through, and `r1 - r0` then
+        # reported a negative row count -- a virtualising client sizes its
+        # spacers from those numbers, and this is a bridge boundary, so it
+        # should not hand back arithmetic that cannot describe a rectangle.
+        r0 = min(max(0, int(r0)), NROW)
+        c0 = min(max(0, int(c0)), NCOL)
         r1 = min(NROW, r0 + max(0, int(rows)))
         c1 = min(NCOL, c0 + max(0, int(cols)))
         cells: list[dict[str, Any]] = []

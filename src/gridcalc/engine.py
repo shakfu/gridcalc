@@ -621,6 +621,41 @@ def _emitref(rc: int, rr: int, ac: int, ar: int) -> str:
     return s
 
 
+def _skip_quoted(text: str, i: int) -> int | None:
+    """Index just past the string literal starting at ``i``, or None if it is
+    not a quote.
+
+    Both formula transformers below walk raw text looking for things shaped like
+    cell references, and a reference is shaped exactly like ordinary prose: the
+    ``A1`` in ``="col A1 total"`` is indistinguishable from the ``A1`` in
+    ``=A1+1`` without tracking quoting. Skipping literals wholesale is what
+    keeps a copy/paste from silently editing the user's text.
+
+    Handles both dialects, since formulas may be Excel or Python: a backslash
+    escapes the next character (Python), and a doubled quote is a literal quote
+    (Excel style). Single quotes count too -- they delimit strings in
+    PYTHON mode and sheet names in Excel (``'My Sheet'!A1``), and in neither case
+    should the contents be rewritten. An unterminated literal swallows the rest
+    of the text, which is the conservative choice: better to adjust nothing than
+    to corrupt something.
+    """
+    if i >= len(text) or text[i] not in ('"', "'"):
+        return None
+    q = text[i]
+    j = i + 1
+    while j < len(text):
+        if text[j] == "\\" and j + 1 < len(text):
+            j += 2
+        elif text[j] == q:
+            if j + 1 < len(text) and text[j + 1] == q:
+                j += 2  # doubled quote: an escaped quote, not the end
+            else:
+                return j + 1
+        else:
+            j += 1
+    return len(text)
+
+
 def adjust_refs(text: str, dcol: int, drow: int) -> str:
     """Shift every relative cell reference in ``text`` by ``(dcol, drow)``.
 
@@ -631,6 +666,11 @@ def adjust_refs(text: str, dcol: int, drow: int) -> str:
     out = []
     i = 0
     while i < len(text):
+        end = _skip_quoted(text, i)
+        if end is not None:
+            out.append(text[i:end])  # a literal is copied through untouched
+            i = end
+            continue
         result = refabs(text[i:])
         if result:
             n, rc, rr, ac, ar = result
@@ -651,6 +691,11 @@ def _expand_ranges(expr: str) -> str:
     result = []
     i = 0
     while i < len(expr):
+        end = _skip_quoted(expr, i)
+        if end is not None:
+            result.append(expr[i:end])  # `"A1:B2"` is text, not a range
+            i = end
+            continue
         r1 = ref(expr[i:])
         if r1:
             n1, c1, row1 = r1
@@ -2287,13 +2332,34 @@ class Grid:
                 shifted[nc] = w
         self._active.widths = shifted
 
-    def insertrow(self, at: int) -> None:
+    def can_insert(self, axis: str, at: int, count: int = 1) -> bool:
+        """True when inserting ``count`` lines at ``at`` would lose no data.
+
+        The sheet is a fixed NROW x NCOL grid, so an insert near the end pushes
+        the last lines past the edge. Silently dropping them is data loss the
+        user never asked for and cannot see, so callers check first and refuse.
+        ``axis`` is "R" for rows or "C" for columns.
+        """
+        limit = NROW if axis == "R" else NCOL
+        edge = limit - count  # a line at or past this is pushed off the end
+        for (c, r), cl in self._cells.items():
+            if cl.type == EMPTY:
+                continue
+            pos = r if axis == "R" else c
+            if pos >= at and pos >= edge:
+                return False
+        return True
+
+    def insertrow(self, at: int) -> bool:
+        """Insert one row at ``at``. False, without mutating, if that would push
+        a populated row off the bottom of the sheet."""
+        if not self.can_insert("R", at):
+            return False
         self._drop_all_spills()
         new_cells: dict[tuple[int, int], Cell] = {}
         for (c, r), cl in self._cells.items():
             if r >= at:
-                if r + 1 < NROW:
-                    new_cells[(c, r + 1)] = cl
+                new_cells[(c, r + 1)] = cl
             else:
                 new_cells[(c, r)] = cl
         self._cells = new_cells
@@ -2301,14 +2367,18 @@ class Grid:
         self._shift_names("R", at, +1)
         self._rebuild_dep_graph()
         self.dirty = 1
+        return True
 
-    def insertcol(self, at: int) -> None:
+    def insertcol(self, at: int) -> bool:
+        """Insert one column at ``at``. False, without mutating, if that would
+        push a populated column off the right edge of the sheet."""
+        if not self.can_insert("C", at):
+            return False
         self._drop_all_spills()
         new_cells: dict[tuple[int, int], Cell] = {}
         for (c, r), cl in self._cells.items():
             if c >= at:
-                if c + 1 < NCOL:
-                    new_cells[(c + 1, r)] = cl
+                new_cells[(c + 1, r)] = cl
             else:
                 new_cells[(c, r)] = cl
         self._cells = new_cells
@@ -2317,6 +2387,7 @@ class Grid:
         self._shift_widths(at, +1)
         self._rebuild_dep_graph()
         self.dirty = 1
+        return True
 
     def deleterow(self, at: int) -> None:
         self._drop_all_spills()
@@ -2468,6 +2539,14 @@ class Grid:
         except (OSError, json.JSONDecodeError):
             return -1
 
+        # A workbook is a JSON *object*. `[]`, `null`, a bare number or string
+        # are all valid JSON and decode without error, so the type has to be
+        # checked before anything reads a key off it -- otherwise a malformed
+        # file raises AttributeError out of a function documented to report
+        # failure by returning -1.
+        if not isinstance(d, dict):
+            return -1
+
         version = d.get("version", 1)
         if not isinstance(version, int) or version > FILE_VERSION:
             return -1
@@ -2498,7 +2577,14 @@ class Grid:
 
         names_dict = d.get("names", {})
         self.names = []
+        # Structured fields are as untrusted as the top level: `names` may be a
+        # list, and an entry's range may be a number, which would fail on
+        # `.items()` and on the `"!" in rng` test respectively.
+        if not isinstance(names_dict, dict):
+            names_dict = {}
         for name, rng in names_dict.items():
+            if not isinstance(name, str) or not isinstance(rng, str):
+                continue
             nr = NamedRange(name=name)
             # A ``Sheet!A1:B3`` name carries an explicit sheet; a bare
             # ``A1:B3`` stays sheet-agnostic.
@@ -2546,8 +2632,12 @@ class Grid:
                     continue
 
         fmt_dict = d.get("format", {})
+        if not isinstance(fmt_dict, dict):
+            fmt_dict = {}
         w = fmt_dict.get("width", 0)
-        if 4 <= w <= 40:
+        # A non-numeric width would raise from the comparison, not just be
+        # ignored; bool is an int subclass but never lands in 4..40.
+        if isinstance(w, (int, float)) and 4 <= w <= 40:
             self.cw = int(w)
         elif not self.cw:
             self.cw = CW_DEFAULT

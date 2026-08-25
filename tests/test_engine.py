@@ -4,6 +4,7 @@ import math
 import pytest
 
 from gridcalc.engine import (
+    CW_DEFAULT,
     EMPTY,
     FORMULA,
     LABEL,
@@ -16,7 +17,9 @@ from gridcalc.engine import (
     Mode,
     NamedRange,
     Vec,
+    _expand_ranges,
     _is_dataframe,
+    adjust_refs,
     col_name,
     ref,
 )
@@ -445,6 +448,63 @@ class TestJsonLoad:
         g = make_grid()
         assert g.jsonload(str(tmp_path / "nonexistent.json")) == -1
 
+    # `jsonload` reports failure by returning -1; it must never raise. Text that
+    # is *valid JSON but not a workbook* decodes cleanly, so every structure the
+    # loader reaches into has to be type-checked first -- otherwise a hand-edited
+    # or truncated-and-repaired file takes the load path out with an
+    # AttributeError instead of a return code the caller can handle.
+    @pytest.mark.parametrize(
+        "body",
+        ["[]", "null", "42", '"hello"', "true", "[1, 2, 3]"],
+        ids=["array", "null", "number", "string", "bool", "array-of-numbers"],
+    )
+    def test_a_non_object_document_is_rejected_not_raised(self, tmp_path, body):
+        g = make_grid()
+        f = tmp_path / "wrong.json"
+        f.write_text(body)
+        assert g.jsonload(str(f)) == -1
+
+    def test_a_non_mapping_names_field_is_ignored(self, tmp_path):
+        """`names` as a list would fail on `.items()`."""
+        g = make_grid()
+        f = tmp_path / "names.json"
+        f.write_text('{"names": [], "cells": [[10]]}')
+        assert g.jsonload(str(f)) == 0
+        assert g.names == []
+        assert g.cells[0][0].val == 10.0  # the rest of the workbook still loads
+
+    def test_a_name_with_a_non_string_range_is_skipped(self, tmp_path):
+        """An entry whose range is a number would fail on `"!" in rng`."""
+        g = make_grid()
+        f = tmp_path / "names.json"
+        f.write_text('{"names": {"bad": 1, "good": "A1:A2"}, "cells": [[10], [20]]}')
+        assert g.jsonload(str(f)) == 0
+        assert [n.name for n in g.names] == ["good"]  # the sound one survives
+
+    def test_a_non_mapping_format_field_is_ignored(self, tmp_path):
+        """`format` as a list would fail on `.get()`."""
+        g = make_grid()
+        f = tmp_path / "fmt.json"
+        f.write_text('{"format": [], "cells": [[10]]}')
+        assert g.jsonload(str(f)) == 0
+        assert g.cells[0][0].val == 10.0
+
+    def test_a_non_numeric_width_is_ignored(self, tmp_path):
+        """A string width would raise from the `4 <= w <= 40` comparison."""
+        g = make_grid()
+        f = tmp_path / "fmt.json"
+        f.write_text('{"format": {"width": "wide"}, "cells": [[10]]}')
+        assert g.jsonload(str(f)) == 0
+        assert g.cw == CW_DEFAULT
+
+    def test_a_valid_width_is_still_honoured(self, tmp_path):
+        """The guard must not swallow well-formed input."""
+        g = make_grid()
+        f = tmp_path / "fmt.json"
+        f.write_text('{"format": {"width": 12}, "cells": [[10]]}')
+        assert g.jsonload(str(f)) == 0
+        assert g.cw == 12
+
 
 class TestJsonSave:
     def test_basic(self, tmp_path):
@@ -703,6 +763,63 @@ class TestSwap:
         g.swapcol(0, 1)
         assert g.cells[0][0].val == 10.0
         assert g.cells[1][0].val == 100.0
+
+
+class TestStringLiteralsAreNotRewritten:
+    """Reference shifting and range expansion must not edit quoted text.
+
+    Both transformers scan raw formula text for things *shaped like* references,
+    and prose is shaped the same way: the `A1` in `="col A1 total"` looks exactly
+    like the `A1` in `=A1+1`. Without literal tracking, copying a formula rewrote
+    the user's strings -- silent data corruption on an everyday paste.
+    """
+
+    def test_a_quoted_reference_is_left_alone(self):
+        assert adjust_refs('="A1"', 1, 0) == '="A1"'
+
+    def test_prose_containing_a_reference_is_left_alone(self):
+        assert adjust_refs('="col A1 total"', 1, 0) == '="col A1 total"'
+
+    def test_real_references_outside_literals_still_shift(self):
+        """The guard must not stop the transformer doing its job."""
+        assert adjust_refs("=A1", 1, 0) == "=B1"
+        assert adjust_refs('=A1&"A1"&B1', 1, 0) == '=B1&"A1"&C1'
+
+    def test_absolute_references_stay_absolute(self):
+        assert adjust_refs("=$A$1", 1, 0) == "=$A$1"
+
+    def test_single_quotes_are_literals_too(self):
+        """PYTHON mode strings, and Excel sheet names (`'My Sheet'!A1`)."""
+        assert adjust_refs("='A1'", 1, 0) == "='A1'"
+
+    def test_an_excel_doubled_quote_escape_is_handled(self):
+        assert adjust_refs('="say ""A1"" now"', 1, 0) == '="say ""A1"" now"'
+
+    def test_a_python_backslash_escape_is_handled(self):
+        assert adjust_refs(r'="esc \"A1\" x"', 1, 0) == r'="esc \"A1\" x"'
+
+    def test_an_unterminated_literal_adjusts_nothing_after_it(self):
+        """Conservative: corrupting nothing beats corrupting something."""
+        assert adjust_refs('="unterminated A1', 1, 0) == '="unterminated A1'
+
+    def test_a_quoted_range_is_not_expanded(self):
+        assert _expand_ranges('"A1:B2"') == '"A1:B2"'
+
+    def test_a_real_range_is_still_expanded(self):
+        assert _expand_ranges("SUM(A1:B2)") == "SUM(Vec([A1,B1,A2,B2]))"
+
+    def test_a_range_and_a_quoted_range_in_one_expression(self):
+        assert _expand_ranges('SUM(A1:B2)+len("A1:B2")') == 'SUM(Vec([A1,B1,A2,B2]))+len("A1:B2")'
+
+    def test_replicating_a_formula_preserves_its_text(self):
+        """End to end: the corruption path a user actually hits."""
+        g = make_grid()
+        g.setcell(0, 0, "10")
+        g.setcell(1, 0, '="A1 is a label"')
+        g.recalc()
+        g.replicatecell(1, 0, 2, 0)  # copy B1 to C1
+        g.recalc()
+        assert g.cells[2][0].text == '="A1 is a label"'
 
 
 class TestFixrefs:
@@ -1877,17 +1994,37 @@ class TestBoundary:
         g.setcell(0, 0, longtext)
         assert g.cells[0][0].type == LABEL
 
-    def test_insert_at_boundary(self):
+    # These two previously asserted that boundary data was *gone* after the
+    # insert -- documenting the drop rather than judging it. Silently destroying
+    # a populated line while reporting success is data loss the user cannot see,
+    # so the contract is now: refuse, and change nothing.
+    def test_insert_at_boundary_refuses_rather_than_dropping_the_last_row(self):
         g = make_grid()
         g.setcell(0, NROW - 1, "end")
-        g.insertrow(NROW - 1)
-        assert g.cells[0][NROW - 1].type == EMPTY
+        assert g.insertrow(NROW - 1) is False
+        assert g.cells[0][NROW - 1].type == LABEL
+        assert g.cells[0][NROW - 1].text == "end"
 
-    def test_insertcol_at_boundary(self):
+    def test_insertcol_at_boundary_refuses_rather_than_dropping_the_last_column(self):
         g = make_grid()
         g.setcell(NCOL - 1, 0, "end")
-        g.insertcol(NCOL - 1)
-        assert g.cells[NCOL - 1][0].type == EMPTY
+        assert g.insertcol(NCOL - 1) is False
+        assert g.cells[NCOL - 1][0].type == LABEL
+        assert g.cells[NCOL - 1][0].text == "end"
+
+    def test_an_insert_far_from_the_end_still_works(self):
+        """The refusal must be scoped to actual overflow, not any insert."""
+        g = make_grid()
+        g.setcell(0, 0, "a")
+        assert g.insertrow(0) is True
+        assert g.cells[0][1].text == "a"
+
+    def test_an_empty_last_row_does_not_block_an_insert(self):
+        """Only *populated* lines can be lost; blank ones are free to fall off."""
+        g = make_grid()
+        g.setcell(0, 5, "a")
+        assert g.insertrow(0) is True
+        assert g.cells[0][6].text == "a"
 
     def test_clear_at_boundary(self):
         g = make_grid()

@@ -10,13 +10,25 @@ view-facing; this module is only the history.
 
 from __future__ import annotations
 
-from .engine import EMPTY, Cell, Grid
+from .engine import EMPTY, Cell, Grid, NamedRange
 
 UNDO_MAX = 64
 
 
+def _copy_names(names: list[NamedRange]) -> list[NamedRange]:
+    """Deep-copy a name list for a snapshot.
+
+    A structural edit rewrites `NamedRange` objects *in place* and drops the
+    ones that lose every line they covered, so a shallow list copy would be
+    mutated by the very edit it is meant to record.
+    """
+    return [
+        NamedRange(name=n.name, c1=n.c1, r1=n.r1, c2=n.c2, r2=n.r2, sheet=n.sheet) for n in names
+    ]
+
+
 class UndoEntry:
-    __slots__ = ("cells", "cc", "cr", "is_grid", "fmt", "sheet")
+    __slots__ = ("cells", "cc", "cr", "is_grid", "fmt", "sheet", "names", "widths")
 
     def __init__(self) -> None:
         self.cells: list[tuple[int, int, Cell]] = []
@@ -32,6 +44,15 @@ class UndoEntry:
         # write real cells into the wrong tab. `_apply` switches back to this
         # sheet first; None means "wherever we are" (a pre-sheet entry).
         self.sheet: str | None = None
+        # Sheet metadata that a *structural* edit moves alongside the cells:
+        # named ranges shift (and can be dropped), and column widths travel with
+        # their column. Restoring cells alone left both shifted, so an undone row
+        # insert kept every name pointing one row off -- formulas then computed
+        # over the wrong region, silently and with a plausible answer. Only
+        # grid-level snapshots carry these; None means "do not touch", which
+        # keeps an ordinary cell undo from reverting an unrelated `:name`.
+        self.names: list[NamedRange] | None = None
+        self.widths: dict[int, int] | None = None
 
 
 class UndoManager:
@@ -90,6 +111,8 @@ class UndoManager:
         e.fmt = g.fmt
         e.sheet = g._active.name
         e.is_grid = True
+        e.names = _copy_names(g.names)
+        e.widths = dict(g._active.widths)
         for (c, r), cl in g._cells.items():
             if cl.type != EMPTY:
                 e.cells.append((c, r, cl.snapshot()))
@@ -120,6 +143,8 @@ class UndoManager:
         re.sheet = e.sheet
         re.is_grid = e.is_grid
         if e.is_grid:
+            re.names = _copy_names(g.names)
+            re.widths = dict(g._active.widths)
             for (c, r), cl in g._cells.items():
                 if cl.type != EMPTY:
                     re.cells.append((c, r, cl.snapshot()))
@@ -143,6 +168,10 @@ class UndoManager:
             g.cr = e.cr
             if e.fmt is not None:
                 g.fmt = e.fmt
+            if e.names is not None:
+                g.names = _copy_names(e.names)
+            if e.widths is not None:
+                g._active.widths = dict(e.widths)
             g.recalc()
         except Exception:
             if re.is_grid:
@@ -158,6 +187,10 @@ class UndoManager:
             g.cr = re.cr
             if re.fmt is not None:
                 g.fmt = re.fmt
+            if re.names is not None:
+                g.names = _copy_names(re.names)
+            if re.widths is not None:
+                g._active.widths = dict(re.widths)
             g.recalc()
             raise
 

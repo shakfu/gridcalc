@@ -28,6 +28,7 @@ import {
   type Selection,
   type SheetView,
 } from '../lib/grid'
+import { failureOf } from '../bridge/result'
 
 // The grid's imperative command set, handed up to the app so the menubar,
 // toolbar, and keyboard all drive one implementation. Cursor and selection
@@ -160,10 +161,21 @@ export function Grid({
   }, [])
 
   // Run a mutating bridge call, then tell the app the workbook changed.
+  // A call that resolves can still be a refusal (`{ok: false}`) -- an empty
+  // clipboard, input the engine will not accept -- and announcing a mutation
+  // for one left the sheet marked dirty with nothing changed. A refusal is
+  // reported like a rejection and returns null, so callers testing `!== null`
+  // stay correct.
   const mutate = useCallback(
     async <T,>(what: string, fn: () => Promise<T>): Promise<T | null> => {
       const res = await guard(what, fn)
-      if (res !== null) onMutateRef.current?.()
+      if (res === null) return null
+      const why = failureOf(res)
+      if (why !== null) {
+        onErrorRef.current?.(`${what}: ${why}`)
+        return null
+      }
+      onMutateRef.current?.()
       return res
     },
     [guard],

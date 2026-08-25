@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { bridge, whenReady } from '../bridge/api'
 import type { Dims, Sheets, SheetsResult } from '../bridge/types'
 import type { Rect } from '../lib/grid'
+import { failureOf } from '../bridge/result'
 
 export interface WorkbookActions {
   open(): Promise<void>
@@ -224,14 +225,31 @@ export function useWorkbook(): Workbook {
         sheetOp('sheet', () => bridge.move_sheet(name, index)),
       runCommand: (name: string, args: string[] = [], rect: Rect | null = null) =>
         runShared(name, args, rect),
+      // Both of these ignored the result and marked the workbook dirty even
+      // when the bridge refused, so the status bar and the close guard reported
+      // unsaved changes over an unchanged sheet.
       format: async (rect: Rect, spec: string) => {
-        await guard('format', () => bridge.set_format(rect.r0, rect.c0, rect.r1, rect.c1, spec))
+        const res = await guard('format', () =>
+          bridge.set_format(rect.r0, rect.c0, rect.r1, rect.c1, spec),
+        )
+        if (res === null) return
+        const why = failureOf(res)
+        if (why !== null) {
+          fail(`format: ${why}`)
+          return
+        }
         setDirty(true)
         setMutations((n) => n + 1)
         setRevision((n) => n + 1) // re-fetch the viewport with the new formatting
       },
       setDefaultFormat: async (fmt: string) => {
-        await guard('format', () => bridge.set_global_format(fmt))
+        const res = await guard('format', () => bridge.set_global_format(fmt))
+        if (res === null) return
+        const why = failureOf(res)
+        if (why !== null) {
+          fail(`format: ${why}`)
+          return
+        }
         setDirty(true)
         setMutations((n) => n + 1)
         setRevision((n) => n + 1)

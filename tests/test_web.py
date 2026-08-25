@@ -62,6 +62,38 @@ def test_viewport_clamps_to_sheet_bounds() -> None:
     assert vp2["rows"] == 2 and vp2["cols"] == 2
 
 
+@pytest.mark.parametrize(
+    ("r0", "c0", "rows", "cols"),
+    [
+        (999999, 0, 10, 10),  # origin far past the last row
+        (0, 99999, 10, 10),  # ...and past the last column
+        (999999, 99999, 10, 10),  # entirely outside the sheet
+        (NROW, NCOL, 10, 10),  # exactly one past the end
+        (-5, -5, 10, 10),  # negative origin
+        (0, 0, -5, -5),  # negative extent
+        (0, 0, 0, 0),  # degenerate but legal
+    ],
+)
+def test_viewport_never_reports_a_negative_size(r0, c0, rows, cols) -> None:
+    """`rows`/`cols` describe a rectangle, so they cannot be negative.
+
+    The origin was clamped only at zero and the ends derived from the unclamped
+    value, so an out-of-range origin returned e.g. `rows: -998975`. A
+    virtualising client sizes its spacers from these numbers, and this is a
+    bridge boundary that should not hand back impossible geometry.
+    """
+    vp = Api(_grid()).viewport(r0, c0, rows, cols)
+    assert vp["rows"] >= 0
+    assert vp["cols"] >= 0
+    assert 0 <= vp["r0"] <= NROW
+    assert 0 <= vp["c0"] <= NCOL
+    assert vp["r0"] + vp["rows"] <= NROW
+    assert vp["c0"] + vp["cols"] <= NCOL
+    assert vp["cells"] == [] or all(
+        vp["r0"] <= cell["r"] < vp["r0"] + vp["rows"] for cell in vp["cells"]
+    )
+
+
 def test_cell_source_returns_editable_text() -> None:
     g = _grid()
     g.setcell(0, 0, "=1+2")

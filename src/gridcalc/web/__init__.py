@@ -34,6 +34,32 @@ dialogs.
 Every mutating method routes its result through :meth:`Api._touch`, so the
 workbook's unsaved-changes state is tracked in one place: it marks the window
 title with a ``*`` and rides back to the client on the call that caused it.
+
+Trust model
+-----------
+
+The bridge is a **local, single-user, fully trusted** boundary, and the file
+methods reflect that: :meth:`Api.open_file` and :meth:`Api.save` take whatever
+path the caller passes and read or write it, exactly as the terminal frontend's
+``:e`` / ``:w`` do. There is no permitted-directory policy, because a
+spreadsheet the user drove to a path of their choosing is the feature, not a
+loophole.
+
+What makes that safe is that nothing untrusted can reach the bridge:
+
+* The window is created from an **inlined HTML string**, not a URL
+  (:func:`run` passes ``html=``), so the view never navigates anywhere and
+  loads no remote code. The bundle is self-contained -- Vite inlines every
+  script and stylesheet.
+* Cell contents render as React text nodes, which are escaped, so a workbook
+  cannot inject script into the view.
+
+Those two properties are what the file API's freedom rests on. Anything that
+weakens them -- pointing the window at a URL, allowing remote assets, or
+rendering cell content as HTML -- turns the bridge into an arbitrary local file
+read/write primitive for whatever loaded, and would need a path policy first.
+Loading a *workbook* is separately guarded: executable content in a file is
+gated by :class:`gridcalc.sandbox.LoadPolicy`, not by this boundary.
 """
 
 from __future__ import annotations

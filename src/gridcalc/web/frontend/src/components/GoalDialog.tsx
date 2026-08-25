@@ -64,20 +64,20 @@ export function GoalDialog({
           <Dialog.Title className="dialog-title">Goal seek</Dialog.Title>
           <div className="field-row">
             <span className="field-label">Set cell</span>
-            <input value={cell} onChange={(e) => setCell(e.target.value)} placeholder="B1" />
+            <input aria-label="Set cell" value={cell} onChange={(e) => setCell(e.target.value)} placeholder="B1" />
           </div>
           <div className="field-row">
             <span className="field-label">To value</span>
-            <input value={target} onChange={(e) => setTarget(e.target.value)} placeholder="0" />
+            <input aria-label="To value" value={target} onChange={(e) => setTarget(e.target.value)} placeholder="0" />
           </div>
           <div className="field-row">
             <span className="field-label">By cell</span>
-            <input value={varc} onChange={(e) => setVarc(e.target.value)} placeholder="A1" />
+            <input aria-label="By cell" value={varc} onChange={(e) => setVarc(e.target.value)} placeholder="A1" />
           </div>
           <div className="field-row">
             <span className="field-label">Bracket</span>
-            <input value={lo} onChange={(e) => setLo(e.target.value)} placeholder="lo (opt)" />
-            <input value={hi} onChange={(e) => setHi(e.target.value)} placeholder="hi (opt)" />
+            <input aria-label="Bracket low" value={lo} onChange={(e) => setLo(e.target.value)} placeholder="lo (opt)" />
+            <input aria-label="Bracket high" value={hi} onChange={(e) => setHi(e.target.value)} placeholder="hi (opt)" />
           </div>
           <div className="dialog-actions">
             <span className="goal-result">{result}</span>

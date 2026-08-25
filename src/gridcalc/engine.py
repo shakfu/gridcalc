@@ -2551,15 +2551,41 @@ class Grid:
         if not isinstance(version, int) or version > FILE_VERSION:
             return -1
 
+        # A load *replaces* the workbook; it does not merge into it. Without an
+        # explicit reset the v1 path wrote its cells into whichever sheet was
+        # already open, so anything outside the incoming payload survived -- a
+        # second workbook silently inherited the first one's data. Worse, a file
+        # whose code the policy refused kept the *previous* workbook's code, and
+        # its functions stayed callable, which is precisely what refusing to
+        # load code is meant to prevent.
+        #
+        # Every `return -1` above happens before any mutation, so resetting here
+        # cannot leave a half-cleared workbook behind on a file that is rejected.
+        self.sheets = [Sheet()]
+        self.active = 0
+        self.clear_all()  # also drops the workbook-wide dep graph
+        self.names = []
+        self.models = {}
+        self.libs = []
+        self.requires = []
+        self.code = ""
+        self.code_error = None
+        self._module_errors = []
+        # Rebuild the eval namespace from the bare base: a previous workbook's
+        # libs and required modules must not stay reachable either.
+        self._eval_globals = _make_eval_globals()
+
         if "mode" in d:
             parsed = Mode.parse(d.get("mode"))
             self.mode = parsed if parsed is not None else Mode.PYTHON
         else:
             self.mode = Mode.PYTHON
 
-        code = d.get("code", "")
+        # Only adopt the file's code when the policy allows it. The reset above
+        # already cleared any inherited code, so a refusal now means "no code",
+        # not "whatever was loaded before".
         if policy is None or policy.load_code:
-            self.code = code
+            self.code = d.get("code", "")
 
         libs = d.get("libs", [])
         if isinstance(libs, list):

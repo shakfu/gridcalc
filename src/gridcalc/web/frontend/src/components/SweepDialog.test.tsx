@@ -44,3 +44,19 @@ test('a bridge failure is shown rather than swallowed', async () => {
   await user.click(screen.getByRole('button', { name: 'Run' }))
   expect(await screen.findByText('solver missing')).toBeInTheDocument()
 })
+
+// See GoalDialog: these were labelled by adjacent text only.
+test('every field has an accessible name', () => {
+  render(<SweepDialog open onOpenChange={() => {}} />)
+  for (const name of [
+    'Objective',
+    'Vars',
+    'Constraints',
+    'Sweep constraint',
+    'RHS from',
+    'RHS to',
+    'Steps',
+  ]) {
+    expect(screen.getByLabelText(name)).toBeInTheDocument()
+  }
+})

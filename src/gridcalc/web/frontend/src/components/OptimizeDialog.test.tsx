@@ -98,6 +98,44 @@ test('a saved model can be deleted', async () => {
   expect(screen.getByLabelText('Objective')).toHaveValue('')
 })
 
+// Models are workbook state, and the bridge marks the workbook dirty when one
+// is saved or deleted -- arming the *native* close guard. The dialog did not
+// pass that on, so the status bar still showed a clean workbook while closing
+// asked about unsaved work; a user trusting the status bar could throw away a
+// model they had just defined.
+test('saving a model reports the workbook changed', async () => {
+  const { onMutated } = renderDialog()
+  const user = userEvent.setup()
+  await fillModel(user)
+  await user.type(screen.getByLabelText('Model name'), 'wyndor')
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await screen.findByText('saved wyndor')
+  expect(onMutated).toHaveBeenCalled()
+})
+
+test('deleting a model reports the workbook changed', async () => {
+  const { onMutated } = renderDialog()
+  const user = userEvent.setup()
+  await fillModel(user)
+  await user.type(screen.getByLabelText('Model name'), 'gone')
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await screen.findByText('saved gone')
+  onMutated.mockClear() // ignore the save; the delete must report on its own
+  await user.click(screen.getByRole('button', { name: 'Delete' }))
+  await screen.findByText('deleted gone')
+  expect(onMutated).toHaveBeenCalled()
+})
+
+test('a rejected save does not report a change', async () => {
+  const { onMutated } = renderDialog()
+  const user = userEvent.setup()
+  await user.type(screen.getByLabelText('Model name'), 'partial')
+  await user.type(screen.getByLabelText('Objective'), 'B2')
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await screen.findByText(/missing required field/)
+  expect(onMutated).not.toHaveBeenCalled()
+})
+
 test('a solve publishes grid annotations and explains them', async () => {
   const { onAnnotations } = renderDialog()
   const user = userEvent.setup()

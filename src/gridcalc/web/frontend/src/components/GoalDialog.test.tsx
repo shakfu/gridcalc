@@ -24,3 +24,13 @@ test('requires the three cells before running', async () => {
   await userEvent.setup().click(screen.getByRole('button', { name: 'Run' }))
   expect(screen.getByText(/fill in set/)).toBeInTheDocument()
 })
+
+// The fields were labelled only by an adjacent <span>, which is visual
+// adjacency and not an accessible name -- a screen reader announced five
+// unnamed text boxes. `getByLabelText` fails unless each input has a real one.
+test('every field has an accessible name', () => {
+  render(<GoalDialog open onOpenChange={() => {}} activeRef="B1" />)
+  for (const name of ['Set cell', 'To value', 'By cell', 'Bracket low', 'Bracket high']) {
+    expect(screen.getByLabelText(name)).toBeInTheDocument()
+  }
+})

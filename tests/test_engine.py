@@ -1350,6 +1350,98 @@ class TestCodeBlockError:
         assert g.code_error is None
 
 
+class TestCodeBlockRevocation:
+    """Removing or replacing a code block must revoke what it defined.
+
+    PYTHON mode used to execute user code straight into the persistent eval
+    namespace, so definitions outlived the block that made them: clearing the
+    code left its functions callable and formulas still answering from them.
+    That is stale-result behaviour and a broken trust boundary -- a user who
+    deletes code reasonably expects it gone.
+    """
+
+    def test_clearing_code_revokes_its_definitions(self):
+        g = make_grid()
+        g.mode = Mode.PYTHON
+        g.code = "def f():\n    return 42\n"
+        g.recalc()
+        g.setcell(0, 0, "=f()")
+        g.recalc()
+        assert g.cell(0, 0).val == 42.0  # the function answers while defined
+
+        g.code = ""
+        g.recalc()
+        assert g.cell(0, 0).err is not None  # and stops when it is removed
+        assert not math.isclose(g.cell(0, 0).val, 42.0, rel_tol=0, abs_tol=0.0)
+
+    def test_replacing_code_does_not_inherit_the_old_definitions(self):
+        g = make_grid()
+        g.mode = Mode.PYTHON
+        g.code = "def old():\n    return 1\ndef kept():\n    return 2\n"
+        g.recalc()
+        # The replacement defines `kept` but drops `old`.
+        g.code = "def kept():\n    return 2\n"
+        g.recalc()
+        g.setcell(0, 0, "=kept()")
+        g.setcell(0, 1, "=old()")
+        g.recalc()
+        assert g.cell(0, 0).val == 2.0
+        assert g.cell(0, 1).err is not None
+
+    def test_rejected_code_leaves_no_definitions_behind(self):
+        """A block that fails validation must not half-apply."""
+        g = make_grid()
+        g.mode = Mode.PYTHON
+        g.code = "def f():\n    return 7\n"
+        g.recalc()
+        g.code = "import os\ndef f():\n    return 8\n"
+        g.recalc()
+        assert g.code_error is not None and "code rejected" in g.code_error
+        g.setcell(0, 0, "=f()")
+        g.recalc()
+        assert g.cell(0, 0).err is not None  # neither the old nor the new `f`
+
+    def test_user_code_never_pollutes_the_shared_builtins(self):
+        """The base namespace is handed to EXCEL/HYBRID evaluation as builtins.
+
+        If PYTHON-mode code wrote into it, a mode switch would carry those names
+        along, so the definitions have to stay in the per-recalc copy.
+        """
+        g = make_grid()
+        g.mode = Mode.PYTHON
+        g.code = "def leaked():\n    return 1\nLEAKED = 2\n"
+        g.recalc()
+        assert "leaked" not in g._eval_globals
+        assert "LEAKED" not in g._eval_globals
+
+    def test_loading_a_codeless_workbook_revokes_the_previous_code(self, tmp_path):
+        """Loading into a reused Grid must not leave the old code's names live.
+
+        The incoming workbook has no code block at all, so `jsonload` sets
+        `code` back to empty -- and everything the previous one defined has to
+        go with it. A workbook that inherited functions from whatever was open
+        beforehand would compute differently depending on session history.
+        """
+        codeless = make_grid()
+        codeless.mode = Mode.PYTHON
+        path = tmp_path / "codeless.json"
+        codeless.jsonsave(str(path))
+
+        h = make_grid()
+        h.mode = Mode.PYTHON
+        h.code = "def f():\n    return 99\n"
+        h.recalc()
+        h.setcell(0, 0, "=f()")
+        h.recalc()
+        assert h.cell(0, 0).val == 99.0  # live before the load
+
+        assert h.jsonload(str(path)) == 0
+        h.setcell(0, 0, "=f()")
+        h.recalc()
+        assert h.code == ""
+        assert h.cell(0, 0).err is not None  # and gone after it
+
+
 class TestSheetClass:
     def test_default_grid_has_one_sheet(self):
         g = make_grid()

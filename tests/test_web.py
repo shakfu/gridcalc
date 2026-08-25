@@ -543,6 +543,56 @@ def test_solve_selection_infers_and_solves() -> None:
     assert res["objective"] == pytest.approx(36.0)
 
 
+def test_solve_selection_applies_by_default() -> None:
+    """The default writes the optimum into the decision cells, as `:opt max` does."""
+    g = _wyndor()
+    res = Api(g).solve_selection(0, 0, 3, 2, "max")
+    assert res["applied"] is True
+    assert g.cell(0, 1).val == pytest.approx(2.0)  # A2 = x1
+    assert g.cell(0, 2).val == pytest.approx(6.0)  # A3 = x2
+
+
+def test_solve_selection_without_apply_does_not_touch_the_sheet() -> None:
+    """Unchecking "write the solution to the sheet" must mean no write.
+
+    The dialog puts that checkbox in the same row as the "Solve selection"
+    button, so a solve that wrote anyway would silently overwrite the decision
+    cells the user was protecting. The result still reports the optimum -- only
+    the sheet is left alone -- and nothing lands on the undo stack, because
+    there is no mutation to undo.
+    """
+    g = _wyndor()
+    api = Api(g)
+
+    def snapshot() -> dict[tuple[int, int], str | None]:
+        # cell() is None for an empty cell, so read through getattr.
+        return {(c, r): getattr(g.cell(c, r), "text", None) for c in range(4) for r in range(4)}
+
+    before = snapshot()
+
+    res = api.solve_selection(0, 0, 3, 2, "max", apply=False)
+
+    assert res["ok"] is True
+    assert res["status"] == "OPTIMAL"
+    assert res["objective"] == pytest.approx(36.0)  # still solved
+    assert res["applied"] is False
+    assert snapshot() == before
+    assert g.cell(0, 1).val == pytest.approx(0.0)  # A2 still the starting 0
+    assert g.cell(0, 2).val == pytest.approx(0.0)  # A3 too
+    assert api._undo.undo_stack == []
+
+
+def test_solve_selection_without_apply_still_stores_the_inferred_model() -> None:
+    """`apply` governs writing the *solution*, not remembering the selection.
+
+    Storing the inferred block as `default` is what lets the user re-run or edit
+    it later, and it is not a change to any cell.
+    """
+    g = _wyndor()
+    assert Api(g).solve_selection(0, 0, 3, 2, "max", apply=False)["ok"] is True
+    assert "default" in g.models
+
+
 def test_goal_seek_solves_and_applies() -> None:
     g = _grid()
     g.setcell(0, 0, "0")  # A1 variable
@@ -1365,13 +1415,46 @@ def test_load_html_returns_the_built_bundle_or_raises() -> None:
     from gridcalc import web
 
     bundle = Path(web.__file__).resolve().parent / "static" / "index.html"
-    if bundle.exists():
+    if bundle.exists() and web.PLACEHOLDER_MARKER not in bundle.read_text():
         html = web._load_html()
         assert 'id="root"' in html  # the React mount point
         assert "pywebviewready" in html  # the inlined app awaits the bridge
     else:
-        with pytest.raises(OSError, match="web UI bundle not found"):
+        with pytest.raises(OSError, match="web UI bundle not built"):
             web._load_html()
+
+
+def test_load_html_rejects_the_packaging_placeholder(tmp_path: Path) -> None:
+    """`make build` writes a stand-in bundle when the real one is absent, because
+    packaging force-includes that path and will not build without *some* file
+    there. The stand-in must not be served: opening it would give a window with
+    no app in it, so it fails with the same directive as a missing bundle."""
+    from gridcalc import web
+
+    placeholder = tmp_path / "index.html"
+    placeholder.write_text(
+        f"<!doctype html>\n<!-- {web.PLACEHOLDER_MARKER} -->\n<p>not built",
+        encoding="utf-8",
+    )
+    with pytest.raises(OSError, match="web UI bundle not built"):
+        web._load_html(placeholder)
+
+
+def test_load_html_reports_a_missing_bundle_rather_than_blanking(tmp_path: Path) -> None:
+    """A checkout that has never run `make web-build` has no bundle at all."""
+    from gridcalc import web
+
+    with pytest.raises(OSError, match="web UI bundle not built"):
+        web._load_html(tmp_path / "absent.html")
+
+
+def test_load_html_serves_a_real_bundle(tmp_path: Path) -> None:
+    """Anything without the placeholder marker is a real build and is served."""
+    from gridcalc import web
+
+    real = tmp_path / "index.html"
+    real.write_text('<!doctype html><div id="root"></div>', encoding="utf-8")
+    assert web._load_html(real) == '<!doctype html><div id="root"></div>'
 
 
 def test_importing_web_does_not_load_pywebview() -> None:

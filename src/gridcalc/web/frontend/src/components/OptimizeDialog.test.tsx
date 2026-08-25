@@ -129,6 +129,51 @@ test('an applied solve reports the write so the grid can refetch', async () => {
   await waitFor(() => expect(onMutated).toHaveBeenCalled())
 })
 
+// The "write the solution to the sheet" checkbox sits in the same row as both
+// solve buttons, so a button that ignored it would silently overwrite the very
+// cells the user unchecked it to protect. Assert the flag reaches the bridge on
+// BOTH paths -- the selection path shipped without it.
+const WRITE_BOX = 'Write the solution to the sheet'
+
+test('unchecking the write option is forwarded on a selection solve', async () => {
+  // Typed as varargs so the positional `apply` is indexable below.
+  const spy = vi.fn((..._args: unknown[]) =>
+    Promise.resolve({ ok: true, status: 'OPTIMAL', applied: false }),
+  )
+  window.pywebview!.api.solve_selection = spy as never
+  renderDialog()
+  const user = userEvent.setup()
+  await user.click(screen.getByLabelText(WRITE_BOX))
+  await user.click(screen.getByRole('button', { name: /^Solve selection$/ }))
+  await waitFor(() => expect(spy).toHaveBeenCalled())
+  // (r0, c0, r1, c1, sense, apply)
+  expect(spy.mock.calls[0][5]).toBe(false)
+})
+
+test('unchecking the write option is forwarded on a model solve', async () => {
+  const spy = vi.fn((..._args: unknown[]) =>
+    Promise.resolve({ ok: true, status: 'OPTIMAL', applied: false }),
+  )
+  window.pywebview!.api.solve_model = spy as never
+  renderDialog()
+  const user = userEvent.setup()
+  await fillModel(user)
+  await user.click(screen.getByLabelText(WRITE_BOX))
+  await user.click(screen.getByRole('button', { name: SOLVE }))
+  await waitFor(() => expect(spy).toHaveBeenCalled())
+  expect((spy.mock.calls[0][0] as { apply?: boolean }).apply).toBe(false)
+})
+
+test('a non-applying solve does not report a mutation', async () => {
+  const { onMutated } = renderDialog()
+  const user = userEvent.setup()
+  await fillModel(user)
+  await user.click(screen.getByLabelText(WRITE_BOX))
+  await user.click(screen.getByRole('button', { name: SOLVE }))
+  await waitFor(() => expect(screen.getByText(/OPTIMAL/i)).toBeInTheDocument())
+  expect(onMutated).not.toHaveBeenCalled()
+})
+
 test('a bridge failure is shown rather than swallowed', async () => {
   window.pywebview!.api.solve_model = () => Promise.reject(new Error('solver missing'))
   renderDialog()

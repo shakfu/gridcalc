@@ -382,10 +382,11 @@ def test_sheet_select_switches_the_active_sheet(page) -> None:
 def test_sheet_switch_preserves_scroll_and_cursor(page) -> None:
     """A sheet switch remounts the grid; where the user was must come back.
 
-    The vitest suite covers the same restore, but jsdom does no layout and its
-    ``scrollTop`` is a permanent zero -- so it can only assert which rows the
-    grid *asks the bridge* for. A real browser is where the restored scroll
-    offset itself is observable.
+    The vitest suite covers the same restore, but happy-dom does no layout --
+    every box measures zero -- so its ``scrollTop`` is a stored number with no
+    scrolling behind it, and the suite can only assert which rows the grid
+    *asks the bridge* for. A real browser is where the restored scroll offset
+    is observable as actual scrolling.
     """
     page.locator(".cell-layer").get_by_text("Widget").click()  # A4
     page.locator(".grid-scroll").evaluate("el => { el.scrollTop = 1100 }")

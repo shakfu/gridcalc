@@ -4,14 +4,16 @@
     make web-drive CHECK=solve  # a solve paints the grid, leaving clears it
 
 Everything else that guards the web frontend runs against a substitute: vitest
-in jsdom, and the Chromium bundle suite against a mocked `window.pywebview.api`.
+in happy-dom, and the Chromium bundle suite against a mocked
+`window.pywebview.api`.
 This is the one thing that runs the shipped bundle against the shipped engine
 in the production webview, which matters for two classes of claim the other
 layers structurally cannot make:
 
-* **Layout.** jsdom does no layout and reports `scrollTop` as a permanent zero,
-  so the component tests can only assert which rows the grid *asks the bridge*
-  for, never where it actually sits.
+* **Layout.** happy-dom does no layout -- every box measures zero, and
+  `scrollTop` is a stored number with no scrolling behind it -- so the
+  component tests can only assert which rows the grid *asks the bridge* for,
+  never where it actually sits.
 * **The real webview.** The Playwright suite is Chromium -- a faithful proxy
   for WKWebView / WebView2 / WebKitGTK, not the production engine.
 

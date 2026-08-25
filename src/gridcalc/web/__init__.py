@@ -734,14 +734,19 @@ class Api:
     # -- optimization -----------------------------------------------------
 
     def solve_selection(
-        self, r0: int, c0: int, r1: int, c1: int, sense: str = "max"
+        self, r0: int, c0: int, r1: int, c1: int, sense: str = "max", apply: bool = True
     ) -> dict[str, Any]:
         """Infer an LP/MIP from a rectangular selection and solve it.
 
         Mirrors ``:opt max`` / ``:opt min`` over a visual selection: the
         objective, decision, and constraint cells are inferred from the block
         (``opt.infer_model``), then solved with sensitivity and diagnostics on.
-        On success the decision cells are written and the grid recalculated.
+        With ``apply`` the decision cells are written and the grid recalculated;
+        without it the solve reports its result and leaves every cell untouched,
+        which is what the dialog's "write the solution to the sheet" control
+        means. The inferred model is stored as ``default`` either way -- that
+        records *what was selected*, not the solution, so it is not a write the
+        control governs.
         """
         g = self._g
         ra, rb = sorted((int(r0), int(r1)))
@@ -764,6 +769,7 @@ class Api:
             decision_vars=m.decision_vars,
             constraint_cells=m.constraint_cells,
             maximize=(sense != "min"),
+            apply=bool(apply),
         )
 
     def solve_model(self, spec: dict[str, Any]) -> dict[str, Any]:
@@ -1138,21 +1144,37 @@ class Api:
         return float(v)
 
 
-def _load_html() -> str:
+#: Marker written into the stand-in bundle that `make build` generates when the
+#: real one is absent. The packaging config force-includes the bundle, so *some*
+#: file has to exist before the package will build at all; this distinguishes
+#: that stand-in from a genuine compiled client.
+PLACEHOLDER_MARKER = "gridcalc:placeholder-bundle"
+
+
+def _load_html(bundle: Path | None = None) -> str:
     """Read the built React bundle (``static/index.html``).
 
     The frontend under ``web/frontend`` compiles to a single self-contained file
     via ``make web-build``. A source checkout that has not run the build has no
-    bundle, so this raises a directive error rather than opening a blank window.
+    bundle -- or carries only the placeholder ``make build`` writes to satisfy
+    packaging -- so this raises a directive error rather than opening a blank
+    window. ``bundle`` overrides the location, which lets the tests cover each
+    of those states without depending on whether the frontend happens to be
+    built in the working tree.
     """
-    bundle = Path(__file__).resolve().parent / "static" / "index.html"
+    if bundle is None:
+        bundle = Path(__file__).resolve().parent / "static" / "index.html"
+    directive = (
+        f"web UI bundle not built at {bundle}; build it with `make web-build` "
+        "(compiles web/frontend into static/index.html)"
+    )
     try:
-        return bundle.read_text(encoding="utf-8")
+        html = bundle.read_text(encoding="utf-8")
     except FileNotFoundError:
-        raise OSError(
-            f"web UI bundle not found at {bundle}; build it with `make web-build` "
-            "(compiles web/frontend into static/index.html)"
-        ) from None
+        raise OSError(directive) from None
+    if PLACEHOLDER_MARKER in html:
+        raise OSError(directive)
+    return html
 
 
 def run(path: str | None = None) -> None:

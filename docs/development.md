@@ -47,4 +47,4 @@ The abi3 build is gated on `GRIDCALC_STABLE_ABI=ON` (CMake) plus `wheel.py-api=c
 
 Tests are pytest, in `tests/`, roughly mirroring the source layout, and run with `GRIDCALC_SANDBOX=1` so sandbox validation is always active. `tests/integration/test_tui_pty.py` drives the real curses app over a pty.
 
-The web frontend's automated layers run against substitutes -- vitest in jsdom, and a Chromium suite against a mocked bridge -- so `scripts/drive_web.py` (`make web-drive`) exists to drive the shipped bundle against the shipped engine in the real webview, with screenshots. It needs a display and is excluded from `make qa`.
+The web frontend's automated layers run against substitutes -- vitest in happy-dom, and a Chromium suite against a mocked bridge -- so `scripts/drive_web.py` (`make web-drive`) exists to drive the shipped bundle against the shipped engine in the real webview, with screenshots. It needs a display and is excluded from `make qa`.

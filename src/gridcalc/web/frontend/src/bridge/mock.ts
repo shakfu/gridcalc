@@ -488,7 +488,18 @@ export function installMockBridge(): void {
         }
         return touch()
       },
-      solve_selection: async (): Promise<SolveResult> => {
+      // `apply` decides whether the solution is written to the sheet. The mock
+      // owns no cells to write, so it reports the choice back through
+      // `applied` -- which is the field the UI keys off to repaint and to mark
+      // the workbook dirty, so an ignored flag shows up here as a wrong repaint.
+      solve_selection: async (
+        _r0: number,
+        _c0: number,
+        _r1: number,
+        _c1: number,
+        _sense: string,
+        apply = true,
+      ): Promise<SolveResult> => {
         models.set('default', {
           name: 'default',
           sense: 'max',
@@ -496,9 +507,13 @@ export function installMockBridge(): void {
           vars: 'A2:A3',
           constraints: 'C2:C4',
         })
-        return { ...MOCK_SOLVE }
+        return { ...MOCK_SOLVE, applied: apply }
       },
-      solve_model: async (): Promise<SolveResult> => ({ ...MOCK_SOLVE }),
+      // ModelSpec is a loose Record, so the flag needs narrowing here.
+      solve_model: async (spec): Promise<SolveResult> => ({
+        ...MOCK_SOLVE,
+        applied: (spec.apply as boolean | undefined) ?? true,
+      }),
       list_models: async (): Promise<ModelsResult> => ({
         models: [...models.values()].sort((a, b) => a.name.localeCompare(b.name)),
       }),

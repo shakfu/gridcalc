@@ -970,7 +970,6 @@ class Grid:
         self.names: list[NamedRange] = []
         # Named ranges bound into the PYTHON-mode eval globals on the last
         # recalc, so a name that disappears can be unbound again.
-        self._injected_names: set[str] = set()
         # Workbook-persistent LP model definitions. Maps a user-chosen
         # name (or "default" for the convention slot) to an OptModel
         # holding the spec strings the user typed for sense/objective/
@@ -1422,7 +1421,18 @@ class Grid:
             dirty3 = spill_changed
 
     def _recalc_python(self) -> None:
-        g = self._eval_globals
+        # Derive the evaluation namespace fresh from the clean base on every
+        # pass. `self._eval_globals` holds the base builtins plus whatever
+        # `load_lib`/`load_requires` added, and user code is never executed into
+        # it -- the same discipline `_build_py_registry` already uses for HYBRID.
+        #
+        # Executing into the persistent dict instead let definitions outlive the
+        # code block that made them: clearing `code` left `f` callable and `=f()`
+        # still answering, and a replacement block inherited whatever the old one
+        # had defined but it did not. It also leaked those names into the
+        # `builtins` handed to EXCEL/HYBRID evaluation, so a mode switch carried
+        # them along. A copy costs one shallow dict per recalc.
+        g = dict(self._eval_globals)
         self._circular = set()
 
         if self.code:
@@ -1453,16 +1463,6 @@ class Grid:
                     g[name] = Vec(cl.arr, cols=cl.arr_cols)
                 else:
                     g[name] = cl.val
-
-            # Unbind names that no longer exist. The eval globals persist
-            # across recalcs, so a name removed by `:unname` -- or dropped by a
-            # structural edit that deleted every row it covered -- would
-            # otherwise keep resolving to the Vec injected on the last pass,
-            # leaving formulas showing a stale answer instead of failing.
-            live = {nr.name for nr in self.names}
-            for stale in self._injected_names - live:
-                g.pop(stale, None)
-            self._injected_names = live
 
             # Inject named ranges (PYTHON mode). A sheet-qualified name reads
             # from that sheet; a sheet-agnostic one from the active sheet.

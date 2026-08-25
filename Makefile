@@ -8,19 +8,42 @@
 # Default target
 all: build
 
+# The packaging config force-includes the web bundle (pyproject.toml), so the
+# file must exist before ANY package build -- and docs/install.md tells a fresh
+# checkout to run `make build` BEFORE `make web-build`. Without the rule below
+# those two deadlock: the build needs the file that web-build produces, and a
+# clone cannot follow its own instructions.
+#
+# So generate a placeholder when the bundle is absent. It keeps the terminal-only
+# path buildable with no Bun installed, `web-build` overwrites it with the real
+# thing, and it is deliberately inert: it carries a marker that `_load_html()`
+# refuses to open a window on, and omits the `id="root"` mount point that CI
+# greps for, so a placeholder cannot pass for a bundle in a distribution.
+BUNDLE = src/gridcalc/web/static/index.html
+
+$(BUNDLE):
+	@mkdir -p $(dir $(BUNDLE))
+	@printf '%s\n' \
+		'<!doctype html>' \
+		'<!-- gridcalc:placeholder-bundle -->' \
+		'<meta charset="utf-8">' \
+		'<title>gridcalc: web UI not built</title>' \
+		'<p>Placeholder, not the compiled client. Run <code>make web-build</code>.' \
+		> $(BUNDLE)
+
 # Sync environment (initial setup, installs dependencies + package)
-sync:
+sync: $(BUNDLE)
 	@uv sync
 
 # Build/rebuild the extension after code changes
-build:
+build: $(BUNDLE)
 	@uv sync --reinstall-package gridcalc
 
 # Alias for build
 rebuild: build
 
 # Run tests (excludes PTY/curses integration tests; see test-tty for those)
-test:
+test: $(BUNDLE)
 	@GRIDCALC_SANDBOX=1 uv run pytest tests/ -v
 
 # Run only the PTY-driven curses integration tests. These spawn a real
@@ -37,35 +60,61 @@ test-tty:
 test-web:
 	@GRIDCALC_SANDBOX=1 uv run pytest tests/integration/ -v -m browser
 
+# The client toolchain runs on Bun -- one binary that is both the package
+# manager and the runtime, so no Node/npm is required. `--bun` is load-bearing:
+# without it `bun run` honours the `#!/usr/bin/env node` shebang in
+# node_modules/.bin and silently shells out to Node, which defeats the point
+# and fails on a machine that has none.
+FRONTEND = src/gridcalc/web/frontend
+
 # Build the React web frontend (web/frontend) into a single self-contained
-# static/index.html that the pywebview window serves. Requires Node/npm.
+# static/index.html that the pywebview window serves. Requires Bun.
 web-build:
-	@npm --prefix src/gridcalc/web/frontend install --no-audit --no-fund
-	@npm --prefix src/gridcalc/web/frontend run build
+	@bun install --cwd $(FRONTEND)
+	@bun --bun run --cwd $(FRONTEND) build
 
 # Run the frontend dev server (browser + mock bridge, hot reload) for fast UI
 # iteration without launching pywebview.
 web-dev:
-	@npm --prefix src/gridcalc/web/frontend run dev
+	@bun --bun run --cwd $(FRONTEND) dev
 
 # Run the frontend component tests (vitest + React Testing Library).
 web-jstest:
-	@npm --prefix src/gridcalc/web/frontend run test
+	@bun --bun run --cwd $(FRONTEND) test
+
+# pywebview draws in a *native* webview, so beyond the `web` extra it needs a
+# GTK or Qt backend -- which is not a Python package uv can resolve. On
+# Debian/Ubuntu the GTK side is the system `python3-gi` plus the WebKit2
+# typelib, and a uv venv cannot see system site-packages. Those bindings are a
+# compiled extension, so they only load when the venv's Python is the same minor
+# version as the system interpreter that built them.
+#
+# Hence the probe: add the system path only when `gi` genuinely imports under
+# the venv. A mismatched venv then falls through to pywebview's own "install a
+# backend" message instead of an ImportError traceback, and a machine with no
+# system bindings at all is unaffected. Lazily expanded (`=`, not `:=`) so the
+# probe runs only for the two targets that open a window, never on `make test`.
+SYS_SITE ?= /usr/lib/python3/dist-packages
+GTK_PATH = $(shell PYTHONPATH=$(SYS_SITE) uv run --extra web python -c 'import gi' \
+        >/dev/null 2>&1 && echo $(SYS_SITE))
 
 # Launch the desktop web app (serves the built static/index.html in a pywebview
-# window). Run `make web-build` first. Needs the `web` extra (pywebview).
+# window). Run `make web-build` first. `--extra web` is required: pywebview is
+# an optional dependency, so a plain `uv run` resolves an environment without it
+# and the entry point dies on `import webview`.
 web-run:
-	@GRIDCALC_SANDBOX=1 uv run gridcalc-web
+	@GRIDCALC_SANDBOX=1 PYTHONPATH=$(GTK_PATH) uv run --extra web gridcalc-web
 
 # Launch the real app and drive it, with screenshots into scripts/out/.
 # `CHECK=sheets` (default) verifies a sheet switch preserves cursor and scroll;
 # `CHECK=solve` verifies a solve paints the grid and that leaving clears it.
 # Deliberately not part of `make qa`: it needs a display and is a driver rather
 # than a test. It is the only layer that runs the shipped bundle in the real
-# webview -- jsdom does no layout, and the Playwright suite is Chromium.
+# webview -- the vitest layer does no layout, and the Playwright suite is
+# Chromium rather than the shipped webview.
 CHECK ?= sheets
 web-drive:
-	@GRIDCALC_SANDBOX=1 uv run --extra web python scripts/drive_web.py $(CHECK)
+	@GRIDCALC_SANDBOX=1 PYTHONPATH=$(GTK_PATH) uv run --extra web python scripts/drive_web.py $(CHECK)
 
 # Run tests in an isolated environment without the optional extras
 # (numpy / pandas). Verifies the optional-dep skipif guards work and
@@ -91,17 +140,17 @@ typecheck:
 # Type-check and test the web frontend. The whole TypeScript/React layer was
 # previously outside every quality gate -- `make qa` guarded the Python and
 # nothing guarded the client, which is the failure mode docs/web.md warned
-# about for the old inline HTML string. Skipped (not failed) when Node is
-# absent or the frontend has never been `npm install`ed, since the web extra is
+# about for the old inline HTML string. Skipped (not failed) when Bun is
+# absent or the frontend has never been `bun install`ed, since the web extra is
 # optional and the curses TUI must stay buildable without it.
 web-qa:
-	@if ! command -v npm >/dev/null 2>&1; then \
-		echo "web-qa: skipped (npm not found)"; \
-	elif [ ! -d src/gridcalc/web/frontend/node_modules ]; then \
+	@if ! command -v bun >/dev/null 2>&1; then \
+		echo "web-qa: skipped (bun not found)"; \
+	elif [ ! -d $(FRONTEND)/node_modules ]; then \
 		echo "web-qa: skipped (run 'make web-build' first)"; \
 	else \
-		npm --prefix src/gridcalc/web/frontend run typecheck && \
-		npm --prefix src/gridcalc/web/frontend run test; \
+		bun --bun run --cwd $(FRONTEND) typecheck && \
+		bun --bun run --cwd $(FRONTEND) test; \
 	fi
 
 # Run a full quality assurance check

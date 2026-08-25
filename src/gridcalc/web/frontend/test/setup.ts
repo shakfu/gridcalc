@@ -1,26 +1,10 @@
 import '@testing-library/jest-dom'
 import { installMockBridge } from '../src/bridge/mock'
 
-// Radix primitives (Menubar, Select) touch a few DOM APIs jsdom does not
-// implement. Stub them so the components mount and interact under vitest.
-if (!Element.prototype.hasPointerCapture) {
-  Element.prototype.hasPointerCapture = () => false
-}
-if (!Element.prototype.setPointerCapture) {
-  Element.prototype.setPointerCapture = () => {}
-}
-if (!Element.prototype.releasePointerCapture) {
-  Element.prototype.releasePointerCapture = () => {}
-}
-if (!Element.prototype.scrollIntoView) {
-  Element.prototype.scrollIntoView = () => {}
-}
-const g = globalThis as { ResizeObserver?: typeof ResizeObserver }
-g.ResizeObserver ??= class {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-} as unknown as typeof ResizeObserver
+// happy-dom implements the pointer-capture, scrollIntoView and ResizeObserver
+// APIs the Radix primitives (Menubar, Select) reach for, so the stubs jsdom
+// needed here are gone. It still does no layout -- every rect measures 0 --
+// which is why the Playwright suite exists alongside this one.
 
 // vitest runs in a DEV env, so this installs the same mock bridge the browser
 // dev server uses -- the component tests exercise the real bridge-call paths

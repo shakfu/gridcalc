@@ -32,6 +32,9 @@ The full set is in the [command reference](reference/commands.md), and every key
 ## Where to go next
 
 - [Formula modes](guide/modes.md) -- pick strict Excel, Excel plus Python, or full Python for a workbook.
+
 - [Formulas](guide/formulas.md) -- syntax, the function library, named ranges, and the per-workbook code block.
+
 - [Multi-sheet workbooks](guide/sheets.md) -- tabs, cross-sheet references, and what the dep graph does with them.
+
 - [Optimization](guide/optimization.md) -- define an LP, MIP, or QP in the sheet and solve it.

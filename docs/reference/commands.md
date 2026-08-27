@@ -23,10 +23,17 @@ Most of these are defined once in a [frontend-neutral registry](https://github.c
 Details by area:
 
 - [Formatting](../guide/formatting.md) -- `:f`, `:gf`, `:width`
+
 - [Multi-sheet workbooks](../guide/sheets.md) -- `:sheet`, `:sheets`
+
 - [Formulas](../guide/formulas.md) -- `:name`, `:names`, `:unname`, `:e`
+
 - [Formula modes](../guide/modes.md) -- `:mode`
+
 - [Import and export](../guide/import-export.md) -- `:csv`, `:xlsx`, `:pd`
+
 - [Optimization](../guide/optimization.md) -- `:opt` and its subcommands
+
 - [Goal seek](../guide/goal-seek.md) -- `:goal`
+
 - [Configuration](../guide/config.md) -- rebinding any of the keys above

@@ -98,6 +98,7 @@ Constraints   (* = binding)
    cell     shadow       rhs  activity     slack  rhs from  rhs till
    D4            0         4         2         2      -inf       inf
  * D5          1.5        12        12         0         6        18
+
  * D6            1        18        18         0        12        24
 ```
 
@@ -158,6 +159,7 @@ D5 right-hand side from 6 to 24   (* = marginal value changed)
    *          8        30         3       1.5
              12        36         3       1.5
              18        45         3       1.5
+
    *         20        45         0         0
              24        45         0         0
 ```

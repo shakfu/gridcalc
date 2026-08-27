@@ -8,7 +8,7 @@ their code and is subject to their terms as well.
 
 * Location: `thirdparty/HiGHS/`
 * Licence: MIT (`thirdparty/HiGHS/LICENSE.txt`)
-* Upstream: https://github.com/ERGO-Code/HiGHS
+* Upstream: <https://github.com/ERGO-Code/HiGHS>
 * Used by: `gridcalc._opt` (the `:opt` / `:goal` solver)
 
 Permissive, and the same licence as gridcalc itself. HiGHS vendors its own

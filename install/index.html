@@ -1549,8 +1549,12 @@
 <p>The <strong>core</strong> install has <strong>zero third-party runtime dependencies on Linux and macOS</strong>. The full 300+ Excel function library -- statistical distributions, financial functions, <code>LINEST</code>/<code>TREND</code> regression, and the rest -- works on the standard library alone.</p>
 <p>Two exceptions, neither of them optional features:</p>
 <ul>
-<li>The 3.10 wheel pulls <code>tomli</code> for config-file parsing; 3.11 and later use the stdlib <code>tomllib</code>.</li>
-<li>On Windows only, <code>windows-curses</code> is pulled in, because curses is not in the Windows standard library.</li>
+<li>
+<p>The 3.10 wheel pulls <code>tomli</code> for config-file parsing; 3.11 and later use the stdlib <code>tomllib</code>.</p>
+</li>
+<li>
+<p>On Windows only, <code>windows-curses</code> is pulled in, because curses is not in the Windows standard library.</p>
+</li>
 </ul>
 <h2 id="the-extras-bundle">The <code>[extras]</code> bundle<a class="headerlink" href="#the-extras-bundle" title="Permanent link">&para;</a></h2>
 <p>One bundle rather than several, because the features overlap. It enables, all at once:</p>
@@ -1570,12 +1574,18 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s1">&#39;gridcalc[web]&#39;</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>gridcalc-web<span class="w">                    </span><span class="c1"># demo workbook, or: gridcalc-web book.json</span>
 </code></pre></div>
+<p>The extra installs <code>pywebview</code>, which draws in the platform's <em>native</em> webview rather than bundling a browser. macOS and Windows supply that themselves (WKWebView, WebView2), but on Linux it needs a GTK or Qt backend that is not a Python package. For GTK on Debian/Ubuntu:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>python3-gi<span class="w"> </span>gir1.2-webkit2-4.1
+</code></pre></div>
+<p>Those bindings are compiled against the system interpreter, so a virtualenv only loads them when it is the same Python minor version; otherwise install a Qt backend into the environment instead (<code>pip install pyqt6 pyqt6-webengine</code>). Without a backend, <code>gridcalc-web</code> exits saying it needs QT or GTK. <code>make web-run</code> probes for the system bindings and adds them to <code>PYTHONPATH</code> when they work.</p>
 <p>See <a href="../desktop/">Desktop app</a> for what it does and what it does not do yet. The curses app has no such dependency.</p>
 <h2 id="from-a-source-checkout">From a source checkout<a class="headerlink" href="#from-a-source-checkout" title="Permanent link">&para;</a></h2>
 <p>The desktop app loads a compiled React bundle that is a build artifact and is not in git, so build it before running from a checkout:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>make<span class="w"> </span>build<span class="w">       </span><span class="c1"># C++ extensions (_core, _opt)</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>make<span class="w"> </span>web-build<span class="w">   </span><span class="c1"># React client -&gt; src/gridcalc/web/static/index.html</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>make<span class="w"> </span>build<span class="w">       </span><span class="c1"># C++ extensions (_core, _opt)</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>make<span class="w"> </span>web-build<span class="w">   </span><span class="c1"># React client -&gt; src/gridcalc/web/static/index.html</span>
 </code></pre></div>
+<p><code>make web-build</code> needs <a href="https://bun.sh">Bun</a>, which serves as both the package manager and the JavaScript runtime for the client; Node and npm are not required. Only the desktop frontend needs it -- the terminal app builds and runs without any JavaScript toolchain.</p>
+<p><code>make build</code> compiles C++ extensions, so it needs the Python development headers. uv's own managed interpreters ship them and are what it picks by default; a distro interpreter usually splits them into a separate package, and building against one without that installed fails in CMake with <code>Could NOT find Python (missing: Interpreter Development.Module)</code>. Install the matching <code>-dev</code> package, or let uv manage the interpreter (<code>uv python install 3.14</code>).</p>
 <p>A checkout that has not run <code>make web-build</code> exits with a message telling you to. Released wheels and sdists ship the bundle already built.</p>
 
 

@@ -1492,7 +1492,13 @@
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>=SUM(Sheet2!A1:A10)
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>=Sheet1!A1 + Sheet2!B1
 </code></pre></div>
+<p>Quote a name that is not a plain identifier -- one containing spaces or punctuation -- and double the apostrophe to include one:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>=&#39;My Sheet&#39;!A1
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>=SUM(&#39;Q1 Results&#39;!A1:A10)
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>=&#39;It&#39;&#39;s&#39;!B2
+</code></pre></div>
 <p>The dependency graph is keyed on <code>(sheet, col, row)</code>, so cross-sheet recalculation works transparently.</p>
+<p>Inserting, deleting or swapping rows and columns moves only the references that resolve against the edited sheet. A formula on another sheet that names this one follows the edit; one on this sheet that names another is left alone, because that sheet's lines did not move.</p>
 <p>Cross-sheet <em>ranges</em> (<code>Sheet1!A1:Sheet2!B5</code>) are not supported. Neither does Excel, and they would defeat the static dependency analysis -- see <a href="../../reference/limitations/">Limitations</a>.</p>
 
 

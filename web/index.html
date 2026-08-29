@@ -1918,116 +1918,74 @@
 
 
 <h1 id="maturing-the-web-frontend-spike-product">Maturing the web frontend: spike -&gt; product<a class="headerlink" href="#maturing-the-web-frontend-spike-product" title="Permanent link">&para;</a></h1>
-<p>Status: analysis / proposal. The web frontend (<code>gridcalc.web</code>) is an
-experimental spike (<code>docs/gui.md</code>); this doc lays out what "product" would
-actually require, the decisions that gate it, and a phased path. It is a plan
-to argue with, not a committed roadmap.</p>
+<p>Status: analysis / proposal. The web frontend (<code>gridcalc.web</code>) is an experimental spike (<code>docs/gui.md</code>); this doc lays out what "product" would actually require, the decisions that gate it, and a phased path. It is a plan to argue with, not a committed roadmap.</p>
 <h2 id="what-has-since-landed">What has since landed<a class="headerlink" href="#what-has-since-landed" title="Permanent link">&para;</a></h2>
-<p>The body below is unchanged from when it was written; this section records
-where the work actually got to, so the two do not silently diverge.</p>
+<p>The body below is unchanged from when it was written; this section records where the work actually got to, so the two do not silently diverge.</p>
 <ul>
-<li><strong>P0 is done.</strong> The client is a real Vite/React/TypeScript app under a lint,
-  type-check and test gate (<code>make web-qa</code>, now part of <code>make qa</code>), not the
-  inline <code>_HTML</code> string Section 5c describes. There is an error/notification
-  channel (Section 5d), plus a React error boundary and an
-  <code>unhandledrejection</code> handler. The <code>NamedRange</code> structural-edit bug is fixed
-  and per-sheet view state is kept across a tab switch; constraining <code>save</code>
-  paths (Section 4) is <strong>still open</strong>.</li>
-<li><strong>P1 is done and then some.</strong> <code>:opt</code>/<code>:goal</code> reached the GUI, and beyond the
-  original sketch: persisted named models (the <code>:opt def/run/list/undef</code>
-  surface, which Appendix A explicitly deferred as "not core P1"), a
-  non-solving <code>infer_model_spec</code> so a model can be read off a block and
-  corrected before it runs, a parametric sweep plotted with breakpoints marked,
-  and a <strong>grid annotation layer</strong> that paints binding/slack constraints and
-  shadow prices onto the sheet itself. Charts use Recharts, as Section 5c
-  anticipated the renderer-agnostic <code>chart_data</code> shape would allow.</li>
-<li><strong>P2 is partial.</strong> Formula bar, per-cell and global number formats, styles,
-  and a status bar with selection aggregates exist. Row/column insert-delete,
-  sheet add/rename/delete/reorder, persisted per-column widths, find, named
-  ranges, sort, formula-mode switching, freeze panes, and a Ctrl-K command
-  palette now ship too -- the last several came free with the shared command
-  registry (<code>gridcalc/commands.py</code>), which both frontends dispatch by name.</li>
-<li><strong>P3 is untouched.</strong> No frozen builds, no per-platform QA, no signing. The
-  IME/CJK and accessibility claims from Section 5e remain unvalidated in a real
-  webview; the grid still has no ARIA grid semantics.</li>
-<li><strong>Security is unchanged and deliberately so</strong>: formulas-only, Section 5a
-  option 1. No trust flow, no <code>load_code=True</code>.</li>
+<li>
+<p><strong>P0 is done.</strong> The client is a real Vite/React/TypeScript app under a lint, type-check and test gate (<code>make web-qa</code>, now part of <code>make qa</code>), not the inline <code>_HTML</code> string Section 5c describes. There is an error/notification channel (Section 5d), plus a React error boundary and an <code>unhandledrejection</code> handler. The <code>NamedRange</code> structural-edit bug is fixed and per-sheet view state is kept across a tab switch; constraining <code>save</code> paths (Section 4) is <strong>still open</strong>.</p>
+</li>
+<li>
+<p><strong>P1 is done and then some.</strong> <code>:opt</code>/<code>:goal</code> reached the GUI, and beyond the original sketch: persisted named models (the <code>:opt def/run/list/undef</code> surface, which Appendix A explicitly deferred as "not core P1"), a non-solving <code>infer_model_spec</code> so a model can be read off a block and corrected before it runs, a parametric sweep plotted with breakpoints marked, and a <strong>grid annotation layer</strong> that paints binding/slack constraints and shadow prices onto the sheet itself. Charts use Recharts, as Section 5c anticipated the renderer-agnostic <code>chart_data</code> shape would allow.</p>
+</li>
+<li>
+<p><strong>P2 is partial.</strong> Formula bar, per-cell and global number formats, styles, and a status bar with selection aggregates exist. Row/column insert-delete, sheet add/rename/delete/reorder, persisted per-column widths, find, named ranges, sort, formula-mode switching, freeze panes, and a Ctrl-K command palette now ship too -- the last several came free with the shared command registry (<code>gridcalc/commands.py</code>), which both frontends dispatch by name.</p>
+</li>
+<li>
+<p><strong>P3 is untouched.</strong> No frozen builds, no per-platform QA, no signing. The IME/CJK and accessibility claims from Section 5e remain unvalidated in a real webview; the grid still has no ARIA grid semantics.</p>
+</li>
+<li>
+<p><strong>Security is unchanged and deliberately so</strong>: formulas-only, Section 5a option 1. No trust flow, no <code>load_code=True</code>.</p>
+</li>
 </ul>
 <h2 id="1-the-premise-challenged">1. The premise, challenged<a class="headerlink" href="#1-the-premise-challenged" title="Permanent link">&para;</a></h2>
-<p>"Polished product" is underspecified, and the ambiguity is not cosmetic -- it
-changes almost every downstream decision. Two forks dominate:</p>
+<p>"Polished product" is underspecified, and the ambiguity is not cosmetic -- it changes almost every downstream decision. Two forks dominate:</p>
 <ul>
 <li>
-<p><strong>Audience / deployment.</strong> A single-user <em>desktop</em> app (pywebview shell,
-  engine in-process) and a <em>shareable, multi-user web</em> app are different
-  products with different security models, packaging, and persistence stories.
-  <code>docs/gui.md</code> already flagged this as an open question; it must be closed
-  before "product" means anything. <strong>Recommendation: commit to single-user
-  desktop.</strong> It is what the pywebview choice already implies (no server, no
-  port, in-process <code>js_api</code>), it sidesteps the multi-tenant security problem
-  (Section 5a), and it matches a spreadsheet-optimization tool used by one
-  analyst at a time. The multi-user web path is a <em>different</em> product; defer it
-  explicitly rather than drift toward it.</p>
+<p><strong>Audience / deployment.</strong> A single-user <em>desktop</em> app (pywebview shell, engine in-process) and a <em>shareable, multi-user web</em> app are different products with different security models, packaging, and persistence stories. <code>docs/gui.md</code> already flagged this as an open question; it must be closed before "product" means anything. <strong>Recommendation: commit to single-user desktop.</strong> It is what the pywebview choice already implies (no server, no port, in-process <code>js_api</code>), it sidesteps the multi-tenant security problem (Section 5a), and it matches a spreadsheet-optimization tool used by one analyst at a time. The multi-user web path is a <em>different</em> product; defer it explicitly rather than drift toward it.</p>
 </li>
 <li>
-<p><strong>Scope: TUI parity vs deliberately narrower.</strong> The reflex is "make the web
-  view do everything the TUI does." Challenge it. gridcalc's stated
-  differentiator (<code>TODO.md</code>) is <em>optimization with spreadsheet semantics</em> --
-  <code>:opt</code>/<code>:goal</code> over a live grid -- not commodity spreadsheet editing that
-  Excel already owns. The web <code>Api</code> today exposes <strong>none</strong> of the optimization
-  surface. So the highest-value gap is not prettier cell editing; it is
-  bringing the differentiator to the GUI. A "polished" web gridcalc that can
-  edit cells and draw bar charts but cannot run <code>:opt</code> is a <em>worse</em> gridcalc
-  than the terminal one.</p>
+<p><strong>Scope: TUI parity vs deliberately narrower.</strong> The reflex is "make the web view do everything the TUI does." Challenge it. gridcalc's stated differentiator (<code>TODO.md</code>) is <em>optimization with spreadsheet semantics</em> -- <code>:opt</code>/<code>:goal</code> over a live grid -- not commodity spreadsheet editing that Excel already owns. The web <code>Api</code> today exposes <strong>none</strong> of the optimization surface. So the highest-value gap is not prettier cell editing; it is bringing the differentiator to the GUI. A "polished" web gridcalc that can edit cells and draw bar charts but cannot run <code>:opt</code> is a <em>worse</em> gridcalc than the terminal one.</p>
 </li>
 </ul>
-<p><strong>Alternative framing (worth a real look):</strong> the web view does not have to be
-the product. It can be a deliberately-scoped <em>visual companion</em> -- open,
-browse, light-edit, and above all <em>visualize and solve</em> (charts + <code>:opt</code>
-results a terminal renders poorly) -- while the curses TUI stays the
-power-editing surface. Under this framing "polish" means depth on charts and
-optimization, not breadth across every <code>:</code> command. This is cheaper, ships
-sooner, and plays to the browser's actual strength (rendering) rather than
-re-implementing modal editing the TUI already does well.</p>
+<p><strong>Alternative framing (worth a real look):</strong> the web view does not have to be the product. It can be a deliberately-scoped <em>visual companion</em> -- open, browse, light-edit, and above all <em>visualize and solve</em> (charts + <code>:opt</code> results a terminal renders poorly) -- while the curses TUI stays the power-editing surface. Under this framing "polish" means depth on charts and optimization, not breadth across every <code>:</code> command. This is cheaper, ships sooner, and plays to the browser's actual strength (rendering) rather than re-implementing modal editing the TUI already does well.</p>
 <h2 id="2-current-state-what-is-solid-what-is-spike-grade">2. Current state: what is solid, what is spike-grade<a class="headerlink" href="#2-current-state-what-is-solid-what-is-spike-grade" title="Permanent link">&para;</a></h2>
 <p>Solid, keep:</p>
 <ul>
-<li><strong>The <code>Api</code> boundary.</strong> All engine&lt;-&gt;view logic is a plain-Python class with
-  no <code>webview</code> import (<code>web/__init__.py</code>), unit-tested without a display
-  (<code>tests/test_web.py</code>). This is the right architecture and scales.</li>
-<li><strong>Headless regression testing of the JS/DOM.</strong> The same page is driven in
-  Chromium with the bridge mocked from real <code>Api</code> output
-  (<code>tests/integration/test_web_playwright.py</code>). Rare and valuable for a webview
-  app.</li>
-<li><strong>Shared formatting.</strong> Cells format identically to the TUI via
-  <code>display.cell_text</code> / <code>cell_right_aligned</code>. No divergence risk.</li>
-<li><strong>Virtualized rendering.</strong> Only viewport cells enter the DOM, so the full
-  256x1024 sheet scrolls without 260k nodes.</li>
+<li>
+<p><strong>The <code>Api</code> boundary.</strong> All engine&lt;-&gt;view logic is a plain-Python class with no <code>webview</code> import (<code>web/__init__.py</code>), unit-tested without a display (<code>tests/test_web.py</code>). This is the right architecture and scales.</p>
+</li>
+<li>
+<p><strong>Headless regression testing of the JS/DOM.</strong> The same page is driven in Chromium with the bridge mocked from real <code>Api</code> output (<code>tests/integration/test_web_playwright.py</code>). Rare and valuable for a webview app.</p>
+</li>
+<li>
+<p><strong>Shared formatting.</strong> Cells format identically to the TUI via <code>display.cell_text</code> / <code>cell_right_aligned</code>. No divergence risk.</p>
+</li>
+<li>
+<p><strong>Virtualized rendering.</strong> Only viewport cells enter the DOM, so the full 256x1024 sheet scrolls without 260k nodes.</p>
+</li>
 </ul>
 <p>Spike-grade, must change:</p>
 <ul>
-<li><strong>A ~500-line inline HTML/JS string</strong> (<code>_HTML</code> in <code>web/__init__.py</code>). No
-  lint, no type-check, no module boundaries, no source maps -- invisible to
-  every quality gate that guards the Python. This is the single biggest
-  maintainability liability (Section 5c).</li>
-<li><strong>Security punted.</strong> <code>open_file</code> hardcodes <code>LoadPolicy.formulas_only()</code>
-  (<code>loader.py</code>); code blocks are never run, no trust UI, no <code>inspect_file</code>
-  disclosure. Fine for a spike, a product-defining hole otherwise (Section 5a).</li>
-<li><strong>No error surface.</strong> <code>Api</code> methods return <code>{ok: false}</code> shapes the client
-  largely ignores; a failed save/open/recalc has no user-visible channel
-  beyond an ad-hoc <code>flashSave</code>.</li>
-<li><strong>One hard-coded demo, no chrome.</strong> No menu bar, no About, no keyboard-help,
-  no recent-files, no window-title lifecycle beyond a best-effort retitle.</li>
+<li>
+<p><strong>A ~500-line inline HTML/JS string</strong> (<code>_HTML</code> in <code>web/__init__.py</code>). No lint, no type-check, no module boundaries, no source maps -- invisible to every quality gate that guards the Python. This is the single biggest maintainability liability (Section 5c).</p>
+</li>
+<li>
+<p><strong>Security punted.</strong> <code>open_file</code> hardcodes <code>LoadPolicy.formulas_only()</code> (<code>loader.py</code>); code blocks are never run, no trust UI, no <code>inspect_file</code> disclosure. Fine for a spike, a product-defining hole otherwise (Section 5a).</p>
+</li>
+<li>
+<p><strong>No error surface.</strong> <code>Api</code> methods return <code>{ok: false}</code> shapes the client largely ignores; a failed save/open/recalc has no user-visible channel beyond an ad-hoc <code>flashSave</code>.</p>
+</li>
+<li>
+<p><strong>One hard-coded demo, no chrome.</strong> No menu bar, no About, no keyboard-help, no recent-files, no window-title lifecycle beyond a best-effort retitle.</p>
+</li>
 </ul>
 <h2 id="3-feature-gap-tui-vs-web-api">3. Feature gap: TUI vs web <code>Api</code><a class="headerlink" href="#3-feature-gap-tui-vs-web-api" title="Permanent link">&para;</a></h2>
-<p>Engine support already exists for nearly all of this; the gap is <code>Api</code> surface
-+ client UI, not core work. Legend: [A] needs <code>Api</code> method, [C] needs client
-UI, [E] needs engine/new work.</p>
-<p><strong>The shared-command rows are no longer maintained by hand.</strong> Commands in
-<code>gridcalc/commands.py</code> are dispatched by name from both frontends, and
-<code>tests/test_docs_conformance.py</code> fails if one of them is shadowed in the TUI or
-dropped by the web bridge. What remains below is the part that is <em>not</em> shared:
-per-frontend interaction, and capabilities one side simply does not have.</p>
+<p>Engine support already exists for nearly all of this; the gap is <code>Api</code> surface</p>
+<ul>
+<li>client UI, not core work. Legend: [A] needs <code>Api</code> method, [C] needs client UI, [E] needs engine/new work.</li>
+</ul>
+<p><strong>The shared-command rows are no longer maintained by hand.</strong> Commands in <code>gridcalc/commands.py</code> are dispatched by name from both frontends, and <code>tests/test_docs_conformance.py</code> fails if one of them is shadowed in the TUI or dropped by the web bridge. What remains below is the part that is <em>not</em> shared: per-frontend interaction, and capabilities one side simply does not have.</p>
 <table>
 <thead>
 <tr>
@@ -2114,207 +2072,165 @@ per-frontend interaction, and capabilities one side simply does not have.</p>
 </tr>
 </tbody>
 </table>
-<p>Takeaway: two clusters carry most of the product value -- <strong>optimization
-(<code>:opt</code>/<code>:goal</code>)</strong> and <strong>format/structure editing (rows, cols, styles, named
-ranges)</strong>. Both are almost entirely "wire an <code>Api</code> method to existing engine
-calls + build client UI." The engine is ready.</p>
+<p>Takeaway: two clusters carry most of the product value -- <strong>optimization (<code>:opt</code>/<code>:goal</code>)</strong> and <strong>format/structure editing (rows, cols, styles, named ranges)</strong>. Both are almost entirely "wire an <code>Api</code> method to existing engine calls + build client UI." The engine is ready.</p>
 <h2 id="4-correctness-gaps-found-while-scoping-fix-regardless-of-roadmap">4. Correctness gaps found while scoping (fix regardless of roadmap)<a class="headerlink" href="#4-correctness-gaps-found-while-scoping-fix-regardless-of-roadmap" title="Permanent link">&para;</a></h2>
 <p>These are latent bugs the spike has not tripped yet; a product will.</p>
 <ul>
-<li><strong><code>save</code> trusts a client-supplied path</strong> (<code>Api.save</code>, web/<strong>init</strong>.py). In
-  the in-process desktop model the "client" is local so the blast radius is
-  small, but any move toward a served frontend makes this arbitrary-path write.
-  Constrain now while it is cheap.</li>
-<li><strong>Shared, persistent eval globals</strong> (<code>_eval_globals</code>, exec into <code>g</code> on
-  PYTHON recalc). Single-process desktop is fine; it is a hard blocker for any
-  multi-tenant path -- another reason to decide Section 1 early.</li>
+<li>
+<p><strong><code>save</code> trusts a client-supplied path</strong> (<code>Api.save</code>, web/<strong>init</strong>.py). In the in-process desktop model the "client" is local so the blast radius is small, but any move toward a served frontend makes this arbitrary-path write. Constrain now while it is cheap.</p>
+</li>
+<li>
+<p><strong>Shared, persistent eval globals</strong> (<code>_eval_globals</code>, exec into <code>g</code> on PYTHON recalc). Single-process desktop is fine; it is a hard blocker for any multi-tenant path -- another reason to decide Section 1 early.</p>
+</li>
 </ul>
 <h2 id="5-the-hard-problems-what-actually-separates-spike-from-product">5. The hard problems (what actually separates spike from product)<a class="headerlink" href="#5-the-hard-problems-what-actually-separates-spike-from-product" title="Permanent link">&para;</a></h2>
 <h3 id="5a-security-trust-model-the-decisive-one">5a. Security / trust model -- the decisive one<a class="headerlink" href="#5a-security-trust-model-the-decisive-one" title="Permanent link">&para;</a></h3>
-<p>The spike is safe precisely because it does nothing: <code>formulas_only()</code> never
-stores or runs a workbook's <code>code</code> block, so cells depending on it show errors
-by design. A product has to choose, and the choice is load-bearing:</p>
+<p>The spike is safe precisely because it does nothing: <code>formulas_only()</code> never stores or runs a workbook's <code>code</code> block, so cells depending on it show errors by design. A product has to choose, and the choice is structural:</p>
 <ol>
-<li><strong>Stay formulas-only forever.</strong> Simplest, honestly safe. Cost: PYTHON and
-   HYBRID workbooks are second-class in the GUI -- their computed cells are
-   dead. Defensible if the web view is the "safe viewer/solver" and code-block
-   authoring stays in the TUI.</li>
-<li><strong>Full trust flow, ported.</strong> Reproduce <code>inspect_file</code> -&gt; <code>FileInfo</code>
-   disclosure (blocked / side-effect modules, code preview) -&gt; a consent dialog
-   equivalent to <code>tui/commands.py trust_prompt</code> -&gt; <code>LoadPolicy(load_code=True,
-   ...)</code>. This is real product work and, critically, <code>validate_code</code>
-   (sandbox.py) is a <em>denylist, not a container</em> -- once it passes, code runs
-   with the process's full privileges. On the desktop that is the same trust
-   the TUI already asks for, so it is acceptable <em>with an honest consent UI</em>.
-   It is not acceptable on a served/multi-user deployment without OS-level
-   isolation (subprocess, container, seccomp), which is out of scope for the
-   recommended desktop product.</li>
+<li>
+<p><strong>Stay formulas-only forever.</strong> Simplest, honestly safe. Cost: PYTHON and HYBRID workbooks are second-class in the GUI -- their computed cells are dead. Defensible if the web view is the "safe viewer/solver" and code-block authoring stays in the TUI.</p>
+</li>
+<li>
+<p><strong>Full trust flow, ported.</strong> Reproduce <code>inspect_file</code> -&gt; <code>FileInfo</code> disclosure (blocked / side-effect modules, code preview) -&gt; a consent dialog equivalent to <code>tui/commands.py trust_prompt</code> -&gt; <code>LoadPolicy(load_code=True, ...)</code>. This is real product work and, critically, <code>validate_code</code> (sandbox.py) is a <em>denylist, not a container</em> -- once it passes, code runs with the process's full privileges. On the desktop that is the same trust the TUI already asks for, so it is acceptable <em>with an honest consent UI</em>. It is not acceptable on a served/multi-user deployment without OS-level isolation (subprocess, container, seccomp), which is out of scope for the recommended desktop product.</p>
+</li>
 </ol>
-<p><strong>Recommendation:</strong> ship P0/P1 as formulas-only (option 1), then add option 2's
-consent flow as an explicit, well-labelled feature -- not silently. Never wire
-<code>load_code=True</code> without a trust dialog. This is the one area where "polish"
-means <em>restraint</em>, not features.</p>
+<p><strong>Recommendation:</strong> ship P0/P1 as formulas-only (option 1), then add option 2's consent flow as an explicit, well-labelled feature -- not silently. Never wire <code>load_code=True</code> without a trust dialog. This is the one area where "polish" means <em>restraint</em>, not features.</p>
 <h3 id="5b-distribution-packaging">5b. Distribution / packaging<a class="headerlink" href="#5b-distribution-packaging" title="Permanent link">&para;</a></h3>
-<p>A pywebview app is not <code>pip install</code> for end users. Product means a
-double-clickable artifact:</p>
+<p>A pywebview app is not <code>pip install</code> for end users. Product means a double-clickable artifact:</p>
 <ul>
-<li><strong>Bundler:</strong> PyInstaller or Briefcase around pywebview + the C++ extensions
-  (<code>_core</code>, the HiGHS <code>_opt</code>). The native extensions and platform webview
-  (WebKit / WebView2 / GTK-WebKit) are the risk; test the frozen build on all
-  three OSes, not just <code>uv run</code>.</li>
-<li><strong>Platform webview parity.</strong> macOS WKWebView, Windows WebView2 (Edge/Chromium
-  runtime dependency), Linux WebKitGTK render and expose <code>navigator.clipboard</code>
-  differently. The Playwright suite is <em>Chromium</em>, a faithful proxy, not the
-  production engine -- clipboard, IME, and CSS edge cases need a manual pass per
-  platform.</li>
-<li><strong>Signing / notarization</strong> (macOS Gatekeeper, Windows SmartScreen) if
-  distributed beyond yourself. This alone can dominate the effort budget and is
-  a reason the "personal tool" audience is materially cheaper.</li>
+<li>
+<p><strong>Bundler:</strong> PyInstaller or Briefcase around pywebview + the C++ extensions (<code>_core</code>, the HiGHS <code>_opt</code>). The native extensions and platform webview (WebKit / WebView2 / GTK-WebKit) are the risk; test the frozen build on all three OSes, not just <code>uv run</code>.</p>
+</li>
+<li>
+<p><strong>Platform webview parity.</strong> macOS WKWebView, Windows WebView2 (Edge/Chromium runtime dependency), Linux WebKitGTK render and expose <code>navigator.clipboard</code> differently. The Playwright suite is <em>Chromium</em>, a faithful proxy, not the production engine -- clipboard, IME, and CSS edge cases need a manual pass per platform.</p>
+</li>
+<li>
+<p><strong>Signing / notarization</strong> (macOS Gatekeeper, Windows SmartScreen) if distributed beyond yourself. This alone can dominate the effort budget and is a reason the "personal tool" audience is materially cheaper.</p>
+</li>
 </ul>
 <h3 id="5c-client-architecture">5c. Client architecture<a class="headerlink" href="#5c-client-architecture" title="Permanent link">&para;</a></h3>
 <p>The inline <code>_HTML</code> string was right for a spike and is wrong for a product:</p>
 <ul>
-<li><strong>Extract</strong> the JS/CSS to real files (still framework-free, still no build
-  step to start) so <code>eslint</code>/<code>prettier</code>/type-checking (JSDoc or a light TS
-  pass) can guard it the way <code>ruff</code>/<code>mypy</code> guard the Python.</li>
-<li><strong>Decide on a build step deliberately.</strong> Framework-free hand-rolled DOM is
-  fine and dependency-light today. It gets painful at "object editor, dialogs,
-  chart library, i18n." A small bundler (esbuild) or a minimal reactive layer
-  (Preact/lit) is a reversible bet; a full SPA framework is probably
-  over-scoped for a single-window desktop tool.</li>
-<li><strong>A real charting library</strong> (Plotly/ECharts) replaces the inline SVG. <code>Api.chart_data</code>
-  already returns a renderer-agnostic <code>{title, labels, series}</code> shape, so this
-  is a client-only swap -- the deliberate seam pays off here.</li>
-<li><strong>A real data-grid</strong> only if the hand-rolled virtualized grid gets painful
-  (frozen panes beyond row/col headers, cell merging, rich in-cell widgets).
-  Do not adopt one preemptively.</li>
+<li>
+<p><strong>Extract</strong> the JS/CSS to real files (still framework-free, still no build step to start) so <code>eslint</code>/<code>prettier</code>/type-checking (JSDoc or a light TS pass) can guard it the way <code>ruff</code>/<code>mypy</code> guard the Python.</p>
+</li>
+<li>
+<p><strong>Decide on a build step deliberately.</strong> Framework-free hand-rolled DOM is fine and dependency-light today. It gets painful at "object editor, dialogs, chart library, i18n." A small bundler (esbuild) or a minimal reactive layer (Preact/lit) is a reversible bet; a full SPA framework is probably over-scoped for a single-window desktop tool.</p>
+</li>
+<li>
+<p><strong>A real charting library</strong> (Plotly/ECharts) replaces the inline SVG. <code>Api.chart_data</code> already returns a renderer-agnostic <code>{title, labels, series}</code> shape, so this is a client-only swap -- the deliberate seam pays off here.</p>
+</li>
+<li>
+<p><strong>A real data-grid</strong> only if the hand-rolled virtualized grid gets painful (frozen panes beyond row/col headers, cell merging, rich in-cell widgets). Do not adopt one preemptively.</p>
+</li>
 </ul>
 <h3 id="5d-ux-chrome-and-error-handling">5d. UX chrome and error handling<a class="headerlink" href="#5d-ux-chrome-and-error-handling" title="Permanent link">&para;</a></h3>
-<p>Product table stakes the spike lacks: a menu/command surface (open, save,
-save-as, recent files, About, keyboard-shortcut help), a real notification /
-error channel (not just the save flash), a formula bar showing the active
-cell's source, cell-format and named-range dialogs, a status line
-(mode, selection stats), and window-title/dirty-state lifecycle. A discoverable
-command palette (Ctrl-K) mapping the TUI's <code>:</code> commands is a natural bridge --
-it reuses the mental model without forcing modal <code>:</code> typing into a GUI.</p>
+<p>Product table stakes the spike lacks: a menu/command surface (open, save, save-as, recent files, About, keyboard-shortcut help), a real notification / error channel (not just the save flash), a formula bar showing the active cell's source, cell-format and named-range dialogs, a status line (mode, selection stats), and window-title/dirty-state lifecycle. A discoverable command palette (Ctrl-K) mapping the TUI's <code>:</code> commands is a natural bridge -- it reuses the mental model without forcing modal <code>:</code> typing into a GUI.</p>
 <h3 id="5e-performance-accessibility-i18n">5e. Performance, accessibility, i18n<a class="headerlink" href="#5e-performance-accessibility-i18n" title="Permanent link">&para;</a></h3>
 <ul>
-<li><strong>Perf at scale.</strong> Virtualized DOM is fine; the cost is <code>viewport()</code>
-  round-trips per scroll frame across the bridge. Profile with a full sheet and
-  fast scroll; batch/debounce if the bridge is the bottleneck.</li>
-<li><strong>The reason web was chosen was IME/CJK + accessibility</strong> (<code>docs/gui.md</code>).
-  That claim is still <em>unvalidated</em> in the actual pywebview window -- only
-  asserted. A product must prove CJK/IME input and basic screen-reader/keyboard
-  accessibility on each platform's real webview, or the central justification
-  for the web bet is unconfirmed.</li>
+<li>
+<p><strong>Perf at scale.</strong> Virtualized DOM is fine; the cost is <code>viewport()</code> round-trips per scroll frame across the bridge. Profile with a full sheet and fast scroll; batch/debounce if the bridge is the bottleneck.</p>
+</li>
+<li>
+<p><strong>The reason web was chosen was IME/CJK + accessibility</strong> (<code>docs/gui.md</code>). That claim is still <em>unvalidated</em> in the actual pywebview window -- only asserted. A product must prove CJK/IME input and basic screen-reader/keyboard accessibility on each platform's real webview, or the central justification for the web bet is unconfirmed.</p>
+</li>
 </ul>
 <h2 id="6-recommended-path">6. Recommended path<a class="headerlink" href="#6-recommended-path" title="Permanent link">&para;</a></h2>
-<p>Assumes the two recommended decisions: <strong>single-user desktop</strong>, and <strong>lead with
-the differentiator (optimization + visualization), not blanket TUI parity.</strong></p>
+<p>Assumes the two recommended decisions: <strong>single-user desktop</strong>, and <strong>lead with the differentiator (optimization + visualization), not blanket TUI parity.</strong></p>
 <ul>
-<li><strong>P0 -- Harden the spike (no new features).</strong> Extract JS/CSS to files under a
-  lint/format/type gate. Add an error/notification channel. Constrain <code>save</code>
-  paths. Fix the <code>NamedRange</code> structural-edit bug (Section 4). Keep
-  formulas-only. Outcome: the current feature set becomes maintainable and
-  honest.</li>
-<li><strong>P1 -- The differentiator.</strong> Wire <code>Api.solve</code> / <code>Api.goal</code> to <code>opt.solve</code> /
-  <code>goalseek.seek</code>; build the client UI to define a model from a selection
-  (<code>opt.infer_model</code>), run it, and render results + sensitivity. Swap inline
-  SVG for a real charting library. Outcome: the web view does the thing that
-  makes gridcalc gridcalc, better than the terminal can.</li>
-<li><strong>P2 -- Editing parity essentials.</strong> Row/col insert/delete/move, per-cell and
-  global number format + styles, named-range management, search, sheet
-  management, a formula bar, and a command palette over the <code>:</code> set. Outcome:
-  the web view is a credible primary editor, not just a viewer.</li>
-<li><strong>P3 -- Product distribution.</strong> Frozen, signed, double-clickable builds on
-  macOS/Windows/Linux; per-platform manual QA of clipboard/IME/accessibility;
-  About/help/recent-files. Optionally, the gated code-block trust flow
-  (Section 5a option 2). Outcome: shippable to someone who is not you.</li>
+<li>
+<p><strong>P0 -- Harden the spike (no new features).</strong> Extract JS/CSS to files under a lint/format/type gate. Add an error/notification channel. Constrain <code>save</code> paths. Fix the <code>NamedRange</code> structural-edit bug (Section 4). Keep formulas-only. Outcome: the current feature set becomes maintainable and honest.</p>
+</li>
+<li>
+<p><strong>P1 -- The differentiator.</strong> Wire <code>Api.solve</code> / <code>Api.goal</code> to <code>opt.solve</code> / <code>goalseek.seek</code>; build the client UI to define a model from a selection (<code>opt.infer_model</code>), run it, and render results + sensitivity. Swap inline SVG for a real charting library. Outcome: the web view does the thing that makes gridcalc gridcalc, better than the terminal can.</p>
+</li>
+<li>
+<p><strong>P2 -- Editing parity essentials.</strong> Row/col insert/delete/move, per-cell and global number format + styles, named-range management, search, sheet management, a formula bar, and a command palette over the <code>:</code> set. Outcome: the web view is a credible primary editor, not just a viewer.</p>
+</li>
+<li>
+<p><strong>P3 -- Product distribution.</strong> Frozen, signed, double-clickable builds on macOS/Windows/Linux; per-platform manual QA of clipboard/IME/accessibility; About/help/recent-files. Optionally, the gated code-block trust flow (Section 5a option 2). Outcome: shippable to someone who is not you.</p>
+</li>
 </ul>
-<p>Ordering rationale: P1 before P2 deliberately. Editing polish is commodity;
-optimization-in-a-GUI is the moat. If the budget runs out after P1, you still
-have something no other tool offers. If it runs out after P2-of-parity-first,
-you have a mediocre Excel.</p>
+<p>Ordering rationale: P1 before P2 deliberately. Editing polish is commodity; optimization-in-a-GUI is the moat. If the budget runs out after P1, you still have something no other tool offers. If it runs out after P2-of-parity-first, you have a mediocre Excel.</p>
 <h2 id="7-open-decisions-need-your-call">7. Open decisions (need your call)<a class="headerlink" href="#7-open-decisions-need-your-call" title="Permanent link">&para;</a></h2>
 <ol>
-<li><strong>Audience:</strong> personal desktop tool, or eventually shareable/distributed?
-   (Drives Section 5a and 5b, and how much P3 costs.)</li>
-<li><strong>Scope:</strong> TUI feature-parity, or the narrower "visualize + solve companion"
-   framing from Section 1? (Drives whether P2 is breadth or depth.)</li>
-<li><strong>Code blocks in the GUI:</strong> never (formulas-only forever), or behind an
-   explicit ported trust flow? (Security posture.)</li>
-<li><strong>Client stack:</strong> stay hand-rolled framework-free, or adopt a small build
-   step / reactive layer at P2 when dialogs and the object editor arrive?</li>
-<li><strong>Does the web view replace the TUI as the default, or complement it?</strong> If
-   complement, parity matters less and the companion framing wins.</li>
+<li>
+<p><strong>Audience:</strong> personal desktop tool, or eventually shareable/distributed? (Drives Section 5a and 5b, and how much P3 costs.)</p>
+</li>
+<li>
+<p><strong>Scope:</strong> TUI feature-parity, or the narrower "visualize + solve companion" framing from Section 1? (Drives whether P2 is breadth or depth.)</p>
+</li>
+<li>
+<p><strong>Code blocks in the GUI:</strong> never (formulas-only forever), or behind an explicit ported trust flow? (Security posture.)</p>
+</li>
+<li>
+<p><strong>Client stack:</strong> stay hand-rolled framework-free, or adopt a small build step / reactive layer at P2 when dialogs and the object editor arrive?</p>
+</li>
+<li>
+<p><strong>Does the web view replace the TUI as the default, or complement it?</strong> If complement, parity matters less and the companion framing wins.</p>
+</li>
 </ol>
 <h2 id="8-effort-risk-summary">8. Effort / risk summary<a class="headerlink" href="#8-effort-risk-summary" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Lowest-risk, highest-value first move:</strong> P1 optimization wiring. Engine is
-  ready (<code>opt.solve</code>, <code>goalseek.seek</code>); it is <code>Api</code> + client UI, and it is the
-  differentiator.</li>
-<li><strong>Most underestimated cost:</strong> P3 distribution (native extensions + three
-  platform webviews + signing). Budget it as its own project.</li>
-<li><strong>Biggest latent trap:</strong> the security fork (5a). Cheap to keep closed
-  (formulas-only), expensive and dangerous to open carelessly. Decide
-  explicitly; never let <code>load_code</code> creep in silently.</li>
-<li><strong>Cheapest thing that most improves maintainability:</strong> extracting <code>_HTML</code> and
-  putting the client under a quality gate (P0).</li>
+<li>
+<p><strong>Lowest-risk, highest-value first move:</strong> P1 optimization wiring. Engine is ready (<code>opt.solve</code>, <code>goalseek.seek</code>); it is <code>Api</code> + client UI, and it is the differentiator.</p>
+</li>
+<li>
+<p><strong>Most underestimated cost:</strong> P3 distribution (native extensions + three platform webviews + signing). Budget it as its own project.</p>
+</li>
+<li>
+<p><strong>Biggest latent trap:</strong> the security fork (5a). Cheap to keep closed (formulas-only), expensive and dangerous to open carelessly. Decide explicitly; never let <code>load_code</code> creep in silently.</p>
+</li>
+<li>
+<p><strong>Cheapest thing that most improves maintainability:</strong> extracting <code>_HTML</code> and putting the client under a quality gate (P0).</p>
+</li>
 </ul>
 <hr />
-<p>Want more depth on any section -- a packaging spike plan or a security-consent
-UI design -- say which and I will expand it. The P1 optimization endpoints are
-sketched in Appendix A.</p>
+<p>Want more depth on any section -- a packaging spike plan or a security-consent UI design -- say which and I will expand it. The P1 optimization endpoints are sketched in Appendix A.</p>
 <h2 id="appendix-a-p1-optimization-api-endpoints-sketch">Appendix A -- P1 optimization <code>Api</code> endpoints (sketch)<a class="headerlink" href="#appendix-a-p1-optimization-api-endpoints-sketch" title="Permanent link">&para;</a></h2>
-<p>The differentiator wiring from Section 6 (P1). The engine is ready
-(<code>opt.solve</code>, <code>opt.sweep</code>, <code>opt.infer_model</code>, <code>goalseek.seek</code>); this is <code>Api</code>
-surface + coordinate translation, plus one small shared refactor.</p>
+<p>The differentiator wiring from Section 6 (P1). The engine is ready (<code>opt.solve</code>, <code>opt.sweep</code>, <code>opt.infer_model</code>, <code>goalseek.seek</code>); this is <code>Api</code> surface + coordinate translation, plus one small shared refactor.</p>
 <h3 id="design-rules">Design rules<a class="headerlink" href="#design-rules" title="Permanent link">&para;</a></h3>
 <ul>
-<li><strong>A1 in, A1 out.</strong> The client already computes <code>selRef()</code>; never push raw
-  coords across the bridge. <code>opt</code>/<code>goalseek</code> use <code>CellKey = (col, row)</code> while
-  the web <code>Api</code> is <code>(r, c)</code>/A1 -- translate at the boundary, one place.</li>
-<li><strong>Errors become data.</strong> Catch <code>OptError</code> (with <code>NotLinear</code>/<code>NotQuadratic</code>
-  subclasses) and <code>GoalSeekError</code> -&gt; <code>{ok: false, error}</code>; the messages are
-  written to be user-facing.</li>
-<li><strong>Applied solves are undo-wrapped.</strong> <code>opt.solve(apply=True)</code> overwrites
-  decision cells and recalcs dependents; <code>goalseek.seek</code> overwrites the var
-  cell. Snapshot first; drop the snapshot when nothing was written.</li>
-<li><strong>No <code>Infinity</code> in JSON.</strong> Ranging bounds (<code>obj_from/till</code>, <code>rhs_from/till</code>)
-  are legitimately <code>+-inf</code>; JSON has no such literal and the bridge chokes.
-  Map non-finite -&gt; <code>null</code> (client renders "inf").</li>
-<li><strong>Reuse the engine's spec parsers, not the TUI's</strong> -- the <code>Api</code> must not
-  import <code>tui</code>.</li>
+<li>
+<p><strong>A1 in, A1 out.</strong> The client already computes <code>selRef()</code>; never push raw coords across the bridge. <code>opt</code>/<code>goalseek</code> use <code>CellKey = (col, row)</code> while the web <code>Api</code> is <code>(r, c)</code>/A1 -- translate at the boundary, one place.</p>
+</li>
+<li>
+<p><strong>Errors become data.</strong> Catch <code>OptError</code> (with <code>NotLinear</code>/<code>NotQuadratic</code> subclasses) and <code>GoalSeekError</code> -&gt; <code>{ok: false, error}</code>; the messages are written to be user-facing.</p>
+</li>
+<li>
+<p><strong>Applied solves are undo-wrapped.</strong> <code>opt.solve(apply=True)</code> overwrites decision cells and recalcs dependents; <code>goalseek.seek</code> overwrites the var cell. Snapshot first; drop the snapshot when nothing was written.</p>
+</li>
+<li>
+<p><strong>No <code>Infinity</code> in JSON.</strong> Ranging bounds (<code>obj_from/till</code>, <code>rhs_from/till</code>) are legitimately <code>+-inf</code>; JSON has no such literal and the bridge chokes. Map non-finite -&gt; <code>null</code> (client renders "inf").</p>
+</li>
+<li>
+<p><strong>Reuse the engine's spec parsers, not the TUI's</strong> -- the <code>Api</code> must not import <code>tui</code>.</p>
+</li>
 </ul>
 <h3 id="prerequisite-refactor-same-pattern-as-displayloaderundo">Prerequisite refactor (same pattern as display/loader/undo)<a class="headerlink" href="#prerequisite-refactor-same-pattern-as-displayloaderundo" title="Permanent link">&para;</a></h3>
-<p>Promote <code>_parse_cells</code> / <code>_parse_bounds</code> / <code>_parse_bound_value</code> from
-<code>tui/solve.py</code> down to <code>opt.py</code> as public <code>parse_cells</code> / <code>parse_bounds</code> (with
-<code>_parse_bound_value</code> a module helper); <code>tui/solve.py</code> re-imports them under the
-old private names so existing TUI callers and <code>gridcalc.tui</code> re-exports keep
-working. Add one helper to <code>UndoManager</code>:</p>
+<p>Promote <code>_parse_cells</code> / <code>_parse_bounds</code> / <code>_parse_bound_value</code> from <code>tui/solve.py</code> down to <code>opt.py</code> as public <code>parse_cells</code> / <code>parse_bounds</code> (with <code>_parse_bound_value</code> a module helper); <code>tui/solve.py</code> re-imports them under the old private names so existing TUI callers and <code>gridcalc.tui</code> re-exports keep working. Add one helper to <code>UndoManager</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">discard_last</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Drop the most recent snapshot when the mutation it guarded didn&#39;t happen.&quot;&quot;&quot;</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">undo_stack</span><span class="p">:</span>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">undo_stack</span><span class="o">.</span><span class="n">pop</span><span class="p">()</span>
 </code></pre></div>
 <h3 id="endpoints">Endpoints<a class="headerlink" href="#endpoints" title="Permanent link">&para;</a></h3>
-<p>Coordinate/serialization helpers: <code>_key(a1) -&gt; (c, r)</code> (rejecting trailing
-garbage), <code>_a1((c, r)) -&gt; "B4"</code>, <code>_num(x)</code> (non-finite -&gt; None).</p>
+<p>Coordinate/serialization helpers: <code>_key(a1) -&gt; (c, r)</code> (rejecting trailing garbage), <code>_a1((c, r)) -&gt; "B4"</code>, <code>_num(x)</code> (non-finite -&gt; None).</p>
 <ul>
-<li><code>solve_selection(r0, c0, r1, c1, sense="max")</code> -- <code>opt.infer_model</code> over the
-  selection, then solve with sensitivity + diagnostics on. Mirrors <code>:opt
-  max</code>/<code>:opt min</code> over a visual selection.</li>
-<li><code>solve_model(spec)</code> -- explicit A1 model:
-  <code>{sense, objective:'B2', vars:'A2:A3', constraints:'C2:C4', bounds?, integers?,
-  binaries?, sensitivity?, diagnose?, apply?}</code>.</li>
-<li><code>goal_seek(formula_ref, target, var_ref, lo?, hi?, apply?)</code> -- <code>goalseek.seek</code>.</li>
-<li><code>opt_sweep(spec)</code> -- parametric RHS sweep (<code>opt.sweep</code>); never mutates the
-  sheet, so no undo snapshot.</li>
+<li>
+<p><code>solve_selection(r0, c0, r1, c1, sense="max")</code> -- <code>opt.infer_model</code> over the selection, then solve with sensitivity + diagnostics on. Mirrors <code>:opt max</code>/<code>:opt min</code> over a visual selection.</p>
+</li>
+<li>
+<p><code>solve_model(spec)</code> -- explicit A1 model: <code>{sense, objective:'B2', vars:'A2:A3', constraints:'C2:C4', bounds?, integers?, binaries?, sensitivity?, diagnose?, apply?}</code>.</p>
+</li>
+<li>
+<p><code>goal_seek(formula_ref, target, var_ref, lo?, hi?, apply?)</code> -- <code>goalseek.seek</code>.</p>
+</li>
+<li>
+<p><code>opt_sweep(spec)</code> -- parametric RHS sweep (<code>opt.sweep</code>); never mutates the sheet, so no undo snapshot.</p>
+</li>
 </ul>
-<p>All applied paths route through a shared <code>_run_solve</code> that snapshots, calls
-<code>opt.solve</code>, and on <code>OptError</code> or a non-applied result (INFEASIBLE/UNBOUNDED)
-calls <code>discard_last</code>. Results serialize through <code>_solve_json</code> (CellKeys -&gt;
-A1 strings, ranging floats through <code>_num</code>).</p>
+<p>All applied paths route through a shared <code>_run_solve</code> that snapshots, calls <code>opt.solve</code>, and on <code>OptError</code> or a non-applied result (INFEASIBLE/UNBOUNDED) calls <code>discard_last</code>. Results serialize through <code>_solve_json</code> (CellKeys -&gt; A1 strings, ranging floats through <code>_num</code>).</p>
 <h3 id="client-facing-return-contract">Client-facing return contract<a class="headerlink" href="#client-facing-return-contract" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>SolveResponse =
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>  { ok: true, status: &quot;OPTIMAL&quot;|&quot;INFEASIBLE&quot;|&quot;UNBOUNDED&quot;|&quot;SUBOPTIMAL&quot;,
@@ -2327,19 +2243,21 @@ A1 strings, ranging floats through <code>_num</code>).</p>
 </code></pre></div>
 <h3 id="decisions-carried-into-implementation">Decisions carried into implementation<a class="headerlink" href="#decisions-carried-into-implementation" title="Permanent link">&para;</a></h3>
 <ul>
-<li><code>apply=True</code> mutates the sheet -- the UI must make a solve feel like an
-  action, not a preview (<code>apply:false</code> gives a dry run for <code>solve_model</code>).</li>
-<li>Snapshot/redo caveat: <code>save_grid</code> clears the redo stack, so a <em>failed</em>
-  applied solve still wipes redo after <code>discard_last</code>. Acceptable; tighten by
-  saving/restoring the redo stack in <code>discard_last</code> if it matters.</li>
-<li>Sensitivity is <code>None</code> for MIPs by design (integer duals mislead) -- the
-  client renders "no sensitivity for integer models," not an empty table.</li>
-<li>The web view renders the returned <code>sensitivity</code> object in a panel rather than
-  writing it into cells (the TUI's <code>:opt sens into &lt;cell&gt;</code>); grid write-back can
-  be an opt-in later.</li>
-<li>Persisted models (<code>grid.models: dict[str, OptModel]</code>, the <code>:opt def/run/list</code>
-  path) are a natural extension -- <code>list_models</code>/<code>run_model</code>/<code>save_model</code> over
-  <code>OptModel.to_json</code>/<code>from_json</code> -- but not core P1.</li>
+<li>
+<p><code>apply=True</code> mutates the sheet -- the UI must make a solve feel like an action, not a preview (<code>apply:false</code> gives a dry run for <code>solve_model</code>).</p>
+</li>
+<li>
+<p>Snapshot/redo caveat: <code>save_grid</code> clears the redo stack, so a <em>failed</em> applied solve still wipes redo after <code>discard_last</code>. Acceptable; tighten by saving/restoring the redo stack in <code>discard_last</code> if it matters.</p>
+</li>
+<li>
+<p>Sensitivity is <code>None</code> for MIPs by design (integer duals mislead) -- the client renders "no sensitivity for integer models," not an empty table.</p>
+</li>
+<li>
+<p>The web view renders the returned <code>sensitivity</code> object in a panel rather than writing it into cells (the TUI's <code>:opt sens into &lt;cell&gt;</code>); grid write-back can be an opt-in later.</p>
+</li>
+<li>
+<p>Persisted models (<code>grid.models: dict[str, OptModel]</code>, the <code>:opt def/run/list</code> path) are a natural extension -- <code>list_models</code>/<code>run_model</code>/<code>save_model</code> over <code>OptModel.to_json</code>/<code>from_json</code> -- but not core P1.</p>
+</li>
 </ul>
 
 

@@ -1776,7 +1776,7 @@
 <p><strong>Zero-runtime-dependency ethos.</strong> The core install has no third-party runtime deps (numpy/pandas are optional extras). Every GUI option adds a heavy dependency; the containment strategy is an optional extra (<code>pip install gridcalc[gui]</code>), keeping the terminal build lean.</p>
 </li>
 <li>
-<p><strong>C++ extensions pin us to CPython.</strong> <code>_core</code> (OpenXLSX) and <code>_opt</code> (lp_solve) are nanobind C++ modules. This rules out running the engine <em>in the browser</em> via Pyodide/WASM without an emscripten rebuild of both vendored libraries -- a large, separate effort. It does <strong>not</strong> affect any option that keeps the engine on a real CPython process.</p>
+<p><strong>C++ extensions pin us to CPython.</strong> <code>_core</code> (OpenXLSX) and <code>_opt</code> (HiGHS) are nanobind C++ modules. This rules out running the engine <em>in the browser</em> via Pyodide/WASM without an emscripten rebuild of both vendored libraries -- a large, separate effort. It does <strong>not</strong> affect any option that keeps the engine on a real CPython process.</p>
 </li>
 </ul>
 <h2 id="the-alternatives">The alternatives<a class="headerlink" href="#the-alternatives" title="Permanent link">&para;</a></h2>
@@ -1859,7 +1859,7 @@
 </li>
 </ul>
 <h3 id="4-web-in-the-browser-via-wasmpyodide-rejected-for-now">4. Web in the browser via WASM/Pyodide -- rejected (for now)<a class="headerlink" href="#4-web-in-the-browser-via-wasmpyodide-rejected-for-now" title="Permanent link">&para;</a></h3>
-<p>Running the <em>engine itself</em> in the browser is blocked: <code>_core</code> (OpenXLSX) and <code>_opt</code> (lp_solve) are C++ extensions with no Pyodide build. Getting there means emscripten-compiling both vendored libraries, or shipping degraded pure-Python fallbacks that lose xlsx and optimization. Not worth it against the server-backed web option, which reuses the extensions unchanged.</p>
+<p>Running the <em>engine itself</em> in the browser is blocked: <code>_core</code> (OpenXLSX) and <code>_opt</code> (HiGHS) are C++ extensions with no Pyodide build. Getting there means emscripten-compiling both vendored libraries, or shipping degraded pure-Python fallbacks that lose xlsx and optimization. Not worth it against the server-backed web option, which reuses the extensions unchanged.</p>
 <h3 id="5-terminal-graphics-kitty-iterm-image-protocol-sixel-complementary">5. Terminal graphics (Kitty / iTerm image protocol, sixel) -- complementary<a class="headerlink" href="#5-terminal-graphics-kitty-iterm-image-protocol-sixel-complementary" title="Permanent link">&para;</a></h3>
 <p>Not a "break free of the TUI" answer, but the cheapest way to get the <em>one</em> thing the TUI structurally cannot do: render a chart or image inline. Render a plot to PNG (matplotlib) and emit it via the terminal's graphics protocol.</p>
 <ul>

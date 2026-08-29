@@ -1754,10 +1754,13 @@
 <p><strong>Safe</strong> (compute-only, no meaningful side effects): <code>numpy</code>, <code>scipy</code>, <code>sympy</code>, <code>decimal</code>, <code>fractions</code>, <code>statistics</code>, <code>cmath</code>, <code>itertools</code>, <code>functools</code>, <code>operator</code>, <code>collections</code>. These are injected directly (e.g., <code>np</code> for numpy).</p>
 </li>
 <li>
-<p><strong>Side-effect</strong> (can do I/O but are commonly needed): <code>matplotlib</code>, <code>pandas</code>, <code>csv</code>, <code>openpyxl</code>. These are injected but flagged at the trust prompt.</p>
+<p><strong>Side-effect</strong> (can do I/O but are commonly needed): <code>matplotlib</code>, <code>matplotlib.pyplot</code>, <code>pandas</code>, <code>csv</code>, <code>xlsxwriter</code>. These are injected but flagged at the trust prompt.</p>
 </li>
 <li>
 <p><strong>Blocked</strong> (filesystem, network, process control): <code>os</code>, <code>sys</code>, <code>subprocess</code>, <code>shutil</code>, <code>pathlib</code>, <code>socket</code>, <code>http</code>, <code>importlib</code>, <code>ctypes</code>, <code>pickle</code>, etc. Never injected, even if requested.</p>
+</li>
+<li>
+<p><strong>Unknown</strong> (everything else): refused unless the user approves them as a separate, deliberate answer at the trust prompt. The blocklist names the dangers known when it was written, so "not blocked" was never the same claim as "safe" -- <code>runpy</code> runs a Python file and <code>sqlite3</code> writes one, and neither appears above. The refusal precedes the import, so a module with an import-time side effect does not get to run before being turned down.</p>
 </li>
 </ul>
 <p>Common aliases are applied automatically: <code>numpy</code> -&gt; <code>np</code>, <code>pandas</code> -&gt; <code>pd</code>, <code>matplotlib.pyplot</code> -&gt; <code>plt</code>.</p>
@@ -1876,6 +1879,9 @@
 <p>If the user approves a file and numpy is available, a formula could still call <code>np.save('/tmp/exfil', data)</code>. The trust gate is the real security boundary; AST validation reduces blast radius but cannot prevent all side effects of approved libraries.</p>
 </li>
 <li>
+<p>There is no resource boundary. Workbook code runs in the application's own process, and AST validation permits loops, comprehensions, and large allocations, because none of those is distinguishable from legitimate computation by inspecting the syntax tree. <code>while True: pass</code> hangs the application and an unbounded allocation exhausts its memory. Containing this needs a worker process with wall-clock and memory limits, not a stricter validator: the four layers above address what untrusted code can <em>reach</em>, not how long it may run. Until that exists, an approved workbook is trusted with the session's availability as well as its data.</p>
+</li>
+<li>
 <p>Code blocks (<code>:e</code> editor) run unrestricted. This is intentional -- the user is the trust boundary. Code blocks from JSON files require explicit approval.</p>
 </li>
 <li>
@@ -1894,7 +1900,7 @@
 <p><code>gridcalc/engine.py</code> -- integration (validate_formula in recalc, requires in Grid, jsoninspect, policy-aware jsonload)</p>
 </li>
 <li>
-<p><code>gridcalc/tui.py</code> -- trust gate prompts (curses and terminal)</p>
+<p><code>gridcalc/tui/commands.py</code> -- trust gate prompt</p>
 </li>
 <li>
 <p><code>tests/test_sandbox.py</code> -- comprehensive tests</p>

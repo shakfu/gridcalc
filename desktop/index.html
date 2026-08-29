@@ -1547,8 +1547,9 @@
 </code></pre></div>
 <div class="admonition note">
 <p class="admonition-title">From a source checkout, build the UI bundle first</p>
-<p><code>make web-build</code> compiles the React client into <code>src/gridcalc/web/static/index.html</code>, which <code>gridcalc-web</code> loads. It is a build artifact and is not in git, so a checkout that has not run it exits with a message telling you to. Released wheels and sdists ship the bundle already built -- <code>make wheel</code>/<code>make sdist</code> and every CI build job compile it first, and the release pipeline fails if a distribution is missing it.</p>
 </div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>`make web-build` compiles the React client into `src/gridcalc/web/static/index.html`, which `gridcalc-web` loads. It is a build artifact and is not in git, so a checkout that has not run it exits with a message telling you to. Released wheels and sdists ship the bundle already built -- `make wheel`/`make sdist` and every CI build job compile it first, and the release pipeline fails if a distribution is missing it.
+</code></pre></div>
 <h2 id="editing">Editing<a class="headerlink" href="#editing" title="Permanent link">&para;</a></h2>
 <p>In-cell and formula-bar editing, keyboard navigation, rectangular selection by drag or shift-click, and clicking a row or column header to select the whole line. Copy/cut/paste (formula references adjust, <code>$</code> absolutes do not), fill down and right, undo/redo, insert and delete rows and columns sized to the selection. Sheets can be added, renamed, deleted, and reordered. Column edges drag to resize and the width is saved with the workbook. A status bar reports the selection's aggregates and an unsaved-changes marker; closing with unsaved work asks first.</p>
 <p><strong>Formula point mode</strong> works as it does in the terminal: while typing a <code>=</code> formula, clicking or dragging on the grid inserts the reference at the caret.</p>

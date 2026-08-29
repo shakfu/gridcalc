@@ -270,7 +270,7 @@ def _execute_sweep(stdscr: curses.window, g: Grid, args: list[str]) -> bool:
         if math.isnan(lo) or math.isnan(hi):
             raise ValueError(f"sweep range is not numeric: {range_str}")
         resolved = _resolve_model(model)
-    except ValueError as e:
+    except (ValueError, RuntimeError) as e:
         show_error(stdscr, f"opt: {e}")
         return False
 
@@ -293,7 +293,7 @@ def _execute_sweep(stdscr: curses.window, g: Grid, args: list[str]) -> bool:
     except OptError as e:
         show_error(stdscr, f"opt: {e}")
         return False
-    except ValueError as e:
+    except (ValueError, RuntimeError) as e:
         show_error(stdscr, f"opt: invalid model ({e})")
         return False
 
@@ -324,7 +324,7 @@ def _execute_model(
     """
     try:
         resolved = _resolve_model(model)
-    except ValueError as e:
+    except (ValueError, RuntimeError) as e:
         show_error(stdscr, f"opt: {e}")
         return False
     (oc, or_), decision_vars, constraint_cells, bounds, integer_vars, binary_vars = resolved
@@ -352,12 +352,13 @@ def _execute_model(
         undo.undo_stack.pop()
         show_error(stdscr, f"opt: {e}")
         return False
-    except ValueError as e:
+    except (ValueError, RuntimeError) as e:
         # Defence in depth. `solve` validates the user-reachable cases and
         # raises OptError, but the `_opt` bridge enforces further invariants
-        # with ValueError. If one ever escapes, report it and keep the
-        # session alive -- an uncaught exception here tears down curses and
-        # takes the user's unsaved sheet with it.
+        # with ValueError and reports a failed HiGHS call with RuntimeError.
+        # If one ever escapes, report it and keep the session alive -- an
+        # uncaught exception here tears down curses and takes the user's
+        # unsaved sheet with it.
         undo.undo_stack.pop()
         show_error(stdscr, f"opt: invalid model ({e})")
         return False
@@ -524,7 +525,7 @@ def cmd_opt(
         name = parts[1]
         try:
             model = _parse_opt_inline(parts[2:])
-        except ValueError as e:
+        except (ValueError, RuntimeError) as e:
             show_error(stdscr, f"opt: {e}")
             return False
         g.models[name] = model
@@ -537,7 +538,7 @@ def cmd_opt(
         # so :w persists it and bare :opt re-runs after reopen.
         try:
             model = _parse_opt_inline(parts)
-        except ValueError as e:
+        except (ValueError, RuntimeError) as e:
             show_error(stdscr, f"opt: {e}")
             return False
         g.models["default"] = model
@@ -594,7 +595,7 @@ def cmd_goal(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bo
         try:
             lo = _parse_bound_value(lo_s, positive=False)
             hi = _parse_bound_value(hi_s, positive=True)
-        except ValueError as e:
+        except (ValueError, RuntimeError) as e:
             show_error(stdscr, f"goal: bad bracket: {e}")
             return False
     elif len(parts) > 5:
@@ -607,7 +608,7 @@ def cmd_goal(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bo
         formula_cell = _parse_single_cell(formula_str)
         var_cell = _parse_single_cell(var_str)
         target = float(target_str)
-    except ValueError as e:
+    except (ValueError, RuntimeError) as e:
         show_error(stdscr, f"goal: {e}")
         return False
 

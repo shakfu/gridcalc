@@ -13,6 +13,7 @@ function makeWb(overrides: Partial<Workbook> = {}): Workbook {
     dirty: false,
     revision: 0,
     mutations: 0,
+    loads: 0,
     notify: vi.fn(),
     fail: vi.fn(),
     markDirty: vi.fn(),

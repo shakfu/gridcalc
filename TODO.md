@@ -90,6 +90,14 @@ The editable pywebview/React frontend (`gridcalc.web`). `docs/web.md` holds the 
 
 - [ ] **Plugin interface.** Allow third-party packages to register custom functions, commands, and cell formats via entry points or a plugin API.
 
+## Security
+
+`docs/dev/sandbox-isolation.md` holds the analysis behind both items, including why isolation is not first.
+
+- [ ] **Curated module facade.** Approved workbook code is handed whole module objects, so `np.savetxt('/anywhere', ...)` writes any path with the sandbox on. Expose a facade (`np.array`, `np.mean`, `np.linalg.solve`) rather than the module. Portable, needs no IPC, and removes the severe outcome -- arbitrary file read and write -- at a fraction of the cost of isolation. Ongoing cost is curation: each newly approved module needs a facade, and an omission is silent.
+
+- [ ] **Process isolation for PYTHON-mode recalc.** Only worth building if running untrusted workbook code becomes a supported feature; `LoadPolicy.formulas_only()` is the current answer everywhere but the TUI trust prompt. Buys a resource ceiling on every platform but filesystem confinement mainly on Linux. HYBRID's `py.*` gateway is a separate decision -- it is called mid-expression from the evaluator in the parent.
+
 ## Documentation & infrastructure
 
 - [ ] **mkdocs documentation site** (mkdocs-material). Publish to GitHub Pages via `gh-pages` branch or GitHub Actions.

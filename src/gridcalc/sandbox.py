@@ -158,12 +158,21 @@ def _check_version(installed: str, op: str, required: str) -> bool:
     return True
 
 
-def load_modules(specs: list[str]) -> tuple[dict[str, object], list[str]]:
+def load_modules(
+    specs: list[str], allow_unknown: bool = False
+) -> tuple[dict[str, object], list[str]]:
     """Import modules by spec. Returns (alias_to_module, error_messages).
 
     Each spec is either a bare module name (``numpy``) or a name with a
     version specifier (``numpy>=1.24``, ``pandas==2.0.3``). Supported
     operators: ``==``, ``>=``, ``<=``, ``>``, ``<``, ``~=``.
+
+    A module that no list classifies is refused unless ``allow_unknown``.
+    The blocklist cannot be the only gate: it names the dangerous modules
+    known when it was written, so anything omitted -- ``runpy``, which runs
+    a Python file, or ``sqlite3``, which writes one -- was loaded on a
+    workbook's say-so. Refusing happens before the import, so a module with
+    import-time side effects does not get to run either.
     """
     result: dict[str, object] = {}
     errors: list[str] = []
@@ -172,6 +181,9 @@ def load_modules(specs: list[str]) -> tuple[dict[str, object], list[str]]:
         cls = classify_module(name)
         if cls == "blocked":
             errors.append(f"'{name}' is blocked (security)")
+            continue
+        if cls == "unknown" and not allow_unknown:
+            errors.append(f"'{name}' is not a recognised module and was not approved")
             continue
         try:
             mod = importlib.import_module(name)
@@ -360,6 +372,7 @@ class FileInfo:
     cell_count: int = 0
     blocked_modules: list[str] = field(default_factory=list)
     side_effect_modules: list[str] = field(default_factory=list)
+    unknown_modules: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -368,11 +381,15 @@ class LoadPolicy:
 
     load_code: bool = False
     approved_modules: list[str] = field(default_factory=list)
+    # Whether modules no list classifies may be imported. Separate from
+    # `approved_modules` because approval is per-file but this is a judgement
+    # about a whole class of module, and the default has to be "no".
+    allow_unknown: bool = False
 
     @staticmethod
     def trust_all(requires: list[str] | None = None) -> LoadPolicy:
         """Approve everything -- code block and all requested modules."""
-        return LoadPolicy(load_code=True, approved_modules=list(requires or []))
+        return LoadPolicy(load_code=True, approved_modules=list(requires or []), allow_unknown=True)
 
     @staticmethod
     def formulas_only() -> LoadPolicy:
@@ -392,22 +409,38 @@ def inspect_file(filename: str) -> FileInfo | None:
     except (OSError, json.JSONDecodeError):
         return None
 
+    # This runs on a file chosen precisely because it is not yet trusted, so
+    # every field it reads is checked before use. `[]` and `42` are valid JSON
+    # and decode without error; a number in `code` or `requires` reaches
+    # `.strip()` and the requirement regex. Either one raised out of a
+    # function whose contract is to report failure by returning None -- and it
+    # raised inside `:open`, before the load, taking curses down with it.
+    if not isinstance(d, dict):
+        return None
+
     info = FileInfo()
 
     code = d.get("code", "")
-    if code and code.strip():
+    if not isinstance(code, str):
+        return None
+    if code.strip():
         info.has_code = True
         info.code_lines = len(code.strip().splitlines())
         info.code_preview = code.strip()
 
     requires = d.get("requires", [])
     if isinstance(requires, list):
+        if not all(isinstance(m, str) for m in requires):
+            return None
         info.requires = list(requires)
         info.blocked_modules = [
             m for m in requires if classify_module(_parse_requirement(m)[0]) == "blocked"
         ]
         info.side_effect_modules = [
             m for m in requires if classify_module(_parse_requirement(m)[0]) == "side_effect"
+        ]
+        info.unknown_modules = [
+            m for m in requires if classify_module(_parse_requirement(m)[0]) == "unknown"
         ]
 
     # v2 nests cells under `sheets[].cells`; v1 has them at top level.

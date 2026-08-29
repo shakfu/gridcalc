@@ -123,6 +123,13 @@ markdown_extensions:
   - pymdownx.tabbed:
       alternate_style: true
 
+# `docs/dev/` is for internal notes -- decision records, investigation logs --
+# written for maintainers, not for readers of the manual. Excluded from the
+# build rather than merely left out of the nav: `strict: true` fails on an
+# unreferenced page, and `not_in_nav` would still publish it.
+exclude_docs: |
+  dev/
+
 # Broken internal links and orphaned pages are build failures, not warnings:
 # the docs are split across a dozen files that link to each other constantly.
 strict: true

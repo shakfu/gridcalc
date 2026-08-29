@@ -36,9 +36,19 @@ VOLATILE_FUNCS: frozenset[str] = frozenset({"RAND", "RANDBETWEEN", "RANDARRAY"})
 # Functions whose CellRef/RangeRef arguments are inspected as references
 # rather than read for value. Their args do not contribute to the cell's
 # dependency set -- e.g. `=ROWS(A1:B10)` does not read A1..B10, it only
-# uses the range's shape. Mirrors `formula.evaluator.RAW_ARG_FUNCS`.
+# uses the range's shape.
+#
+# Deliberately a subset of `formula.evaluator.RAW_ARG_FUNCS`, not a mirror of
+# it: taking raw AST nodes is about *evaluation*, while membership here is
+# about whether the answer can change when the referenced cell is edited.
+# Every name below is purely positional or structural. `ISFORMULA` is not --
+# it reports the cell's kind, so it belongs to the dependency graph even
+# though it too receives a raw reference. Listing it here left
+# `=ISFORMULA(A1)` reading its old answer after A1 became a formula, until
+# something forced a full recalc. `FORMULATEXT` was never listed, for the
+# same reason.
 ADDRESS_ONLY_FUNCS: frozenset[str] = frozenset(
-    {"ROW", "COLUMN", "ROWS", "COLUMNS", "ISREF", "ISFORMULA", "AREAS"}
+    {"ROW", "COLUMN", "ROWS", "COLUMNS", "ISREF", "AREAS"}
 )
 
 

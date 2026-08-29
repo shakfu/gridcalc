@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -425,10 +426,37 @@ def _concat(a: Any, b: Any) -> Any:
     return sa + sb
 
 
+def _empty_as(other: Any) -> Any:
+    """The value an empty cell takes when compared against ``other``.
+
+    Excel gives an empty cell the type of the value it is compared against,
+    and that type's zero. Returns ``None`` unchanged when ``other`` is not a
+    scalar, leaving the type-ranking path below to deal with it.
+    """
+    if isinstance(other, bool):
+        return False
+    if isinstance(other, str):
+        return ""
+    if isinstance(other, (int, float)):
+        return 0.0
+    return None
+
+
 def _compare(op: str, a: Any, b: Any) -> Any:
     err = first_error(a, b)
     if err:
         return err
+    # An empty cell is `None` here, and `None` compares with nothing: ordering
+    # two of them raised a TypeError that surfaced as a bare NaN with no error
+    # set, and `=A1=0` answered FALSE where Excel answers TRUE. Arithmetic
+    # already reads an empty cell as 0 (`_to_number`); this makes comparison
+    # agree with it.
+    if a is None and b is None:
+        a = b = 0.0
+    elif a is None:
+        a = _empty_as(b)
+    elif b is None:
+        b = _empty_as(a)
     a_is_num = isinstance(a, (int, float)) and not isinstance(a, bool)
     b_is_num = isinstance(b, (int, float)) and not isinstance(b, bool)
     if a_is_num and b_is_num:
@@ -458,14 +486,20 @@ def _compare(op: str, a: Any, b: Any) -> Any:
         return x == y
     if op == "<>":
         return x != y
-    if op == "<":
-        return x < y
-    if op == ">":
-        return x > y
-    if op == "<=":
-        return x <= y
-    if op == ">=":
-        return x >= y
+    # Ordering can still meet a pair Python refuses to compare (a Vec against
+    # None, say). Report that as #VALUE!, not as an exception that becomes a
+    # valueless NaN further up.
+    try:
+        if op == "<":
+            return x < y
+        if op == ">":
+            return x > y
+        if op == "<=":
+            return x <= y
+        if op == ">=":
+            return x >= y
+    except TypeError:
+        return ExcelError.VALUE
     raise AssertionError(f"unknown compare op {op}")
 
 
@@ -573,6 +607,93 @@ _ERROR_AWARE_FUNCS = frozenset({"iferror", "ifna", "iserror", "iserr", "isna"})
 # Env, instead of evaluated values. Used for functions whose semantics
 # depend on the *reference* rather than the cell's value -- ROW(A5),
 # COLUMN(A5), ROWS(A1:B10), COLUMNS(A1:B10).
+# Conditional functions evaluate only the arguments their result depends on.
+# `=IF(A1=0, "n/a", B1/A1)` is the standard guard against dividing by zero;
+# evaluating both branches made it report the very error it exists to prevent,
+# because the eager path materialised every argument and then propagated the
+# first error it found.
+#
+# Dependency extraction still walks every branch (see `deps.py`), so a cell
+# read only by the branch not taken stays a dependency. That is deliberate:
+# the condition can change, and a graph whose shape depended on the current
+# values could not be topologically ordered before evaluating it. A
+# self-reference in an untaken branch is therefore still circular.
+LAZY_FUNCS = frozenset({"if", "ifs", "switch", "iferror", "ifna", "choose"})
+
+
+def _eval_lazy(name: str, node: Call, env: Env) -> Any:
+    """Evaluate a conditional function, materialising only the arguments that
+    determine its result. Argument-count errors mirror what the eager path
+    produced by way of a TypeError from the underlying function."""
+    args = node.args
+
+    def val(i: int) -> Any:
+        return _deref(_eval(args[i], env), env)
+
+    if name == "if":
+        if not 2 <= len(args) <= 3:
+            return ExcelError.VALUE
+        cond = val(0)
+        if isinstance(cond, ExcelError):
+            return cond
+        if cond:
+            return val(1)
+        # Two-argument IF answers 0, matching the library function's default.
+        return val(2) if len(args) == 3 else 0
+
+    if name == "ifs":
+        if not args or len(args) % 2 != 0:
+            return ExcelError.NA
+        for i in range(0, len(args), 2):
+            cond = val(i)
+            if isinstance(cond, ExcelError):
+                return cond
+            if cond:
+                return val(i + 1)
+        return ExcelError.NA
+
+    if name == "switch":
+        if not args:
+            return ExcelError.VALUE
+        subject = val(0)
+        if isinstance(subject, ExcelError):
+            return subject
+        rest = len(args) - 1
+        for i in range(rest // 2):
+            match = val(1 + 2 * i)
+            if isinstance(match, ExcelError):
+                return match
+            if subject == match:
+                return val(2 + 2 * i)
+        # A trailing unpaired argument is the default.
+        return val(len(args) - 1) if rest % 2 == 1 else ExcelError.NA
+
+    if name == "iferror":
+        if len(args) != 2:
+            return ExcelError.VALUE
+        v = val(0)
+        if isinstance(v, ExcelError) or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
+            return val(1)
+        return v
+
+    if name == "ifna":
+        if len(args) != 2:
+            return ExcelError.VALUE
+        v = val(0)
+        return val(1) if v is ExcelError.NA else v
+
+    if name == "choose":
+        if len(args) < 2:
+            return ExcelError.VALUE
+        index = val(0)
+        if isinstance(index, ExcelError):
+            return index
+        i = int(index)
+        return val(i) if 1 <= i <= len(args) - 1 else ExcelError.VALUE
+
+    raise AssertionError(f"unhandled lazy function {name}")
+
+
 RAW_ARG_FUNCS = frozenset(
     {
         "row",
@@ -683,6 +804,15 @@ def _eval_call(node: Call, env: Env) -> Any:
     fn = env.lookup_func(node.name)
     if fn is None:
         return ExcelError.NAME
+    if name_lower in LAZY_FUNCS:
+        try:
+            return _eval_lazy(name_lower, node, env)
+        except ZeroDivisionError:
+            return ExcelError.DIV0
+        except (ValueError, OverflowError, ArithmeticError):
+            return ExcelError.NUM
+        except (TypeError, AttributeError):
+            return ExcelError.VALUE
     if name_lower in RAW_ARG_FUNCS:
         try:
             return fn(env, *node.args)

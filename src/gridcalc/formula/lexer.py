@@ -151,6 +151,30 @@ def tokenize(text: str) -> list[Token]:
             tokens.append(Token(STRING, "".join(buf), pos))
             i = j + 1
             continue
+        # 'Sheet Name'!A1 -- a quoted sheet name, with '' for a literal
+        # apostrophe. Emitted as IDENT so the parser's existing
+        # `IDENT BANG CELLREF` path handles it: quoting is a lexical device for
+        # names that are not identifiers (spaces, punctuation, a leading
+        # digit), not a different kind of reference. A single quote means
+        # nothing else in this grammar -- Excel strings use double quotes --
+        # so there is no ambiguity to resolve here.
+        if ch == "'":
+            j = i + 1
+            name: list[str] = []
+            while j < n:
+                if s[j] == "'":
+                    if j + 1 < n and s[j + 1] == "'":
+                        name.append("'")
+                        j += 2
+                        continue
+                    break
+                name.append(s[j])
+                j += 1
+            else:
+                raise FormulaError(f"unterminated sheet name at {pos}")
+            tokens.append(Token(IDENT, "".join(name), pos))
+            i = j + 1
+            continue
         # multi-char operators
         if ch == "<" and i + 1 < n and s[i + 1] == "=":
             tokens.append(Token(LE, "<=", pos))

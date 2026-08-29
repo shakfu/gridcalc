@@ -308,3 +308,34 @@ test('an annotation outside the sheet is skipped rather than misplaced', async (
   await waitFor(() => cells().getByText('gridcalc demo'))
   expect(container.querySelectorAll('.annot').length).toBe(1)
 })
+
+test('a cut does not mark the workbook dirty until the paste that consumes it', async () => {
+  // Cut only fills the engine's clipboard buffer; the source cells are cleared
+  // later, by the paste. Reporting a mutation here left a cancelled cut showing
+  // unsaved changes over a workbook nothing had touched.
+  const onMutate = vi.fn()
+  const { cells, scroll } = renderGrid({ onMutate })
+  await waitFor(() => cells().getByText('gridcalc demo'))
+  scroll.focus()
+  const user = userEvent.setup()
+
+  await user.keyboard('{Control>}x{/Control}')
+  await waitFor(() => expect(bridge.copy).toBeDefined())
+  expect(onMutate).not.toHaveBeenCalled()
+
+  await user.keyboard('{ArrowDown}')
+  await user.keyboard('{Control>}v{/Control}')
+  await waitFor(() => expect(onMutate).toHaveBeenCalled())
+})
+
+test('a copy does not mark the workbook dirty', async () => {
+  const onMutate = vi.fn()
+  const { cells, scroll } = renderGrid({ onMutate })
+  await waitFor(() => cells().getByText('gridcalc demo'))
+  scroll.focus()
+  const user = userEvent.setup()
+
+  await user.keyboard('{Control>}c{/Control}')
+  await new Promise((r) => setTimeout(r, 20))
+  expect(onMutate).not.toHaveBeenCalled()
+})

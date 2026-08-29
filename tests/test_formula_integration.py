@@ -2,6 +2,8 @@
 
 import math
 
+import pytest
+
 from gridcalc.engine import Grid, Mode, NamedRange
 
 
@@ -320,3 +322,221 @@ class TestStringResults:
         g.setcell(0, 0, '="hi"')
         rendered = fmtcell(g.cells[0][0], 8)
         assert "hi" in rendered
+
+
+class TestConditionalsEvaluateOnlyTheSelectedBranch:
+    """Excel evaluates only the branch a conditional selects. Evaluating both
+    made `=IF(A1=0, "n/a", B1/A1)` -- the standard guard against dividing by
+    zero -- report the very error it exists to prevent."""
+
+    @staticmethod
+    def _grid():
+        # These functions live in the xlsx library, which `Grid()` does not
+        # load until a mode is applied; `make_excel_grid` only sets the mode.
+        g = make_excel_grid()
+        g._apply_mode_libs()
+        return g
+
+    def test_if_skips_erroring_false_branch(self):
+        g = self._grid()
+        g.setcell(0, 0, "=IF(1=1,10,1/0)")
+        assert g.cells[0][0].val == 10.0
+        assert g.cells[0][0].err is None
+
+    def test_if_skips_erroring_true_branch(self):
+        g = self._grid()
+        g.setcell(0, 0, "=IF(1=2,1/0,20)")
+        assert g.cells[0][0].val == 20.0
+        assert g.cells[0][0].err is None
+
+    def test_if_guards_division_by_zero(self):
+        g = self._grid()
+        g.setcell(0, 0, "0")
+        g.setcell(1, 0, "5")
+        g.setcell(2, 0, '=IF(A1=0,"n/a",B1/A1)')
+        assert g.cells[2][0].sval == "n/a"
+
+    def test_if_still_propagates_an_error_in_the_condition(self):
+        g = self._grid()
+        g.setcell(0, 0, "=IF(1/0,1,2)")
+        assert g.cells[0][0].err.value == "#DIV/0!"
+
+    def test_if_two_argument_form_unchanged(self):
+        g = self._grid()
+        g.setcell(0, 0, "=IF(1=1,5)")
+        g.setcell(0, 1, "=IF(1=2,5)")
+        assert g.cells[0][0].val == 5.0
+        assert g.cells[0][1].val == 0.0
+
+    def test_iferror_skips_fallback_when_value_is_fine(self):
+        g = self._grid()
+        g.setcell(0, 0, "=IFERROR(5,1/0)")
+        assert g.cells[0][0].val == 5.0
+        assert g.cells[0][0].err is None
+
+    def test_iferror_still_catches(self):
+        g = self._grid()
+        g.setcell(0, 0, "=IFERROR(1/0,99)")
+        assert g.cells[0][0].val == 99.0
+
+    def test_ifna_skips_fallback_when_value_is_fine(self):
+        g = self._grid()
+        g.setcell(0, 0, "=IFNA(4,1/0)")
+        assert g.cells[0][0].val == 4.0
+        assert g.cells[0][0].err is None
+
+    def test_ifs_skips_unmatched_branches(self):
+        g = self._grid()
+        g.setcell(0, 0, "=IFS(1=2,1/0,1=1,42)")
+        assert g.cells[0][0].val == 42.0
+        assert g.cells[0][0].err is None
+
+    def test_switch_skips_unmatched_results(self):
+        g = self._grid()
+        g.setcell(0, 0, "=SWITCH(2,1,1/0,2,77)")
+        assert g.cells[0][0].val == 77.0
+        assert g.cells[0][0].err is None
+
+    def test_switch_default_branch(self):
+        g = self._grid()
+        g.setcell(0, 0, "=SWITCH(9,1,2,55)")
+        assert g.cells[0][0].val == 55.0
+
+    def test_choose_skips_unselected_arguments(self):
+        g = self._grid()
+        g.setcell(0, 0, "=CHOOSE(2,1/0,88)")
+        assert g.cells[0][0].val == 88.0
+        assert g.cells[0][0].err is None
+
+    def test_choose_out_of_range(self):
+        g = self._grid()
+        g.setcell(0, 0, "=CHOOSE(5,1,2)")
+        assert g.cells[0][0].err.value == "#VALUE!"
+
+    def test_untaken_branch_is_still_a_dependency(self):
+        """Laziness changes evaluation, not the dependency graph: the branch
+        not taken is still recalculated when the condition flips to it."""
+        g = self._grid()
+        g.setcell(0, 0, "1")  # A1 condition source
+        g.setcell(0, 1, "50")  # A2, read only by the false branch
+        g.setcell(1, 0, "=IF(A1=1,10,A2)")
+        assert g.cells[1][0].val == 10.0
+        g.setcell(0, 0, "0")
+        assert g.cells[1][0].val == 50.0
+        g.setcell(0, 1, "60")
+        assert g.cells[1][0].val == 60.0
+
+
+class TestEmptyCellComparisons:
+    """An empty cell takes the type of what it is compared against and that
+    type's zero. It reaches the evaluator as `None`, which compares with
+    nothing: ordering two empty cells raised a TypeError that surfaced as a
+    bare NaN with no error set, and `=A1=0` answered FALSE."""
+
+    @staticmethod
+    def _grid():
+        g = make_excel_grid()
+        g._apply_mode_libs()
+        g.setcell(5, 0, "7")  # F1
+        g.setcell(5, 1, "txt")  # F2
+        return g
+
+    def _val(self, formula):
+        g = self._grid()
+        g.setcell(3, 0, formula)
+        c = g.cells[3][0]
+        assert c.err is None, f"{formula} -> {c.err}"
+        return c.sval
+
+    @pytest.mark.parametrize(
+        "formula,expected",
+        [
+            # A1 and A2 are both empty.
+            ("=A1=A2", "TRUE"),
+            ("=A1<>A2", "FALSE"),
+            ("=A1<A2", "FALSE"),
+            ("=A1>A2", "FALSE"),
+            ("=A1<=A2", "TRUE"),
+            ("=A1>=A2", "TRUE"),
+            # Against a number, an empty cell reads as 0 -- as it already did
+            # in arithmetic.
+            ("=A1=0", "TRUE"),
+            ("=A1<1", "TRUE"),
+            ("=A1>-1", "TRUE"),
+            ("=A1<F1", "TRUE"),
+            # Against text, as the empty string.
+            ('=A1=""', "TRUE"),
+            ('=A1<>""', "FALSE"),
+            ("=A1=F2", "FALSE"),
+            ("=A1<F2", "TRUE"),
+            # Against a boolean, as FALSE.
+            ("=A1=FALSE", "TRUE"),
+            ("=A1=TRUE", "FALSE"),
+        ],
+    )
+    def test_empty_cell_comparison(self, formula, expected):
+        assert self._val(formula) == expected
+
+    def test_ordering_two_empties_sets_no_error(self):
+        """The old failure was silent: a NaN value with `err` unset, which
+        reads as a number rather than as a refusal."""
+        g = self._grid()
+        g.setcell(3, 0, "=A1<A2")
+        assert g.cells[3][0].err is None
+        assert not math.isnan(g.cells[3][0].val)
+
+
+class TestMetadataFormulasTrackTheirReference:
+    """`ISFORMULA` reports a cell's *kind*, so its answer changes when that
+    cell is edited. It was classed address-only alongside `ROW`, whose answer
+    cannot, so its argument never entered the dependency graph and the result
+    kept its old value until something forced a full recalc."""
+
+    @staticmethod
+    def _grid():
+        g = make_excel_grid()
+        g._apply_mode_libs()
+        return g
+
+    def test_literal_to_formula(self):
+        g = self._grid()
+        g.setcell(0, 0, "5")
+        g.setcell(1, 0, "=ISFORMULA(A1)")
+        assert g.cells[1][0].val == 0.0
+        g.setcell(0, 0, "=1+1")
+        assert g.cells[1][0].val == 1.0
+
+    def test_formula_to_literal(self):
+        g = self._grid()
+        g.setcell(0, 0, "=1+1")
+        g.setcell(1, 0, "=ISFORMULA(A1)")
+        assert g.cells[1][0].val == 1.0
+        g.setcell(0, 0, "9")
+        assert g.cells[1][0].val == 0.0
+
+    def test_formula_to_empty(self):
+        g = self._grid()
+        g.setcell(0, 0, "=1+1")
+        g.setcell(1, 0, "=ISFORMULA(A1)")
+        assert g.cells[1][0].val == 1.0
+        g.setcell(0, 0, "")
+        assert g.cells[1][0].val == 0.0
+
+    def test_formulatext_tracks_its_reference(self):
+        g = self._grid()
+        g.setcell(0, 0, "=1+1")
+        g.setcell(1, 0, "=FORMULATEXT(A1)")
+        assert g.cells[1][0].sval == "=1+1"
+        g.setcell(0, 0, "=2+2")
+        assert g.cells[1][0].sval == "=2+2"
+
+    def test_positional_functions_stay_address_only(self):
+        """`ROW` and `ISREF` answer from the reference's shape, not the cell's
+        contents, so editing the cell must not make them dependents."""
+        from gridcalc.formula import parse
+        from gridcalc.formula.deps import extract_refs
+
+        assert extract_refs(parse("ROW(A1)")) == set()
+        assert extract_refs(parse("ROWS(A1:B10)")) == set()
+        assert extract_refs(parse("ISREF(A1)")) == set()
+        assert extract_refs(parse("ISFORMULA(A1)")) == {(None, 0, 0)}

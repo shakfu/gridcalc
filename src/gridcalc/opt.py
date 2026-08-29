@@ -116,6 +116,20 @@ class NotLinear(OptError):
     """A formula cannot be expressed as a linear combination of decision vars."""
 
 
+def _solve_lp(*args: Any, **kwargs: Any) -> Any:
+    """Call the native solver, normalising its failures to ``OptError``.
+
+    The extension reports argument-invariant violations with ``ValueError``
+    but a failed HiGHS call with ``RuntimeError``. Nothing in this module's
+    contract mentions ``RuntimeError``, so callers do not catch it; one
+    reaching the TUI tears down curses and takes the unsaved sheet with it.
+    """
+    try:
+        return _ext.solve_lp(*args, **kwargs)
+    except RuntimeError as exc:
+        raise OptError(f"solver failed: {exc}") from exc
+
+
 # --- Cell-list / bounds spec parsing ----------------------------------------
 # Shared by every frontend that lets a user name a model's cells (the curses
 # `:opt`/`:goal` commands and the web `Api`). These live here, below the view
@@ -824,6 +838,11 @@ def solve(
     obj_is_quadratic = obj_quad.has_quadratic()
     obj_form = LinearForm(dict(obj_quad.linear), obj_quad.constant)
     c_vec = [obj_form.coeffs.get(v, 0.0) for v in decision_vars]
+    if not all(math.isfinite(x) for x in c_vec) or not math.isfinite(obj_form.constant):
+        raise OptError(
+            f"objective cell {_cellname(*objective_cell)} has a non-finite value; "
+            "check the cells it references"
+        )
     # The objective constant is dropped here: the solver is given only the
     # linear part. We add it back to the reported objective below.
 
@@ -840,6 +859,15 @@ def solve(
         if rhs_override and (c, r) in rhs_override:
             rhs_val = float(rhs_override[(c, r)])
         row = [coeffs.get(v, 0.0) for v in decision_vars]
+        # A constraint whose right-hand side reads an error cell (`=SQRT(-1)`,
+        # a division by zero) arrives here as NaN. Bounds are already checked
+        # for this; the constraint rows were not, and HiGHS rejects the model
+        # with a bare "Highs_passLp failed" that names nothing.
+        if not math.isfinite(rhs_val) or not all(math.isfinite(x) for x in row):
+            raise OptError(
+                f"constraint cell {_cellname(c, r)} has a non-finite value; "
+                "check the cells it references"
+            )
         A.append(row)
         sense.append(op_code)
         rhs.append(rhs_val)
@@ -912,7 +940,7 @@ def solve(
         diagnose = False
 
     # Solve.
-    sol = _ext.solve_lp(
+    sol = _solve_lp(
         c_vec,
         A,
         sense,
@@ -1047,7 +1075,7 @@ def _unbounded_variables(
         push_up = (cj > 0) == maximize
         probe_obj = [0.0] * len(c_vec)
         probe_obj[j] = 1.0
-        probe = _ext.solve_lp(
+        probe = _solve_lp(
             probe_obj,
             A,
             sense,
@@ -1108,7 +1136,7 @@ def _irreducible_conflict(
             trial_A = [A[i] for i in rows]
             trial_sense = [sense[i] for i in rows]
             trial_rhs = [rhs[i] for i in rows]
-        probe = _ext.solve_lp(
+        probe = _solve_lp(
             c_vec,
             trial_A,
             trial_sense,

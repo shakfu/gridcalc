@@ -15,10 +15,15 @@ from typing import Any
 
 from gridcalc.keys import CONTEXTS, KNOWN_ACTIONS, ParsedKey, parse_keyspec
 
-try:
-    import tomllib  # type: ignore[import-not-found]
-except ModuleNotFoundError:
-    import tomli as tomllib  # type: ignore[import-not-found]
+# `tomllib` is stdlib from 3.11; below that the `tomli` backport provides the
+# same API and is pulled in by an environment marker. Written as a
+# `sys.version_info` test rather than try/except because mypy evaluates it
+# statically against `python_version` and checks only the matching branch,
+# which a runtime ImportError cannot tell it.
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
 
 CONFIG_FILENAME = "gridcalc.toml"
 

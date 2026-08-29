@@ -656,6 +656,82 @@ def _skip_quoted(text: str, i: int) -> int | None:
     return len(text)
 
 
+# `Sheet1!`, `'My Sheet'!` -- the sheet qualifier ahead of a reference.
+_SHEET_QUAL_RE = re.compile(r"(?:'((?:[^']|'')*)'|([A-Za-z_][A-Za-z0-9_.]*))!")
+
+
+def _rewrite_refs_on_sheet(
+    text: str,
+    home_sheet: str,
+    edited_sheet: str,
+    move: Callable[[int, int], tuple[int, int]],
+) -> str | None:
+    """Rewrite the references in ``text`` that resolve against ``edited_sheet``.
+
+    Returns the new text, or None when nothing moved.
+
+    ``home_sheet`` is the sheet the formula lives on, which is what a bare
+    reference resolves against; a reference carrying a qualifier resolves
+    against that sheet instead. Inserting a row on one sheet must not move
+    `Data!A2`, because Data's rows did not move -- the rule `_shift_names`
+    already applies to named ranges. String literals are skipped, since prose
+    is shaped like a reference.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    changed = False
+
+    def take_refs(at: int, sheet: str) -> tuple[int, bool]:
+        """Consume a reference at ``at``, plus the ``:ref`` completing a range
+        so a qualifier governs both ends, and append the result."""
+        moved = False
+        first = True
+        while True:
+            result = refabs(text[at:])
+            if not result:
+                if first:
+                    out.append(text[at])
+                    return at + 1, False
+                return at, moved
+            width, rc, rr, ac, ar = result
+            if sheet == edited_sheet:
+                nrc, nrr = move(rc, rr)
+                if (nrc, nrr) != (rc, rr):
+                    rc, rr = nrc, nrr
+                    moved = True
+            out.append(_emitref(rc, rr, ac, ar))
+            at += width
+            first = False
+            if at < n and text[at] == ":" and refabs(text[at + 1 :]):
+                out.append(":")
+                at += 1
+                continue
+            return at, moved
+
+    while i < n:
+        # The qualifier is matched before `_skip_quoted`, or a quoted sheet
+        # name would be mistaken for a string literal and its reference left
+        # to resolve against the wrong sheet.
+        q = _SHEET_QUAL_RE.match(text, i)
+        if q:
+            out.append(q.group(0))
+            quoted, bare = q.group(1), q.group(2)
+            sheet = bare if quoted is None else quoted.replace("''", "'")
+            i, moved = take_refs(q.end(), sheet)
+            changed = changed or moved
+            continue
+        end = _skip_quoted(text, i)
+        if end is not None:
+            out.append(text[i:end])
+            i = end
+            continue
+        i, moved = take_refs(i, home_sheet)
+        changed = changed or moved
+
+    return "".join(out) if changed else None
+
+
 def adjust_refs(text: str, dcol: int, drow: int) -> str:
     """Shift every relative cell reference in ``text`` by ``(dcol, drow)``.
 
@@ -796,19 +872,23 @@ def _xlsx_read_defined_names(filename: str) -> list[tuple[str, str, int, int, in
     return out
 
 
-def _xlsx_write_cells(filename: str, cells: list[tuple[Any, ...]]) -> int:
+def _xlsx_write_cells(
+    filename: str, cells: list[tuple[Any, ...]], sheet_names: list[str] | None = None
+) -> int:
     """Write ``(sheet_name, col0, row0, kind, value[, cached])`` tuples.
 
     ``kind`` is in ``{'s','n','f'}``. For ``'f'``, ``value`` is the
     formula text (with or without leading ``=``) and the optional 6th
-    element is a cached numeric value (or ``None``). Sheets are created
-    in the order they first appear in ``cells``. Returns 0 on success,
-    -1 on failure.
+    element is a cached numeric value (or ``None``). ``sheet_names`` lists
+    every sheet in workbook order and fixes both the sheet order and the
+    fate of sheets holding no cells; without it, sheets are created in the
+    order they first appear in ``cells``. Returns 0 on success, -1 on
+    failure.
     """
     from gridcalc import _core
 
     try:
-        _core.xlsx_write(filename, cells)
+        _core.xlsx_write(filename, cells, list(sheet_names or []))
         return 0
     except Exception:
         return -1
@@ -1240,11 +1320,15 @@ class Grid:
                 errors.append(f"{cellname(c, r)}: py.* calls not allowed in EXCEL")
         return errors
 
-    def load_requires(self, modules: list[str]) -> None:
-        """Load required modules into the eval namespace."""
+    def load_requires(self, modules: list[str], allow_unknown: bool = False) -> None:
+        """Load required modules into the eval namespace.
+
+        ``allow_unknown`` passes through to ``load_modules``: unclassified
+        modules are refused unless the caller has explicitly approved them.
+        """
         if not modules:
             return
-        mods, errors = load_modules(modules)
+        mods, errors = load_modules(modules, allow_unknown=allow_unknown)
         self._eval_globals.update(mods)
         self._module_errors = errors
 
@@ -2192,73 +2276,57 @@ class Grid:
                 return s
         return None
 
+    def _rewrite_all_sheets(self, move: Callable[[int, int], tuple[int, int]]) -> None:
+        """Apply ``move`` to every reference in the workbook that resolves
+        against the active sheet -- the one a structural edit acts on.
+
+        Every sheet's formulas are scanned, not just the active sheet's: a
+        formula on another sheet that names this one (`Sheet1!A2`) has to
+        follow the edit, and one on the active sheet that names another
+        (`Data!A2`) must not. Scanning only the active sheet got both wrong,
+        rewriting the cross-sheet references it should have left alone and
+        missing the ones it should have moved.
+        """
+        edited = self._active.name
+        for sheet in self.sheets:
+            for cl in sheet._cells.values():
+                if cl.type != FORMULA:
+                    continue
+                new = _rewrite_refs_on_sheet(cl.text, sheet.name, edited, move)
+                if new is not None:
+                    cl.text = new
+
     def _fixrefs(self, axis: str, a: int, b: int) -> None:
-        for cl in self._cells.values():
-            if cl.type != FORMULA:
-                continue
-            out = []
-            s = cl.text
-            i = 0
-            changed_flag = False
-            while i < len(s):
-                result = refabs(s[i:])
-                if result:
-                    n, rc, rr, ac, ar = result
-                    if axis == "R":
-                        if rr == a:
-                            rr = b
-                            changed_flag = True
-                        elif rr == b:
-                            rr = a
-                            changed_flag = True
-                    else:
-                        if rc == a:
-                            rc = b
-                            changed_flag = True
-                        elif rc == b:
-                            rc = a
-                            changed_flag = True
-                    out.append(_emitref(rc, rr, ac, ar))
-                    i += n
-                else:
-                    out.append(s[i])
-                    i += 1
-            if changed_flag:
-                cl.text = "".join(out)
+        def move(rc: int, rr: int) -> tuple[int, int]:
+            if axis == "R":
+                if rr == a:
+                    return rc, b
+                if rr == b:
+                    return rc, a
+            else:
+                if rc == a:
+                    return b, rr
+                if rc == b:
+                    return a, rr
+            return rc, rr
+
+        self._rewrite_all_sheets(move)
 
     def _shiftrefs(self, axis: str, pos: int, direction: int) -> None:
-        for cl in self._cells.values():
-            if cl.type != FORMULA:
-                continue
-            out = []
-            s = cl.text
-            i = 0
-            changed_flag = False
-            while i < len(s):
-                result = refabs(s[i:])
-                if result:
-                    n, rc, rr, ac, ar = result
-                    if axis == "R":
-                        if direction > 0 and rr >= pos:
-                            rr += 1
-                            changed_flag = True
-                        elif direction < 0 and rr > pos:
-                            rr -= 1
-                            changed_flag = True
-                    else:
-                        if direction > 0 and rc >= pos:
-                            rc += 1
-                            changed_flag = True
-                        elif direction < 0 and rc > pos:
-                            rc -= 1
-                            changed_flag = True
-                    out.append(_emitref(rc, rr, ac, ar))
-                    i += n
-                else:
-                    out.append(s[i])
-                    i += 1
-            if changed_flag:
-                cl.text = "".join(out)
+        def move(rc: int, rr: int) -> tuple[int, int]:
+            if axis == "R":
+                if direction > 0 and rr >= pos:
+                    return rc, rr + 1
+                if direction < 0 and rr > pos:
+                    return rc, rr - 1
+            else:
+                if direction > 0 and rc >= pos:
+                    return rc + 1, rr
+                if direction < 0 and rc > pos:
+                    return rc - 1, rr
+            return rc, rr
+
+        self._rewrite_all_sheets(move)
 
     def _shift_names(self, axis: str, pos: int, direction: int) -> None:
         """Move named-range coordinates across an insert/delete.
@@ -2551,6 +2619,20 @@ class Grid:
         if not isinstance(version, int) or version > FILE_VERSION:
             return -1
 
+        # Field types are checked here, above the reset, for the same reason
+        # the document type is: the loader must report a malformed file by
+        # returning -1, not by raising out of the middle of a half-applied
+        # load. `code` and `requires` are the two fields whose contents are
+        # handed to something that assumes a string -- `ast.parse` and the
+        # requirement regex -- so a JSON number or object in either one took
+        # the load path out with an AttributeError or TypeError *after* the
+        # workbook had already been cleared.
+        if "code" in d and not isinstance(d["code"], str):
+            return -1
+        requires_field = d.get("requires")
+        if isinstance(requires_field, list) and not all(isinstance(r, str) for r in requires_field):
+            return -1
+
         # A load *replaces* the workbook; it does not merge into it. Without an
         # explicit reset the v1 path wrote its cells into whichever sheet was
         # already open, so anything outside the incoming payload survived -- a
@@ -2597,9 +2679,13 @@ class Grid:
         requires = d.get("requires", [])
         if isinstance(requires, list):
             self.requires = requires
+            # No policy means the caller vouched for the file (the library
+            # API, not a UI open), so unclassified modules are theirs to
+            # allow; a policy decides for itself.
             approved = requires if policy is None else policy.approved_modules
+            allow_unknown = True if policy is None else policy.allow_unknown
             if approved:
-                self.load_requires(approved)
+                self.load_requires(approved, allow_unknown=allow_unknown)
 
         names_dict = d.get("names", {})
         self.names = []
@@ -2921,7 +3007,7 @@ class Grid:
                         payload.append((s.name, c, r, "f", cl.text, cached))
                     elif cached is not None:
                         payload.append((s.name, c, r, "n", cached))
-        return _xlsx_write_cells(filename, payload)
+        return _xlsx_write_cells(filename, payload, [s.name for s in self.sheets])
 
     def csvsave(self, filename: str) -> int:
         """Export evaluated cell values to CSV."""

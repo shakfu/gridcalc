@@ -69,6 +69,13 @@ export function App() {
   // are joined on NUL, which neither a path nor a sheet name can contain, so
   // no pair of them can collide on one key.
   const sheetViews = useRef(new Map<string, SheetView>())
+  // A load replaces the workbook, so every remembered position describes a
+  // sheet that is gone. The filename in the key was meant to prevent the
+  // inheritance, but it does not separate two different workbooks opened from
+  // the same path -- the entries have to be dropped on the load itself.
+  useEffect(() => {
+    sheetViews.current.clear()
+  }, [wb.loads])
   const sheetName = wb.sheets ? (wb.sheets.names[wb.sheets.active] ?? '') : ''
   const viewKey = wb.dims ? `${wb.dims.filename}\u0000${sheetName}` : ''
 
@@ -279,7 +286,7 @@ export function App() {
         {wb.ready && wb.dims && wb.sheets ? (
           <Grid
             ref={grid}
-            key={`${wb.dims.filename}:${wb.sheets.active}`}
+            key={`${wb.dims.filename}:${wb.loads}:${wb.sheets.active}`}
             ncol={wb.dims.ncol}
             nrow={wb.dims.nrow}
             revision={wb.revision}

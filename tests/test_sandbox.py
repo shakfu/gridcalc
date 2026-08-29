@@ -431,10 +431,50 @@ class TestLoadModules:
         assert len(errors) == 1
 
     def test_nonexistent_module(self):
-        mods, errors = load_modules(["nonexistent_xyz_module_12345"])
+        # allow_unknown: this test is about the "not installed" report, not
+        # about the classification gate that now precedes it.
+        mods, errors = load_modules(["nonexistent_xyz_module_12345"], allow_unknown=True)
         assert len(mods) == 0
         assert len(errors) == 1
         assert "not installed" in errors[0]
+
+    def test_unknown_module_is_refused_by_default(self):
+        """Not on the blocklist is not the same claim as safe. `runpy` runs a
+        Python file and `sqlite3` writes one; neither is blocked, so both were
+        imported on a workbook's say-so."""
+        for name in ("runpy", "sqlite3", "glob", "posixpath"):
+            mods, errors = load_modules([name])
+            assert mods == {}, name
+            assert len(errors) == 1
+            assert "not a recognised module" in errors[0]
+
+    def test_unknown_module_loads_when_explicitly_allowed(self):
+        mods, errors = load_modules(["sqlite3"], allow_unknown=True)
+        assert "sqlite3" in mods
+        assert errors == []
+
+    def test_unknown_module_is_refused_without_importing_it(self, monkeypatch):
+        """The refusal has to precede the import, or a module with an
+        import-time side effect gets to run before being turned down."""
+        import importlib
+
+        called: list[str] = []
+
+        def spy(name):
+            called.append(name)
+            raise AssertionError(f"imported {name} despite refusing it")
+
+        monkeypatch.setattr(importlib, "import_module", spy)
+        mods, errors = load_modules(["runpy"])
+        assert called == []
+        assert mods == {}
+        assert len(errors) == 1
+
+    def test_safe_module_still_loads_when_unknown_are_refused(self):
+        mods, errors = load_modules(["decimal", "runpy"])
+        assert "decimal" in mods
+        assert "runpy" not in mods
+        assert len(errors) == 1
 
     def test_stdlib_safe_module(self):
         mods, errors = load_modules(["decimal"])
@@ -470,12 +510,12 @@ class TestLoadModules:
         import importlib.metadata as md
 
         v = md.version("pytest")
-        mods, errors = load_modules([f"pytest=={v}"])
+        mods, errors = load_modules([f"pytest=={v}"], allow_unknown=True)
         assert "pytest" in mods
         assert errors == []
 
     def test_version_pin_mismatch_known_dist(self):
-        mods, errors = load_modules(["pytest==0.0.1"])
+        mods, errors = load_modules(["pytest==0.0.1"], allow_unknown=True)
         assert "pytest" not in mods
         assert len(errors) == 1
         assert "does not satisfy" in errors[0]

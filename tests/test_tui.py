@@ -2,12 +2,13 @@
 
 import curses
 import importlib.util
+import json
 import math
 from pathlib import Path
 
 import pytest
 
-from gridcalc.engine import Grid, col_name
+from gridcalc.engine import Grid, NamedRange, col_name
 from gridcalc.opt import OptModel
 from gridcalc.tui import UndoManager
 
@@ -3315,3 +3316,52 @@ class TestSpillRendering:
         status = next(s for (y, x, s, n) in stdscr.calls if y == 0)
         assert "#SPILL!" in status
         assert "blocked" in status
+
+
+class TestOpenPreservesWorkbookOnFailure:
+    """`:open` used to clear the sheet before attempting the load, so any file
+    the loader refused left the user with an empty workbook -- the open failed
+    and destroyed the open sheet with it."""
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = MockStdscr()
+        self.g = Grid()
+        self.undo = UndoManager()
+        self.g.setcell(0, 0, "keep")
+        self.g.names.append(NamedRange(name="keep", c1=0, r1=0, c2=0, r2=0))
+        self.g.recalc()
+
+    def _assert_intact(self):
+        assert self.g.cell(0, 0).text == "keep"
+        assert [n.name for n in self.g.names] == ["keep"]
+
+    def test_missing_file(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, f"open {tmp_path / 'nope.json'}")
+        self._assert_intact()
+
+    def test_unparseable_file(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        f = tmp_path / "bad.json"
+        f.write_text("{not json")
+        cmdexec(self.stdscr, self.g, self.undo, f"open {f}")
+        self._assert_intact()
+
+    def test_valid_json_that_is_not_a_workbook(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        f = tmp_path / "arr.json"
+        f.write_text("[]")
+        cmdexec(self.stdscr, self.g, self.undo, f"open {f}")
+        self._assert_intact()
+
+    def test_malformed_code_field(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        f = tmp_path / "badcode.json"
+        f.write_text(json.dumps({"version": 2, "code": 123}))
+        cmdexec(self.stdscr, self.g, self.undo, f"open {f}")
+        self._assert_intact()

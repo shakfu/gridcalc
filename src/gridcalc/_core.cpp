@@ -76,32 +76,49 @@ nb::list xlsx_read(const std::string& path) {
     return out;
 }
 
-void xlsx_write(const std::string& path, nb::list cells) {
-    // Accepts list[(sheet_name, col, row, kind, value)]. Sheets are
-    // created lazily in payload order; the default sheet that
-    // OpenXLSX produces on `create()` is renamed to the first
-    // unique sheet name in the payload (or kept if it already
-    // matches).
+void xlsx_write(const std::string& path, nb::list cells, nb::list sheet_names) {
+    // Accepts list[(sheet_name, col, row, kind, value)] plus the workbook's
+    // full ordered sheet-name list. `sheet_names` is what makes an empty
+    // sheet survive: the cell payload cannot describe a sheet with no cells,
+    // so a workbook's empty sheets would otherwise vanish on export.
     XLDocument doc;
     std::remove(path.c_str());
     doc.create(path);
     auto wbk = doc.workbook();
-    bool default_renamed = false;
-    std::string default_name = wbk.sheetNames().front();
+    const std::string default_name = wbk.sheetNames().front();
+    bool default_consumed = false;
 
     auto ensure_sheet = [&](const std::string& name) {
         auto current = wbk.sheetNames();
         for (auto const& s : current) {
-            if (s == name) return;
+            if (s == name) {
+                // A name that matches the auto-created default sheet is not
+                // an existing sheet the caller asked for -- it is the default
+                // itself. Claiming it here marks the default consumed, so a
+                // later sheet gets a new worksheet instead of renaming (and
+                // merging into) this one.
+                if (!default_consumed && name == default_name) {
+                    default_consumed = true;
+                }
+                return;
+            }
         }
-        if (!default_renamed) {
-            // First payload sheet: rename the auto-created default.
+        if (!default_consumed) {
+            // Reuse the auto-created default rather than leaving it as a
+            // stray empty sheet.
             wbk.sheet(default_name).setName(name);
-            default_renamed = true;
+            default_consumed = true;
             return;
         }
         wbk.addWorksheet(name);
     };
+
+    // Create every sheet the workbook has, in model order, before any cell
+    // is written. This fixes sheet order too: it no longer depends on which
+    // sheet happens to hold the first non-empty cell.
+    for (auto handle : sheet_names) {
+        ensure_sheet(nb::cast<std::string>(handle));
+    }
 
     for (auto handle : cells) {
         nb::tuple t = nb::cast<nb::tuple>(handle);
@@ -144,5 +161,6 @@ NB_MODULE(_core, m) {
     m.def("xlsx_read", &xlsx_read, nb::arg("path"),
           "Read an .xlsx file. Returns list[(col, row, text)] (zero-indexed).");
     m.def("xlsx_write", &xlsx_write, nb::arg("path"), nb::arg("cells"),
-          "Write cells to an .xlsx file. Each cell is (sheet, col, row, kind, value[, cached]); kind in {'s','n','f'} where 'f' uses value as formula text and optional cached numeric.");
+          nb::arg("sheet_names") = nb::list(),
+          "Write cells to an .xlsx file. Each cell is (sheet, col, row, kind, value[, cached]); kind in {'s','n','f'} where 'f' uses value as formula text and optional cached numeric. sheet_names lists every sheet in workbook order, so empty sheets are written too.");
 }

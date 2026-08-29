@@ -40,6 +40,10 @@ export interface Workbook {
   // (which refetch themselves and so must not bump `revision`). Derived views
   // like the status-bar aggregates watch this.
   mutations: number
+  // Bumped only when a load replaces the whole workbook. Distinct from
+  // `revision`, which many ordinary edits bump: anything keyed on workbook
+  // *identity* has to remount on a load and not on an undo.
+  loads: number
   actions: WorkbookActions
   // The app-wide user-visible channel. Anything that fails -- a bridge
   // rejection, a failed save -- reports here rather than dying silently.
@@ -68,6 +72,7 @@ export function useWorkbook(): Workbook {
   const [dirty, setDirty] = useState(false)
   const [revision, setRevision] = useState(0)
   const [mutations, setMutations] = useState(0)
+  const [loads, setLoads] = useState(0)
 
   const refresh = useCallback(async () => {
     const [d, s] = await Promise.all([bridge.dims(), bridge.sheets()])
@@ -177,6 +182,7 @@ export function useWorkbook(): Workbook {
         if (r.ok) {
           await refresh()
           setRevision((n) => n + 1)
+          setLoads((n) => n + 1)
           flash('opened')
         } else {
           fail(r.error ?? 'could not open that workbook')
@@ -267,6 +273,7 @@ export function useWorkbook(): Workbook {
     dirty,
     revision,
     mutations,
+    loads,
     actions,
     notify: flash,
     fail,

@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import math
 
 import pytest
@@ -588,6 +589,39 @@ class TestLoadReplacesTheWorkbook:
         g.recalc()
         assert g.cell(0, 0).val == 1.0
 
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("code", 123),
+            ("code", ["x"]),
+            ("code", {"a": 1}),
+            ("requires", [1]),
+            ("requires", [{"a": 1}]),
+            ("requires", ["numpy", 2]),
+        ],
+        ids=[
+            "code-number",
+            "code-array",
+            "code-object",
+            "requires-number",
+            "requires-object",
+            "requires-mixed",
+        ],
+    )
+    def test_a_malformed_field_is_rejected_not_raised(self, tmp_path, field, value):
+        """`code` reaches `ast.parse` and `requires` reaches the requirement
+        regex; both assume a string. A JSON number or object in either used to
+        raise straight out of the loader, and it raised *after* the reset, so
+        the workbook the user still had open was already gone."""
+        f = tmp_path / "bad_field.json"
+        f.write_text(json.dumps({"version": 2, field: value}))
+        g = make_grid()
+        g.setcell(0, 0, "keep")
+        g.recalc()
+
+        assert g.jsonload(str(f)) == -1
+        assert g.cell(0, 0).text == "keep"
+
     def test_a_rejected_file_leaves_the_workbook_untouched(self, tmp_path):
         """The reset sits after every failure return, so a file that is refused
         must not clear the workbook the user still has open."""
@@ -873,6 +907,63 @@ class TestStringLiteralsAreNotRewritten:
 
     def test_a_quoted_reference_is_left_alone(self):
         assert adjust_refs('="A1"', 1, 0) == '="A1"'
+
+    # Structural edits (swap/insert/delete row or column) run their own raw-text
+    # scanners, which were left out when `adjust_refs` learned to skip literals.
+
+    @staticmethod
+    def _grid():
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, '="A1"')
+        g.setcell(0, 1, '="hello A2 world"')
+        g.setcell(1, 0, "=A2*2")
+        g.setcell(1, 1, "=A1*3")
+        return g
+
+    def test_swaprow_does_not_rewrite_literals(self):
+        g = self._grid()
+        g.swaprow(0, 1)
+        assert g.cells[0][0].text == '="hello A2 world"'
+        assert g.cells[0][1].text == '="A1"'
+        # Real references outside literals still move.
+        assert g.cells[1][0].text == "=A2*3"
+        assert g.cells[1][1].text == "=A1*2"
+
+    def test_swapcol_does_not_rewrite_literals(self):
+        g = self._grid()
+        g.swapcol(0, 1)
+        assert g.cells[1][0].text == '="A1"'
+        assert g.cells[1][1].text == '="hello A2 world"'
+        assert g.cells[0][0].text == "=B2*2"
+
+    def test_insertrow_does_not_rewrite_literals(self):
+        g = self._grid()
+        g.insertrow(0)
+        assert g.cells[0][1].text == '="A1"'
+        assert g.cells[1][1].text == "=A3*2"
+
+    def test_deleterow_does_not_rewrite_literals(self):
+        g = self._grid()
+        g.deleterow(0)
+        assert g.cells[0][0].text == '="hello A2 world"'
+        assert g.cells[1][0].text == "=A1*3"
+
+    def test_insertcol_does_not_rewrite_literals(self):
+        g = self._grid()
+        g.insertcol(0)
+        assert g.cells[1][0].text == '="A1"'
+
+    def test_excel_doubled_quote_escape_survives_a_swap(self):
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, '="escaped ""A1"" here"')
+        g.setcell(0, 1, "=A1")
+        g.swaprow(0, 1)
+        assert g.cells[0][1].text == '="escaped ""A1"" here"'
+        assert g.cells[0][0].text == "=A2"
 
     def test_prose_containing_a_reference_is_left_alone(self):
         assert adjust_refs('="col A1 total"', 1, 0) == '="col A1 total"'
@@ -3319,3 +3410,91 @@ class TestEmptyCellPlaceholderIsFrozen:
         # ...and no unrelated empty cell was touched, here or anywhere else.
         assert g.cells[20][20].type == EMPTY
         assert Grid().cells[0][0].type == EMPTY
+
+
+class TestStructuralEditsRespectSheetBoundaries:
+    """A structural edit moves the lines of one sheet, so it must move exactly
+    the references that resolve against that sheet.
+
+    Both text scanners rewrote every reference in the *active* sheet's
+    formulas, qualifier or not, and never looked at the other sheets. So
+    inserting a row on Sheet1 rewrote `=Data!A2` to `=Data!A3` -- silently
+    repointing it at a cell Data never moved -- while a formula on Data reading
+    `=Sheet1!A2` was left behind. `_shift_names` already applied the right rule
+    to named ranges.
+    """
+
+    @staticmethod
+    def _grid():
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.add_sheet("Data")
+        g.set_active("Data")
+        g.setcell(0, 1, "42")  # Data!A2
+        g.setcell(1, 0, "=Sheet1!A2")  # on Data, points at the edited sheet
+        g.set_active("Sheet1")
+        g.setcell(0, 1, "7")  # Sheet1!A2
+        g.setcell(0, 0, "=Data!A2")  # on Sheet1, points at another sheet
+        g.setcell(1, 0, "=A2")  # bare, resolves against Sheet1
+        return g
+
+    def test_a_reference_to_another_sheet_does_not_move(self):
+        g = self._grid()
+        g.insertrow(0)
+        assert g.cells[0][1].text == "=Data!A2"
+        g.recalc()
+        assert g.cells[0][1].val == 42.0
+
+    def test_a_bare_reference_still_moves(self):
+        g = self._grid()
+        g.insertrow(0)
+        assert g.cells[1][1].text == "=A3"
+
+    def test_another_sheet_pointing_here_does_move(self):
+        g = self._grid()
+        g.insertrow(0)
+        assert g.sheets[1]._cells[(1, 0)].text == "=Sheet1!A3"
+        g.recalc()
+        assert g.sheets[1]._cells[(1, 0)].val == 7.0
+
+    def test_editing_the_referenced_sheet_moves_the_reference(self):
+        g = self._grid()
+        g.set_active("Data")
+        g.insertrow(0)
+        assert g.sheets[0]._cells[(0, 0)].text == "=Data!A3"
+
+    def test_quoted_sheet_names_follow_the_same_rule(self):
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.add_sheet("My Sheet")
+        g.set_active("My Sheet")
+        g.setcell(0, 1, "5")
+        g.set_active("Sheet1")
+        g.setcell(0, 0, "='My Sheet'!A2")
+        g.setcell(1, 0, "=A2")
+        g.insertrow(0)
+        # The other sheet did not move; the bare reference did.
+        assert g.cells[0][1].text == "='My Sheet'!A2"
+        assert g.cells[1][1].text == "=A3"
+        g.set_active("My Sheet")
+        g.insertrow(0)
+        assert g.sheets[0]._cells[(0, 1)].text == "='My Sheet'!A3"
+
+    def test_a_qualifier_governs_both_ends_of_a_range(self):
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.add_sheet("Data")
+        g.set_active("Sheet1")
+        g.setcell(0, 0, "=SUM(Data!A2:A5)")
+        g.setcell(1, 0, "=SUM(A2:A5)")
+        g.insertrow(0)
+        assert g.cells[0][1].text == "=SUM(Data!A2:A5)"
+        assert g.cells[1][1].text == "=SUM(A3:A6)"
+
+    def test_swap_respects_sheet_boundaries(self):
+        g = self._grid()
+        g.swaprow(0, 1)
+        assert g.cells[0][1].text == "=Data!A2"

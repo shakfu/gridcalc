@@ -134,3 +134,58 @@ test('a solve does not follow the user to another sheet', async () => {
   await waitFor(() => expect(container.querySelector('.cell-layer')).toHaveTextContent('Widget'))
   expect(container.querySelectorAll('.annot').length).toBe(0)
 })
+
+test('a renamed sheet keeps the cursor it was left on', async () => {
+  // The per-sheet view stash is keyed by sheet name, which a rename changes.
+  // It survives because the entry is written on unmount from the closure of
+  // the last render, so it lands under the new name -- an invariant worth
+  // pinning, since keying the stash differently would quietly break it.
+  const { container } = render(<App />)
+  await waitFor(() => expect(container.querySelector('.cell-layer')).toHaveTextContent('Widget'))
+  const nameBox = () => (container.querySelector('.name-box') as HTMLInputElement).value
+  const user = userEvent.setup()
+
+  ;(container.querySelector('.grid-scroll') as HTMLElement).focus()
+  await user.keyboard('{ArrowDown}{ArrowDown}{ArrowRight}')
+  expect(nameBox()).toBe('B3')
+
+  await user.click(screen.getByRole('menuitem', { name: 'Sheet' }))
+  await user.click(await screen.findByRole('menuitem', { name: /Rename/ }))
+  const input = await screen.findByLabelText('Name')
+  await user.clear(input)
+  await user.type(input, 'Renamed')
+  await user.click(screen.getByRole('button', { name: 'Rename' }))
+
+  await waitFor(() => expect(screen.getByRole('combobox', { name: 'Active sheet' })).toHaveTextContent('Renamed'))
+  await toSheet(user, 'Data')
+  await waitFor(() => expect(nameBox()).toBe('A1'))
+  await toSheet(user, 'Renamed')
+  await waitFor(() => expect(nameBox()).toBe('B3'))
+})
+
+test('reopening a workbook at the same path resets the cursor', async () => {
+  // The grid was keyed on filename alone, so a second open of the same path
+  // did not remount it and the cursor stayed where the *previous* workbook had
+  // been left -- pointing into a sheet that had since been replaced.
+  const { container } = render(<App />)
+  await waitFor(() => expect(container.querySelector('.cell-layer')).toHaveTextContent('Widget'))
+  const nameBox = () => (container.querySelector('.name-box') as HTMLInputElement).value
+  const user = userEvent.setup()
+
+  const openWorkbook = async () => {
+    await user.click(screen.getByRole('menuitem', { name: 'File' }))
+    await user.click(await screen.findByRole('menuitem', { name: /Open/ }))
+  }
+
+  await openWorkbook()
+  await waitFor(() => expect(nameBox()).toBe('A1'))
+
+  ;(container.querySelector('.grid-scroll') as HTMLElement).focus()
+  await user.keyboard('{ArrowDown}{ArrowDown}{ArrowRight}')
+  expect(nameBox()).toBe('B3')
+
+  // Same path as the previous open, so nothing about the key changes but the
+  // workbook behind it is new.
+  await openWorkbook()
+  await waitFor(() => expect(nameBox()).toBe('A1'))
+})

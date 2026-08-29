@@ -6,7 +6,8 @@ import math
 
 import pytest
 
-from gridcalc.engine import Grid
+from gridcalc import _opt as _ext
+from gridcalc.engine import Grid, Mode
 from gridcalc.formula.parser import parse
 from gridcalc.opt import (
     LinearForm,
@@ -1630,3 +1631,128 @@ def test_quadratic_applies_to_the_sheet_like_an_lp():
     )
     assert res.applied is True
     assert g.cells[0][0].val == pytest.approx(3.0, abs=1e-6)
+
+
+class TestNonFiniteModelValues:
+    """A cell holding an error value reaches the model as NaN. HiGHS rejects
+    such a model by returning a failure code, which the extension raises as
+    `RuntimeError` -- a type no caller of this module expects, and one that
+    tears down curses when it reaches the TUI."""
+
+    def _grid(self):
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, "0")  # A1 decision var
+        g.setcell(0, 1, "0")  # A2 decision var
+        return g
+
+    def test_non_finite_constraint_rhs_raises_opterror(self):
+        g = self._grid()
+        g.setcell(1, 0, "=A1+A2")  # B1 objective
+        g.setcell(2, 0, "=SQRT(-1)")  # C1 is NaN
+        g.setcell(1, 1, "=A1+A2<=C1")  # B2 constraint
+        with pytest.raises(OptError) as exc:
+            solve(g, (1, 0), [(0, 0), (0, 1)], [(1, 1)], maximize=True)
+        assert "B2" in str(exc.value)
+
+    def test_non_finite_constraint_coefficient_raises_opterror(self):
+        g = self._grid()
+        g.setcell(1, 0, "=A1+A2")
+        g.setcell(2, 0, "=SQRT(-1)")
+        g.setcell(1, 1, "=C1*A1+A2<=10")
+        with pytest.raises(OptError) as exc:
+            solve(g, (1, 0), [(0, 0), (0, 1)], [(1, 1)], maximize=True)
+        assert "B2" in str(exc.value)
+
+    def test_non_finite_objective_raises_opterror(self):
+        g = self._grid()
+        g.setcell(2, 0, "=SQRT(-1)")
+        g.setcell(1, 0, "=C1*A1+A2")  # B1 objective with NaN coefficient
+        g.setcell(1, 1, "=A1+A2<=10")
+        with pytest.raises(OptError) as exc:
+            solve(g, (1, 0), [(0, 0), (0, 1)], [(1, 1)], maximize=True)
+        assert "B1" in str(exc.value)
+
+    def test_native_runtime_error_is_normalised_to_opterror(self):
+        """The boundary wrapper must convert a native failure whatever its
+        cause, not only the NaN cases validation already catches."""
+        from gridcalc import opt as opt_mod
+
+        def boom(*a, **k):
+            raise RuntimeError("Highs_passLp failed")
+
+        orig = opt_mod._ext.solve_lp
+        opt_mod._ext.solve_lp = boom
+        try:
+            g = self._grid()
+            g.setcell(1, 0, "=A1+A2")
+            g.setcell(1, 1, "=A1+A2<=10")
+            with pytest.raises(OptError) as exc:
+                solve(g, (1, 0), [(0, 0), (0, 1)], [(1, 1)], maximize=True)
+            assert "Highs_passLp failed" in str(exc.value)
+        finally:
+            opt_mod._ext.solve_lp = orig
+
+
+class TestNativeSparseMatrixContract:
+    """The CSR/CSC arrays handed to HiGHS, pinned at the extension boundary.
+
+    A review read `_opt.cpp` as building `a_start` with one entry per row where
+    row-wise CSR needs `m + 1`, and called the result undefined behaviour. It
+    is not: the C API takes exactly `num_row` offsets and appends the nonzero
+    count itself (`Highs.cpp:582-596`, and `:633-635` for the Hessian), which
+    its own documentation states. Nothing exercised the boundary directly
+    though, so the claim could only be settled by reading vendored source.
+    These tests settle it by observation instead, and would fail if the
+    packing were ever genuinely wrong.
+    """
+
+    def test_the_final_constraint_row_is_honoured(self):
+        # Only the last row binds. Lose it and both variables run to their own
+        # limits for an objective of 20 instead of 5.
+        r = _ext.solve_lp(
+            [1.0, 1.0],
+            [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]],
+            [_ext.LE] * 3,
+            [10.0, 10.0, 5.0],
+            [0.0, 0.0],
+            [100.0, 100.0],
+            maximize=True,
+        )
+        assert r.status == _ext.OPTIMAL
+        assert r.objective == pytest.approx(5.0)
+
+    def test_every_hessian_column_is_honoured(self):
+        # min x^2 + y^2 - 4x - 6y, so Q is 2I and the optimum is (2, 3).
+        # Drop the second column and y loses its quadratic term, running to
+        # its upper bound of 100.
+        r = _ext.solve_lp(
+            [-4.0, -6.0],
+            [[1.0, 1.0]],
+            [_ext.LE],
+            [1000.0],
+            [0.0, 0.0],
+            [100.0, 100.0],
+            hessian=[[2.0, 0.0], [0.0, 2.0]],
+        )
+        assert r.status == _ext.OPTIMAL
+        assert list(r.x[:2]) == pytest.approx([2.0, 3.0], abs=1e-6)
+        assert r.objective == pytest.approx(-13.0, abs=1e-6)
+
+    def test_a_hessian_cross_term_is_honoured(self):
+        # min x^2 + y^2 + xy - 4x - 6y. The cross term is the off-diagonal of
+        # the lower triangle, so it is the entry whose column offset matters:
+        # lose it and the answer reverts to the separable (2, 3).
+        r = _ext.solve_lp(
+            [-4.0, -6.0],
+            [[1.0, 1.0]],
+            [_ext.LE],
+            [1000.0],
+            [0.0, 0.0],
+            [100.0, 100.0],
+            hessian=[[2.0, 1.0], [1.0, 2.0]],
+        )
+        assert r.status == _ext.OPTIMAL
+        assert list(r.x[:2]) == pytest.approx([2 / 3, 8 / 3], abs=1e-6)
+        assert r.objective == pytest.approx(-28 / 3, abs=1e-6)

@@ -15,7 +15,7 @@ from gridcalc.formula.ast_nodes import (
     String,
     UnaryOp,
 )
-from gridcalc.formula.errors import ExcelError
+from gridcalc.formula.errors import ExcelError, FormulaError
 from gridcalc.formula.parser import ParseError, parse
 
 
@@ -253,3 +253,64 @@ class TestParseErrors:
     def test_range_needs_cellref_after_colon(self):
         with pytest.raises(ParseError):
             parse("A1:5")
+
+
+class TestQuotedSheetNames:
+    """`'My Sheet'!A1` is the standard way to name a sheet whose name is not
+    an identifier. A sheet with a space was creatable and importable from xlsx
+    but could not be referenced from any formula, which made it unreachable."""
+
+    def test_quoted_sheet_cellref(self):
+        n = parse("'My Sheet'!A1")
+        assert isinstance(n, CellRef)
+        assert n.sheet == "My Sheet"
+
+    def test_quoted_sheet_range(self):
+        n = parse("'My Sheet'!A1:B2")
+        assert isinstance(n, RangeRef)
+        assert n.start.sheet == "My Sheet"
+
+    def test_doubled_apostrophe_is_a_literal_apostrophe(self):
+        n = parse("'It''s'!A1")
+        assert isinstance(n, CellRef)
+        assert n.sheet == "It's"
+
+    def test_quoted_sheet_inside_a_call(self):
+        n = parse("SUM('My Sheet'!A1:A3)")
+        assert isinstance(n, Call)
+
+    def test_unquoted_sheet_still_parses(self):
+        n = parse("MySheet!A1")
+        assert isinstance(n, CellRef)
+        assert n.sheet == "MySheet"
+
+    def test_unterminated_quote_is_an_error(self):
+        with pytest.raises((FormulaError, ParseError)):
+            parse("'My Sheet!A1")
+
+
+class TestBooleanCallForm:
+    """Excel spells the boolean literals both `TRUE` and `TRUE()`. The lexer
+    resolves the bare word to a BOOL token before any function name is
+    considered, so the call form has to be accepted where the literal is."""
+
+    @pytest.mark.parametrize("src,expected", [("TRUE()", True), ("FALSE()", False)])
+    def test_call_form_is_the_literal(self, src, expected):
+        n = parse(src)
+        assert isinstance(n, Bool)
+        assert n.value is expected
+
+    @pytest.mark.parametrize("src,expected", [("TRUE", True), ("FALSE", False)])
+    def test_bare_form_still_works(self, src, expected):
+        n = parse(src)
+        assert isinstance(n, Bool)
+        assert n.value is expected
+
+    def test_call_form_nests(self):
+        assert isinstance(parse("IF(TRUE(),1,2)"), Call)
+
+    def test_arguments_do_not_make_it_a_literal(self):
+        """Only the empty call form is the literal. `TRUE(1)` stays a generic
+        application, which the evaluator refuses with #VALUE! -- Excel's
+        answer too."""
+        assert not isinstance(parse("TRUE(1)"), Bool)

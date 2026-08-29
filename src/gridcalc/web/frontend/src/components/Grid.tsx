@@ -444,9 +444,13 @@ export function Grid({
   const copySelection = useCallback(
     async (cut: boolean) => {
       const s = selRect(curRef.current, anchorRef.current)
-      // A cut mutates (it clears the source on paste), a copy does not.
-      const run = cut ? mutate : guard
-      const res = await run(cut ? 'cut' : 'copy', () =>
+      // Neither a cut nor a copy changes a cell: both only fill the engine's
+      // clipboard buffer, and a cut clears its source later, during the paste
+      // that consumes it. Announcing a mutation here marked the workbook dirty
+      // for a cut the user then cancelled, so closing warned about unsaved
+      // changes that did not exist. `paste` is what mutates, and it already
+      // reports it.
+      const res = await guard(cut ? 'cut' : 'copy', () =>
         bridge.copy(s.r0, s.c0, s.r1, s.c1, cut),
       )
       if (!res) return
@@ -458,7 +462,7 @@ export function Grid({
       }
       if (cut) await refresh()
     },
-    [guard, mutate, refresh],
+    [guard, refresh],
   )
 
   const pasteAt = useCallback(async () => {

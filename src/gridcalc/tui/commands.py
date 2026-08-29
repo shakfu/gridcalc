@@ -31,6 +31,7 @@ from ..sandbox import (
     SANDBOX_ENABLED,
     FileInfo,
     LoadPolicy,
+    _parse_requirement,
     classify_module,
     inspect_file,
 )
@@ -317,6 +318,15 @@ def trust_prompt(stdscr: curses.window, filename: str, info: FileInfo) -> LoadPo
                 stdscr.addnstr(y, 0, io_mods, curses.COLS - 1)
                 stdscr.attroff(curses.color_pair(CP_LOCKED))
                 y += 1
+            if info.unknown_modules:
+                # Shown on its own line because "not on any list" is a risk
+                # statement, not the absence of one: an unclassified module
+                # is unreviewed, not known-safe.
+                stdscr.attron(curses.color_pair(CP_LOCKED))
+                unk = f"  Unknown:  {', '.join(info.unknown_modules)}"
+                stdscr.addnstr(y, 0, unk, curses.COLS - 1)
+                stdscr.attroff(curses.color_pair(CP_LOCKED))
+                y += 1
 
         if info.has_code:
             stdscr.addnstr(y, 0, f"  Code:     {info.code_lines} lines", curses.COLS - 1)
@@ -324,6 +334,8 @@ def trust_prompt(stdscr: curses.window, filename: str, info: FileInfo) -> LoadPo
 
         y += 1
         prompt = "[a]pprove  [f]ormulas only"
+        if info.unknown_modules:
+            prompt += "  [u] approve incl. unknown"
         if info.has_code:
             prompt += "  [v]iew code"
         prompt += "  [c]ancel"
@@ -331,9 +343,19 @@ def trust_prompt(stdscr: curses.window, filename: str, info: FileInfo) -> LoadPo
         stdscr.refresh()
 
         ch = stdscr.getch()
-        if ch == ord("a"):
-            approved = [m for m in info.requires if classify_module(m) != "blocked"]
-            return LoadPolicy(load_code=True, approved_modules=approved)
+        if ch == ord("a") or (ch == ord("u") and info.unknown_modules):
+            # `a` approves what the lists vouch for. Loading an unclassified
+            # module is a second, deliberate answer (`u`) rather than a
+            # by-product of approving the file: the blocklist names only the
+            # dangers known when it was written, so "not blocked" was never
+            # the same claim as "safe".
+            allow_unknown = ch == ord("u")
+            approved = [
+                m for m in info.requires if classify_module(_parse_requirement(m)[0]) != "blocked"
+            ]
+            return LoadPolicy(
+                load_code=True, approved_modules=approved, allow_unknown=allow_unknown
+            )
         elif ch == ord("f"):
             return LoadPolicy.formulas_only()
         elif ch == ord("v") and info.has_code:
@@ -364,10 +386,20 @@ def cmd_open(stdscr: curses.window, g: Grid, args: str) -> bool:
         else:
             policy = LoadPolicy.trust_all(info.requires)
 
-    g.clear_all()
-    g.names = []
-    g.code = ""
-    if g.jsonload(fn, policy=policy) == 0:
+    # No pre-clear: `jsonload` performs its own (wider) reset once the file
+    # is known to be loadable, and every rejection returns before it. Clearing
+    # here first meant any unreadable or malformed file left the user holding
+    # an empty workbook -- the open failed *and* took the open sheet with it.
+    try:
+        rc = g.jsonload(fn, policy=policy)
+    except Exception as exc:  # noqa: BLE001
+        # Defence in depth. `jsonload` is documented to report failure by
+        # returning -1, but it runs a recalc over file-supplied formulas; an
+        # uncaught exception here tears down curses and takes the user's
+        # unsaved sheet with it.
+        show_error(stdscr, f"Failed to load: {fn} ({type(exc).__name__}). Press any key.")
+        return False
+    if rc == 0:
         g.filename = fn
         g.dirty = 0
     else:

@@ -20,7 +20,7 @@ Two frictions the current layout imposes on *any* non-curses frontend:
 
 - **Zero-runtime-dependency ethos.** The core install has no third-party runtime deps (numpy/pandas are optional extras). Every GUI option adds a heavy dependency; the containment strategy is an optional extra (`pip install gridcalc[gui]`), keeping the terminal build lean.
 
-- **C++ extensions pin us to CPython.** `_core` (OpenXLSX) and `_opt` (lp_solve) are nanobind C++ modules. This rules out running the engine *in the browser* via Pyodide/WASM without an emscripten rebuild of both vendored libraries -- a large, separate effort. It does **not** affect any option that keeps the engine on a real CPython process.
+- **C++ extensions pin us to CPython.** `_core` (OpenXLSX) and `_opt` (HiGHS) are nanobind C++ modules. This rules out running the engine *in the browser* via Pyodide/WASM without an emscripten rebuild of both vendored libraries -- a large, separate effort. It does **not** affect any option that keeps the engine on a real CPython process.
 
 ## The alternatives
 
@@ -82,7 +82,7 @@ The engine runs server-side (reused verbatim, C++ extensions and all); the brows
 
 ### 4. Web in the browser via WASM/Pyodide -- rejected (for now)
 
-Running the *engine itself* in the browser is blocked: `_core` (OpenXLSX) and `_opt` (lp_solve) are C++ extensions with no Pyodide build. Getting there means emscripten-compiling both vendored libraries, or shipping degraded pure-Python fallbacks that lose xlsx and optimization. Not worth it against the server-backed web option, which reuses the extensions unchanged.
+Running the *engine itself* in the browser is blocked: `_core` (OpenXLSX) and `_opt` (HiGHS) are C++ extensions with no Pyodide build. Getting there means emscripten-compiling both vendored libraries, or shipping degraded pure-Python fallbacks that lose xlsx and optimization. Not worth it against the server-backed web option, which reuses the extensions unchanged.
 
 ### 5. Terminal graphics (Kitty / iTerm image protocol, sixel) -- complementary
 

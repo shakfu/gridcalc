@@ -159,6 +159,14 @@ class _Parser:
             return String(t.value)
         if t.kind == BOOL:
             self._advance()
+            # `TRUE()` and `FALSE()` are Excel's function spellings of the same
+            # literals. The lexer resolves the bare words to BOOL before a
+            # function name is ever considered, so the call form has to be
+            # accepted here or it parses as a literal followed by stray
+            # parentheses.
+            if self._peek().kind == LPAREN and self.tokens[self.i + 1].kind == RPAREN:
+                self._advance()
+                self._advance()
             return Bool(t.value)
         if t.kind == ERROR_LIT:
             self._advance()

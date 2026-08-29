@@ -29,9 +29,11 @@ Modules are classified into three categories:
 
 - **Safe** (compute-only, no meaningful side effects): `numpy`, `scipy`, `sympy`, `decimal`, `fractions`, `statistics`, `cmath`, `itertools`, `functools`, `operator`, `collections`. These are injected directly (e.g., `np` for numpy).
 
-- **Side-effect** (can do I/O but are commonly needed): `matplotlib`, `pandas`, `csv`, `openpyxl`. These are injected but flagged at the trust prompt.
+- **Side-effect** (can do I/O but are commonly needed): `matplotlib`, `matplotlib.pyplot`, `pandas`, `csv`, `xlsxwriter`. These are injected but flagged at the trust prompt.
 
 - **Blocked** (filesystem, network, process control): `os`, `sys`, `subprocess`, `shutil`, `pathlib`, `socket`, `http`, `importlib`, `ctypes`, `pickle`, etc. Never injected, even if requested.
+
+- **Unknown** (everything else): refused unless the user approves them as a separate, deliberate answer at the trust prompt. The blocklist names the dangers known when it was written, so "not blocked" was never the same claim as "safe" -- `runpy` runs a Python file and `sqlite3` writes one, and neither appears above. The refusal precedes the import, so a module with an import-time side effect does not get to run before being turned down.
 
 Common aliases are applied automatically: `numpy` -> `np`, `pandas` -> `pd`, `matplotlib.pyplot` -> `plt`.
 
@@ -126,6 +128,8 @@ Files without `requires` are fully backward compatible.
 
 - If the user approves a file and numpy is available, a formula could still call `np.save('/tmp/exfil', data)`. The trust gate is the real security boundary; AST validation reduces blast radius but cannot prevent all side effects of approved libraries.
 
+- There is no resource boundary. Workbook code runs in the application's own process, and AST validation permits loops, comprehensions, and large allocations, because none of those is distinguishable from legitimate computation by inspecting the syntax tree. `while True: pass` hangs the application and an unbounded allocation exhausts its memory. Containing this needs a worker process with wall-clock and memory limits, not a stricter validator: the four layers above address what untrusted code can *reach*, not how long it may run. Until that exists, an approved workbook is trusted with the session's availability as well as its data.
+
 - Code blocks (`:e` editor) run unrestricted. This is intentional -- the user is the trust boundary. Code blocks from JSON files require explicit approval.
 
 - Named ranges that shadow module aliases (e.g., a range named `np`) will override the module in the eval namespace. This is documented behavior.
@@ -138,6 +142,6 @@ Files without `requires` are fully backward compatible.
 
 - `gridcalc/engine.py` -- integration (validate_formula in recalc, requires in Grid, jsoninspect, policy-aware jsonload)
 
-- `gridcalc/tui.py` -- trust gate prompts (curses and terminal)
+- `gridcalc/tui/commands.py` -- trust gate prompt
 
 - `tests/test_sandbox.py` -- comprehensive tests

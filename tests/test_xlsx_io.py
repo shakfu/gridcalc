@@ -244,3 +244,64 @@ def test_example_multisheet_xlsx_roundtrip_preserves_formulas(tmp_path):
     # Cached value is also written so data_only readers see a number.
     wb_v = openpyxl.load_workbook(str(dst), data_only=True)
     assert wb_v["Summary"].cell(row=2, column=1).value == expected_total
+
+
+def test_xlsxsave_keeps_default_sheet1_alongside_another_sheet(tmp_path):
+    # The default sheet name is the one nobody renames. Because OpenXLSX also
+    # calls its auto-created sheet "Sheet1", the export used to treat the first
+    # payload sheet as "already present", leave the default unclaimed, and then
+    # rename it to the *second* sheet -- merging both sheets into one.
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    assert g.sheet_names() == ["Sheet1"]
+    g.setcell(0, 0, "111")
+    g.add_sheet("Data")
+    g.set_active("Data")
+    g.setcell(0, 0, "222")
+    f = tmp_path / "default_first.xlsx"
+    assert g.xlsxsave(str(f)) == 0
+
+    wb = openpyxl.load_workbook(str(f))
+    assert wb.sheetnames == ["Sheet1", "Data"]
+    assert wb["Sheet1"].cell(row=1, column=1).value == 111.0
+    assert wb["Data"].cell(row=1, column=1).value == 222.0
+
+
+def test_xlsxsave_writes_empty_sheets(tmp_path):
+    # A sheet with no cells contributes nothing to the cell payload, so the
+    # writer needs the workbook's sheet list to know it exists at all.
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    g.rename_sheet("Sheet1", "Inputs")
+    g.setcell(0, 0, "1")
+    g.add_sheet("Blank")
+    g.add_sheet("Outputs")
+    g.set_active("Outputs")
+    g.setcell(0, 0, "2")
+    f = tmp_path / "with_empty.xlsx"
+    assert g.xlsxsave(str(f)) == 0
+
+    wb = openpyxl.load_workbook(str(f))
+    assert wb.sheetnames == ["Inputs", "Blank", "Outputs"]
+    assert wb["Blank"].max_row == 1
+    assert wb["Blank"].cell(row=1, column=1).value is None
+
+
+def test_xlsxsave_preserves_sheet_order_when_first_sheet_is_empty(tmp_path):
+    # Sheet order must follow the workbook model, not whichever sheet holds
+    # the first non-empty cell.
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    g.rename_sheet("Sheet1", "Cover")
+    g.add_sheet("Body")
+    g.set_active("Body")
+    g.setcell(0, 0, "7")
+    f = tmp_path / "order.xlsx"
+    assert g.xlsxsave(str(f)) == 0
+
+    wb = openpyxl.load_workbook(str(f))
+    assert wb.sheetnames == ["Cover", "Body"]
+    assert wb["Body"].cell(row=1, column=1).value == 7.0

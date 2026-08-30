@@ -28,6 +28,23 @@ The [function coverage audit](../function_coverage.md) tracks the library agains
 
 **PYTHON-only extras**: the `math` module, Python builtins (`sum`, `min`, `max`, `abs`, `len`), list comprehensions, and -- when the relevant extras are installed -- `np.array(...)`, `np.linalg`, matrix multiply (`@`), and `pd.DataFrame(...)`.
 
+![A cell holding =np.array([[1,2],[3,4]]); the status line reads ndarray(2, 2) [1, 2, 3, 4]](../media/terminal-large-ndarray.png)
+
+*PYTHON mode: B19 holds a numpy array. The cell shows the shape badge `[2x2]`; the status line shows the value.*
+
+## Array cells
+
+In PYTHON mode an array stays in the one cell that produced it instead of spilling across its neighbours. That cell shows a badge, not the contents:
+
+| Value | Cell shows | Example |
+|---|---|---|
+| `Vec` | first element and length | `13750[4]` |
+| 1D ndarray | length | `[4]` |
+| 2D ndarray | rows and columns | `[2x2]` |
+| DataFrame | rows and columns | `df[4x3]` |
+
+The status line prints the full value for the cursor cell. Press `E` on a `Vec`, ndarray, or DataFrame cell to open the object editor and edit elements in a sub-grid.
+
 ## Named ranges and custom functions
 
 ```text

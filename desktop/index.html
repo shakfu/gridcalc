@@ -438,6 +438,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#workbooks-that-carry-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workbooks that carry code
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#not-there-yet" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1504,6 +1515,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#workbooks-that-carry-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workbooks that carry code
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#not-there-yet" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1559,9 +1581,14 @@
 <h2 id="optimization">Optimization<a class="headerlink" href="#optimization" title="Permanent link">&para;</a></h2>
 <p>This is where the desktop app goes past the terminal. <code>Optimize</code> reads a model off a selected block or loads one saved in the workbook (the same models <code>:opt run</code> executes), solves it, and then <strong>paints the result onto the sheet</strong>: the objective, the decision cells, and each constraint marked binding or slack, with shadow prices and RHS ranging in the hover text. A shadow price means considerably more sitting on the constraint row it belongs to than in a column of cell references.</p>
 <p><code>Goal Seek</code> and a parametric <code>Sweep</code> -- the objective plotted against a constraint's right-hand side, breakpoints marked -- round it out.</p>
+<p><img alt="The desktop app: the Optimize dialog reporting an optimal solve with shadow prices and RHS ranging" src="../media/webview.png" /></p>
+<p><em><code>gridcalc-web example_lp.json</code> after <code>Optimize</code>: the decision cells are green on the sheet behind the dialog, and the constraint table carries the shadow prices and the range each right-hand side may take before the basis changes.</em></p>
+<h2 id="workbooks-that-carry-code">Workbooks that carry code<a class="headerlink" href="#workbooks-that-carry-code" title="Permanent link">&para;</a></h2>
+<p>A JSON workbook can hold a Python code block, and HYBRID and PYTHON mode formulas call into it. Opening one is a decision, not a default: the file loads <em>formulas only</em>, and a dialog reports what it would run -- the cell and formula counts, the modules it names split by how much is known about each, and the code itself. Nothing has been executed to produce any of that; the file is parsed, not run.</p>
+<p>Three answers. <strong>Run code</strong> loads it and the sheet recalculates against it. <strong>Formulas only</strong> leaves it withheld, and cells that call into it keep their error state. <strong>Cancel</strong> loads nothing at all -- or, for a workbook named on the command line, leaves the formulas-only view already on screen. Modules that no list classifies need a second, separate answer: approving the file vouches for what the lists know about, and an unclassified module is unreviewed rather than known-safe. The reasoning is in the <a href="../security-plan/">security plan</a>; the curses frontend asks the same question at its own prompt.</p>
+<p>Turning the sandbox off (<code>GRIDCALC_SANDBOX=0</code>, or <code>sandbox = false</code> in the config) removes the question along with the protection: the code loads unasked, as it does in the terminal.</p>
 <h2 id="not-there-yet">Not there yet<a class="headerlink" href="#not-there-yet" title="Permanent link">&para;</a></h2>
 <p>The object editor for Vec/ndarray/DataFrame cells, code-block editing (<code>:e</code>), pandas import/export, and <code>:move</code>/<code>:replicate</code>.</p>
-<p>Workbooks in HYBRID or PYTHON mode load <em>formulas only</em> -- their code block is never executed, so code-dependent cells show an error state until a trust flow exists.</p>
 <p>See the <a href="../web/">web frontend design note</a> for the full parity table and <a href="../gui/">GUI direction</a> for why this direction was chosen over the alternatives.</p>
 
 

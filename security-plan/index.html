@@ -1900,7 +1900,11 @@
 <p><code>gridcalc/engine.py</code> -- integration (validate_formula in recalc, requires in Grid, jsoninspect, policy-aware jsonload)</p>
 </li>
 <li>
-<p><code>gridcalc/tui/commands.py</code> -- trust gate prompt</p>
+<p><code>gridcalc/tui/commands.py</code> -- trust gate prompt (curses)</p>
+</li>
+<li>
+<p><code>gridcalc/web/frontend/src/components/TrustDialog.tsx</code> -- the same gate in the desktop app;
+  <code>gridcalc/loader.py:needs_trust</code> decides when either frontend must ask</p>
 </li>
 <li>
 <p><code>tests/test_sandbox.py</code> -- comprehensive tests</p>

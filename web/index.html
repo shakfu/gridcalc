@@ -1935,7 +1935,7 @@
 <p><strong>P3 is untouched.</strong> No frozen builds, no per-platform QA, no signing. The IME/CJK and accessibility claims from Section 5e remain unvalidated in a real webview; the grid still has no ARIA grid semantics.</p>
 </li>
 <li>
-<p><strong>Security is unchanged and deliberately so</strong>: formulas-only, Section 5a option 1. No trust flow, no <code>load_code=True</code>.</p>
+<p><strong>Security now has the trust flow</strong> Section 5a called for. Formulas-only is still what an unanswered open loads; a workbook carrying code raises a dialog reporting what it would run, and its answer becomes the <code>LoadPolicy</code> the load uses. <code>inspect_file</code> disclosure, the blocked/I-O/unknown split, and the separate answer for unclassified modules all match the curses prompt.</p>
 </li>
 </ul>
 <h2 id="1-the-premise-challenged">1. The premise, challenged<a class="headerlink" href="#1-the-premise-challenged" title="Permanent link">&para;</a></h2>
@@ -1971,7 +1971,7 @@
 <p><strong>A ~500-line inline HTML/JS string</strong> (<code>_HTML</code> in <code>web/__init__.py</code>). No lint, no type-check, no module boundaries, no source maps -- invisible to every quality gate that guards the Python. This is the single biggest maintainability liability (Section 5c).</p>
 </li>
 <li>
-<p><strong>Security punted.</strong> <code>open_file</code> hardcodes <code>LoadPolicy.formulas_only()</code> (<code>loader.py</code>); code blocks are never run, no trust UI, no <code>inspect_file</code> disclosure. Fine for a spike, a product-defining hole otherwise (Section 5a).</p>
+<p>~~<strong>Security punted.</strong> <code>open_file</code> hardcodes <code>LoadPolicy.formulas_only()</code> (<code>loader.py</code>); code blocks are never run, no trust UI, no <code>inspect_file</code> disclosure. Fine for a spike, a product-defining hole otherwise (Section 5a).~~ Closed: <code>open_file</code> takes a policy, <code>inspect</code>/<code>pending_trust</code> report the decision, and <code>TrustDialog</code> asks it.</p>
 </li>
 <li>
 <p><strong>No error surface.</strong> <code>Api</code> methods return <code>{ok: false}</code> shapes the client largely ignores; a failed save/open/recalc has no user-visible channel beyond an ad-hoc <code>flashSave</code>.</p>
@@ -2066,9 +2066,14 @@
 <td><code>[A]</code> pandas, dialogs</td>
 </tr>
 <tr>
-<td>Code block edit (<code>:e</code>) + trust prompt</td>
+<td>Code block trust prompt</td>
+<td>Yes (dialog)</td>
+<td>--</td>
+</tr>
+<tr>
+<td>Code block edit (<code>:e</code>)</td>
 <td>No</td>
-<td><code>[E-security]</code> gated on 5a</td>
+<td><code>[A]</code></td>
 </tr>
 </tbody>
 </table>

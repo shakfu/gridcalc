@@ -525,6 +525,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#array-cells" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Array cells
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#named-ranges-and-custom-functions" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1473,6 +1484,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#array-cells" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Array cells
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#named-ranges-and-custom-functions" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1540,6 +1562,42 @@
 <p><strong>Excel-compatible library</strong> (auto-loaded in <code>EXCEL</code> and <code>HYBRID</code>): <code>IF</code>, <code>IFERROR</code>, <code>AND</code>, <code>OR</code>, <code>NOT</code>, <code>ROUND</code>, <code>AVERAGE</code>, <code>MEDIAN</code>, <code>SUMIF</code>, <code>COUNTIF</code>, <code>AVERAGEIF</code>, <code>LET</code>, <code>VLOOKUP</code>, <code>HLOOKUP</code>, <code>XLOOKUP</code>, <code>XMATCH</code>, <code>INDEX</code>, <code>MATCH</code>, <code>FILTER</code>, <code>SORT</code>, <code>UNIQUE</code>, <code>SEQUENCE</code>, <code>CONCATENATE</code>, <code>LEFT</code>, <code>RIGHT</code>, <code>MID</code>, <code>LEN</code>, <code>TRIM</code>, <code>UPPER</code>, <code>LOWER</code>, <code>SUBSTITUTE</code>, and 280 others. Dynamic-array functions return whole rows and columns and compose: <code>=INDEX(SORT(A1:B9), 1, 2)</code>.</p>
 <p>The <a href="../../function_coverage/">function coverage audit</a> tracks the library against Microsoft's documented function set, including what is deliberately absent.</p>
 <p><strong>PYTHON-only extras</strong>: the <code>math</code> module, Python builtins (<code>sum</code>, <code>min</code>, <code>max</code>, <code>abs</code>, <code>len</code>), list comprehensions, and -- when the relevant extras are installed -- <code>np.array(...)</code>, <code>np.linalg</code>, matrix multiply (<code>@</code>), and <code>pd.DataFrame(...)</code>.</p>
+<p><img alt="A cell holding =np.array([[1,2],[3,4]]); the status line reads ndarray(2, 2) [1, 2, 3, 4]" src="../../media/terminal-large-ndarray.png" /></p>
+<p><em>PYTHON mode: B19 holds a numpy array. The cell shows the shape badge <code>[2x2]</code>; the status line shows the value.</em></p>
+<h2 id="array-cells">Array cells<a class="headerlink" href="#array-cells" title="Permanent link">&para;</a></h2>
+<p>In PYTHON mode an array stays in the one cell that produced it instead of spilling across its neighbours. That cell shows a badge, not the contents:</p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Cell shows</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Vec</code></td>
+<td>first element and length</td>
+<td><code>13750[4]</code></td>
+</tr>
+<tr>
+<td>1D ndarray</td>
+<td>length</td>
+<td><code>[4]</code></td>
+</tr>
+<tr>
+<td>2D ndarray</td>
+<td>rows and columns</td>
+<td><code>[2x2]</code></td>
+</tr>
+<tr>
+<td>DataFrame</td>
+<td>rows and columns</td>
+<td><code>df[4x3]</code></td>
+</tr>
+</tbody>
+</table>
+<p>The status line prints the full value for the cursor cell. Press <code>E</code> on a <code>Vec</code>, ndarray, or DataFrame cell to open the object editor and edit elements in a sub-grid.</p>
 <h2 id="named-ranges-and-custom-functions">Named ranges and custom functions<a class="headerlink" href="#named-ranges-and-custom-functions" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>:name revenue A1:A12       Define a named range (workbook-global)
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>:names                     List

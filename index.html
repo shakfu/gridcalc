@@ -1562,6 +1562,10 @@
 <h1 id="gridcalc">gridcalc<a class="headerlink" href="#gridcalc" title="Permanent link">&para;</a></h1>
 <p>A programmable spreadsheet for developers and technical users, with Excel-ish formulas, Python escape hatches, XLSX interop, goal seek, and LP/MIP solving. It ships <strong>two frontends over one engine</strong>: a curses terminal app, and a desktop window that renders the same workbook in a webview.</p>
 <p>Inspired by Serge Zaitsev's <a href="https://github.com/zserge/kalk">kalk</a>.</p>
+<p><img alt="The terminal app: a sales report with IF/MATCH formulas, named ranges, and two spilled array results" src="media/terminal-large.png" /></p>
+<p><em>The terminal app over <code>example_excel.json</code>. The <a href="tour/">quick tour</a> walks through it.</em></p>
+<p><img alt="The desktop app: the Optimize dialog reporting an optimal solve with shadow prices and RHS ranging" src="media/webview.png" /></p>
+<p><em>The <a href="desktop/">desktop app</a> solving <code>example_lp.json</code> -- the solution is written to the sheet behind the dialog.</em></p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span>gridcalc
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>gridcalc<span class="w"> </span>budget.json<span class="w">        </span><span class="c1"># terminal</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>gridcalc-web<span class="w"> </span>budget.json<span class="w">    </span><span class="c1"># desktop window  (needs the [web] extra)</span>

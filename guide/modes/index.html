@@ -1444,6 +1444,8 @@
 </tr>
 </tbody>
 </table>
+<p><img alt="The terminal app in PYTHON mode: cell F3 holds =tax(B3), a function defined in the workbook code block" src="../../media/terminal-large-python.png" /></p>
+<p><em><code>examples/example.json</code> in PYTHON mode. F3 calls <code>tax</code>, defined in the workbook code block with <code>:e</code>; the mode badge is top right.</em></p>
 <p>Switch with <code>:mode &lt;name&gt;</code>. The change is refused if any current formula does not parse in the target mode.</p>
 <p>Files without an explicit <code>mode</code> field load as <code>PYTHON</code>, for backwards compatibility with workbooks written before modes existed. <code>:xlsx load</code> switches to <code>EXCEL</code> automatically, since an imported workbook's formulas are Excel formulas by definition.</p>
 <p>The mode also decides which recalculation engine runs: EXCEL and HYBRID use a dependency graph derived from the parsed formula ASTs and evaluate in topological order, while PYTHON iterates to a fixed point. See <a href="../../topological/">Topological recalc</a> for why, and <a href="../../security-plan/">Security plan</a> for what the sandbox does on each path.</p>

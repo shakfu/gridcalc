@@ -8,6 +8,10 @@ Each workbook has one of three evaluation modes, controlling which formulas pars
 | `HYBRID` | Excel + `py.*` | code-block functions reachable as `py.foo(...)` | code blocks only | most new sheets |
 | `PYTHON` | Python `eval()` | full Python expressions | full AST sandbox | numpy/pandas-heavy work |
 
+![The terminal app in PYTHON mode: cell F3 holds =tax(B3), a function defined in the workbook code block](../media/terminal-large-python.png)
+
+*`examples/example.json` in PYTHON mode. F3 calls `tax`, defined in the workbook code block with `:e`; the mode badge is top right.*
+
 Switch with `:mode <name>`. The change is refused if any current formula does not parse in the target mode.
 
 Files without an explicit `mode` field load as `PYTHON`, for backwards compatibility with workbooks written before modes existed. `:xlsx load` switches to `EXCEL` automatically, since an imported workbook's formulas are Excel formulas by definition.

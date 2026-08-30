@@ -91,13 +91,21 @@
       {"v": "Range arithmetic", "bold": true}
     ],
     [
-      "Sales - Targets:",
-      "=sales - targets"
+      null,
+      {"v": "Sales - Targets", "bold": true},
+      null,
+      {"v": "Discounted (95%)", "bold": true}
     ],
     [
-      "Discounted (95%):",
+      null,
+      "=sales - targets",
+      null,
       "=sales * 0.95"
     ],
+    [],
+    [],
+    [],
+    [],
     [
       "Total uplift:",
       "=SUM(sales * 1.1) - SUM(sales)"

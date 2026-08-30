@@ -14,7 +14,7 @@ The body below is unchanged from when it was written; this section records where
 
 - **P3 is untouched.** No frozen builds, no per-platform QA, no signing. The IME/CJK and accessibility claims from Section 5e remain unvalidated in a real webview; the grid still has no ARIA grid semantics.
 
-- **Security is unchanged and deliberately so**: formulas-only, Section 5a option 1. No trust flow, no `load_code=True`.
+- **Security now has the trust flow** Section 5a called for. Formulas-only is still what an unanswered open loads; a workbook carrying code raises a dialog reporting what it would run, and its answer becomes the `LoadPolicy` the load uses. `inspect_file` disclosure, the blocked/I-O/unknown split, and the separate answer for unclassified modules all match the curses prompt.
 
 ## 1. The premise, challenged
 
@@ -42,7 +42,7 @@ Spike-grade, must change:
 
 - **A ~500-line inline HTML/JS string** (`_HTML` in `web/__init__.py`). No lint, no type-check, no module boundaries, no source maps -- invisible to every quality gate that guards the Python. This is the single biggest maintainability liability (Section 5c).
 
-- **Security punted.** `open_file` hardcodes `LoadPolicy.formulas_only()` (`loader.py`); code blocks are never run, no trust UI, no `inspect_file` disclosure. Fine for a spike, a product-defining hole otherwise (Section 5a).
+- ~~**Security punted.** `open_file` hardcodes `LoadPolicy.formulas_only()` (`loader.py`); code blocks are never run, no trust UI, no `inspect_file` disclosure. Fine for a spike, a product-defining hole otherwise (Section 5a).~~ Closed: `open_file` takes a policy, `inspect`/`pending_trust` report the decision, and `TrustDialog` asks it.
 
 - **No error surface.** `Api` methods return `{ok: false}` shapes the client largely ignores; a failed save/open/recalc has no user-visible channel beyond an ad-hoc `flashSave`.
 
@@ -72,7 +72,8 @@ Engine support already exists for nearly all of this; the gap is `Api` surface
 | Move row/column (`swaprow`/`swapcol`) | No | registry entry + drag gesture |
 | Object editor for Vec/ndarray/DataFrame cells (`tui/objedit.py`) | No | `[A]` `[C]` larger |
 | xlsx / csv / pandas import-export | save by ext; open JSON/xlsx/csv | `[A]` pandas, dialogs |
-| Code block edit (`:e`) + trust prompt | No | `[E-security]` gated on 5a |
+| Code block trust prompt | Yes (dialog) | -- |
+| Code block edit (`:e`) | No | `[A]` |
 
 Takeaway: two clusters carry most of the product value -- **optimization (`:opt`/`:goal`)** and **format/structure editing (rows, cols, styles, named ranges)**. Both are almost entirely "wire an `Api` method to existing engine calls + build client UI." The engine is ready.
 

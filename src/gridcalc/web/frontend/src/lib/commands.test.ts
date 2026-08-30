@@ -12,6 +12,7 @@ function stubDeps(): RegistryDeps {
       open: asyncNoop, save: asyncNoop, saveAs: asyncNoop, undo: asyncNoop, redo: asyncNoop,
       setSheet: asyncNoop, addSheet: asyncNoop, deleteSheet: asyncNoop, renameSheet: asyncNoop,
       moveSheet: asyncNoop, runCommand: asyncNoop, format: asyncNoop, setDefaultFormat: asyncNoop,
+      resolveTrust: asyncNoop,
     },
     commands: { cut: noop, copy: noop, paste: noop, clear: noop, fillDown: noop, fillRight: noop },
     structure: null,

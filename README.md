@@ -6,6 +6,14 @@ A programmable spreadsheet for developers and technical users, with Excel-ish fo
 
 Inspired by Serge Zaitsev's [kalk](https://github.com/zserge/kalk).
 
+![The terminal app: a sales report with IF/MATCH formulas, named ranges, and two spilled array results](https://raw.githubusercontent.com/shakfu/gridcalc/main/docs/media/terminal-large.png)
+
+*The terminal app over `example_excel.json`.*
+
+![The desktop app: the Optimize dialog reporting an optimal solve with shadow prices and RHS ranging](https://raw.githubusercontent.com/shakfu/gridcalc/main/docs/media/webview.png)
+
+*The desktop app solving `example_lp.json` -- the solution is written to the sheet behind the dialog.*
+
 ```sh
 pip install gridcalc
 gridcalc budget.json        # terminal

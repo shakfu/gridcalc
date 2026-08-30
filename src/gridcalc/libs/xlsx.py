@@ -831,6 +831,10 @@ def ISBLANK(x: Any) -> bool:
 
 
 def ISERROR(x: Any) -> bool:
+    # The NaN arm is not a stand-in for a lost error code -- a reference now
+    # carries the code -- but for the values Excel has no name for: a HYBRID
+    # `py.*` function returning float("nan") lands in a cell that renders as
+    # `ERROR`, and answering FALSE here would contradict what the cell shows.
     if isinstance(x, ExcelError):
         return True
     return isinstance(x, float) and math.isnan(x)

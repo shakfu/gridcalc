@@ -3365,3 +3365,131 @@ class TestOpenPreservesWorkbookOnFailure:
         f.write_text(json.dumps({"version": 2, "code": 123}))
         cmdexec(self.stdscr, self.g, self.undo, f"open {f}")
         self._assert_intact()
+
+
+class TestCommandLine:
+    """The `gridcalc` / `gridcalc-web` argument parsers.
+
+    Hand-rolled `sys.argv` checks got the conventions wrong in four ways --
+    `--help` exited 1 on stderr, the two entry points disagreed about the exit
+    code, `--version` was taken as a filename, and `-h` was only recognised as
+    the sole argument. These pin the conventions rather than the wording.
+    """
+
+    @staticmethod
+    def _parsers():
+        from gridcalc.tui import cli_parser as tui_parser
+        from gridcalc.web import cli_parser as web_parser
+
+        return [tui_parser(), web_parser()]
+
+    def test_no_argument_means_no_file(self):
+        for p in self._parsers():
+            assert p.parse_args([]).file is None
+
+    def test_a_workbook_is_the_one_positional(self):
+        for p in self._parsers():
+            assert p.parse_args(["book.json"]).file == "book.json"
+
+    @pytest.mark.parametrize("flag", ["-h", "--help", "-V", "--version"])
+    def test_help_and_version_succeed(self, flag, capsys):
+        """An explicit request is answered, on stdout, with exit 0 -- so
+        `gridcalc --help | less` shows something."""
+        for p in self._parsers():
+            with pytest.raises(SystemExit) as exc:
+                p.parse_args([flag])
+            assert exc.value.code == 0
+            out = capsys.readouterr()
+            assert out.out and not out.err
+
+    def test_help_is_recognised_after_a_filename(self):
+        """`len(sys.argv) == 2` made this open a workbook called `-h`."""
+        for p in self._parsers():
+            with pytest.raises(SystemExit) as exc:
+                p.parse_args(["book.json", "-h"])
+            assert exc.value.code == 0
+
+    def test_an_unknown_flag_is_an_error_not_a_filename(self):
+        for p in self._parsers():
+            with pytest.raises(SystemExit) as exc:
+                p.parse_args(["--bogus"])
+            assert exc.value.code == 2
+
+    def test_the_program_name_is_the_command(self, capsys):
+        """`sys.argv[0]` printed the absolute path of the venv shim."""
+        from gridcalc.tui import cli_parser
+
+        with pytest.raises(SystemExit):
+            cli_parser().parse_args(["--help"])
+        assert capsys.readouterr().out.startswith("usage: gridcalc ")
+
+    def test_version_reports_the_packaged_version(self, capsys):
+        from gridcalc import __version__
+        from gridcalc.tui import cli_parser
+
+        with pytest.raises(SystemExit):
+            cli_parser().parse_args(["--version"])
+        assert capsys.readouterr().out.strip() == f"gridcalc {__version__}"
+
+
+class TestTheVersionIsDeclaredOnce:
+    """`pyproject.toml` is the only place the version is written.
+
+    `__version__` reads it back from the metadata the build wrote, and
+    `--version` prints that -- so a number nobody shipped is not expressible.
+    The alternative, a literal in the package, is a copy maintained by hand
+    against one maintained by `make release`, which bumps only pyproject.
+    """
+
+    @staticmethod
+    def _declared() -> str:
+        try:
+            import tomllib
+        except ModuleNotFoundError:  # 3.10
+            import tomli as tomllib
+
+        root = Path(__file__).resolve().parents[1]
+        data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+        return str(data["project"]["version"])
+
+    def test_the_package_reports_what_pyproject_declares(self):
+        """Fails on a stale editable install as well as on a second copy --
+        both mean the version being reported is not the one in the source."""
+        from gridcalc import __version__
+
+        assert __version__ == self._declared()
+
+    def test_the_package_holds_no_release_number_of_its_own(self):
+        """The read is what keeps the two in step; a hardcoded number here
+        would pass the test above until the next release and fail after it.
+        The not-installed sentinel is a literal too, and is meant to be -- it
+        is precisely not a release number."""
+        import re
+
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "src" / "gridcalc" / "__init__.py").read_text(encoding="utf-8")
+        assigned = re.findall(r"""__version__\s*=\s*["']([^"']+)""", source)
+        assert assigned, "the attribute has to exist"
+        assert [v for v in assigned if re.match(r"^\d+(\.\d+)+", v)] == []
+
+    def test_an_uninstalled_source_tree_says_so(self, monkeypatch):
+        """No metadata is not a number. Guessing one gives every uninstalled
+        checkout the same plausible, wrong answer."""
+        import importlib
+        import importlib.metadata
+
+        def missing(name: str) -> str:
+            raise importlib.metadata.PackageNotFoundError(name)
+
+        monkeypatch.setattr(importlib.metadata, "version", missing)
+        mod = importlib.reload(importlib.import_module("gridcalc"))
+        try:
+            assert "unknown" in mod.__version__
+        finally:
+            monkeypatch.undo()
+            importlib.reload(mod)
+
+    def test_the_release_target_bumps_pyproject(self):
+        root = Path(__file__).resolve().parents[1]
+        makefile = (root / "Makefile").read_text(encoding="utf-8")
+        assert 's/^version = .*/version = \\"$$version\\"/" pyproject.toml' in makefile

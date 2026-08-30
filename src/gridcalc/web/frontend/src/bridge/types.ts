@@ -50,12 +50,46 @@ export interface SaveResult {
   error?: string
 }
 
-export interface OpenResult {
+interface OpenOk {
   ok: boolean
   filename?: string
   cancelled?: boolean
   error?: string
 }
+
+// `needs_trust` discriminates: when it is set the load did *not* happen and
+// the reply carries everything the dialog needs, so narrowing on it hands the
+// caller a `TrustInfo` without a cast.
+export type OpenResult = (OpenOk & { needs_trust?: false }) | (OpenOk & { needs_trust: true } & TrustInfo)
+
+// What the trust dialog shows about a file, gathered by parsing it -- never by
+// running it. Mirrors the curses prompt: how big the file is, its modules split
+// by how much is known about each, and the code itself.
+export interface TrustInfo {
+  path: string
+  name: string
+  cells: number
+  formulas: number
+  has_code: boolean
+  code: string
+  code_lines: number
+  requires: string[]
+  // Refused outright; never approved, and never offered by the dialog.
+  blocked: string[]
+  // Known, but able to touch the filesystem or the network.
+  side_effect: string[]
+  // On no list. Unreviewed rather than known-safe, so approving these is a
+  // second, separate answer.
+  unknown: string[]
+}
+
+// The dialog's answer. Absent `load_code`, the file loads formulas-only.
+export interface TrustPolicy {
+  load_code: boolean
+  allow_unknown?: boolean
+}
+
+export type TrustQuery = ({ needs_trust: false } & Partial<TrustInfo>) | ({ needs_trust: true } & TrustInfo)
 
 export interface ViewportCell {
   r: number
@@ -274,7 +308,9 @@ export interface PywebviewApi {
   save(path?: string): Promise<SaveResult>
   save_dialog(): Promise<SaveResult>
   open_dialog(): Promise<OpenResult>
-  open_file(path: string): Promise<OpenResult>
+  open_file(path: string, policy?: TrustPolicy | null): Promise<OpenResult>
+  inspect(path: string): Promise<TrustQuery>
+  pending_trust(): Promise<TrustQuery>
   viewport(r0: number, c0: number, rows: number, cols: number): Promise<Viewport>
   stats(r0: number, c0: number, r1: number, c1: number): Promise<Stats>
   cell_source(r: number, c: number): Promise<string>

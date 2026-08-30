@@ -551,13 +551,20 @@ def _eval(node: Node, env: Env) -> Value:
     raise AssertionError(f"unknown node {type(node).__name__}")
 
 
-def _eval_range(node: RangeRef, env: Env) -> Any:
+def _eval_range(node: RangeRef, env: Env, keep_errors: bool = False) -> Any:
+    """Evaluate a range to a ``Vec``, or to the first cell error in it.
+
+    ``keep_errors`` puts the errors *in* the Vec instead, for the handful of
+    functions Excel defines as ignoring them -- see
+    ``_RANGE_ERROR_TOLERANT_FUNCS``. That result is not cached: the cache is
+    keyed by rectangle alone, and the two forms of the same rectangle differ.
+    """
     # Normalise B3:A1 -> A1:B3. Matches Excel's range semantics.
     c1, c2 = sorted([node.start.col, node.end.col])
     r1, r2 = sorted([node.start.row, node.end.row])
     sheet = node.start.sheet  # parser guarantees start.sheet == end.sheet
     key = (sheet, c1, r1, c2, r2)
-    cached = env._range_cache.get(key)
+    cached = None if keep_errors else env._range_cache.get(key)
     if cached is not None:
         # Re-register dependencies even on a cache hit -- consumers
         # rely on `refs_used` to know which cells they touched.
@@ -570,7 +577,10 @@ def _eval_range(node: RangeRef, env: Env) -> Any:
         for c in range(c1, c2 + 1):
             v = env.get_cell(c, r, sheet)
             if isinstance(v, ExcelError):
-                return v
+                if not keep_errors:
+                    return v
+                data.append(v)
+                continue
             if v is None:
                 data.append(0.0)
             elif isinstance(v, bool):
@@ -582,7 +592,8 @@ def _eval_range(node: RangeRef, env: Env) -> Any:
     from ..engine import Vec  # lazy import to break cycle
 
     result = Vec(data, cols=c2 - c1 + 1)
-    env._range_cache[key] = result
+    if not keep_errors:
+        env._range_cache[key] = result
     return result
 
 
@@ -601,7 +612,34 @@ def _eval_name(node: Name, env: Env) -> Any:
     return _eval(target, env)
 
 
-_ERROR_AWARE_FUNCS = frozenset({"iferror", "ifna", "iserror", "iserr", "isna"})
+# Functions that see an error argument instead of being short-circuited by it.
+# The IS-predicates answer FALSE for an error rather than propagating it, and
+# the two type reporters exist to describe one: `ERROR.TYPE(A1)` over a
+# `#DIV/0!` is 2, not `#DIV/0!`. `ISEVEN`/`ISODD` are deliberately absent --
+# Excel propagates through those.
+_ERROR_AWARE_FUNCS = frozenset(
+    {
+        "iferror",
+        "ifna",
+        "iserror",
+        "iserr",
+        "isna",
+        "isblank",
+        "islogical",
+        "isnumber",
+        "istext",
+        "error.type",
+        "type",
+    }
+)
+
+# Functions whose *range* arguments tolerate cell errors instead of collapsing
+# to them: Excel's COUNT family ignores error values inside a reference, where
+# every other aggregate propagates (`=SUM(A1:A3)` over a `#DIV/0!` is
+# `#DIV/0!`, `=COUNT(A1:A3)` is the count of the numbers beside it). COUNTA
+# counts the error cell, which falls out of counting everything non-empty.
+# A scalar error argument still short-circuits: only the range read changes.
+_RANGE_ERROR_TOLERANT_FUNCS = frozenset({"count", "counta", "countblank", "countif", "countifs"})
 
 # Functions that receive raw AST nodes (CellRef/RangeRef/...) plus the
 # Env, instead of evaluated values. Used for functions whose semantics
@@ -824,7 +862,15 @@ def _eval_call(node: Call, env: Env) -> Any:
             return ExcelError.VALUE
     # Normal (value) functions receive materialised values: any Reference
     # argument (from a nested OFFSET) is dereferenced before the call.
-    args = [_deref(_eval(a, env), env) for a in node.args]
+    if name_lower in _RANGE_ERROR_TOLERANT_FUNCS:
+        args = [
+            _eval_range(a, env, keep_errors=True)
+            if isinstance(a, RangeRef)
+            else _deref(_eval(a, env), env)
+            for a in node.args
+        ]
+    else:
+        args = [_deref(_eval(a, env), env) for a in node.args]
     if name_lower not in _ERROR_AWARE_FUNCS:
         err = first_error(*args)
         if err:

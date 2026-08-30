@@ -1454,6 +1454,12 @@ class Grid:
         cl.sval = None
         cl.spill_parent = None
         cl.spill_shape = None
+        # A formula result carries its error here; the literal or label
+        # replacing it has none. `_store_formula_result` rewrites this for a
+        # formula, so clearing unconditionally only affects the other two --
+        # which previously kept the error of whatever formula they replaced.
+        cl.err = None
+        cl.err_msg = None
         cl.text = text
         self.dirty = 1
 
@@ -1822,6 +1828,14 @@ class Grid:
         cl = self._sheet_cells(sheet).get((c, r))
         if cl is None or cl.type == EMPTY:
             return None
+        # An errored cell reads as its error, not as the NaN standing in for a
+        # value it does not have. Returning the NaN dropped the code at the
+        # reference boundary: `=1-A1` over a `#NAME?` produced an untyped NaN,
+        # which is why `ISERROR` had to test `isnan` and `ERROR.TYPE` could
+        # only answer `#N/A`. The evaluator already expects errors from here --
+        # `_eval_range` returns one the moment a cell read yields it.
+        if cl.err is not None:
+            return cl.err
         if cl.type == LABEL:
             return cl.text
         if cl.matrix is not None:
@@ -1841,6 +1855,8 @@ class Grid:
         cl = self._sheet_cells(sheet).get((c, r))
         if cl is None or cl.type == EMPTY:
             return None
+        if cl.err is not None:
+            return cl.err
         if cl.arr is not None and cl.arr:
             return Vec(cl.arr, cols=cl.arr_cols)
         if cl.matrix is not None:

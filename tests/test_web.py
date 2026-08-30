@@ -1506,3 +1506,152 @@ def test_importing_web_does_not_load_pywebview() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "CLEAN"
+
+
+# --- the trust decision ----------------------------------------------------
+# A workbook's code block does not run until someone says so. The curses
+# frontend asks at the prompt; the web frontend asks in a dialog, and these
+# cover the bridge half of it -- what is reported, and what each answer loads.
+
+HYBRID = EXAMPLES / "example_hybrid.json"
+
+
+def _tax_cell(api: Api) -> str:
+    """C2 of example_hybrid.json: `=py.progressive_tax(B2)`. Reads `#NAME?`
+    while the code block is withheld and 4340 once it has run."""
+    from gridcalc.display import cell_text
+
+    return cell_text(api._g.cell(2, 1))
+
+
+def test_inspect_says_nothing_to_decide_for_a_plain_workbook() -> None:
+    api = Api(_grid())
+    assert api.inspect(str(EXAMPLES / "example_excel.json"))["needs_trust"] is False
+
+
+def test_inspect_reports_what_the_file_would_run() -> None:
+    api = Api(_grid())
+    info = api.inspect(str(HYBRID))
+    assert info["needs_trust"] is True
+    assert info["name"] == "example_hybrid.json"
+    assert info["has_code"] is True
+    assert info["code_lines"] == 27
+    assert "def progressive_tax" in info["code"]
+    assert info["cells"] > 0 and info["formulas"] > 0
+    assert info["blocked"] == [] and info["unknown"] == []
+
+
+def test_inspect_runs_nothing() -> None:
+    """The metadata comes from parsing the file. Inspecting it must not load
+    it, let alone execute the code it is asking about."""
+    api = Api(_grid())
+    api.set_cell(0, 0, "keep")
+    api.inspect(str(HYBRID))
+    assert api.cell_source(0, 0) == "keep"
+
+
+def test_open_without_a_policy_refuses_and_asks() -> None:
+    api = Api(_grid())
+    api.set_cell(0, 0, "keep")
+    res = api.open_file(str(HYBRID))
+    assert res["ok"] is False
+    assert res["needs_trust"] is True
+    assert "def progressive_tax" in res["code"]
+    assert api.cell_source(0, 0) == "keep"  # nothing was loaded
+
+
+def test_declining_the_code_loads_the_formulas() -> None:
+    api = Api(_grid())
+    res = api.open_file(str(HYBRID), {"load_code": False})
+    assert res["ok"] is True
+    assert _tax_cell(api) == "#NAME?"  # the py.* call has nothing to call
+
+
+def test_approving_the_code_runs_it() -> None:
+    api = Api(_grid())
+    res = api.open_file(str(HYBRID), {"load_code": True})
+    assert res["ok"] is True
+    assert _tax_cell(api) == "4340"
+
+
+def test_a_malformed_answer_withholds_the_code() -> None:
+    """Anything but an explicit `load_code` is formulas only: a client bug
+    must not be able to run a workbook by accident."""
+    for answer in ({}, {"load_code": False}, {"allow_unknown": True}, {"load_code": ""}):
+        api = Api(_grid())
+        assert api.open_file(str(HYBRID), answer)["ok"] is True
+        assert _tax_cell(api) == "#NAME?", answer
+
+
+def test_a_workbook_with_no_code_opens_without_asking() -> None:
+    api = Api(_grid())
+    assert api.open_file(str(EXAMPLES / "example_excel.json")) == {
+        "ok": True,
+        "filename": str(EXAMPLES / "example_excel.json"),
+    }
+
+
+def test_policy_never_approves_a_blocked_module() -> None:
+    from gridcalc.sandbox import FileInfo
+
+    info = FileInfo()
+    info.requires = ["numpy", "socket"]
+    info.blocked_modules = ["socket"]
+    policy = Api._policy_from(info, {"load_code": True, "allow_unknown": True})
+    assert policy.load_code is True
+    assert policy.approved_modules == ["numpy"]
+    assert policy.allow_unknown is True
+
+
+def test_unknown_modules_need_their_own_answer() -> None:
+    """Approving the file vouches for what the lists know about; an
+    unclassified module is a second answer, as it is at the curses prompt."""
+    from gridcalc.sandbox import FileInfo
+
+    info = FileInfo()
+    info.requires = ["mystery"]
+    info.unknown_modules = ["mystery"]
+    assert Api._policy_from(info, {"load_code": True}).allow_unknown is False
+    assert Api._policy_from(info, {"load_code": True, "allow_unknown": True}).allow_unknown is True
+
+
+def test_pending_trust_is_empty_until_a_startup_file_sets_it() -> None:
+    api = Api(_grid())
+    assert api.pending_trust() == {"needs_trust": False}
+    api._pending_trust = str(HYBRID)
+    assert api.pending_trust()["needs_trust"] is True
+
+
+def test_answering_the_startup_decision_clears_it() -> None:
+    api = Api(load_workbook(str(HYBRID)))
+    api._pending_trust = str(HYBRID)
+    api.open_file(str(HYBRID), {"load_code": True})
+    assert api.pending_trust() == {"needs_trust": False}
+    assert _tax_cell(api) == "4340"
+
+
+def test_needs_trust_covers_only_files_that_can_carry_code(tmp_path) -> None:
+    from gridcalc.loader import needs_trust
+
+    assert needs_trust(EXAMPLES / "example_excel.json") is None
+    assert needs_trust(EXAMPLES / "example_multisheet.xlsx") is None
+    csv = tmp_path / "d.csv"
+    csv.write_text("a,b\n1,2\n")
+    assert needs_trust(csv) is None
+    assert needs_trust("/no/such/file.json") is None  # the load reports that
+    assert needs_trust(HYBRID) is not None
+
+
+def test_nothing_is_withheld_when_the_sandbox_is_off(monkeypatch) -> None:
+    """With the sandbox disabled there is nothing to ask about, so the dialog
+    must not appear -- and the code has to load, or the file is broken for the
+    user who turned the sandbox off precisely to run it."""
+    from gridcalc import sandbox
+    from gridcalc.loader import needs_trust
+
+    monkeypatch.setattr(sandbox, "SANDBOX_ENABLED", False)
+    assert needs_trust(HYBRID) is None
+    api = Api(_grid())
+    assert api.inspect(str(HYBRID))["needs_trust"] is False
+    assert api.open_file(str(HYBRID))["ok"] is True
+    assert _tax_cell(api) == "4340"

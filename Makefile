@@ -112,9 +112,11 @@ web-run:
 # than a test. It is the only layer that runs the shipped bundle in the real
 # webview -- the vitest layer does no layout, and the Playwright suite is
 # Chromium rather than the shipped webview.
+# Shots crop to the app window; `SHOT=--screen` grabs the whole display.
 CHECK ?= sheets
+SHOT ?= --window
 web-drive:
-	@GRIDCALC_SANDBOX=1 PYTHONPATH=$(GTK_PATH) uv run --extra web python scripts/drive_web.py $(CHECK)
+	@GRIDCALC_SANDBOX=1 PYTHONPATH=$(GTK_PATH) uv run --extra web python scripts/drive_web.py $(CHECK) $(SHOT)
 
 # Run tests in an isolated environment without the optional extras
 # (numpy / pandas). Verifies the optional-dep skipif guards work and
@@ -263,7 +265,10 @@ docs-deploy:
 docs-clean:
 	@rm -rf site/
 
-# Create a release (bump version, tag, push)
+# Create a release (bump version, tag, push).
+# pyproject is the only place the version is written -- `gridcalc --version`
+# reads it back from the installed metadata -- so this one line is the whole
+# bump.
 release:
 	@echo "Current version: $$(grep '^version' pyproject.toml | head -1)"
 	@read -p "New version: " version; 	sed -i '' "s/^version = .*/version = \"$$version\"/" pyproject.toml; 	git add pyproject.toml; 	git commit -m "Bump version to $$version"; 	git tag -a "v$$version" -m "Release $$version"; 	echo "Tagged v$$version. Run 'git push && git push --tags' to publish."

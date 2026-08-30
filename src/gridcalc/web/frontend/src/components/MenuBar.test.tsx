@@ -18,6 +18,7 @@ function makeActions(): WorkbookActions {
     runCommand: vi.fn(async () => {}),
     format: vi.fn(async () => {}),
     setDefaultFormat: vi.fn(async () => {}),
+    resolveTrust: vi.fn(async () => {}),
   }
 }
 

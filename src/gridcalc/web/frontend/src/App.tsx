@@ -8,6 +8,7 @@ import { GoalDialog } from './components/GoalDialog'
 import { SweepDialog } from './components/SweepDialog'
 import { ChartDialog } from './components/ChartDialog'
 import { SheetDialog, type SheetMode } from './components/SheetDialog'
+import { TrustDialog } from './components/TrustDialog'
 import { FindBar } from './components/FindBar'
 import { CommandPalette } from './components/CommandPalette'
 import { buildRegistry } from './lib/registry'
@@ -332,6 +333,7 @@ export function App() {
         actions={wb.actions}
         onOpenChange={setSheetOpen}
       />
+      <TrustDialog info={wb.trust} onDecide={(policy) => void wb.actions.resolveTrust(policy)} />
     </div>
   )
 }

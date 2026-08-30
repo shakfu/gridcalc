@@ -1,6 +1,10 @@
 [project]
 name = "gridcalc"
-version = "0.5.0"
+# The one place the version is written. `gridcalc.__version__` reads it back
+# from the installed metadata rather than keeping a second copy in the package,
+# which would drift from this one at the first release -- `make release` bumps
+# this line and nothing else.
+version = "0.5.1"
 description = "A terminal / web spreadsheet powered by Python formulas"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -115,7 +119,12 @@ cmake.source-dir = "."
 # explicit entry the one file `gridcalc-web` needs is the one file left out of
 # the distribution. Naming the exact source force-includes it.
 sdist.include = ["src/gridcalc/web/static/index.html"]
-sdist.exclude = []
+# Screenshot staging. `media/` at the root holds the same two shots at other
+# scales, kept for swapping one in later; the pair the docs link lives under
+# `docs/media` and ships with them. The leading slash anchors this to the root
+# folder -- a bare `media` matches `docs/media` too, and drops the images the
+# shipped pages reference.
+sdist.exclude = ["/media"]
 wheel.force-include = {"src/gridcalc/web/static/index.html" = "gridcalc/web/static/index.html"}
 # The client's TypeScript sources belong in the sdist (it has to be buildable)
 # but not in a wheel, which only ever loads the compiled bundle. Leaving them in

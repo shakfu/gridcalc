@@ -64,14 +64,15 @@ gated by :class:`gridcalc.sandbox.LoadPolicy`, not by this boundary.
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import math
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from .. import __version__, goalseek, opt
 from .. import commands as shared
-from .. import goalseek, opt
 from ..display import cell_clip_value, cell_right_aligned, cell_text
 from ..engine import (
     COL_PX_MAX,
@@ -88,8 +89,9 @@ from ..engine import (
     col_name,
     ref,
 )
-from ..loader import demo_grid, load_workbook
+from ..loader import demo_grid, load_workbook, needs_trust
 from ..opt import OptError, OptModel, cells_to_spec, parse_bounds, parse_cells
+from ..sandbox import FileInfo, LoadPolicy, classify_module
 from ..search import find_matches
 from ..undo import UndoManager
 
@@ -113,6 +115,10 @@ class Api:
         self._undo = UndoManager()
         self._window: Any = None  # set by run() for the native save dialog
         self._dirty = False
+        # Set by run() when the workbook named on the command line carried
+        # code: it is already open, loaded formulas-only, and the client asks
+        # for this on boot to raise the trust dialog over it.
+        self._pending_trust: str | None = None
         g.dirty = 0  # a freshly loaded (or demo) workbook is not user-modified
 
     def dims(self) -> dict[str, Any]:
@@ -619,8 +625,82 @@ class Api:
         path = result if isinstance(result, str) else result[0]
         return self.save(path)
 
-    def open_file(self, path: str) -> dict[str, Any]:
+    @staticmethod
+    def _trust_info(path: str, info: FileInfo) -> dict[str, Any]:
+        """One file's trust metadata, shaped for the dialog.
+
+        Mirrors what the curses prompt prints (`tui.commands.trust_prompt`):
+        the counts that say how big the file is, the modules split by how much
+        is known about them, and the code itself, which is the only thing that
+        lets a user actually judge the decision.
+        """
+        return {
+            "path": path,
+            "name": Path(path).name,
+            "cells": info.cell_count,
+            "formulas": info.formula_count,
+            "has_code": info.has_code,
+            "code": info.code_preview,
+            "code_lines": info.code_lines,
+            "requires": list(info.requires),
+            "blocked": list(info.blocked_modules),
+            "side_effect": list(info.side_effect_modules),
+            "unknown": list(info.unknown_modules),
+        }
+
+    @staticmethod
+    def _policy_from(info: FileInfo, choice: dict[str, Any] | None) -> LoadPolicy:
+        """Turn the dialog's answer into a :class:`LoadPolicy`.
+
+        Anything but an explicit ``load_code`` is formulas only, so a
+        malformed or missing answer withholds the code rather than running it.
+        Blocked modules are never approved -- the dialog does not offer them --
+        and unclassified ones need their own ``allow_unknown``, which is the
+        same second answer the curses prompt asks for with `[u]`.
+        """
+        if not choice or not choice.get("load_code"):
+            return LoadPolicy.formulas_only()
+        approved = [m for m in info.requires if classify_module(m) != "blocked"]
+        return LoadPolicy(
+            load_code=True,
+            approved_modules=approved,
+            allow_unknown=bool(choice.get("allow_unknown")),
+        )
+
+    def inspect(self, path: str) -> dict[str, Any]:
+        """Whether opening ``path`` is a trust decision, and what it involves.
+
+        ``{"needs_trust": False}`` means open it directly. Otherwise the reply
+        carries the metadata the dialog shows. Nothing is loaded and no code
+        runs either way -- the file is parsed, not executed.
+        """
+        info = needs_trust(path)
+        if info is None:
+            return {"needs_trust": False, "path": path}
+        return {"needs_trust": True, **self._trust_info(path, info)}
+
+    def pending_trust(self) -> dict[str, Any]:
+        """The startup file's trust decision, if one is outstanding.
+
+        A workbook named on the command line is already open by the time the
+        window exists, loaded formulas-only. The client calls this on boot and
+        raises the dialog over the sheet it can already see -- which is more
+        informative than a prompt in front of nothing, and keeps the safe
+        default in force while the user decides.
+        """
+        if self._pending_trust is None:
+            return {"needs_trust": False}
+        return self.inspect(self._pending_trust)
+
+    def open_file(self, path: str, policy: dict[str, Any] | None = None) -> dict[str, Any]:
         """Load a different workbook into this window, replacing the current one.
+
+        ``policy`` is the trust dialog's answer -- ``{"load_code": bool,
+        "allow_unknown": bool}``. Omitted, the file loads formulas-only, so a
+        client that never asks can never run a workbook's code. A file needing
+        a decision that has not been made comes back as ``{"ok": False,
+        "needs_trust": True, ...}`` with the metadata for the dialog, and
+        nothing is loaded.
 
         The engine model is swapped for the freshly loaded one and the
         per-workbook UI state that would otherwise dangle -- undo/redo history
@@ -630,14 +710,18 @@ class Api:
         failure comes back as ``{"ok": False, "error": ...}`` and leaves the
         current workbook untouched.
         """
+        info = needs_trust(path)
+        if info is not None and policy is None:
+            return {"ok": False, "needs_trust": True, **self._trust_info(path, info)}
         try:
-            g = load_workbook(path)
+            g = load_workbook(path, self._policy_from(info, policy) if info else None)
         except OSError as exc:
             return {"ok": False, "error": str(exc)}
         self._g = g
         self._undo = UndoManager()
         self._clip = None
         self._mark_clean()
+        self._pending_trust = None
         return {"ok": True, "filename": getattr(g, "filename", "") or ""}
 
     def open_dialog(self) -> dict[str, Any]:
@@ -655,6 +739,8 @@ class Api:
         if not result:
             return {"ok": False, "cancelled": True}
         path = result if isinstance(result, str) else result[0]
+        # No policy: a file with code comes back as `needs_trust` and the
+        # client puts the dialog up before anything is loaded.
         return self.open_file(path)
 
     def _sync_close_guard(self) -> None:
@@ -1214,6 +1300,11 @@ def run(path: str | None = None) -> None:
 
     g = load_workbook(path) if path else demo_grid()
     api = Api(g)
+    # Loaded formulas-only above. If that withheld anything, the client raises
+    # the trust dialog once the window is up -- the decision cannot be asked
+    # for here, before there is a window to ask in.
+    if path and needs_trust(path) is not None:
+        api._pending_trust = path
     name = getattr(g, "filename", "") or "(demo)"
     window = webview.create_window(
         f"gridcalc - {name}",
@@ -1237,12 +1328,22 @@ def run(path: str | None = None) -> None:
     webview.start()
 
 
+def cli_parser() -> argparse.ArgumentParser:
+    """The `gridcalc-web` command line. Mirrors `gridcalc`'s, one positional
+    wider: the desktop app opens csv too."""
+    p = argparse.ArgumentParser(
+        prog="gridcalc-web",
+        description="The gridcalc grid in a desktop window.",
+    )
+    p.add_argument(
+        "file",
+        nargs="?",
+        help="workbook to open (.json, .xlsx, or .csv); omitted, a demo workbook opens",
+    )
+    p.add_argument("-V", "--version", action="version", version=f"gridcalc {__version__}")
+    return p
+
+
 def run_cli() -> None:
     """Console-script entry point (``gridcalc-web``)."""
-    import sys
-
-    args = sys.argv[1:]
-    if args and args[0] in ("-h", "--help"):
-        print("Usage: gridcalc-web [workbook.json | workbook.xlsx]")
-        return
-    run(args[0] if args else None)
+    run(cli_parser().parse_args().file)

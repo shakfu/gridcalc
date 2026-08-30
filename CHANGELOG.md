@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+## [0.5.1]
+
+### Added
+
+- **The desktop app asks before running a workbook's code.** A JSON workbook can carry a Python code block, and the web frontend loaded every one of them formulas-only with no way to say otherwise -- so `example_hybrid.json` opened as a grid of `#NAME?` and stayed that way. It now opens the same dialog decision the curses frontend prompts for: cell and formula counts, the modules named split into classified / I-O / unclassified / blocked, and the code itself, gathered by parsing the file rather than running it. `Run code`, `Formulas only`, `Cancel`, with unclassified modules needing their own answer (the prompt's `[u]`, for the same reason: approving a file vouches for what the lists know about, and "not blocked" was never the same claim as "safe").
+
+  The bridge grew `inspect(path)` and `pending_trust()`, and `open_file(path, policy)` a second argument. Anything but an explicit `load_code` loads formulas only, so a client bug cannot run a workbook by accident, and a file needing a decision that has not been made comes back `needs_trust` with nothing loaded. A workbook named on the command line is already open, formulas-only, by the time a window exists to ask in -- so the dialog comes up over the sheet the user can already see, rather than in front of nothing.
+
+- **`load_workbook` takes a `LoadPolicy`**, and `loader.needs_trust` decides when a frontend has to ask. With the sandbox off it answers "never": no prompt would be shown, and withholding the code would leave the workbook broken for the one user who has said they want it run. That was already the curses rule at startup; it is now in the loader, where both frontends get it.
+
+### Fixed
+
+- **An error stopped being an error when read through a reference.** `Grid._cell_lookup_value` returned `cl.val` -- the NaN standing in for the value an errored cell does not have -- and never looked at `cl.err`, so the code was dropped at the reference boundary. `=1-A1` over a `#NAME?` produced an untyped NaN that rendered as the bare string `ERROR`, `=SUM(A1:A3)` the same, and every function that reports on an error could only see a number: `ERROR.TYPE` answered `#N/A` whatever it was given, `ISNA` answered FALSE over an `#N/A`, `IFNA` did not fire. The evaluator was already written for this -- `_eval_range` returns an error the moment a cell read yields one -- so the fix is the reader honouring `err`, plus three consequences of errors now actually arriving: `ERROR.TYPE`/`TYPE` and the `ISBLANK`/`ISNUMBER`/`ISTEXT`/`ISLOGICAL` predicates see the error instead of being short-circuited by it (Excel answers FALSE, not the error), and the COUNT family reads its ranges error-tolerantly, since Excel's `COUNT` ignores error values in a reference where `SUM` propagates them. `ISERROR`'s NaN arm stays: it is not covering for a lost code but for the values Excel has no name for, such as a HYBRID `py.*` function returning `float("nan")`. 36 new tests.
+
+- **A literal overwriting an errored formula inherited its error.** `_setcell_no_recalc` reset every other result field and left `err` behind, which was invisible while nothing read it. Breaking a reference cycle by typing a number into one of its cells left `#CIRC!` on that cell, and once references started reporting errors it would have poisoned everything downstream.
+
+- **`sandbox = false` in `gridcalc.toml` did not reach the trust prompt or the SANDBOX OFF banner.** Both read a `SANDBOX_ENABLED` imported by name at module load, and `configure_sandbox` rebinds it in `sandbox` -- so config could never change it and only the environment variable worked, because that one is read before either module imports. Both now read it through the module.
+
+### Changed
+
+- **Both console scripts parse their arguments with argparse.** The hand-rolled `sys.argv` checks got every convention wrong: `gridcalc --help` exited 1 and printed to stderr (so `gridcalc --help | less` showed nothing) while `gridcalc-web --help` exited 0, `-h` was recognised only as the *sole* argument -- `gridcalc -h book.json` tried to open a workbook called `-h` -- `--version` did not exist and was read as a filename, and the usage line interpolated `sys.argv[0]`, printing the absolute path of the venv shim. Both now take one optional positional, `-h/--help`, and `-V/--version`; an unknown flag is an error rather than a filename. `scripts/drive_web.py` follows, with `--window`/`--screen` as a mutually exclusive pair and the check name constrained to what exists.
+
+- **The version is declared once, in `pyproject.toml`.** `gridcalc.__version__` was a second copy, and `make release` bumps only pyproject -- so the new `--version` flag would have reported the release before the last one from the first bump onward. `__version__` now reads the installed distribution's metadata, which is what the build wrote from pyproject; an uninstalled source tree reports `0+unknown (not installed)` rather than guessing. The read costs ~5ms on a 36ms import, `importlib.metadata` being already loaded by the time it runs.
+
+- **The range-arithmetic block in `example_excel.json` no longer renders as `#SPILL!`.** `=sales - targets` and `=sales * 0.95` each return four values and sat in adjacent rows of column B, so the first one's spill range ran into the second one's anchor and both refused. They are now side by side in B18 and D18 under their own headers, with four clear rows beneath each. The file is one of the six a new user is told to open, and two error tokens in it read as a broken engine.
+
+- **`make web-drive` crops its screenshots to the app window.** `screencapture` grabbed the whole display, so every shot carried the dock, the menu bar and whatever sat behind the window. The driver now finds its own window in the Quartz on-screen list by pid and passes that id to `screencapture -l`. `SHOT=--screen` (`--screen` to the script) restores the full-display grab, which is the one to use when the question is where the window itself sits; a missing window id falls back to it on its own. Both modes still need Screen Recording permission for the terminal.
+
 ## [0.5.0]
 
 ### Added

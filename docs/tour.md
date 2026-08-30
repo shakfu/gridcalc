@@ -4,6 +4,10 @@ Cells hold a number, a label (any string not prefixed with `=`), or a formula (p
 
 This guide shows the terminal frontend, but the model, formulas, file format, and most commands are the same in the [desktop app](desktop.md).
 
+![The terminal app: a sales report with IF/MATCH formulas, named ranges, and two spilled array results](media/terminal-large.png)
+
+*`gridcalc example_excel.json`, one of the [shipped examples](index.md). The top line is the formula bar; `[EXCEL]` on the right is the file's formula mode.*
+
 ```text
         A          B          C
 1  Revenue   Cost       Margin

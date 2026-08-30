@@ -142,6 +142,8 @@ Files without `requires` are fully backward compatible.
 
 - `gridcalc/engine.py` -- integration (validate_formula in recalc, requires in Grid, jsoninspect, policy-aware jsonload)
 
-- `gridcalc/tui/commands.py` -- trust gate prompt
+- `gridcalc/tui/commands.py` -- trust gate prompt (curses)
+- `gridcalc/web/frontend/src/components/TrustDialog.tsx` -- the same gate in the desktop app;
+  `gridcalc/loader.py:needs_trust` decides when either frontend must ask
 
 - `tests/test_sandbox.py` -- comprehensive tests

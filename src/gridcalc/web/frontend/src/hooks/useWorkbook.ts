@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { bridge, whenReady } from '../bridge/api'
-import type { Dims, Sheets, SheetsResult } from '../bridge/types'
+import type { Dims, Sheets, SheetsResult, TrustInfo, TrustPolicy } from '../bridge/types'
 import type { Rect } from '../lib/grid'
 import { failureOf } from '../bridge/result'
 
@@ -21,6 +21,9 @@ export interface WorkbookActions {
   runCommand(name: string, args?: string[], rect?: Rect | null): Promise<void>
   format(rect: Rect, spec: string): Promise<void>
   setDefaultFormat(fmt: string): Promise<void>
+  // Answer the outstanding trust request: a policy loads the file under it,
+  // `null` cancels and leaves whatever is open alone.
+  resolveTrust(policy: TrustPolicy | null): Promise<void>
 }
 
 export type StatusKind = 'info' | 'error'
@@ -44,6 +47,10 @@ export interface Workbook {
   // `revision`, which many ordinary edits bump: anything keyed on workbook
   // *identity* has to remount on a load and not on an undo.
   loads: number
+  // The file waiting on a trust decision, or null. Set by an open that came
+  // back `needs_trust`, and on boot by a startup workbook whose code was
+  // withheld -- that one is already on screen, loaded formulas-only.
+  trust: TrustInfo | null
   actions: WorkbookActions
   // The app-wide user-visible channel. Anything that fails -- a bridge
   // rejection, a failed save -- reports here rather than dying silently.
@@ -73,6 +80,7 @@ export function useWorkbook(): Workbook {
   const [revision, setRevision] = useState(0)
   const [mutations, setMutations] = useState(0)
   const [loads, setLoads] = useState(0)
+  const [trust, setTrust] = useState<TrustInfo | null>(null)
 
   const refresh = useCallback(async () => {
     const [d, s] = await Promise.all([bridge.dims(), bridge.sheets()])
@@ -106,7 +114,14 @@ export function useWorkbook(): Workbook {
   useEffect(() => {
     let alive = true
     whenReady()
-      .then(refresh)
+      .then(async () => {
+        await refresh()
+        // A workbook named on the command line is already open, formulas-only.
+        // Ask whether that withheld anything, and if so put the dialog up over
+        // the sheet the user can already see.
+        const pending = await bridge.pending_trust()
+        if (alive && pending.needs_trust) setTrust(pending)
+      })
       .catch((e: unknown) => alive && show(String(e), 'error'))
     return () => {
       alive = false
@@ -179,6 +194,12 @@ export function useWorkbook(): Workbook {
       open: async () => {
         const r = await guard('open', () => bridge.open_dialog())
         if (!r || r.cancelled) return
+        if (r.needs_trust) {
+          // Nothing was loaded: the reply carries what the file wants to run,
+          // and the dialog's answer completes the open.
+          setTrust(r)
+          return
+        }
         if (r.ok) {
           await refresh()
           setRevision((n) => n + 1)
@@ -187,6 +208,21 @@ export function useWorkbook(): Workbook {
         } else {
           fail(r.error ?? 'could not open that workbook')
         }
+      },
+      resolveTrust: async (policy: TrustPolicy | null) => {
+        const pending = trust
+        setTrust(null)
+        if (!pending || !policy) return
+        const r = await guard('open', () => bridge.open_file(pending.path, policy))
+        if (!r) return
+        if (!r.ok) {
+          fail(r.error ?? 'could not open that workbook')
+          return
+        }
+        await refresh()
+        setRevision((n) => n + 1)
+        setLoads((n) => n + 1)
+        flash(policy.load_code ? 'opened with code' : 'opened, formulas only')
       },
       save: async () => {
         let r = await guard('save', () => bridge.save())
@@ -261,7 +297,7 @@ export function useWorkbook(): Workbook {
         setRevision((n) => n + 1)
       },
     }),
-    [refresh, flash, fail, guard, sheetOp, runShared],
+    [refresh, flash, fail, guard, sheetOp, runShared, trust],
   )
 
   return {
@@ -274,6 +310,7 @@ export function useWorkbook(): Workbook {
     revision,
     mutations,
     loads,
+    trust,
     actions,
     notify: flash,
     fail,

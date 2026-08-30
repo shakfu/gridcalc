@@ -33,7 +33,8 @@ _MOCK_BRIDGE = """
     open_dialog: 0, save: 0, set_active: [], set_cell: [], clear_range: [],
     copy: [], paste: [], paste_text: [], fill: [], solve: [], goal: [], chart: [],
     set_format: [], set_global_format: [], save_model: [],
-    sheet_ops: [], structural: [], col_widths: [], search: [], undo_calls: 0, commands: []
+    sheet_ops: [], structural: [], col_widths: [], search: [], undo_calls: 0, commands: [],
+    open_file: []
   };
   const sheets = { active: 0, names: ['Sheet1', 'Data'] };
   const cells = new Map();
@@ -176,7 +177,13 @@ _MOCK_BRIDGE = """
     open_dialog: async () => {
       window.__calls.open_dialog++; return { ok: true, filename: 'book.json' };
     },
-    open_file: async (p) => ({ ok: true, filename: p }),
+    open_file: async (p, policy) => {
+      window.__calls.open_file.push([p, policy || null]);
+      return { ok: true, filename: p };
+    },
+    inspect: async (p) => ({ needs_trust: false, path: p }),
+    pending_trust: async () => window.__trust
+      ? { needs_trust: true, ...window.__trust } : { needs_trust: false },
     viewport: async (r0, c0, rows, cols) => {
       const out = [];
       for (let r = r0; r < r0 + rows; r++) {
@@ -1043,3 +1050,87 @@ def test_a_refused_command_reports_rather_than_failing_silently(page) -> None:
     field.fill("9bad")
     field.press("Enter")
     page.get_by_text(re.compile("not a usable name")).wait_for()
+
+
+# --- the trust dialog ------------------------------------------------------
+# The shipped bundle's half of the decision: what the dialog shows, and that
+# each answer reaches `open_file` as the policy the Python side expects.
+
+_TRUST_INFO = """
+  window.__trust = {
+    path: '/tmp/hybrid.json', name: 'hybrid.json', cells: 71, formulas: 34,
+    has_code: true, code: 'def progressive_tax(income):\\n    return income * 0.1\\n',
+    code_lines: 2, requires: ['numpy', 'mystery'], blocked: [], side_effect: [],
+    unknown: ['mystery'],
+  };
+"""
+
+
+def _ask_on_open(page) -> None:
+    """Make the next File > Open come back needing a decision."""
+    page.evaluate(
+        _TRUST_INFO + "window.pywebview.api.open_dialog = async () =>"
+        "  ({ ok: false, needs_trust: true, ...window.__trust });"
+    )
+    page.get_by_role("menuitem", name="File").click()
+    page.get_by_role("menuitem", name=re.compile("Open")).click()
+    page.wait_for_selector("[role=dialog]")
+
+
+def test_opening_a_workbook_with_code_raises_the_dialog(page) -> None:
+    _ask_on_open(page)
+    assert page.get_by_text(re.compile("Run code from hybrid.json")).is_visible()
+    # The code itself is shown: it is what the decision is about.
+    assert "progressive_tax" in page.get_by_label("Code block").inner_text()
+    # Nothing was loaded while the question stands.
+    assert page.evaluate("() => window.__calls.open_file.length") == 0
+
+
+def test_approving_sends_the_policy(page) -> None:
+    _ask_on_open(page)
+    page.get_by_role("button", name="Run code").click()
+    page.wait_for_function("() => window.__calls.open_file.length === 1")
+    path, policy = page.evaluate("() => window.__calls.open_file[0]")
+    assert path == "/tmp/hybrid.json"
+    assert policy == {"load_code": True, "allow_unknown": False}
+
+
+def test_the_unknown_module_answer_is_separate(page) -> None:
+    _ask_on_open(page)
+    page.get_by_role("checkbox").click()
+    page.get_by_role("button", name="Run code").click()
+    page.wait_for_function("() => window.__calls.open_file.length === 1")
+    assert page.evaluate("() => window.__calls.open_file[0][1].allow_unknown") is True
+
+
+def test_formulas_only_loads_without_the_code(page) -> None:
+    _ask_on_open(page)
+    page.get_by_role("button", name="Formulas only").click()
+    page.wait_for_function("() => window.__calls.open_file.length === 1")
+    assert page.evaluate("() => window.__calls.open_file[0][1]") == {"load_code": False}
+
+
+def test_cancelling_loads_nothing(page) -> None:
+    _ask_on_open(page)
+    page.get_by_role("button", name="Cancel").click()
+    page.wait_for_selector("[role=dialog]", state="detached")
+    assert page.evaluate("() => window.__calls.open_file.length") == 0
+
+
+def test_a_startup_workbook_with_code_asks_on_boot() -> None:
+    """The file named on the command line is already open, formulas-only, and
+    the dialog comes up over it once the window exists."""
+    if not BUNDLE.exists():
+        pytest.skip("web bundle not built; run `make web-build`")
+    with sync_api.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch()
+        except sync_api.Error as exc:
+            pytest.skip(f"chromium not available: {exc}")
+        pg = browser.new_page(viewport={"width": 1200, "height": 800})
+        pg.set_content(BUNDLE.read_text(encoding="utf-8"))
+        pg.evaluate(_TRUST_INFO)  # before the bridge goes live
+        pg.evaluate(_MOCK_BRIDGE)
+        pg.wait_for_selector("[role=dialog]")
+        assert pg.get_by_text(re.compile("Run code from hybrid.json")).is_visible()
+        browser.close()

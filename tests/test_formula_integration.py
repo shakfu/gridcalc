@@ -4,7 +4,9 @@ import math
 
 import pytest
 
+from gridcalc.display import cell_text
 from gridcalc.engine import Grid, Mode, NamedRange
+from gridcalc.formula.errors import ExcelError
 
 
 def make_excel_grid():
@@ -484,6 +486,159 @@ class TestEmptyCellComparisons:
         g.setcell(3, 0, "=A1<A2")
         assert g.cells[3][0].err is None
         assert not math.isnan(g.cells[3][0].val)
+
+
+class TestErrorsPropagateThroughReferences:
+    """A cell holding an error reads as that error, not as the NaN standing in
+    for the value it does not have.
+
+    The engine's cell reader returned `cl.val` and never looked at `cl.err`, so
+    the code was dropped at the reference boundary: `=1-A1` over a `#NAME?`
+    produced an untyped NaN that rendered as the string `ERROR`, and every
+    function that reports on an error could only see a number.
+    """
+
+    @staticmethod
+    def _grid():
+        g = make_excel_grid()
+        g._apply_mode_libs()
+        g.setcell(0, 0, "=NOSUCHFN(1)")  # A1 -> #NAME?
+        g.setcell(0, 1, "=1/0")  # A2 -> #DIV/0!
+        g.setcell(0, 2, "=NA()")  # A3 -> #N/A
+        return g
+
+    def _err(self, formula):
+        g = self._grid()
+        g.setcell(3, 0, formula)
+        return g.cells[3][0].err
+
+    def _text(self, formula):
+        g = self._grid()
+        g.setcell(3, 0, formula)
+        return cell_text(g.cells[3][0])
+
+    @pytest.mark.parametrize(
+        "formula,expected",
+        [
+            ("=1 - A1", ExcelError.NAME),
+            ("=A1 + 0", ExcelError.NAME),
+            ("=A1 * 2", ExcelError.NAME),
+            ("=-A1", ExcelError.NAME),
+            ('=A2 & "x"', ExcelError.DIV0),
+            ("=A2 = 1", ExcelError.DIV0),
+            # Through an aggregate over a range, and through a second hop.
+            ("=SUM(A1:A3)", ExcelError.NAME),
+            ("=AVERAGE(A2:A2)", ExcelError.DIV0),
+            ("=MAX(A2:A2)", ExcelError.DIV0),
+        ],
+    )
+    def test_error_reaches_the_dependent_cell(self, formula, expected):
+        assert self._err(formula) is expected
+
+    def test_the_error_code_survives_two_hops(self):
+        g = self._grid()
+        g.setcell(3, 0, "=A2 + 1")
+        g.setcell(3, 1, "=D1 + 1")
+        assert g.cells[3][1].err is ExcelError.DIV0
+
+    @pytest.mark.parametrize(
+        "formula,expected",
+        [
+            # The reporters exist to describe an error; they must see it.
+            ("=ERROR.TYPE(A1)", "5"),
+            ("=ERROR.TYPE(A2)", "2"),
+            ("=ERROR.TYPE(A3)", "7"),
+            ("=TYPE(A2)", "16"),
+            ("=ISNA(A3)", "TRUE"),
+            ("=ISNA(A2)", "FALSE"),
+            ("=IFNA(A3, 42)", "42"),
+            ("=IFERROR(A2, 42)", "42"),
+            ("=ISERROR(A2)", "TRUE"),
+            ("=ISERR(A2)", "TRUE"),
+            # Excel's IS-predicates answer FALSE for an error, not the error.
+            ("=ISBLANK(A2)", "FALSE"),
+            ("=ISNUMBER(A2)", "FALSE"),
+            ("=ISTEXT(A2)", "FALSE"),
+            ("=ISLOGICAL(A2)", "FALSE"),
+        ],
+    )
+    def test_error_reporting_functions(self, formula, expected):
+        assert self._text(formula) == expected
+
+    def test_a_spilled_reference_reads_its_error(self):
+        """`A1#` reads through the same gap as a bare reference did."""
+        g = self._grid()
+        g.setcell(3, 0, "=A1#")
+        assert g.cells[3][0].err is ExcelError.NAME
+
+
+class TestCountFamilyIgnoresCellErrors:
+    """Excel's COUNT family ignores error values inside a reference where
+    every other aggregate propagates them. COUNTA counts the error cell."""
+
+    @staticmethod
+    def _grid():
+        g = make_excel_grid()
+        g._apply_mode_libs()
+        g.setcell(0, 0, "1")
+        g.setcell(0, 1, "=1/0")
+        g.setcell(0, 2, "3")
+        return g
+
+    @pytest.mark.parametrize(
+        "formula,expected",
+        [
+            ("=COUNT(A1:A3)", "2"),
+            ("=COUNTA(A1:A3)", "3"),
+            ("=COUNTBLANK(A1:A3)", "0"),
+            ('=COUNTIF(A1:A3, ">0")', "2"),
+            ('=COUNTIFS(A1:A3, ">0")', "2"),
+            # Unchanged: everything else still propagates.
+            ("=SUM(A1:A3)", "#DIV/0!"),
+            ("=AVERAGE(A1:A3)", "#DIV/0!"),
+            ('=SUMIF(A1:A3, ">0")', "#DIV/0!"),
+        ],
+    )
+    def test_count_over_a_range_holding_an_error(self, formula, expected):
+        g = self._grid()
+        g.setcell(3, 0, formula)
+        assert cell_text(g.cells[3][0]) == expected
+
+    def test_a_scalar_error_argument_still_short_circuits(self):
+        """Only the range read tolerates errors. `=COUNT(A2)` names the
+        errored cell itself, which is an error argument, not a range."""
+        g = self._grid()
+        g.setcell(3, 0, "=COUNT(A2)")
+        assert g.cells[3][0].err is ExcelError.DIV0
+
+
+class TestOverwriteClearsTheStaleError:
+    """A literal replacing a formula does not inherit its error.
+
+    `_setcell_no_recalc` reset every other result field and left `err`, which
+    was invisible while nothing read it -- and became a poison pill the moment
+    references started reporting errors.
+    """
+
+    def test_literal_over_a_circular_formula(self):
+        g = make_excel_grid()
+        g._apply_mode_libs()
+        g.setcell(0, 0, "=B1")
+        g.setcell(1, 0, "=A1")
+        assert g.cells[1][0].err is ExcelError.CIRC
+        g.setcell(1, 0, "42")
+        assert g.cells[1][0].err is None
+        assert g.cells[0][0].val == 42.0
+
+    def test_label_over_an_errored_formula(self):
+        g = make_excel_grid()
+        g._apply_mode_libs()
+        g.setcell(0, 0, "=1/0")
+        g.setcell(0, 1, "=ISERROR(A1)")
+        assert g.cells[0][1].sval == "TRUE"
+        g.setcell(0, 0, "hello")
+        assert g.cells[0][0].err is None
+        assert g.cells[0][1].sval == "FALSE"
 
 
 class TestMetadataFormulasTrackTheirReference:

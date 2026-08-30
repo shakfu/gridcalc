@@ -446,6 +446,71 @@ button {
   width: 560px;
 }
 
+/* --- Trust dialog ----------------------------------------------------- */
+.trust-lede {
+  margin: 0 0 14px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.trust-facts {
+  margin-bottom: 12px;
+}
+
+.trust-row {
+  display: flex;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.trust-key {
+  flex: 0 0 76px;
+  color: var(--muted);
+}
+
+.trust-warn {
+  color: #d9a441;
+}
+
+.trust-danger {
+  color: var(--err);
+}
+
+/* The code is the only thing that lets a user judge the decision, so it is
+   shown in full rather than summarised -- capped in height and scrolled. */
+.trust-code {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 4;
+}
+
+.trust-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  color: var(--muted);
+}
+
+.trust-check input {
+  accent-color: var(--accent);
+}
+
+.dialog-actions .btn + .btn,
+.dialog-actions .btn + .btn-primary,
+.dialog-actions .btn-primary + .btn {
+  margin-left: 8px;
+}
+
 .btn-primary,
 .btn {
   padding: 6px 16px;

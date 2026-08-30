@@ -33,10 +33,20 @@ This is where the desktop app goes past the terminal. `Optimize` reads a model o
 
 `Goal Seek` and a parametric `Sweep` -- the objective plotted against a constraint's right-hand side, breakpoints marked -- round it out.
 
+![The desktop app: the Optimize dialog reporting an optimal solve with shadow prices and RHS ranging](media/webview.png)
+
+*`gridcalc-web example_lp.json` after `Optimize`: the decision cells are green on the sheet behind the dialog, and the constraint table carries the shadow prices and the range each right-hand side may take before the basis changes.*
+
+## Workbooks that carry code
+
+A JSON workbook can hold a Python code block, and HYBRID and PYTHON mode formulas call into it. Opening one is a decision, not a default: the file loads *formulas only*, and a dialog reports what it would run -- the cell and formula counts, the modules it names split by how much is known about each, and the code itself. Nothing has been executed to produce any of that; the file is parsed, not run.
+
+Three answers. **Run code** loads it and the sheet recalculates against it. **Formulas only** leaves it withheld, and cells that call into it keep their error state. **Cancel** loads nothing at all -- or, for a workbook named on the command line, leaves the formulas-only view already on screen. Modules that no list classifies need a second, separate answer: approving the file vouches for what the lists know about, and an unclassified module is unreviewed rather than known-safe. The reasoning is in the [security plan](security-plan.md); the curses frontend asks the same question at its own prompt.
+
+Turning the sandbox off (`GRIDCALC_SANDBOX=0`, or `sandbox = false` in the config) removes the question along with the protection: the code loads unasked, as it does in the terminal.
+
 ## Not there yet
 
 The object editor for Vec/ndarray/DataFrame cells, code-block editing (`:e`), pandas import/export, and `:move`/`:replicate`.
-
-Workbooks in HYBRID or PYTHON mode load *formulas only* -- their code block is never executed, so code-dependent cells show an error state until a trust flow exists.
 
 See the [web frontend design note](web.md) for the full parity table and [GUI direction](gui.md) for why this direction was chosen over the alternatives.

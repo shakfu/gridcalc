@@ -4,6 +4,9 @@ import type {
   Dims,
   GoalResult,
   OpenResult,
+  TrustInfo,
+  TrustPolicy,
+  TrustQuery,
   SaveResult,
   Sheets,
   InferResult,
@@ -83,6 +86,24 @@ const MOCK_SOLVE: SolveResult = {
 // in-memory workbook (sheets + a sparse cell store) so actions have observable
 // effects. Installed only in DEV builds; the production bundle uses the real
 // pywebview bridge, and headless tests of that bundle inject their own mock.
+// A file that would raise the trust dialog. One module of each class, so the
+// dialog's four module rows are all exercised by the mock.
+function trustInfo(path: string): TrustInfo {
+  return {
+    path,
+    name: path.split('/').pop() ?? path,
+    cells: 42,
+    formulas: 17,
+    has_code: true,
+    code: 'def rate(x):\n    return x * 0.07\n',
+    code_lines: 2,
+    requires: ['numpy', 'requests', 'socket', 'mystery'],
+    blocked: ['socket'],
+    side_effect: ['requests'],
+    unknown: ['mystery'],
+  }
+}
+
 export function installMockBridge(): void {
   if (!import.meta.env.DEV) return
   if (window.pywebview?.api) return
@@ -337,11 +358,22 @@ export function installMockBridge(): void {
         sheets.active = 0
         return { ok: true, filename: dims.filename }
       },
-      open_file: async (path: string): Promise<OpenResult> => {
+      open_file: async (path: string, policy?: TrustPolicy | null): Promise<OpenResult> => {
+        // A path with `trust` in it stands in for a workbook carrying code:
+        // without a policy it refuses and asks, which is what the real bridge
+        // does and what the dialog is driven by.
+        if (path.includes('trust') && !policy) {
+          return { ok: false, needs_trust: true, ...trustInfo(path) }
+        }
         dims.filename = path
         dims.dirty = false
         return { ok: true, filename: path }
       },
+      inspect: async (path: string): Promise<TrustQuery> =>
+        path.includes('trust')
+          ? { needs_trust: true, ...trustInfo(path) }
+          : { needs_trust: false, path },
+      pending_trust: async (): Promise<TrustQuery> => ({ needs_trust: false }),
       viewport: async (r0: number, c0: number, rows: number, cols: number): Promise<Viewport> => {
         const out: ViewportCell[] = []
         for (let r = r0; r < r0 + rows; r++) {

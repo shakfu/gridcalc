@@ -1,6 +1,21 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { useWorkbook } from './useWorkbook'
 import { installMockBridge } from '../bridge/mock'
+import type { TrustInfo } from '../bridge/types'
+
+const trustInfo = (path: string): TrustInfo => ({
+  path,
+  name: path.split('/').pop() ?? path,
+  cells: 42,
+  formulas: 17,
+  has_code: true,
+  code: 'def f():\n    return 1\n',
+  code_lines: 2,
+  requires: [],
+  blocked: [],
+  side_effect: [],
+  unknown: [],
+})
 
 // The mock bridge holds mutable workbook state; reset it before each test so
 // order-dependent mutations (a save recording a filename, an open replacing the
@@ -72,4 +87,75 @@ test('an accepted format does mark the workbook dirty', async () => {
     await result.current.actions.format({ r0: 0, c0: 0, r1: 0, c1: 0 }, '0.00')
   })
   expect(result.current.dirty).toBe(true)
+})
+
+// --- the trust decision ----------------------------------------------------
+// A workbook's code does not run until someone says so, and the hook is what
+// carries the question from the bridge to the dialog and the answer back.
+
+test('a startup workbook whose code was withheld raises the decision on boot', async () => {
+  window.pywebview!.api.pending_trust = () =>
+    Promise.resolve({ needs_trust: true, ...trustInfo('/tmp/hybrid.json') } as const)
+  const { result } = renderHook(() => useWorkbook())
+  await waitFor(() => expect(result.current.trust?.path).toBe('/tmp/hybrid.json'))
+})
+
+test('nothing is asked when the startup workbook has no code', async () => {
+  const { result } = renderHook(() => useWorkbook())
+  await waitFor(() => expect(result.current.ready).toBe(true))
+  expect(result.current.trust).toBeNull()
+})
+
+test('opening a file with code asks instead of loading it', async () => {
+  window.pywebview!.api.open_dialog = () =>
+    Promise.resolve({ ok: false, needs_trust: true, ...trustInfo('/tmp/trust.json') } as const)
+  const { result } = renderHook(() => useWorkbook())
+  await waitFor(() => expect(result.current.ready).toBe(true))
+  await act(async () => {
+    await result.current.actions.open()
+  })
+  await waitFor(() => expect(result.current.trust?.path).toBe('/tmp/trust.json'))
+  // The workbook on screen is untouched: nothing was loaded.
+  expect(result.current.dims?.filename).toBe('')
+})
+
+test('approving completes the open with the policy', async () => {
+  const calls: unknown[] = []
+  window.pywebview!.api.open_file = (path: string, policy?: unknown) => {
+    calls.push([path, policy])
+    return Promise.resolve({ ok: true, filename: path })
+  }
+  window.pywebview!.api.open_dialog = () =>
+    Promise.resolve({ ok: false, needs_trust: true, ...trustInfo('/tmp/trust.json') } as const)
+  const { result } = renderHook(() => useWorkbook())
+  await waitFor(() => expect(result.current.ready).toBe(true))
+  await act(async () => {
+    await result.current.actions.open()
+  })
+  await act(async () => {
+    await result.current.actions.resolveTrust({ load_code: true, allow_unknown: false })
+  })
+  expect(calls).toEqual([['/tmp/trust.json', { load_code: true, allow_unknown: false }]])
+  expect(result.current.trust).toBeNull()
+  expect(result.current.status).toBe('opened with code')
+})
+
+test('cancelling loads nothing', async () => {
+  let opened = 0
+  window.pywebview!.api.open_file = (path: string) => {
+    opened += 1
+    return Promise.resolve({ ok: true, filename: path })
+  }
+  window.pywebview!.api.open_dialog = () =>
+    Promise.resolve({ ok: false, needs_trust: true, ...trustInfo('/tmp/trust.json') } as const)
+  const { result } = renderHook(() => useWorkbook())
+  await waitFor(() => expect(result.current.ready).toBe(true))
+  await act(async () => {
+    await result.current.actions.open()
+  })
+  await act(async () => {
+    await result.current.actions.resolveTrust(null)
+  })
+  expect(opened).toBe(0)
+  expect(result.current.trust).toBeNull()
 })

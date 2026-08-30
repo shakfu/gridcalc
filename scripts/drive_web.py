@@ -1,7 +1,8 @@
 """Launch the real web app and drive it, headfully, with screenshots.
 
-    make web-drive              # sheet switch preserves cursor and scroll
-    make web-drive CHECK=solve  # a solve paints the grid, leaving clears it
+    make web-drive                # sheet switch preserves cursor and scroll
+    make web-drive CHECK=solve    # a solve paints the grid, leaving clears it
+    make web-drive SHOT=--screen  # grab the whole display, not just the window
 
 Everything else that guards the web frontend runs against a substitute: vitest
 in happy-dom, and the Chromium bundle suite against a mocked
@@ -44,14 +45,18 @@ not app bugs, and they are the reason this file is worth keeping:
 Screenshots need macOS Screen Recording permission for the terminal running
 this; without it `screencapture` fails with "could not create image from
 display" and the run still completes, since the DOM probe is the real evidence.
-They are full-screen and Retina-sized -- `sips -Z 1400` before reading one.
+They crop to the app window (`--window`, the default) so the output is usable
+in the README; `--screen` grabs the whole display instead, which is what you
+want when the bug is in where the window itself sits. Either way they are
+Retina-sized -- `sips -Z 1400` before reading one.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -198,16 +203,63 @@ def wait_ready(win) -> dict:
 SCREENCAPTURE = "/usr/sbin/screencapture"
 
 
+WINDOW_ONLY = True  # --screen turns it off
+
+
+def window_id() -> int | None:
+    """CGWindowID of this process's window, for ``screencapture -l``.
+
+    The webview runs in-process, so the window is ours: filter the on-screen
+    list by our own pid and take the largest window on the normal layer (layer
+    0 excludes the menu bar and any helper surfaces). Quartz comes with the
+    pyobjc pywebview already needs on macOS; anywhere else the import fails
+    and the caller falls back to a full-screen grab.
+    """
+    try:
+        from Quartz import (
+            CGWindowListCopyWindowInfo,
+            kCGNullWindowID,
+            kCGWindowListOptionOnScreenOnly,
+        )
+    except ImportError:
+        return None
+    info = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID) or []
+    mine = [
+        w
+        for w in info
+        if w.get("kCGWindowOwnerPID") == os.getpid() and w.get("kCGWindowLayer") == 0
+    ]
+    if not mine:
+        return None
+
+    def area(w: dict) -> float:
+        b = w["kCGWindowBounds"]
+        return float(b["Width"]) * float(b["Height"])
+
+    return int(max(mine, key=area)["kCGWindowNumber"])
+
+
 def shoot(tag: str) -> str:
     if not Path(SCREENCAPTURE).exists():
         return "skipped (no screencapture -- macOS only)"
     OUT.mkdir(parents=True, exist_ok=True)
     out = OUT / f"{tag}.png"
+    # -o drops the drop shadow, which in window mode is a wide band of
+    # semi-transparent desktop around the frame.
+    argv = [SCREENCAPTURE, "-x", "-o"]
+    scope = "screen"
+    if WINDOW_ONLY:
+        wid = window_id()
+        if wid is None:
+            scope = "screen (no window id)"
+        else:
+            argv += ["-l", str(wid)]
+            scope = "window"
     r = subprocess.run(  # noqa: S603 -- fixed argv, no shell, no user input
-        [SCREENCAPTURE, "-x", "-o", str(out)], capture_output=True, text=True
+        [*argv, str(out)], capture_output=True, text=True
     )
     if r.returncode == 0 and out.exists():
-        return str(out.relative_to(ROOT))
+        return f"{out.relative_to(ROOT)} ({scope})"
     return f"FAILED ({(r.stderr or '').strip() or 'unknown'}) -- grant Screen Recording"
 
 
@@ -329,9 +381,36 @@ CHECKS = {"sheets": check_sheets, "solve": check_solve}
 
 
 def main() -> None:
-    which = sys.argv[1] if len(sys.argv) > 1 else "sheets"
-    if which not in CHECKS:
-        sys.exit(f"usage: drive_web.py [{' | '.join(CHECKS)}]")
+    global WINDOW_ONLY
+
+    p = argparse.ArgumentParser(
+        prog="drive_web.py",
+        description="Drive the shipped web bundle in a real webview, with screenshots.",
+    )
+    p.add_argument(
+        "check",
+        nargs="?",
+        default="sheets",
+        choices=sorted(CHECKS),
+        help="which behaviour to drive (default: sheets)",
+    )
+    shot = p.add_mutually_exclusive_group()
+    shot.add_argument(
+        "--window",
+        dest="window_only",
+        action="store_true",
+        default=True,
+        help="crop shots to the app window (default)",
+    )
+    shot.add_argument(
+        "--screen",
+        dest="window_only",
+        action="store_false",
+        help="grab the whole display instead -- for when the question is where the window sits",
+    )
+    args = p.parse_args()
+    WINDOW_ONLY = args.window_only
+    which = args.check
     book = (
         str(ROOT / "examples" / "example_multisheet.json") if which == "sheets" else lp_two_sheets()
     )

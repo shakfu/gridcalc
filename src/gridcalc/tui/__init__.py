@@ -17,10 +17,15 @@ reference to it is the patchable ``gridcalc.tui.draw``.
 
 from __future__ import annotations
 
+import argparse
 import curses
 import sys
 from collections.abc import Callable
 
+# The module, not the flag: `configure_sandbox` rebinds `SANDBOX_ENABLED` in
+# `sandbox`, so a name imported here would keep the import-time value and
+# `sandbox = false` in gridcalc.toml would never reach the trust prompt.
+from .. import __version__, sandbox
 from .. import commands as shared
 from ..config import emit_warnings, load_config
 from ..display import fmt_float, fmtcell
@@ -40,7 +45,6 @@ from ..keys import build_resolved_keymap
 from ..opt import parse_bounds as _parse_bounds
 from ..opt import parse_cells as _parse_cells
 from ..sandbox import (
-    SANDBOX_ENABLED,
     FileInfo,
     LoadPolicy,
     classify_module,
@@ -581,7 +585,33 @@ def startup_trust_prompt(filename: str, info: FileInfo) -> LoadPolicy | None:
             return None
 
 
+def cli_parser() -> argparse.ArgumentParser:
+    """The `gridcalc` command line.
+
+    One optional positional and two conventional flags -- but argparse rather
+    than a hand-rolled `sys.argv[1]` check, which got all three of the boring
+    parts wrong: `--help` exited 1 and printed to stderr, `-h` was recognised
+    only as the sole argument (`gridcalc -h foo` opened a workbook called
+    `-h`), and `--version` was read as a filename.
+    """
+    p = argparse.ArgumentParser(
+        prog="gridcalc",
+        description="A programmable spreadsheet for the terminal.",
+    )
+    p.add_argument(
+        "file",
+        nargs="?",
+        help="workbook to open (.json or .xlsx); omitted, gridcalc starts empty",
+    )
+    p.add_argument("-V", "--version", action="version", version=f"gridcalc {__version__}")
+    return p
+
+
 def main() -> None:
+    # Before the config load, so `--help` and `--version` answer immediately
+    # and without emitting config warnings at someone who asked for the usage.
+    args = cli_parser().parse_args()
+
     _state._cfg = load_config()
     emit_warnings(_state._cfg)
     configure_sandbox(_state._cfg.sandbox)
@@ -600,12 +630,8 @@ def main() -> None:
         g.load_requires(_state._cfg.allowed_modules)
         g.requires = list(_state._cfg.allowed_modules)
 
-    if len(sys.argv) == 2 and sys.argv[1] in ("-h", "--help"):
-        print(f"Usage: {sys.argv[0]} <sheet.json | sheet.xlsx>", file=sys.stderr)
-        sys.exit(1)
-
-    if len(sys.argv) > 1:
-        fn = sys.argv[1]
+    if args.file:
+        fn = args.file
         if fn.lower().endswith(".xlsx"):
             # xlsx files have no code block / sandbox surface; load
             # directly via the OpenXLSX-backed C++ extension.
@@ -621,7 +647,7 @@ def main() -> None:
 
             policy = None
             if info.has_code or info.requires:
-                if SANDBOX_ENABLED:
+                if sandbox.SANDBOX_ENABLED:
                     policy = startup_trust_prompt(fn, info)
                     if policy is None:
                         print("Load cancelled.", file=sys.stderr)

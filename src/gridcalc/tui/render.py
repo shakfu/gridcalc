@@ -5,6 +5,10 @@ from __future__ import annotations
 import curses
 import math
 
+# The module, not the name: `configure_sandbox` rebinds the flag in
+# `sandbox`, and a `from ... import` here would freeze the import-time value.
+# `sandbox = false` in gridcalc.toml is applied after this module loads.
+from .. import sandbox
 from ..display import fmtcell
 from ..engine import (
     EMPTY,
@@ -20,7 +24,6 @@ from ..engine import (
     col_name,
 )
 from ..formula.errors import ExcelError
-from ..sandbox import SANDBOX_ENABLED
 
 GW = 4
 
@@ -175,7 +178,7 @@ def draw(
         status += f"  [CODE ERR: {g.code_error}]"
     stdscr.addnstr(0, 0, status, curses.COLS - 1)
     stdscr.attroff(curses.color_pair(CP_CHROME) | curses.A_BOLD)
-    if not SANDBOX_ENABLED:
+    if not sandbox.SANDBOX_ENABLED:
         banner = " SANDBOX OFF "
         x = max(0, curses.COLS - len(banner) - 1)
         stdscr.attron(curses.color_pair(CP_ERROR) | curses.A_BOLD | curses.A_REVERSE)

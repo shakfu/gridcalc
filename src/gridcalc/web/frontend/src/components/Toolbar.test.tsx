@@ -14,6 +14,7 @@ function makeWb(overrides: Partial<Workbook> = {}): Workbook {
     revision: 0,
     mutations: 0,
     loads: 0,
+    trust: null,
     notify: vi.fn(),
     fail: vi.fn(),
     markDirty: vi.fn(),
@@ -32,6 +33,7 @@ function makeWb(overrides: Partial<Workbook> = {}): Workbook {
       runCommand: vi.fn(async () => {}),
       format: vi.fn(async () => {}),
       setDefaultFormat: vi.fn(async () => {}),
+      resolveTrust: vi.fn(async () => {}),
     },
     ...overrides,
   }

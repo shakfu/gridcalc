@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import curses
-import math
 
 from ..engine import EMPTY, LABEL, NCOL, NROW, NUM, Grid, cellname, ref
 from ..goalseek import GoalSeekError
@@ -11,23 +10,28 @@ from ..goalseek import seek as goal_seek
 from ..opt import (
     OptError,
     OptModel,
-    _parse_bound_value,
     infer_model,
 )
 from ..opt import (
     cells_to_spec as _cells_to_spec,
 )
 from ..opt import (
-    parse_bounds as _parse_bounds,
-)
-from ..opt import (
-    parse_cells as _parse_cells,
-)
-from ..opt import (
     solve as opt_solve,
 )
 from ..opt import (
     sweep as opt_sweep,
+)
+from ..optspec import (
+    parse_goal as _parse_goal,
+)
+from ..optspec import (
+    parse_inline_model as _parse_opt_inline,
+)
+from ..optspec import (
+    parse_sweep as _parse_sweep,
+)
+from ..optspec import (
+    resolve_model as _resolve_model,
 )
 from .format import (
     format_conflict,
@@ -43,100 +47,6 @@ _OPT_USAGE = (
     "usage: opt [max|min <cell> vars <cells> st <cells> [bounds <spec>] | "
     "def <name> max|min ... | run [<name>] | list | undef <name>]"
 )
-
-
-def _parse_opt_inline(parts: list[str]) -> OptModel:
-    """Parse the body after ``max|min`` into an :class:`OptModel`.
-
-    Raises :class:`ValueError` with a human-readable message on syntax errors.
-    The returned model stores the *spec strings* as the user wrote them, not
-    pre-resolved cell coordinates -- resolution happens at run time, which
-    matches how saved models round-trip through the JSON file.
-    """
-    if len(parts) < 5 or parts[0].lower() not in ("max", "min") or parts[2].lower() != "vars":
-        raise ValueError(
-            "usage: max|min <cell> vars <cells> st <cells> "
-            "[bounds <spec>] [int <cells>] [bin <cells>]"
-        )
-
-    sense = parts[0].lower()
-    obj_str = parts[1]
-
-    try:
-        st_idx = next(i for i in range(3, len(parts)) if parts[i].lower() in ("st", "subject"))
-    except StopIteration as e:
-        raise ValueError("expected 'st' keyword for constraints") from e
-
-    # Locate every optional-clause keyword that follows `st`. Order is
-    # flexible: bounds / int / bin may appear in any sequence. Each clause
-    # runs from the keyword to the next keyword (or end of input).
-    _CLAUSE_KEYWORDS = ("bounds", "int", "bin")
-    clause_positions: list[tuple[int, str]] = []
-    for i in range(st_idx + 1, len(parts)):
-        lo = parts[i].lower()
-        if lo in _CLAUSE_KEYWORDS:
-            clause_positions.append((i, lo))
-
-    vars_spec = " ".join(parts[3:st_idx])
-    first_clause = clause_positions[0][0] if clause_positions else len(parts)
-    st_spec = " ".join(parts[st_idx + 1 : first_clause])
-
-    clauses: dict[str, str] = {"bounds": "", "int": "", "bin": ""}
-    for j, (pos, kw) in enumerate(clause_positions):
-        end = clause_positions[j + 1][0] if j + 1 < len(clause_positions) else len(parts)
-        if clauses[kw]:
-            raise ValueError(f"'{kw}' clause appears more than once")
-        clauses[kw] = " ".join(parts[pos + 1 : end])
-
-    if not _looks_like_cellref(obj_str):
-        raise ValueError(f"bad objective cell: {obj_str}")
-
-    return OptModel(
-        sense=sense,
-        objective=obj_str,
-        vars=vars_spec,
-        constraints=st_spec,
-        bounds=clauses["bounds"],
-        integers=clauses["int"],
-        binaries=clauses["bin"],
-    )
-
-
-def _looks_like_cellref(s: str) -> bool:
-    """Quick syntactic check that ``s`` is a single cell ref (no range)."""
-    m = ref(s)
-    return m is not None and m[0] == len(s)
-
-
-_ResolvedModel = tuple[
-    tuple[int, int],
-    list[tuple[int, int]],
-    list[tuple[int, int]],
-    dict[tuple[int, int], tuple[float, float]] | None,
-    set[tuple[int, int]] | None,
-    set[tuple[int, int]] | None,
-]
-
-
-def _resolve_model(model: OptModel) -> _ResolvedModel:
-    """Turn a saved model's spec strings into cell coordinates.
-
-    Raises ``ValueError`` with a user-facing message; callers report it.
-    Shared by every command that runs a model so the specs cannot be
-    interpreted one way by ``:opt run`` and another by ``:opt sweep``.
-    """
-    obj_match = ref(model.objective)
-    if not obj_match or obj_match[0] != len(model.objective):
-        raise ValueError(f"bad objective cell: {model.objective}")
-    _, oc, or_ = obj_match
-    return (
-        (oc, or_),
-        _parse_cells(model.vars),
-        _parse_cells(model.constraints),
-        _parse_bounds(model.bounds) if model.bounds else None,
-        set(_parse_cells(model.integers)) if model.integers else None,
-        set(_parse_cells(model.binaries)) if model.binaries else None,
-    )
 
 
 def _write_sensitivity(
@@ -240,35 +150,21 @@ def _execute_sweep(stdscr: curses.window, g: Grid, args: list[str]) -> bool:
     never writes to the sheet, so there is no undo snapshot to take and
     nothing to roll back.
     """
-    if len(args) < 2:
-        show_error(stdscr, _SWEEP_USAGE)
-        return False
-
-    cell_str, range_str = args[0], args[1]
-    steps = 10
-    name = "default"
-    for extra in args[2:]:
-        if extra.isdigit():
-            steps = int(extra)
-        else:
-            name = extra
-
-    model = g.models.get(name)
-    if model is None:
-        show_error(stdscr, f"opt: no model named {name!r}")
-        return False
-
     try:
-        m = ref(cell_str)
-        if not m or m[0] != len(cell_str):
-            raise ValueError(f"bad constraint cell: {cell_str}")
-        _, cc, cr = m
-        if ":" not in range_str:
-            raise ValueError(f"sweep range needs 'lo:hi': {range_str}")
-        lo_s, hi_s = range_str.split(":", 1)
-        lo, hi = float(lo_s), float(hi_s)
-        if math.isnan(lo) or math.isnan(hi):
-            raise ValueError(f"sweep range is not numeric: {range_str}")
+        spec = _parse_sweep(args)
+    except (ValueError, RuntimeError) as e:
+        show_error(stdscr, f"opt: {e}")
+        return False
+
+    model = g.models.get(spec.model)
+    if model is None:
+        show_error(stdscr, f"opt: no model named {spec.model!r}")
+        return False
+
+    cc, cr = spec.constraint
+    lo, hi = spec.lo, spec.hi
+    steps = spec.steps
+    try:
         resolved = _resolve_model(model)
     except (ValueError, RuntimeError) as e:
         show_error(stdscr, f"opt: {e}")
@@ -548,14 +444,6 @@ def cmd_opt(
     return False
 
 
-def _parse_single_cell(s: str) -> tuple[int, int]:
-    m = ref(s)
-    if not m or m[0] != len(s):
-        raise ValueError(f"bad cell ref: {s}")
-    _, c, r = m
-    return (c, r)
-
-
 def cmd_goal(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bool:
     """``:goal <formula_cell> = <target> by <var_cell> [in <lo>:<hi>]``.
 
@@ -567,50 +455,16 @@ def cmd_goal(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bo
     one-shot operation whose entire state is the three short args. Just
     retype the command to re-run.
     """
-    parts = args.split()
-    usage = "usage: goal <formula_cell> = <target> by <var_cell> [in <lo>:<hi>]"
-
-    if len(parts) < 5 or parts[1] != "=" or parts[3].lower() != "by":
-        show_error(stdscr, usage)
-        return False
-
-    formula_str = parts[0]
-    target_str = parts[2]
-    var_str = parts[4]
-
-    in_idx: int | None = None
-    for i in range(5, len(parts)):
-        if parts[i].lower() == "in":
-            in_idx = i
-            break
-
-    lo: float | None = None
-    hi: float | None = None
-    if in_idx is not None:
-        bracket_spec = " ".join(parts[in_idx + 1 :]).strip()
-        if ":" not in bracket_spec:
-            show_error(stdscr, "goal: bracket needs 'lo:hi' after 'in'")
-            return False
-        lo_s, hi_s = bracket_spec.split(":", 1)
-        try:
-            lo = _parse_bound_value(lo_s, positive=False)
-            hi = _parse_bound_value(hi_s, positive=True)
-        except (ValueError, RuntimeError) as e:
-            show_error(stdscr, f"goal: bad bracket: {e}")
-            return False
-    elif len(parts) > 5:
-        # Trailing junk that isn't `in ...` is a syntax error rather than
-        # silently ignored, so typos surface immediately.
-        show_error(stdscr, usage)
-        return False
-
     try:
-        formula_cell = _parse_single_cell(formula_str)
-        var_cell = _parse_single_cell(var_str)
-        target = float(target_str)
+        spec = _parse_goal(args)
     except (ValueError, RuntimeError) as e:
-        show_error(stdscr, f"goal: {e}")
+        show_error(stdscr, f"goal: {e}" if "usage:" not in str(e) else str(e))
         return False
+
+    formula_cell = spec.formula_cell
+    var_cell = spec.var_cell
+    target = spec.target
+    lo, hi = spec.lo, spec.hi
 
     undo.save_grid(g)
     try:

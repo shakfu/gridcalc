@@ -1,6 +1,10 @@
 # Topological recalc
 
-Design note for replacing the fixed-point recalc loop with a dependency-graph driven traversal. Status: **proposal, not implemented**. Linked from `TODO.md` under Performance.
+Design note for replacing the fixed-point recalc loop with a dependency-graph driven traversal. Status: **shipped, Phases A-D**. Linked from `TODO.md` under Performance.
+
+`Grid._recalc_topo` (`src/gridcalc/engine.py`) is what `Grid.recalc()` calls in EXCEL and HYBRID mode, wrapped in a bounded fixpoint so a spill whose shape changed can re-drive its consumers. Phase A's two indexes are `Grid._dep_of` / `Grid._subscribers`; Phase C's incremental path is the `dirty` argument `setcell` and `setcells_bulk` pass down; Phase D's structural cycle detection is the "left in the closure but not in `order`" step, which marks `#CIRC!` instead of the old "didn't converge in 100 iterations" guess. **Phase E (range aggregation) is the one part still open** -- see `TODO.md` under Performance.
+
+Everything below is the design as originally written, in the future tense it was written in. It is kept as the rationale -- why the indexes are shaped the way they are, and what the hard cases were -- not as a description of pending work. The one section that no longer describes the code is "How recalc worked before this", which records the fixed-point loop this replaced.
 
 ## Why
 
@@ -14,7 +18,7 @@ Of the 8 ms, the actual cell writes are ~1 ms; the rest is **one pass through ev
 
 Topological recalc replaces this with a graph traversal that touches only the transitive closure of cells affected by a change.
 
-## How recalc works today
+## How recalc worked before this
 
 `Grid.recalc()` in EXCEL/HYBRID mode dispatches to `_recalc_formula()` (`src/gridcalc/engine.py:929`). The hot loop:
 
@@ -258,6 +262,10 @@ Only revisit if profiling shows large ranges as a hot spot. Sparse subscribers s
 - **Concurrency.** None of this is thread-safe. The TUI is single-threaded; not a current concern.
 
 ## When to actually do this
+
+Retained as the trigger list that was written before the work was done; all
+three were reached and Phases A-D shipped. It still governs **Phase E**, which
+is deferred on the same terms -- see `TODO.md` under Performance.
 
 Defer until at least one of:
 

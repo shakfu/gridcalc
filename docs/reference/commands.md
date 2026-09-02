@@ -32,6 +32,7 @@ Details by area:
 
 - [Import and export](../guide/import-export.md) -- `:csv`, `:xlsx`, `:pd`
 
+- [Headless CLI](cli.md) -- running the same operations in batch, without opening the editor
 - [Optimization](../guide/optimization.md) -- `:opt` and its subcommands
 
 - [Goal seek](../guide/goal-seek.md) -- `:goal`

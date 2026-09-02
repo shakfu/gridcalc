@@ -25,10 +25,12 @@ nav:
       - Optimization: guide/optimization.md
       - Goal seek: guide/goal-seek.md
       - Formatting: guide/formatting.md
+      - Dates: guide/dates.md
       - Import and export: guide/import-export.md
       - Configuration: guide/config.md
   - Reference:
       - Command reference: reference/commands.md
+      - Headless CLI: reference/cli.md
       - File format: reference/file-format.md
       - Limitations: reference/limitations.md
       - Excel function coverage: function_coverage.md

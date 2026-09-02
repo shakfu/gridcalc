@@ -164,12 +164,15 @@ def test_opt_sens_into_cells_writes_the_block(tui_session) -> None:
     tui_session.send(":opt sens into H10\n")
     render = tui_session.wait_for("written at H10", timeout=6.0)
     assert "OPTIMAL" in render
-    # The status line is painted by `_flash`, which does not repaint the
-    # grid. Nudge the cursor so the next loop iteration redraws, then look
-    # for the block's own header label on the sheet.
-    tui_session._buffer.clear()
-    tui_session.send("!")  # recalc: one byte, forces a full redraw
-    render = tui_session.wait_for("Variables", timeout=4.0)
+    # `wait_for` returns a settled screen, so the grid repaint that follows
+    # the flash is already in this render -- including the block's own header
+    # label, which is the evidence the cells were written.
+    #
+    # This used to clear the buffer and nudge the cursor to force a second
+    # paint. It only appeared to work: the clear discarded the Python-side
+    # buffer but not the pty's, so the "second" render was the *first* one
+    # arriving late. A cursor nudge emits a ~19-byte diff, not a repaint, so
+    # once the buffer was genuinely empty there was nothing to find.
     assert "Variables" in render
 
 

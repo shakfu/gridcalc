@@ -68,18 +68,32 @@ class TuiSession:
             data = data.encode("utf-8")
         os.write(self.master_fd, data)
 
-    def wait_for(self, needle: str, timeout: float = 4.0) -> str:
-        """Read output until ``needle`` appears in the de-ANSI'd text.
+    def wait_for(self, needle: str, timeout: float = 4.0, settle: float = 0.25) -> str:
+        """Read output until ``needle`` appears, then until the screen settles.
 
-        Returns the full accumulated render (de-ANSI'd) up to the point the
-        needle appeared, or all collected output if it never did. Raises
-        ``AssertionError`` on timeout so the test fails with a useful
-        decoded snapshot rather than a bare TimeoutError.
+        Returns the full de-ANSI'd render. Raises ``AssertionError`` on
+        timeout so the test fails with a useful decoded snapshot rather than
+        a bare TimeoutError.
+
+        The settle step is load-bearing, not politeness. curses paints a
+        screen in pieces, and the needle a test waits for is usually drawn
+        early -- the status line carrying the active cell's contents goes out
+        before the grid body. Returning the buffer the instant the needle
+        matched therefore handed back a *half-drawn* screen, and every
+        assertion about anything painted later was a race: it passed on a
+        machine that filled the pty in one read and failed on one that did
+        not. That is what made this suite flake, on a different test each
+        run. So after the match, keep reading until the child has produced
+        nothing for ``settle`` seconds, which is the observable end of a
+        redraw.
         """
         deadline = time.time() + timeout
+        found = False
         while time.time() < deadline:
             r, _, _ = select.select([self.master_fd], [], [], 0.1)
             if not r:
+                if found:
+                    break  # quiet for a full poll after the match: settled
                 continue
             try:
                 chunk = os.read(self.master_fd, 8192)
@@ -88,10 +102,12 @@ class TuiSession:
             if not chunk:
                 break
             self._buffer.extend(chunk)
-            decoded = _strip_ansi(bytes(self._buffer))
-            if needle in decoded:
-                return decoded
+            if not found and needle in _strip_ansi(bytes(self._buffer)):
+                found = True
+                deadline = min(deadline, time.time() + settle) if settle else deadline
         decoded = _strip_ansi(bytes(self._buffer))
+        if found:
+            return decoded
         raise AssertionError(
             f"timed out waiting for {needle!r} in TUI output. "
             f"Last 800 chars of render:\n{decoded[-800:]}"

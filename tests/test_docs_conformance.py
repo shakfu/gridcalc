@@ -333,3 +333,105 @@ def test_core_vi_keys_bound(key: str) -> None:
 def test_core_ctrl_keys_bound(key: str) -> None:
     _, ctrl = _keyloop_keys()
     assert key in ctrl, f"grid keyloop lost its Ctrl-{key.upper()} binding"
+
+
+# --- Status claims that must not outlive the feature -------------------------
+#
+# The command tests above catch docs that promise more than the code does. This
+# section catches the opposite drift, which is what actually happened: three
+# features shipped and the pages saying they had not were never updated, so
+# `limitations.md` told readers LAMBDA, the higher-order helpers and spill were
+# absent for two releases after they landed, and `topological.md` opened with
+# "proposal, not implemented" while `Grid._recalc_topo` was the recalc path.
+#
+# Design notes are in scope here where the manual tests deliberately exclude
+# them: a *status line* is a claim about the code, not a proposal, and it is
+# exactly the part that goes stale.
+
+LIMITATIONS = DOCS / "reference" / "limitations.md"
+TOPOLOGICAL = DOCS / "topological.md"
+
+# A name in backticks inside a top-level bullet of the limitations page. The
+# admonition recording what is no longer a limitation names those functions
+# too, but its lines are indented into the block rather than being bullets, so
+# scanning for `- ` at column zero skips it. Filtered to all-caps identifiers
+# so ``py.*``, ``**`` and ``Sheet1!A1:Sheet2!B5`` do not read as functions.
+_BULLET_FUNC = re.compile(r"`([A-Z][A-Z0-9.]{1,30})`")
+
+
+def _functions_documented_as_absent() -> set[str]:
+    names: set[str] = set()
+    for line in LIMITATIONS.read_text(encoding="utf-8").splitlines():
+        if line.startswith("- "):
+            names.update(_BULLET_FUNC.findall(line))
+    return names
+
+
+def _resolves(name: str) -> bool:
+    """Whether the evaluator knows ``name`` at all.
+
+    Asks the engine the way a user would rather than inspecting a registry,
+    because there is no single registry to inspect: `BUILTINS` holds the
+    library functions, while `LET` and `LAMBDA` are special forms in
+    `_eval_call` and would be missed. A zero-argument call separates the two
+    cases cleanly -- an unknown name is `#NAME?`, and a known one gets as far
+    as its arguments and reports `#VALUE!`.
+    """
+    from gridcalc.engine import Grid, Mode
+    from gridcalc.formula.errors import ExcelError
+
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    g.setcell(0, 0, f"={name}()")
+    return g.cells[0][0].err is not ExcelError.NAME
+
+
+def test_the_probe_can_tell_a_known_name_from_an_unknown_one() -> None:
+    """Guards the guard: a probe that answered "absent" for everything would
+    make the test below pass no matter how stale the page got."""
+    assert _resolves("LAMBDA")
+    assert _resolves("MAP")
+    assert _resolves("SUM")
+    assert not _resolves("NOSUCHFUNCTION")
+
+
+def test_functions_documented_as_absent_are_really_absent() -> None:
+    documented = _functions_documented_as_absent()
+    assert documented, "parser found no functions in limitations.md -- the parser is broken"
+    shipped = sorted(n for n in documented if _resolves(n))
+    assert not shipped, (
+        f"limitations.md lists functions the evaluator resolves: {shipped}. "
+        "They shipped; drop them from the page (and note them in the "
+        '"No longer limitations" admonition) rather than leaving a reader '
+        "to conclude the feature is missing."
+    )
+
+
+def test_the_topological_recalc_note_does_not_still_call_itself_a_proposal() -> None:
+    """`_recalc_topo` being wired into `recalc()` is the thing the doc's status
+    line claims has not happened."""
+    from gridcalc.engine import Grid
+
+    assert hasattr(Grid, "_recalc_topo")
+    recalc_src = REPO_ROOT / "src" / "gridcalc" / "engine.py"
+    assert "_recalc_topo(" in recalc_src.read_text(encoding="utf-8")
+    status = TOPOLOGICAL.read_text(encoding="utf-8")
+    assert "not implemented" not in status.split("## Why")[0], (
+        "topological.md still opens by calling itself unimplemented, but "
+        "Grid._recalc_topo is the recalc path. Update the status line."
+    )
+
+
+def test_the_limitations_page_does_not_still_deny_spill() -> None:
+    from gridcalc.engine import SPILL, Grid, Mode
+
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    g.setcell(0, 0, "=SEQUENCE(3)")
+    assert g.cells[0][1].type == SPILL, "spill regressed -- fix the engine, not the doc"
+    assert "packed into their origin cell" not in LIMITATIONS.read_text(encoding="utf-8"), (
+        "limitations.md still says array results pack into their origin cell, "
+        "but they spill into neighbours."
+    )

@@ -59,6 +59,6 @@ make web-build   # React client -> src/gridcalc/web/static/index.html
 
 `make web-build` needs [Bun](https://bun.sh), which serves as both the package manager and the JavaScript runtime for the client; Node and npm are not required. Only the desktop frontend needs it -- the terminal app builds and runs without any JavaScript toolchain.
 
-`make build` compiles C++ extensions, so it needs the Python development headers. uv's own managed interpreters ship them and are what it picks by default; a distro interpreter usually splits them into a separate package, and building against one without that installed fails in CMake with `Could NOT find Python (missing: Interpreter Development.Module)`. Install the matching `-dev` package, or let uv manage the interpreter (`uv python install 3.14`).
+`make build` compiles C++ extensions, so it needs the Python development headers. A distro interpreter usually splits those into a separate package, and building against one without it fails in CMake with `Could NOT find Python (missing: Interpreter Development.Module)`. So `pyproject.toml` sets `python-preference = "only-managed"`: uv downloads its own interpreter, which always ships the headers, and a fresh clone needs nothing installed but uv. `.python-version` chooses the version. To build against your own interpreter instead, install its `-dev` package and pass `--python-preference system`.
 
 A checkout that has not run `make web-build` exits with a message telling you to. Released wheels and sdists ship the bundle already built.

@@ -1655,3 +1655,63 @@ def test_nothing_is_withheld_when_the_sandbox_is_off(monkeypatch) -> None:
     assert api.inspect(str(HYBRID))["needs_trust"] is False
     assert api.open_file(str(HYBRID))["ok"] is True
     assert _tax_cell(api) == "4340"
+
+
+# --- The premises under the file API's freedom -------------------------------
+#
+# `Api.save` and `Api.open_file` deliberately take whatever path the caller
+# passes -- see the "Trust model" section of `gridcalc/web`'s module docstring,
+# which argues that a permitted-directory policy would break the feature rather
+# than close a hole. That argument is only sound while nothing untrusted can
+# reach the bridge, and it names exactly two properties that keep it that way.
+# Both were prose until now. The tests below make them load-bearing, so the
+# change that quietly invalidates the reasoning fails here instead of turning
+# the bridge into an arbitrary local file read/write primitive.
+
+
+def test_the_window_is_built_from_inlined_html_not_a_url() -> None:
+    """Premise 1: the view never navigates and loads no remote code.
+
+    `run()` must hand pywebview `html=`. Passing `url=` -- even a `file://`
+    one -- gives the page an origin it can navigate from, and anything it
+    then loads inherits the unrestricted `js_api` bridge.
+    """
+    import ast
+
+    src = Path(__file__).resolve().parents[1] / "src" / "gridcalc" / "web" / "__init__.py"
+    tree = ast.parse(src.read_text(encoding="utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "create_window"
+    ]
+    assert calls, "no webview.create_window call found -- did run() get refactored?"
+    for call in calls:
+        kwargs = {kw.arg for kw in call.keywords}
+        assert "html" in kwargs, "create_window must inline the bundle via html="
+        assert "url" not in kwargs, (
+            "create_window got url=; the file API's freedom assumes the view "
+            "cannot navigate (see the Trust model docstring in gridcalc/web)"
+        )
+
+
+def test_the_frontend_has_no_html_injection_sink() -> None:
+    """Premise 2: cell contents render as escaped React text nodes.
+
+    A workbook is untrusted input. The moment any component renders it as
+    markup, a crafted cell can script the view -- which holds the bridge.
+    """
+    frontend = Path(__file__).resolve().parents[1] / "src" / "gridcalc" / "web" / "frontend" / "src"
+    offenders = [
+        f"{path.relative_to(frontend)}:{n}"
+        for path in sorted(frontend.rglob("*.ts*"))
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if "dangerouslySetInnerHTML" in line or ".innerHTML" in line
+    ]
+    assert not offenders, (
+        "HTML injection sink in the view: " + ", ".join(offenders) + ". Cell "
+        "content is untrusted; rendering it as markup would expose the js_api "
+        "bridge (see the Trust model docstring in gridcalc/web)."
+    )

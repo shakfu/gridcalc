@@ -6,7 +6,7 @@ Status: analysis / proposal. The web frontend (`gridcalc.web`) is an experimenta
 
 The body below is unchanged from when it was written; this section records where the work actually got to, so the two do not silently diverge.
 
-- **P0 is done.** The client is a real Vite/React/TypeScript app under a lint, type-check and test gate (`make web-qa`, now part of `make qa`), not the inline `_HTML` string Section 5c describes. There is an error/notification channel (Section 5d), plus a React error boundary and an `unhandledrejection` handler. The `NamedRange` structural-edit bug is fixed and per-sheet view state is kept across a tab switch; constraining `save` paths (Section 4) is **still open**.
+- **P0 is done.** The client is a real Vite/React/TypeScript app under a lint, type-check and test gate (`make web-qa`, now part of `make qa`), not the inline `_HTML` string Section 5c describes. There is an error/notification channel (Section 5d), plus a React error boundary and an `unhandledrejection` handler. The `NamedRange` structural-edit bug is fixed and per-sheet view state is kept across a tab switch. Constraining `save` paths (Section 4) was **closed by deciding against it**: see the struck bullet there and the "Trust model" section of `gridcalc/web`'s module docstring.
 
 - **P1 is done and then some.** `:opt`/`:goal` reached the GUI, and beyond the original sketch: persisted named models (the `:opt def/run/list/undef` surface, which Appendix A explicitly deferred as "not core P1"), a non-solving `infer_model_spec` so a model can be read off a block and corrected before it runs, a parametric sweep plotted with breakpoints marked, and a **grid annotation layer** that paints binding/slack constraints and shadow prices onto the sheet itself. Charts use Recharts, as Section 5c anticipated the renderer-agnostic `chart_data` shape would allow.
 
@@ -40,7 +40,7 @@ Solid, keep:
 
 Spike-grade, must change:
 
-- **A ~500-line inline HTML/JS string** (`_HTML` in `web/__init__.py`). No lint, no type-check, no module boundaries, no source maps -- invisible to every quality gate that guards the Python. This is the single biggest maintainability liability (Section 5c).
+- ~~**A ~500-line inline HTML/JS string** (`_HTML` in `web/__init__.py`). No lint, no type-check, no module boundaries, no source maps -- invisible to every quality gate that guards the Python. This is the single biggest maintainability liability (Section 5c).~~ Closed: the client is a Vite/React/TypeScript app under `web/frontend/`, gated by `make web-qa`. `_HTML` is gone; `_load_html()` reads the built bundle.
 
 - ~~**Security punted.** `open_file` hardcodes `LoadPolicy.formulas_only()` (`loader.py`); code blocks are never run, no trust UI, no `inspect_file` disclosure. Fine for a spike, a product-defining hole otherwise (Section 5a).~~ Closed: `open_file` takes a policy, `inspect`/`pending_trust` report the decision, and `TrustDialog` asks it.
 
@@ -81,7 +81,7 @@ Takeaway: two clusters carry most of the product value -- **optimization (`:opt`
 
 These are latent bugs the spike has not tripped yet; a product will.
 
-- **`save` trusts a client-supplied path** (`Api.save`, web/**init**.py). In the in-process desktop model the "client" is local so the blast radius is small, but any move toward a served frontend makes this arbitrary-path write. Constrain now while it is cheap.
+- ~~**`save` trusts a client-supplied path** (`Api.save`, web/**init**.py). In the in-process desktop model the "client" is local so the blast radius is small, but any move toward a served frontend makes this arbitrary-path write. Constrain now while it is cheap.~~ Decided the other way (v0.4.0), and the reasoning now lives in the "Trust model" section of `gridcalc/web`'s module docstring: a path policy would break the feature -- saving where the user chose -- rather than close a hole, because nothing untrusted can reach the bridge. That rests on two properties, the window being built from inlined HTML rather than a URL and cell content rendering as escaped React text nodes, and both are now enforced by tests in `tests/test_web.py` instead of prose. Revisit **only** together with a served frontend, which Section 1 recommends deferring explicitly.
 
 - **Shared, persistent eval globals** (`_eval_globals`, exec into `g` on PYTHON recalc). Single-process desktop is fine; it is a hard blocker for any multi-tenant path -- another reason to decide Section 1 early.
 
@@ -108,6 +108,8 @@ A pywebview app is not `pip install` for end users. Product means a double-click
 - **Signing / notarization** (macOS Gatekeeper, Windows SmartScreen) if distributed beyond yourself. This alone can dominate the effort budget and is a reason the "personal tool" audience is materially cheaper.
 
 ### 5c. Client architecture
+
+**Done** -- what shipped went further than the sketch below: not extracted files with no build step, but a Vite/React/TypeScript app (`web/frontend/`) compiled to one self-contained `static/index.html`, with Recharts for the charts exactly as the last-but-one bullet anticipated. The reasoning is kept because it is why the seams are where they are.
 
 The inline `_HTML` string was right for a spike and is wrong for a product:
 

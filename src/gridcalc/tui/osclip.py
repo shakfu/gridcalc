@@ -92,18 +92,88 @@ class SystemClipboard:
         return out.stdout.decode("utf-8", errors="replace")
 
 
+def _needs_quoting(s: str) -> bool:
+    """Whether ``s`` cannot survive the wire unquoted.
+
+    A tab or a newline would be read back as a cell or row boundary. A double
+    quote matters too, and less obviously: a cell whose text is literally
+    ``"x"`` would come back as ``x``, because the parser has no way to tell an
+    unquoted quote from a field the writer quoted.
+    """
+    return any(ch in s for ch in ("\t", "\n", "\r", '"'))
+
+
 def rows_to_tsv(rows: list[list[str]]) -> str:
     """Serialise a rectangular grid of cell strings to TSV.
 
     Rows are newline-separated, cells tab-separated. No trailing newline,
-    so a round-trip through ``pbcopy``/``pbpaste`` compares equal. Embedded
-    tabs/newlines in a cell are replaced with spaces (TSV has no quoting).
+    so a round-trip through ``pbcopy``/``pbpaste`` compares equal.
+
+    A cell containing a tab, a newline or a double quote is wrapped in double
+    quotes with its own quotes doubled -- the CSV convention from RFC 4180,
+    which is also what Excel, Numbers and Sheets write into the clipboard for
+    such a cell, so the quoting is understood on the other side rather than
+    being a gridcalc dialect. Cells that need none of this are written
+    verbatim, so ordinary content is byte-for-byte what it always was.
+
+    This replaced sanitising tabs and newlines to spaces. That kept the shape
+    of the grid but silently rewrote the user's data, and a copy-paste that
+    corrupts a cell is worse than one that fails.
     """
 
-    def clean(s: str) -> str:
-        return s.replace("\t", " ").replace("\r", " ").replace("\n", " ")
+    def field(s: str) -> str:
+        if not _needs_quoting(s):
+            return s
+        return '"' + s.replace('"', '""') + '"'
 
-    return "\n".join("\t".join(clean(c) for c in row) for row in rows)
+    return "\n".join("\t".join(field(c) for c in row) for row in rows)
+
+
+def _split_row(line: str, start: int) -> tuple[list[str], int, bool]:
+    """Read one row from ``line[start:]``.
+
+    Returns its cells, the offset to resume at, and whether the row ended on a
+    newline rather than at the end of the text -- which is what says another
+    row follows, even an empty one. Takes the whole text rather than a single
+    line because a quoted field may contain newlines, so rows cannot be found
+    by splitting on ``\n`` first.
+    """
+    cells: list[str] = []
+    i = start
+    n = len(line)
+    while True:
+        if i < n and line[i] == '"':
+            # Quoted field: consume to the closing quote, unescaping "" -> ".
+            i += 1
+            buf: list[str] = []
+            while i < n:
+                if line[i] == '"':
+                    if i + 1 < n and line[i + 1] == '"':
+                        buf.append('"')
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                buf.append(line[i])
+                i += 1
+            cells.append("".join(buf))
+            # Anything between the closing quote and the next delimiter is
+            # malformed input; keep it rather than dropping the user's bytes.
+            while i < n and line[i] not in ("\t", "\n"):
+                cells[-1] += line[i]
+                i += 1
+        else:
+            j = i
+            while j < n and line[j] not in ("\t", "\n"):
+                j += 1
+            cells.append(line[i:j])
+            i = j
+        if i >= n:
+            return cells, i, False
+        if line[i] == "\t":
+            i += 1
+            continue
+        return cells, i + 1, True  # line[i] == "\n"
 
 
 def tsv_to_rows(text: str) -> list[list[str]]:
@@ -111,10 +181,20 @@ def tsv_to_rows(text: str) -> list[list[str]]:
 
     Accepts LF or CRLF line endings and drops a single trailing blank line
     (the newline many clipboard tools append). Returns [] for empty input.
+
+    Understands the quoting :func:`rows_to_tsv` writes, so a cell holding a
+    tab or a newline round-trips; a field that is not quoted is taken
+    literally, which is what unquoted TSV from another program means.
     """
     body = text.replace("\r\n", "\n").replace("\r", "\n")
     if body.endswith("\n"):
         body = body[:-1]
     if body == "":
         return []
-    return [line.split("\t") for line in body.split("\n")]
+    rows: list[list[str]] = []
+    pos = 0
+    while True:
+        cells, pos, more = _split_row(body, pos)
+        rows.append(cells)
+        if not more:
+            return rows

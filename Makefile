@@ -268,10 +268,21 @@ docs-clean:
 # Create a release (bump version, tag, push).
 # pyproject is the only place the version is written -- `gridcalc --version`
 # reads it back from the installed metadata -- so this one line is the whole
-# bump.
+# bump. `scripts/bump_version.py` does the edit rather than sed: the sed here
+# was the BSD spelling (`sed -i ''`), a syntax error on GNU sed, so on Linux
+# the bump did nothing -- and because the steps were joined with `;` the tag
+# was still created, on a tree that still held the old version. The publish
+# workflow triggers on `v*` tags, so that mislabelled tag is what would have
+# shipped. The steps are chained with `&&` now: nothing reaches `git tag`
+# unless every step before it succeeded.
 release:
 	@echo "Current version: $$(grep '^version' pyproject.toml | head -1)"
-	@read -p "New version: " version; 	sed -i '' "s/^version = .*/version = \"$$version\"/" pyproject.toml; 	git add pyproject.toml; 	git commit -m "Bump version to $$version"; 	git tag -a "v$$version" -m "Release $$version"; 	echo "Tagged v$$version. Run 'git push && git push --tags' to publish."
+	@read -p "New version: " version; \
+	  python3 scripts/bump_version.py "$$version" && \
+	  git add pyproject.toml && \
+	  git commit -m "Bump version to $$version" && \
+	  git tag -a "v$$version" -m "Release $$version" && \
+	  echo "Tagged v$$version. Run 'git push && git push --tags' to publish."
 
 # Clean build artifacts
 clean:

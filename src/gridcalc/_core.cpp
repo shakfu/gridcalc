@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <unordered_map>
+#include <utility>
 
 #include <OpenXLSX.hpp>
 
@@ -48,9 +50,39 @@ std::string cell_to_text(XLCell& cell) {
     return "";
 }
 
+// The number format attached to a cell, as (format code, numFmtId).
+//
+// A date in xlsx is a plain number whose cell style names a date format --
+// there is no date value type -- so this is the only evidence that a column
+// of floats is a column of dates. Built-in ids (14-22, 45-47) carry no code
+// in the file at all, which is why the id is reported as well as the string.
+//
+// Every lookup can throw XLException on a file whose style table is missing
+// or inconsistent, and a malformed style is not a reason to fail the whole
+// read: an unstyled cell is still a number the user wants. So each stage
+// degrades to "no format".
+std::pair<std::string, uint32_t> cell_number_format(XLDocument& doc, XLCell& cell) {
+    try {
+        XLStyleIndex styleIndex = cell.cellFormat();
+        auto formats = doc.styles().cellFormats();
+        if (styleIndex >= formats.count()) return {"", 0};
+        uint32_t fmtId = formats[styleIndex].numberFormatId();
+        if (fmtId == 0) return {"", 0};
+        try {
+            return {doc.styles().numberFormats().numberFormatById(fmtId).formatCode(), fmtId};
+        } catch (...) {
+            // A built-in id: defined by the spec, so it has no entry in the
+            // file's numFmts table. The id alone identifies it.
+            return {"", fmtId};
+        }
+    } catch (...) {
+        return {"", 0};
+    }
+}
+
 nb::list xlsx_read(const std::string& path) {
-    // Returns list[(sheet_name, col, row, text)] across every sheet
-    // in the workbook, in workbook order.
+    // Returns list[(sheet_name, col, row, text, numfmt_code, numfmt_id)]
+    // across every sheet in the workbook, in workbook order.
     nb::list out;
     XLDocument doc;
     doc.open(path);
@@ -65,10 +97,13 @@ nb::list xlsx_read(const std::string& path) {
                 std::string text = cell_to_text(cell);
                 if (text.empty()) continue;
                 uint16_t c = cell.cellReference().column();
+                auto fmt = cell_number_format(doc, cell);
                 out.append(nb::make_tuple(sname,
                                           static_cast<int>(c) - 1,
                                           static_cast<int>(r) - 1,
-                                          text));
+                                          text,
+                                          fmt.first,
+                                          static_cast<int>(fmt.second)));
             }
         }
     }
@@ -120,6 +155,37 @@ void xlsx_write(const std::string& path, nb::list cells, nb::list sheet_names) {
         ensure_sheet(nb::cast<std::string>(handle));
     }
 
+    // One cell-format entry per distinct number-format code, created lazily
+    // and reused. Without the cache every dated cell would append its own
+    // numFmt and cellXf entry, so a column of 1000 dates would write 1000
+    // identical styles -- valid, but the file balloons and Excel's style
+    // dialog fills with duplicates.
+    std::unordered_map<std::string, XLStyleIndex> format_cache;
+    // Custom number formats must use ids at or above 164; 0-163 are reserved
+    // for the built-ins, and reusing one silently redefines it.
+    uint32_t next_fmt_id = 164;
+
+    // Bound by reference, once. `auto styles = doc.styles()` copies the
+    // XLStyles object, and `create()` on the copy returns an index into the
+    // copy's own vector -- so the second distinct format is written at an
+    // index that, in the saved file, still holds the first. The symptom is a
+    // cell silently wearing another cell's format.
+    XLStyles& styles = doc.styles();
+
+    auto style_for_format = [&](const std::string& code) -> XLStyleIndex {
+        auto it = format_cache.find(code);
+        if (it != format_cache.end()) return it->second;
+        XLStyleIndex numberFormatIndex = styles.numberFormats().create();
+        uint32_t fmtId = next_fmt_id++;
+        styles.numberFormats()[numberFormatIndex].setNumberFormatId(fmtId);
+        styles.numberFormats()[numberFormatIndex].setFormatCode(code);
+        XLStyleIndex cellFormatIndex = styles.cellFormats().create();
+        styles.cellFormats()[cellFormatIndex].setNumberFormatId(fmtId);
+        styles.cellFormats()[cellFormatIndex].setApplyNumberFormat(true);
+        format_cache[code] = cellFormatIndex;
+        return cellFormatIndex;
+    };
+
     for (auto handle : cells) {
         nb::tuple t = nb::cast<nb::tuple>(handle);
         std::string sname = nb::cast<std::string>(t[0]);
@@ -147,6 +213,20 @@ void xlsx_write(const std::string& path, nb::list cells, nb::list sheet_names) {
                 if (!std::isnan(v) && !std::isinf(v)) cell.value() = v;
             }
         }
+        // Trailing number-format code, when the caller supplied one. It is
+        // last so the existing 5- and 6-element payloads stay valid.
+        size_t fmt_slot = (kind == "f") ? 6 : 5;
+        if (t.size() > fmt_slot && !t[fmt_slot].is_none()) {
+            std::string code = nb::cast<std::string>(t[fmt_slot]);
+            if (!code.empty()) {
+                try {
+                    cell.setCellFormat(style_for_format(code));
+                } catch (...) {
+                    // A style table that will not take the format is not a
+                    // reason to lose the value that was already written.
+                }
+            }
+        }
     }
     // If the payload was empty, the auto-created default sheet is left
     // in place untouched -- OpenXLSX requires at least one sheet.
@@ -159,8 +239,8 @@ void xlsx_write(const std::string& path, nb::list cells, nb::list sheet_names) {
 NB_MODULE(_core, m) {
     m.doc() = "gridcalc native extensions";
     m.def("xlsx_read", &xlsx_read, nb::arg("path"),
-          "Read an .xlsx file. Returns list[(col, row, text)] (zero-indexed).");
+          "Read an .xlsx file. Returns list[(sheet, col, row, text, numfmt_code, numfmt_id)] (zero-indexed). numfmt_code is the cell's number-format string ('' for a built-in or unstyled cell) and numfmt_id its numFmtId (0 when unstyled).");
     m.def("xlsx_write", &xlsx_write, nb::arg("path"), nb::arg("cells"),
           nb::arg("sheet_names") = nb::list(),
-          "Write cells to an .xlsx file. Each cell is (sheet, col, row, kind, value[, cached]); kind in {'s','n','f'} where 'f' uses value as formula text and optional cached numeric. sheet_names lists every sheet in workbook order, so empty sheets are written too.");
+          "Write cells to an .xlsx file. Each cell is (sheet, col, row, kind, value[, cached][, numfmt]); kind in {'s','n','f'} where 'f' uses value as formula text and optional cached numeric. A trailing numfmt string applies that number format to the cell (slot 5, or 6 for 'f'). sheet_names lists every sheet in workbook order, so empty sheets are written too.");
 }

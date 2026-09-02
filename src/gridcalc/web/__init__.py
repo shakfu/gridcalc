@@ -91,6 +91,7 @@ from ..engine import (
 )
 from ..loader import demo_grid, load_workbook, needs_trust
 from ..opt import OptError, OptModel, cells_to_spec, parse_bounds, parse_cells
+from ..report import goal_json, solve_json, sweep_json
 from ..sandbox import FileInfo, LoadPolicy, classify_module
 from ..search import find_matches
 from ..undo import UndoManager
@@ -1043,15 +1044,7 @@ class Api:
             self._undo.discard_last()
         elif res.applied:
             self._touch()
-        return {
-            "ok": True,
-            "converged": res.converged,
-            "iterations": res.iterations,
-            "var_value": res.var_value,
-            "formula_value": res.formula_value,
-            "residual": res.residual,
-            "applied": res.applied,
-        }
+        return {"ok": True, **goal_json(res, fc, vc, tgt)}
 
     def opt_sweep(self, spec: dict[str, Any]) -> dict[str, Any]:
         """Parametric right-hand-side sweep -- what-if, never mutates the sheet.
@@ -1093,20 +1086,7 @@ class Api:
             )
         except opt.OptError as exc:
             return {"ok": False, "error": str(exc)}
-        return {
-            "ok": True,
-            "points": [
-                {
-                    "rhs": p.rhs,
-                    "status": p.status_name,
-                    "objective": self._num(p.objective),
-                    "shadow_price": self._num(p.shadow_price),
-                    "delta": self._num(p.delta),
-                    "breakpoint": p.breakpoint,
-                }
-                for p in pts
-            ],
-        }
+        return {"ok": True, **sweep_json(pts, constraint)}
 
     def _run_solve(
         self,
@@ -1156,48 +1136,15 @@ class Api:
             self._touch()
         return {"ok": True, **self._solve_json(res)}
 
-    def _solve_json(self, res: opt.SolveResult) -> dict[str, Any]:
-        """Serialize a ``SolveResult`` to JSON-safe, A1-keyed data."""
-        out: dict[str, Any] = {
-            "status": res.status_name,
-            "optimal": res.status_name == "OPTIMAL",
-            "objective": self._num(res.objective),
-            "values": {self._a1(k): v for k, v in res.values.items()},
-            "applied": res.applied,
-            "quadratic": res.quadratic,
-        }
-        if res.sensitivity is not None:
-            out["sensitivity"] = {
-                "variables": [
-                    {
-                        "cell": self._a1(v.cell),
-                        "value": v.value,
-                        "reduced_cost": v.reduced_cost,
-                        "obj_coef": v.obj_coef,
-                        "obj_from": self._num(v.obj_from),
-                        "obj_till": self._num(v.obj_till),
-                    }
-                    for v in res.sensitivity.variables
-                ],
-                "constraints": [
-                    {
-                        "cell": self._a1(c.cell),
-                        "shadow_price": c.shadow_price,
-                        "rhs": c.rhs,
-                        "activity": c.activity,
-                        "slack": c.slack,
-                        "binding": c.binding,
-                        "rhs_from": self._num(c.rhs_from),
-                        "rhs_till": self._num(c.rhs_till),
-                    }
-                    for c in res.sensitivity.constraints
-                ],
-            }
-        if res.conflict is not None:
-            out["conflict"] = [self._a1(k) for k in res.conflict]
-        if res.unbounded is not None:
-            out["unbounded"] = [self._a1(k) for k in res.unbounded]
-        return out
+    @staticmethod
+    def _solve_json(res: opt.SolveResult) -> dict[str, Any]:
+        """Serialize a ``SolveResult`` to JSON-safe, A1-keyed data.
+
+        The shape lives in :mod:`gridcalc.report` so the headless CLI emits
+        exactly the same object; this stays as a method because the call sites
+        below read better for it.
+        """
+        return solve_json(res)
 
     # -- helpers ----------------------------------------------------------
 

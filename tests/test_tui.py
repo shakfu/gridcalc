@@ -1219,11 +1219,95 @@ class TestTsvSerialization:
         assert rows_to_tsv(rows) == "a\t1\nb\t2"
         assert tsv_to_rows(rows_to_tsv(rows)) == rows
 
-    def test_rows_to_tsv_sanitizes_delimiters(self):
+    def test_rows_to_tsv_quotes_embedded_delimiters(self):
         from gridcalc.tui.osclip import rows_to_tsv
 
-        # Embedded tabs/newlines become spaces (TSV has no quoting).
-        assert rows_to_tsv([["x\ty", "a\nb"]]) == "x y\ta b"
+        # A tab or newline in a cell is quoted, RFC 4180 style, not replaced
+        # with a space -- sanitising silently corrupted the user's data.
+        assert rows_to_tsv([["x\ty", "a\nb"]]) == '"x\ty"\t"a\nb"'
+
+    def test_rows_to_tsv_quotes_and_doubles_embedded_quotes(self):
+        from gridcalc.tui.osclip import rows_to_tsv
+
+        assert rows_to_tsv([['say "hi"', "plain"]]) == '"say ""hi"""\tplain'
+        # A cell that merely *looks* quoted has to be quoted too, or the
+        # parser reads it back as the unquoted text inside.
+        assert rows_to_tsv([['"x"']]) == '"""x"""'
+
+    def test_rows_to_tsv_leaves_ordinary_cells_untouched(self):
+        from gridcalc.tui.osclip import rows_to_tsv
+
+        # Quoting is per-cell, so content that needs none crosses verbatim and
+        # anything already pasting gridcalc output keeps working.
+        assert rows_to_tsv([["=SUM(A1:A2)", "3.14", "", "hello world"]]) == (
+            "=SUM(A1:A2)\t3.14\t\thello world"
+        )
+
+    @pytest.mark.parametrize(
+        "rows",
+        [
+            [["a", "1"], ["b", "2"]],
+            [["x\ty", "a\nb"]],
+            [['say "hi"', "plain"]],
+            [['"quoted"', ""]],
+            [["", "", ""]],
+            [["multi\nline\nvalue"]],
+            [['a"b\tc', "d"]],
+            [["=SUM(A1:A2)", "\t"]],
+            [["one", "two"], ["three\nfour", 'fi"ve']],
+        ],
+    )
+    def test_tsv_round_trips_whatever_a_cell_holds(self, rows):
+        from gridcalc.tui.osclip import rows_to_tsv, tsv_to_rows
+
+        assert tsv_to_rows(rows_to_tsv(rows)) == rows
+
+    def test_tsv_to_rows_reads_unquoted_input_from_other_programs(self):
+        from gridcalc.tui.osclip import tsv_to_rows
+
+        # Nothing quoted -> every field is literal, exactly as before. This is
+        # what a paste from a program that does not quote must still mean.
+        assert tsv_to_rows('a\tb"c\nd\te') == [["a", 'b"c'], ["d", "e"]]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "",
+            "\n",
+            "a",
+            "a\n",
+            "a\n\n",
+            "a\t",
+            "a\t1\nb\t2\n",
+            "a\t1\r\nb\t2\r\n",
+            "\t\t",
+            "x\t\ny",
+            "a\n\nb",
+            "\n\n",
+            "a\tb\tc",
+        ],
+    )
+    def test_quote_aware_parsing_did_not_change_unquoted_input(self, text):
+        """Input with no quotes in it must parse exactly as the old
+        split-on-delimiters parser did, down to trailing empty rows and
+        cells. Quoting is additive; everything already in a clipboard
+        somewhere has to keep meaning what it meant."""
+        from gridcalc.tui.osclip import tsv_to_rows
+
+        body = text.replace("\r\n", "\n").replace("\r", "\n")
+        if body.endswith("\n"):
+            body = body[:-1]
+        previous = [] if body == "" else [line.split("\t") for line in body.split("\n")]
+        assert tsv_to_rows(text) == previous
+
+    def test_tsv_to_rows_keeps_the_bytes_of_a_malformed_field(self):
+        from gridcalc.tui.osclip import tsv_to_rows
+
+        # Junk after a closing quote, and a quoted field never closed: both
+        # are broken input, and dropping the user's text is the one wrong
+        # answer. Keep it and let them see it.
+        assert tsv_to_rows('"a"junk\tb') == [["ajunk", "b"]]
+        assert tsv_to_rows('"unterminated\tstill here') == [["unterminated\tstill here"]]
 
     def test_tsv_to_rows_trailing_newline_and_empty(self):
         from gridcalc.tui.osclip import tsv_to_rows
@@ -1291,6 +1375,26 @@ class TestSystemClipboard:
         assert self.g.cell(1, 0).val == 99.0
         assert self.g.cell(0, 1).text == "foo"
         assert self.g.cell(1, 1).val == 2.0  # "=1+1" pasted as a live formula
+
+    def test_a_cell_holding_a_tab_survives_the_os_clipboard(self):
+        """The data-integrity half of the quoting change, end to end.
+
+        A label with a tab in it used to come back with a space instead --
+        silently, and only for the user who happened to have one. Copy now
+        quotes it and paste unquotes it, so the text is what it was.
+        """
+        from gridcalc.tui import Clipboard
+
+        self.g.setcell(0, 0, "a\tb")
+        fake = _FakeSystemClipboard()
+        cb = Clipboard(fake)
+        cb.yank(self.g, 0, 0, 0, 0)
+        assert fake.buf == '"a\tb"'  # quoted on the wire, not flattened
+        # Not our own push any more, so the paste goes through the TSV path
+        # a foreign program's content would take.
+        cb._last_pushed = None
+        cb.paste(self.g, self.undo, 3, 3)
+        assert self.g.cell(3, 3).text == "a\tb"
 
     def test_external_blank_cells_do_not_clobber(self):
         from gridcalc.tui import Clipboard

@@ -108,6 +108,22 @@ Issues = "https://github.com/shakfu/gridcalc/issues"
 requires = ["scikit-build-core>=0.8", "nanobind"]
 build-backend = "scikit_build_core.build"
 
+[tool.uv]
+# The wheel compiles C++ extensions (`_core`, `_opt`), so the interpreter uv
+# picks has to ship its development headers. Left to its default preference uv
+# takes an interpreter that is already installed over downloading a managed
+# one, and a distro python is usually split so that the headers live in a
+# separate package -- building against one without that installed fails in
+# CMake with `Could NOT find Python (missing: Interpreter Development.Module)`,
+# which reads as a project defect rather than a missing OS package.
+#
+# `only-managed` makes uv fetch its own interpreter instead, which always
+# carries the headers, so a fresh clone builds with no prerequisite beyond uv
+# itself. `.python-version` chooses which one. The cost is that a system
+# interpreter is refused even when it does have its headers; a contributor who
+# wants theirs can override per command with `--python-preference system`.
+python-preference = "only-managed"
+
 [tool.scikit-build]
 wheel.packages = ["src/gridcalc"]
 cmake.args = []

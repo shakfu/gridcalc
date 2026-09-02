@@ -27,6 +27,8 @@ from collections.abc import Callable
 # `sandbox = false` in gridcalc.toml would never reach the trust prompt.
 from .. import __version__, sandbox
 from .. import commands as shared
+from ..cli import add_headless_arguments, is_headless
+from ..cli import run as cli_run
 from ..config import emit_warnings, load_config
 from ..display import fmt_float, fmtcell
 from ..engine import (
@@ -593,6 +595,10 @@ def cli_parser() -> argparse.ArgumentParser:
     parts wrong: `--help` exited 1 and printed to stderr, `-h` was recognised
     only as the sole argument (`gridcalc -h foo` opened a workbook called
     `-h`), and `--version` was read as a filename.
+
+    The headless flags (`--solve`, `--goal`, `--sweep`, `--eval`, `--convert`)
+    are attached by `gridcalc.cli`; any of them turns the same command line
+    into a batch run that never opens a window. See `docs/reference/cli.md`.
     """
     p = argparse.ArgumentParser(
         prog="gridcalc",
@@ -604,6 +610,7 @@ def cli_parser() -> argparse.ArgumentParser:
         help="workbook to open (.json or .xlsx); omitted, gridcalc starts empty",
     )
     p.add_argument("-V", "--version", action="version", version=f"gridcalc {__version__}")
+    add_headless_arguments(p)
     return p
 
 
@@ -611,6 +618,18 @@ def main() -> None:
     # Before the config load, so `--help` and `--version` answer immediately
     # and without emitting config warnings at someone who asked for the usage.
     args = cli_parser().parse_args()
+
+    # A headless action means "answer this and exit"; curses is never touched,
+    # so the run works over ssh without a tty, in a cron job, and in CI.
+    # Config still loads, because sandbox policy and enabled libs change what
+    # a workbook evaluates to and a batch answer has to match the interactive
+    # one -- but its warnings go to stderr so they cannot corrupt the JSON on
+    # stdout that a caller is parsing.
+    if is_headless(args):
+        _state._cfg = load_config()
+        emit_warnings(_state._cfg)
+        configure_sandbox(_state._cfg.sandbox)
+        sys.exit(cli_run(args))
 
     _state._cfg = load_config()
     emit_warnings(_state._cfg)

@@ -37,8 +37,21 @@ CORE_MODULES = (
     "commands.py",
     "opt.py",
     "goalseek.py",
+    # Headless mode. `cli.py` is a frontend in the sense that it renders
+    # results, but it is core by the only definition that matters here: it
+    # must run on a machine with no terminal, which is the entire point of
+    # `gridcalc book.json --solve` in a cron job or a CI container. Its two
+    # helpers are pure -- `optspec` parses the `:opt`/`:goal` grammar for both
+    # frontends, `report` shapes results for both.
+    "cli.py",
+    "optspec.py",
+    "report.py",
     "config.py",
     "sandbox.py",
+    # Excel date serials: the epoch, format classification, and rendering.
+    # Shared by the function library, the display layer and the criteria
+    # parser, none of which may reach for a terminal.
+    "dates.py",
     "formula/ast_nodes.py",
     "formula/deps.py",
     "formula/errors.py",
@@ -74,6 +87,12 @@ CORE_IMPORTS = (
     "gridcalc.goalseek",
     "gridcalc.sandbox",
     "gridcalc.keys",
+    # Headless mode is the strongest statement of the layering rule: if
+    # importing it pulled in curses, `gridcalc --solve` would need a terminal.
+    "gridcalc.cli",
+    "gridcalc.dates",
+    "gridcalc.optspec",
+    "gridcalc.report",
 )
 
 

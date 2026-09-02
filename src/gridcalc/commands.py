@@ -168,11 +168,13 @@ def valid_name(name: str) -> bool:
 def apply_format(g: Grid, undo: UndoManager, c1: int, r1: int, c2: int, r2: int, spec: str) -> bool:
     """Apply a format ``spec`` to the non-empty cells of a rectangle.
 
-    Three shapes, in the order the TUI's `:format` has always accepted them:
+    Four shapes, in the order the TUI's `:format` has always accepted them:
     a style string drawn from ``bui`` (toggles, so applying `b` twice is
-    unbold), a single number-format char from ``LRIGD$%*``, or a Python format
-    spec like ``,.2f``. Returns False only for an empty spec -- anything else
-    is treated as a Python spec, since that is the open-ended case.
+    unbold), a single number-format char from ``LRIGD$%*``, a Python format
+    spec like ``,.2f``, or an xlsx date format like ``yyyy-mm-dd``. Returns
+    False only for an empty spec -- anything else is stored in ``fmtstr``,
+    since that is the open-ended case, and the display layer decides at render
+    time which of the two languages it is written in.
     """
     if not spec:
         return False
@@ -268,7 +270,10 @@ def _blank(ctx: Context) -> Result:
 def _format(ctx: Context) -> Result:
     spec = ctx.arg(0)
     if not spec:
-        return fail("give a format: b u i, one of LRIGD$%*, or a Python spec like ,.2f")
+        return fail(
+            "give a format: b u i, one of LRIGD$%*, a Python spec like ,.2f, "
+            "or a date format like yyyy-mm-dd"
+        )
     c1, r1, c2, r2 = ctx.rect()
     if not apply_format(ctx.grid, ctx.undo, c1, r1, c2, r2, spec):
         return fail(f"unusable format: {spec}")
@@ -493,7 +498,12 @@ COMMANDS: tuple[Command, ...] = (
         title="Format cells",
         group="Format",
         needs_selection=True,
-        args=(Arg("spec", "b u i, one of LRIGD$%*, or a Python spec like ,.2f"),),
+        args=(
+            Arg(
+                "spec",
+                "b u i, one of LRIGD$%*, a Python spec like ,.2f, or a date format like yyyy-mm-dd",
+            ),
+        ),
         run=_format,
     ),
     Command(

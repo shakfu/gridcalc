@@ -79,6 +79,25 @@ gridcalc example_lp.json             # LP/MIP demo -- type :opt to solve
 gridcalc example_goal.json           # goal-seek demo -- :goal B1 = 11 by A1
 ```
 
+## Scripting it
+
+Any operation flag turns the same command line into a batch run that never
+opens a window -- so the solver is reachable from cron, a Makefile, or CI:
+
+```sh
+gridcalc plan.json --solve                       # run the workbook's saved model
+gridcalc plan.json --solve --sens                # ... with shadow prices
+gridcalc plan.json --sweep 'D5 6:24 9'           # parametric right-hand side
+gridcalc book.json --goal 'B10 = 100 by A1'      # goal seek
+gridcalc book.json --eval '=SUM(A1:A10)'         # evaluate a formula
+gridcalc book.xlsx --convert book.json           # format conversion
+```
+
+Results go to stdout as JSON with a documented schema, and the exit code
+separates "the answer is no" (`2` -- infeasible, unbounded, did not converge)
+from "the job is broken" (`1`). Nothing is written back unless you pass
+`--apply`. Full reference: <https://shakfu.github.io/gridcalc/reference/cli/>
+
 ## Documentation
 
 | Topic | |
@@ -88,6 +107,7 @@ gridcalc example_goal.json           # goal-seek demo -- :goal B1 = 11 by A1
 | Desktop app (web frontend) | <https://shakfu.github.io/gridcalc/desktop/> |
 | Formulas, functions, named ranges | <https://shakfu.github.io/gridcalc/guide/formulas/> |
 | Optimization (LP/MIP/QP, sensitivity, sweeps) | <https://shakfu.github.io/gridcalc/guide/optimization/> |
+| Headless CLI (solve/goal/sweep/eval/convert) | <https://shakfu.github.io/gridcalc/reference/cli/> |
 | File format | <https://shakfu.github.io/gridcalc/reference/file-format/> |
 | Python API | <https://shakfu.github.io/gridcalc/reference/api/> |
 | Design notes (recalc, security, web frontend) | <https://shakfu.github.io/gridcalc/topological/> |

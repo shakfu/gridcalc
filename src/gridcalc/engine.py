@@ -10,6 +10,7 @@ from io import StringIO
 from types import MappingProxyType
 from typing import Any, NamedTuple
 
+from .dates import is_date_format, normalise_format
 from .sandbox import load_modules, validate_code, validate_formula
 
 
@@ -797,12 +798,16 @@ def _expand_ranges(expr: str) -> str:
     return "".join(result)
 
 
-def _xlsx_read_cells(filename: str) -> list[tuple[str, int, int, str]] | None:
+def _xlsx_read_cells(filename: str) -> list[tuple[str, int, int, str, str, int]] | None:
     """Read xlsx via the OpenXLSX-backed `_core.xlsx_read`.
 
-    Returns the list of ``(sheet_name, col0, row0, text)`` tuples
-    across every sheet in the workbook (workbook order), or ``None``
-    if the file cannot be opened.
+    Returns the list of ``(sheet_name, col0, row0, text, numfmt_code,
+    numfmt_id)`` tuples across every sheet in the workbook (workbook order),
+    or ``None`` if the file cannot be opened.
+
+    The number format rides along because xlsx has no date type: a date is a
+    serial wearing a date format, so the format is the only thing that says
+    a column of floats is a column of dates.
     """
     from gridcalc import _core
 
@@ -2938,14 +2943,21 @@ class Grid:
         self._spill_blocked.clear()
         self._apply_mode_libs()
 
-        # Group payload by sheet, preserving first-seen order.
+        # Group payload by sheet, preserving first-seen order. Date formats
+        # are collected separately and applied after the cells are written:
+        # `setcells_bulk` takes text, and a format is not text.
         per_sheet: dict[str, list[tuple[int, int, str]]] = {}
+        per_sheet_fmt: dict[str, list[tuple[int, int, str]]] = {}
         sheet_order: list[str] = []
-        for sname, c, r, text in cells:
+        for sname, c, r, text, numfmt_code, numfmt_id in cells:
             if sname not in per_sheet:
                 per_sheet[sname] = []
+                per_sheet_fmt[sname] = []
                 sheet_order.append(sname)
             per_sheet[sname].append((c, r, text))
+            datefmt = normalise_format(numfmt_code, numfmt_id)
+            if datefmt:
+                per_sheet_fmt[sname].append((c, r, datefmt))
 
         # Replace the auto-created Sheet1 with the first xlsx sheet
         # (preserves the source workbook's first-sheet name) and add
@@ -2979,6 +2991,10 @@ class Grid:
             # Use the resolved name rather than `sname` in case the
             # de-dupe path renamed it.
             self.setcells_bulk(per_sheet[sname])
+            for c, r, datefmt in per_sheet_fmt[sname]:
+                cl = self._active._cells.get((c, r))
+                if cl is not None and cl.type in (NUM, FORMULA):
+                    cl.fmtstr = datefmt
         self.active = 0
 
         # A single full recalc so every formula sees the final workbook,
@@ -3006,10 +3022,15 @@ class Grid:
             for (c, r), cl in s._cells.items():
                 if cl.type == EMPTY:
                     continue
+                # A date cell is a serial plus a format; without the format
+                # the file that comes back out is a column of five-digit
+                # numbers, which is what "dates are neither read nor written"
+                # used to mean in practice.
+                datefmt = cl.fmtstr if cl.fmtstr and is_date_format(cl.fmtstr) else ""
                 if cl.type == LABEL:
                     payload.append((s.name, c, r, "s", cl.text))
                 elif cl.type == NUM:
-                    payload.append((s.name, c, r, "n", float(cl.val)))
+                    payload.append((s.name, c, r, "n", float(cl.val), datefmt))
                 elif cl.type == FORMULA:
                     val = cl.val
                     cached: float | None
@@ -3020,9 +3041,9 @@ class Grid:
                     else:
                         cached = None
                     if preserve_formulas and cl.text:
-                        payload.append((s.name, c, r, "f", cl.text, cached))
+                        payload.append((s.name, c, r, "f", cl.text, cached, datefmt))
                     elif cached is not None:
-                        payload.append((s.name, c, r, "n", cached))
+                        payload.append((s.name, c, r, "n", cached, datefmt))
         return _xlsx_write_cells(filename, payload, [s.name for s in self.sheets])
 
     def csvsave(self, filename: str) -> int:

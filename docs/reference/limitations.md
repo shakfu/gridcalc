@@ -10,7 +10,7 @@ Known gaps, each of them deliberate rather than pending:
 
 - **Cross-sheet ranges** (`Sheet1!A1:Sheet2!B5`) are rejected at parse time. Excel does not support them either.
 
-- **xlsx dates and styles** are neither read nor written; date serials arrive as floats.
+- **xlsx cell styles** (fonts, fills, borders, column widths) are neither read nor written. Number formats are, but only the date ones -- enough to keep dates dates through a round trip; a currency or percent format from Excel still arrives as a bare number.
 
 The [Excel function coverage audit](../function_coverage.md) tracks the function library itself against Microsoft's documented set, including which absences are architectural and which are merely unimplemented.
 
@@ -25,3 +25,7 @@ For what the desktop frontend does not do yet -- a separate question from engine
     returns a real reference, and array results spill into neighbouring
     cells. `tests/test_docs_conformance.py` now fails if a function named
     on this page is one the evaluator actually resolves.
+
+    It also said xlsx dates were neither read nor written. They now are:
+    a date's number format is read, rendered, written back, and understood
+    by `COUNTIF`-style criteria -- see [Dates](../guide/dates.md).

@@ -4,7 +4,7 @@ name = "gridcalc"
 # from the installed metadata rather than keeping a second copy in the package,
 # which would drift from this one at the first release -- `make release` bumps
 # this line and nothing else.
-version = "0.5.1"
+version = "0.6.0"
 description = "A terminal / web spreadsheet powered by Python formulas"
 readme = "README.md"
 requires-python = ">=3.10"

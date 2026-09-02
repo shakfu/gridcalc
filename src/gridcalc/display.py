@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import math
 
+from .dates import format_serial as _format_serial
+from .dates import is_date_format
 from .engine import EMPTY, FORMULA, LABEL, NUM, SPILL, Cell, _is_dataframe
 
 # Width (in characters) handed to ``fmtcell`` by :func:`cell_text` before the
@@ -37,6 +39,18 @@ def _insert_commas(s: str) -> str:
             result.append(",")
         result.append(ch)
     return ("-" if neg else "") + "".join(result)
+
+
+def format_date(val: float, spec: str) -> str | None:
+    """Render ``val`` as a date if ``spec`` is an xlsx date format, else None.
+
+    The gate is deliberate: `fmtstr` is one field holding two languages, and
+    a numeric spec like ``,.2f`` must not be mistaken for a date pattern
+    because it happens to contain an `f`.
+    """
+    if not is_date_format(spec):
+        return None
+    return _format_serial(val, spec)
 
 
 def fmt_float(val: float, spec: str) -> str | None:
@@ -190,7 +204,15 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
         return f"{('inf' if cl.val > 0 else '-inf'):>{cw}}"[:cw]
 
     if cl.fmtstr:
-        formatted = fmt_float(cl.val, cl.fmtstr)
+        # `fmtstr` carries either a Python numeric spec (",.2f") or an xlsx
+        # number-format code ("yyyy-mm-dd"). The date branch goes first
+        # because `fmt_float` would reject a date code and fall through to
+        # printing the raw serial, which is the behaviour dates were added to
+        # end. Both return None when the spec is not theirs, so an
+        # unrecognised code still reaches the ordinary numeric path.
+        formatted = format_date(cl.val, cl.fmtstr)
+        if formatted is None:
+            formatted = fmt_float(cl.val, cl.fmtstr)
         if formatted is not None:
             return f"{formatted:>{cw}}"[:cw]
 

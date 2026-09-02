@@ -16,6 +16,8 @@ import statistics
 from collections.abc import Callable
 from typing import Any
 
+from ..dates import EXCEL_EPOCH as _EPOCH
+from ..dates import from_serial, parse_date, to_serial
 from ..engine import Vec
 from ..formula.errors import ExcelError
 
@@ -88,8 +90,17 @@ def _parse_criteria(criteria: Any) -> Any:
                 cmp_val = float(raw)
                 is_numeric = True
             except ValueError:
-                cmp_val = raw
-                is_numeric = False
+                # A date criterion (`">1/1/2020"`) is a numeric comparison
+                # wearing a date: cells hold serials, so the operand has to
+                # become one or the comparison silently degrades to string
+                # ordering, where "9/1/2020" sorts after "10/1/2020".
+                serial = parse_date(raw)
+                if serial is not None:
+                    cmp_val = serial
+                    is_numeric = True
+                else:
+                    cmp_val = raw
+                    is_numeric = False
             if op is operator.eq and not is_numeric:
                 regex = _wildcard_regex(raw)
                 return lambda x, r=regex: bool(r.match(str(x))) if x is not None else False
@@ -103,6 +114,11 @@ def _parse_criteria(criteria: Any) -> Any:
         val = float(s)
         return lambda x, v=val: _crit_eq_number(x, v)
     except ValueError:
+        # A bare date, `COUNTIF(range, "2020-01-01")`, is equality against
+        # that day's serial rather than a text match against "2020-01-01".
+        day = parse_date(s)
+        if day is not None:
+            return lambda x, v=day: _crit_eq_number(x, v)
         regex = _wildcard_regex(s)
         return lambda x, r=regex: bool(r.match(str(x))) if x is not None else False
 
@@ -635,22 +651,13 @@ def TEXT(value: Any, fmt: str) -> str:
 # fractional part. We use Python's datetime.date / datetime as the
 # in-memory representation and convert to/from serials at the boundary.
 
-_EXCEL_EPOCH = _dt.date(1899, 12, 30)
-
-
-def _to_serial(d: _dt.date | _dt.datetime) -> float:
-    if isinstance(d, _dt.datetime):
-        days = (d.date() - _EXCEL_EPOCH).days
-        secs = d.hour * 3600 + d.minute * 60 + d.second + d.microsecond / 1e6
-        return days + secs / 86400.0
-    return float((d - _EXCEL_EPOCH).days)
-
-
-def _from_serial(s: float) -> _dt.datetime:
-    days = int(s)
-    frac = s - days
-    base = _EXCEL_EPOCH + _dt.timedelta(days=days)
-    return _dt.datetime(base.year, base.month, base.day) + _dt.timedelta(seconds=frac * 86400)
+# The conversions live in `gridcalc.dates` now: the display layer renders
+# serials through a number format and the criteria parser turns ">1/1/2020"
+# into one, so all three need the same epoch. Three copies of the
+# 1900-leap-year offset would be three chances to disagree.
+_EXCEL_EPOCH = _EPOCH
+_to_serial = to_serial
+_from_serial = from_serial
 
 
 def NOW() -> float:

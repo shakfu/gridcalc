@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.6.0]
 
 ### Added
 
@@ -29,6 +29,12 @@
 - **Documentation reconciled against the code.** Beyond the two pages above: `TODO.md` listed `OFFSET` and `LAMBDA`/spill as open work; said the web frontend had no code-block trust flow and that `loader.load_workbook` was hardcoded to `LoadPolicy.formulas_only()`, both fixed in 0.5.1; described the `_core.xlsx_write` path as writing evaluated values only, when EXCEL mode has round-tripped formulas for some time; and carried the docs site as an open task with the site built and three `make` targets driving it. `docs/web.md` still described the client as an inline `_HTML` string in its body text, and listed constraining `save` paths as open after the opposite was decided in 0.4.0. Each is now struck with what actually happened, in the pattern that file already used, rather than deleted -- the reasoning is why the seams are where they are.
 
 ### Fixed
+
+- **`make release` could tag a version it had not applied.** The recipe bumped `pyproject.toml` with `sed -i ''`, the BSD spelling, which is a syntax error on GNU sed -- so on Linux the bump silently did nothing. Because the steps were joined with `;` rather than `&&`, the failure did not stop anything: `git tag -a v0.6.0` still ran, against a tree that still said `0.5.1`, and `build-publish.yml` fires on `v*` tags, so that mislabelled tag is what would have been published. The edit now goes through `scripts/bump_version.py`, which validates the version string, refuses if the `version =` line is missing or already at the target, and exits non-zero either way; the steps are chained with `&&` so nothing reaches `git tag` unless everything before it succeeded.
+
+- **The PTY integration suite raced its own screen and flaked, on a different test each run.** `wait_for` returned the buffer at the instant its needle appeared, and curses paints a screen in pieces -- the status line carrying the active cell's contents goes out before the grid body. So a test that waited for a string in the status line and then asserted on something in the grid was reading a half-drawn screen: it passed on a machine that filled the pty in one read and failed on one that did not. `wait_for` now keeps reading until the child has been quiet for a moment, which is the observable end of a redraw, and `make test-tty` passes repeatedly instead of failing one arbitrary test per run.
+
+  This also exposed a test that was only ever passing on stale output: `test_opt_sens_into_cells_writes_the_block` cleared the Python-side buffer and nudged the cursor to force a "second" render, but the clear did not empty the *pty's* buffer, so what it read was the first render arriving late. With the buffer genuinely empty there was nothing to find -- a cursor move emits a small diff, not a repaint. The settled render already contains the block, so the dance is gone.
 
 - **The xlsx writer gave a cell another cell's number format.** `auto styles = doc.styles()` copies the `XLStyles` object, so `create()` returned an index into the copy's own vector while the saved file's style table had grown differently: the second distinct format was written at an index that, in the file, still held the first. A sheet with a date column and a timestamp column came back with two date columns. Found by round-tripping the dates fixture, which is why the test asserts distinct formats stay distinct rather than merely that dates survive.
 

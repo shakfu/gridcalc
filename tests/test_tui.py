@@ -4,6 +4,7 @@ import curses
 import importlib.util
 import json
 import math
+import sys
 from pathlib import Path
 
 import pytest
@@ -3594,6 +3595,70 @@ class TestTheVersionIsDeclaredOnce:
             importlib.reload(mod)
 
     def test_the_release_target_bumps_pyproject(self):
+        """That `make release` *calls* the bumper, and cannot tag without it.
+
+        This used to assert the literal `sed` string the recipe contained,
+        which pinned the command rather than the behaviour -- so it went on
+        passing while that command was the BSD spelling and did nothing at
+        all on Linux, and the recipe tagged a version it had not applied.
+        Asserting the `&&` chain is the part that actually matters: with `;`
+        a failed bump still reached `git tag`.
+        """
         root = Path(__file__).resolve().parents[1]
         makefile = (root / "Makefile").read_text(encoding="utf-8")
-        assert 's/^version = .*/version = \\"$$version\\"/" pyproject.toml' in makefile
+        recipe = makefile.split("release:", 1)[1].split("\n\n", 1)[0]
+        assert "scripts/bump_version.py" in recipe
+        assert "git tag" in recipe
+        # Every step between the bump and the tag is chained, so none of them
+        # can fail and leave the tag to be created anyway.
+        assert ";" not in recipe.split("bump_version.py", 1)[1].split("git tag", 1)[0]
+        assert recipe.count("&&") >= 3
+
+    def test_the_bumper_rewrites_the_version(self, tmp_path):
+        import subprocess
+
+        root = Path(__file__).resolve().parents[1]
+        book = tmp_path / "pyproject.toml"
+        book.write_text('[project]\nname = "x"\nversion = "0.5.1"\n', encoding="utf-8")
+        rc = subprocess.run(
+            [sys.executable, str(root / "scripts" / "bump_version.py"), "0.6.0", str(book)],
+            capture_output=True,
+            text=True,
+        )
+        assert rc.returncode == 0, rc.stderr
+        assert 'version = "0.6.0"' in book.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize(
+        "version",
+        ["", "0.6", "v0.6.0", "0.6.0; rm -rf /", "latest", "0.6.0 extra"],
+    )
+    def test_the_bumper_refuses_anything_that_is_not_a_release_version(self, tmp_path, version):
+        """A typo at the prompt must not become a tag."""
+        import subprocess
+
+        root = Path(__file__).resolve().parents[1]
+        book = tmp_path / "pyproject.toml"
+        original = '[project]\nversion = "0.5.1"\n'
+        book.write_text(original, encoding="utf-8")
+        rc = subprocess.run(
+            [sys.executable, str(root / "scripts" / "bump_version.py"), version, str(book)],
+            capture_output=True,
+            text=True,
+        )
+        assert rc.returncode != 0
+        assert book.read_text(encoding="utf-8") == original
+
+    def test_the_bumper_refuses_a_file_with_no_version_line(self, tmp_path):
+        """Rather than appending or writing something odd into the file the
+        build reads."""
+        import subprocess
+
+        root = Path(__file__).resolve().parents[1]
+        book = tmp_path / "pyproject.toml"
+        book.write_text('[project]\nname = "x"\n', encoding="utf-8")
+        rc = subprocess.run(
+            [sys.executable, str(root / "scripts" / "bump_version.py"), "0.6.0", str(book)],
+            capture_output=True,
+            text=True,
+        )
+        assert rc.returncode != 0

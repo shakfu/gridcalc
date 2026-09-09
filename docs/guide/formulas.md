@@ -9,6 +9,7 @@
 =IF(A1 > 0, "pos", "neg")             conditionals
 =IFERROR(B1/C1, 0)                    error catch -- #DIV/0!, #VALUE!, #N/A, ...
 =SUM(A1:A10)                          range -> 1D array
+=SUM(A1:A3, B1:B3, 100)               several ranges, values or both
 =SUM(A1:A3 * B1:B3)                   element-wise array arithmetic
 =LET(x, SUM(A1:A9), x/COUNT(A1:A9))   local bindings -- compute once, reuse
 =FILTER(A1:A9, B1:B9 > 0)             dynamic arrays: FILTER/SORT/UNIQUE

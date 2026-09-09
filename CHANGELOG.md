@@ -30,6 +30,12 @@
 
 ### Fixed
 
+- **The aggregates took exactly one argument.** `SUM`, `AVG`, `MIN`, `MAX`, `COUNT` (`engine.py`) and `AVERAGE` (`libs/xlsx.py`) were each `def f(x)`, so `=SUM(A1:A3, B1:B3)` and `=SUM(A1, 5)` -- among the most common things anyone writes in a spreadsheet -- answered `#VALUE!` where Excel sums them. They now take up to any number of arguments and flatten ranges, arrays and scalars into one numeric list, skipping text and bools exactly as the single-argument path already did, so `=SUM(A1:A3, C1)` and `=SUM(A1:C3)` agree.
+
+  Each keeps `def f(x, *rest)` rather than `def f(*args)`: `=SUM()` is a syntax error in Excel and stays a `#VALUE!` here, which a bare `*args` would have silently turned into 0. One argument still takes the original path, so an ndarray operand is read whole (`x.sum()`, `x.size`) rather than element by element.
+
+  Nothing in the suite called an aggregate with two arguments, which is why it survived this long; 13 tests now do.
+
 - **`make release` could tag a version it had not applied.** The recipe bumped `pyproject.toml` with `sed -i ''`, the BSD spelling, which is a syntax error on GNU sed -- so on Linux the bump silently did nothing. Because the steps were joined with `;` rather than `&&`, the failure did not stop anything: `git tag -a v0.6.0` still ran, against a tree that still said `0.5.1`, and `build-publish.yml` fires on `v*` tags, so that mislabelled tag is what would have been published. The edit now goes through `scripts/bump_version.py`, which validates the version string, refuses if the `version =` line is missing or already at the target, and exits non-zero either way; the steps are chained with `&&` so nothing reaches `git tag` unless everything before it succeeded.
 
 - **The PTY integration suite raced its own screen and flaked, on a different test each run.** `wait_for` returned the buffer at the instant its needle appeared, and curses paints a screen in pieces -- the status line carrying the active cell's contents goes out before the grid body. So a test that waited for a string in the status line and then asserted on something in the grid was reading a half-drawn screen: it passed on a machine that filled the pty in one read and failed on one that did not. `wait_for` now keeps reading until the child has been quiet for a moment, which is the observable end of a redraw, and `make test-tty` passes repeatedly instead of failing one arbitrary test per run.

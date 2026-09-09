@@ -283,7 +283,24 @@ def _numeric_only(data: Iterable[Any]) -> list[float]:
     return [float(v) for v in data if _is_num(v)]
 
 
-def SUM(x: Any) -> float:
+def _agg_operands(args: tuple[Any, ...]) -> list[float]:
+    """Flatten several aggregate arguments into one numeric list. Only the
+    multi-argument path uses this; one argument keeps its own fast paths,
+    which read an ndarray whole rather than element by element."""
+    out: list[float] = []
+    for a in args:
+        if isinstance(a, Vec):
+            out.extend(_numeric_only(a.data))
+        elif _is_ndarray(a):
+            out.extend(_numeric_only(a.flat))
+        elif _is_num(a):
+            out.append(float(a))
+    return out
+
+
+def SUM(x: Any, *rest: Any) -> float:
+    if rest:
+        return sum(_agg_operands((x, *rest)))
     if isinstance(x, Vec):
         return sum(_numeric_only(x.data))
     if _is_ndarray(x):
@@ -293,7 +310,10 @@ def SUM(x: Any) -> float:
     return float(x)
 
 
-def AVG(x: Any) -> float:
+def AVG(x: Any, *rest: Any) -> float:
+    if rest:
+        nums = _agg_operands((x, *rest))
+        return sum(nums) / len(nums) if nums else 0.0
     if isinstance(x, Vec):
         nums = _numeric_only(x.data)
         return sum(nums) / len(nums) if nums else 0.0
@@ -304,7 +324,10 @@ def AVG(x: Any) -> float:
     return float(x)
 
 
-def MIN(x: Any) -> float:
+def MIN(x: Any, *rest: Any) -> float:
+    if rest:
+        nums = _agg_operands((x, *rest))
+        return min(nums) if nums else 0.0
     if isinstance(x, Vec):
         nums = _numeric_only(x.data)
         return min(nums) if nums else 0.0
@@ -315,7 +338,10 @@ def MIN(x: Any) -> float:
     return float(x)
 
 
-def MAX(x: Any) -> float:
+def MAX(x: Any, *rest: Any) -> float:
+    if rest:
+        nums = _agg_operands((x, *rest))
+        return max(nums) if nums else 0.0
     if isinstance(x, Vec):
         nums = _numeric_only(x.data)
         return max(nums) if nums else 0.0
@@ -326,7 +352,9 @@ def MAX(x: Any) -> float:
     return float(x)
 
 
-def COUNT(x: Any) -> int | float:
+def COUNT(x: Any, *rest: Any) -> int | float:
+    if rest:
+        return len(_agg_operands((x, *rest)))
     if isinstance(x, Vec):
         return len(_numeric_only(x.data))
     if _is_ndarray(x):

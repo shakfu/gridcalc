@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+import pytest
+
 from gridcalc.engine import Grid, Mode, Vec
 from gridcalc.formula.errors import ExcelError
 from gridcalc.libs import get_lib_builtins
@@ -3899,7 +3901,7 @@ class TestVariadicAggregates:
         assert g.cells[4][2].val == 3.0
 
     def test_ndarray_operand_flattens(self) -> None:
-        import numpy as np
+        np = pytest.importorskip("numpy")
 
         from gridcalc.engine import COUNT, MAX, SUM
 

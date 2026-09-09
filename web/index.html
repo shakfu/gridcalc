@@ -592,6 +592,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../guide/dates/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dates
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../guide/import-export/" class="md-nav__link">
         
   
@@ -735,6 +763,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Headless CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../reference/file-format/" class="md-nav__link">
         
   
@@ -829,10 +885,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_5" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_6" >
         
           
-          <label class="md-nav__link" for="__nav_6_5" id="__nav_6_5_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_6_6" id="__nav_6_6_label" tabindex="0">
             
   
   
@@ -850,8 +906,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_5_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6_5">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_6">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1923,7 +1979,7 @@
 <p>The body below is unchanged from when it was written; this section records where the work actually got to, so the two do not silently diverge.</p>
 <ul>
 <li>
-<p><strong>P0 is done.</strong> The client is a real Vite/React/TypeScript app under a lint, type-check and test gate (<code>make web-qa</code>, now part of <code>make qa</code>), not the inline <code>_HTML</code> string Section 5c describes. There is an error/notification channel (Section 5d), plus a React error boundary and an <code>unhandledrejection</code> handler. The <code>NamedRange</code> structural-edit bug is fixed and per-sheet view state is kept across a tab switch; constraining <code>save</code> paths (Section 4) is <strong>still open</strong>.</p>
+<p><strong>P0 is done.</strong> The client is a real Vite/React/TypeScript app under a lint, type-check and test gate (<code>make web-qa</code>, now part of <code>make qa</code>), not the inline <code>_HTML</code> string Section 5c describes. There is an error/notification channel (Section 5d), plus a React error boundary and an <code>unhandledrejection</code> handler. The <code>NamedRange</code> structural-edit bug is fixed and per-sheet view state is kept across a tab switch. Constraining <code>save</code> paths (Section 4) was <strong>closed by deciding against it</strong>: see the struck bullet there and the "Trust model" section of <code>gridcalc/web</code>'s module docstring.</p>
 </li>
 <li>
 <p><strong>P1 is done and then some.</strong> <code>:opt</code>/<code>:goal</code> reached the GUI, and beyond the original sketch: persisted named models (the <code>:opt def/run/list/undef</code> surface, which Appendix A explicitly deferred as "not core P1"), a non-solving <code>infer_model_spec</code> so a model can be read off a block and corrected before it runs, a parametric sweep plotted with breakpoints marked, and a <strong>grid annotation layer</strong> that paints binding/slack constraints and shadow prices onto the sheet itself. Charts use Recharts, as Section 5c anticipated the renderer-agnostic <code>chart_data</code> shape would allow.</p>
@@ -1968,7 +2024,7 @@
 <p>Spike-grade, must change:</p>
 <ul>
 <li>
-<p><strong>A ~500-line inline HTML/JS string</strong> (<code>_HTML</code> in <code>web/__init__.py</code>). No lint, no type-check, no module boundaries, no source maps -- invisible to every quality gate that guards the Python. This is the single biggest maintainability liability (Section 5c).</p>
+<p>~~<strong>A ~500-line inline HTML/JS string</strong> (<code>_HTML</code> in <code>web/__init__.py</code>). No lint, no type-check, no module boundaries, no source maps -- invisible to every quality gate that guards the Python. This is the single biggest maintainability liability (Section 5c).~~ Closed: the client is a Vite/React/TypeScript app under <code>web/frontend/</code>, gated by <code>make web-qa</code>. <code>_HTML</code> is gone; <code>_load_html()</code> reads the built bundle.</p>
 </li>
 <li>
 <p>~~<strong>Security punted.</strong> <code>open_file</code> hardcodes <code>LoadPolicy.formulas_only()</code> (<code>loader.py</code>); code blocks are never run, no trust UI, no <code>inspect_file</code> disclosure. Fine for a spike, a product-defining hole otherwise (Section 5a).~~ Closed: <code>open_file</code> takes a policy, <code>inspect</code>/<code>pending_trust</code> report the decision, and <code>TrustDialog</code> asks it.</p>
@@ -2082,7 +2138,7 @@
 <p>These are latent bugs the spike has not tripped yet; a product will.</p>
 <ul>
 <li>
-<p><strong><code>save</code> trusts a client-supplied path</strong> (<code>Api.save</code>, web/<strong>init</strong>.py). In the in-process desktop model the "client" is local so the blast radius is small, but any move toward a served frontend makes this arbitrary-path write. Constrain now while it is cheap.</p>
+<p>~~<strong><code>save</code> trusts a client-supplied path</strong> (<code>Api.save</code>, web/<strong>init</strong>.py). In the in-process desktop model the "client" is local so the blast radius is small, but any move toward a served frontend makes this arbitrary-path write. Constrain now while it is cheap.~~ Decided the other way (v0.4.0), and the reasoning now lives in the "Trust model" section of <code>gridcalc/web</code>'s module docstring: a path policy would break the feature -- saving where the user chose -- rather than close a hole, because nothing untrusted can reach the bridge. That rests on two properties, the window being built from inlined HTML rather than a URL and cell content rendering as escaped React text nodes, and both are now enforced by tests in <code>tests/test_web.py</code> instead of prose. Revisit <strong>only</strong> together with a served frontend, which Section 1 recommends deferring explicitly.</p>
 </li>
 <li>
 <p><strong>Shared, persistent eval globals</strong> (<code>_eval_globals</code>, exec into <code>g</code> on PYTHON recalc). Single-process desktop is fine; it is a hard blocker for any multi-tenant path -- another reason to decide Section 1 early.</p>
@@ -2114,6 +2170,7 @@
 </li>
 </ul>
 <h3 id="5c-client-architecture">5c. Client architecture<a class="headerlink" href="#5c-client-architecture" title="Permanent link">&para;</a></h3>
+<p><strong>Done</strong> -- what shipped went further than the sketch below: not extracted files with no build step, but a Vite/React/TypeScript app (<code>web/frontend/</code>) compiled to one self-contained <code>static/index.html</code>, with Recharts for the charts exactly as the last-but-one bullet anticipated. The reasoning is kept because it is why the seams are where they are.</p>
 <p>The inline <code>_HTML</code> string was right for a spike and is wrong for a product:</p>
 <ul>
 <li>

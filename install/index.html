@@ -683,6 +683,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../guide/dates/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dates
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../guide/import-export/" class="md-nav__link">
         
   
@@ -826,6 +854,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Headless CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../reference/file-format/" class="md-nav__link">
         
   
@@ -920,10 +976,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_5" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_6" >
         
           
-          <label class="md-nav__link" for="__nav_6_5" id="__nav_6_5_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_6_6" id="__nav_6_6_label" tabindex="0">
             
   
   
@@ -941,8 +997,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_5_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6_5">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_6">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1585,7 +1641,7 @@
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>make<span class="w"> </span>web-build<span class="w">   </span><span class="c1"># React client -&gt; src/gridcalc/web/static/index.html</span>
 </code></pre></div>
 <p><code>make web-build</code> needs <a href="https://bun.sh">Bun</a>, which serves as both the package manager and the JavaScript runtime for the client; Node and npm are not required. Only the desktop frontend needs it -- the terminal app builds and runs without any JavaScript toolchain.</p>
-<p><code>make build</code> compiles C++ extensions, so it needs the Python development headers. uv's own managed interpreters ship them and are what it picks by default; a distro interpreter usually splits them into a separate package, and building against one without that installed fails in CMake with <code>Could NOT find Python (missing: Interpreter Development.Module)</code>. Install the matching <code>-dev</code> package, or let uv manage the interpreter (<code>uv python install 3.14</code>).</p>
+<p><code>make build</code> compiles C++ extensions, so it needs the Python development headers. A distro interpreter usually splits those into a separate package, and building against one without it fails in CMake with <code>Could NOT find Python (missing: Interpreter Development.Module)</code>. So <code>pyproject.toml</code> sets <code>python-preference = "only-managed"</code>: uv downloads its own interpreter, which always ships the headers, and a fresh clone needs nothing installed but uv. <code>.python-version</code> chooses the version. To build against your own interpreter instead, install its <code>-dev</code> package and pass <code>--python-preference system</code>.</p>
 <p>A checkout that has not run <code>make web-build</code> exits with a message telling you to. Released wheels and sdists ship the bundle already built.</p>
 
 

@@ -592,6 +592,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../guide/dates/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dates
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../guide/import-export/" class="md-nav__link">
         
   
@@ -735,6 +763,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Headless CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../reference/file-format/" class="md-nav__link">
         
   
@@ -829,10 +885,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_5" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_6" >
         
           
-          <label class="md-nav__link" for="__nav_6_5" id="__nav_6_5_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_6_6" id="__nav_6_6_label" tabindex="0">
             
   
   
@@ -850,8 +906,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_5_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6_5">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_6">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1204,10 +1260,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#how-recalc-works-today" class="md-nav__link">
+  <a href="#how-recalc-worked-before-this" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How recalc works today
+        How recalc worked before this
       
     </span>
   </a>
@@ -1711,10 +1767,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#how-recalc-works-today" class="md-nav__link">
+  <a href="#how-recalc-worked-before-this" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How recalc works today
+        How recalc worked before this
       
     </span>
   </a>
@@ -1996,7 +2052,9 @@
 
 
 <h1 id="topological-recalc">Topological recalc<a class="headerlink" href="#topological-recalc" title="Permanent link">&para;</a></h1>
-<p>Design note for replacing the fixed-point recalc loop with a dependency-graph driven traversal. Status: <strong>proposal, not implemented</strong>. Linked from <code>TODO.md</code> under Performance.</p>
+<p>Design note for replacing the fixed-point recalc loop with a dependency-graph driven traversal. Status: <strong>shipped, Phases A-D</strong>. Linked from <code>TODO.md</code> under Performance.</p>
+<p><code>Grid._recalc_topo</code> (<code>src/gridcalc/engine.py</code>) is what <code>Grid.recalc()</code> calls in EXCEL and HYBRID mode, wrapped in a bounded fixpoint so a spill whose shape changed can re-drive its consumers. Phase A's two indexes are <code>Grid._dep_of</code> / <code>Grid._subscribers</code>; Phase C's incremental path is the <code>dirty</code> argument <code>setcell</code> and <code>setcells_bulk</code> pass down; Phase D's structural cycle detection is the "left in the closure but not in <code>order</code>" step, which marks <code>#CIRC!</code> instead of the old "didn't converge in 100 iterations" guess. <strong>Phase E (range aggregation) is the one part still open</strong> -- see <code>TODO.md</code> under Performance.</p>
+<p>Everything below is the design as originally written, in the future tense it was written in. It is kept as the rationale -- why the indexes are shaped the way they are, and what the hard cases were -- not as a description of pending work. The one section that no longer describes the code is "How recalc worked before this", which records the fixed-point loop this replaced.</p>
 <h2 id="why">Why<a class="headerlink" href="#why" title="Permanent link">&para;</a></h2>
 <p><code>xlsxload</code> on a 5000-cell sheet now runs in ~12 ms end-to-end. The breakdown:</p>
 <ul>
@@ -2009,7 +2067,7 @@
 </ul>
 <p>Of the 8 ms, the actual cell writes are ~1 ms; the rest is <strong>one pass through every formula in the sheet</strong>. For sheets with many formulas (or edits that change a value referenced by deep chains), recalc dominates, and the cost is bounded only by <code>range(100)</code> in the loop below.</p>
 <p>Topological recalc replaces this with a graph traversal that touches only the transitive closure of cells affected by a change.</p>
-<h2 id="how-recalc-works-today">How recalc works today<a class="headerlink" href="#how-recalc-works-today" title="Permanent link">&para;</a></h2>
+<h2 id="how-recalc-worked-before-this">How recalc worked before this<a class="headerlink" href="#how-recalc-worked-before-this" title="Permanent link">&para;</a></h2>
 <p><code>Grid.recalc()</code> in EXCEL/HYBRID mode dispatches to <code>_recalc_formula()</code> (<code>src/gridcalc/engine.py:929</code>). The hot loop:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">100</span><span class="p">):</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">changed_cells</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
@@ -2293,6 +2351,9 @@
 </li>
 </ul>
 <h2 id="when-to-actually-do-this">When to actually do this<a class="headerlink" href="#when-to-actually-do-this" title="Permanent link">&para;</a></h2>
+<p>Retained as the trigger list that was written before the work was done; all
+three were reached and Phases A-D shipped. It still governs <strong>Phase E</strong>, which
+is deferred on the same terms -- see <code>TODO.md</code> under Performance.</p>
 <p>Defer until at least one of:</p>
 <ul>
 <li>

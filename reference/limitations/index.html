@@ -592,6 +592,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../guide/dates/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dates
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/import-export/" class="md-nav__link">
         
   
@@ -737,6 +765,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Headless CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../file-format/" class="md-nav__link">
         
   
@@ -841,10 +897,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_5" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_6" >
         
           
-          <label class="md-nav__link" for="__nav_6_5" id="__nav_6_5_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_6_6" id="__nav_6_6_label" tabindex="0">
             
   
   
@@ -862,8 +918,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_5_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6_5">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_6">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1415,9 +1471,6 @@
 <p><strong><code>INDIRECT</code></strong> is unsupported. A reference computed at evaluation time cannot be seen by the static dependency extractor, so the recalculation order would be wrong -- see <a href="../../topological/">Topological recalc</a>.</p>
 </li>
 <li>
-<p><strong><code>LAMBDA</code></strong> and its higher-order helpers (<code>MAP</code>, <code>REDUCE</code>, <code>BYROW</code>, and the rest) are unsupported; <code>LET</code> is supported. Dynamic-array results are packed into their origin cell rather than spilling into neighbours.</p>
-</li>
-<li>
 <p><strong>xlsx export of formulas is EXCEL mode only.</strong> PYTHON and HYBRID syntax (<code>**</code>, list comprehensions, <code>py.*</code>) is not strict Excel, so those modes export values.</p>
 </li>
 <li>
@@ -1427,11 +1480,24 @@
 <p><strong>Cross-sheet ranges</strong> (<code>Sheet1!A1:Sheet2!B5</code>) are rejected at parse time. Excel does not support them either.</p>
 </li>
 <li>
-<p><strong>xlsx dates and styles</strong> are neither read nor written; date serials arrive as floats.</p>
+<p><strong>xlsx cell styles</strong> (fonts, fills, borders, column widths) are neither read nor written. Number formats are, but only the date ones -- enough to keep dates dates through a round trip; a currency or percent format from Excel still arrives as a bare number.</p>
 </li>
 </ul>
 <p>The <a href="../../function_coverage/">Excel function coverage audit</a> tracks the function library itself against Microsoft's documented set, including which absences are architectural and which are merely unimplemented.</p>
 <p>For what the desktop frontend does not do yet -- a separate question from engine limitations -- see <a href="../../desktop/">Desktop app</a>.</p>
+<div class="admonition note">
+<p class="admonition-title">No longer limitations</p>
+<p>This page once listed <code>LAMBDA</code> and its higher-order helpers (<code>MAP</code>,
+<code>REDUCE</code>, <code>SCAN</code>, <code>BYROW</code>, <code>BYCOL</code>, <code>MAKEARRAY</code>), <code>OFFSET</code>, and the
+packing of dynamic-array results into their origin cell. All three
+have since shipped: lambdas are a first-class value type, <code>OFFSET</code>
+returns a real reference, and array results spill into neighbouring
+cells. <code>tests/test_docs_conformance.py</code> now fails if a function named
+on this page is one the evaluator actually resolves.</p>
+<p>It also said xlsx dates were neither read nor written. They now are:
+a date's number format is read, rendered, written back, and understood
+by <code>COUNTIF</code>-style criteria -- see <a href="../../guide/dates/">Dates</a>.</p>
+</div>
 
 
 

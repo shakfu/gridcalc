@@ -685,6 +685,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../dates/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dates
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../import-export/" class="md-nav__link">
         
   
@@ -828,6 +856,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Headless CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../reference/file-format/" class="md-nav__link">
         
   
@@ -922,10 +978,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_5" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_6" >
         
           
-          <label class="md-nav__link" for="__nav_6_5" id="__nav_6_5_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_6_6" id="__nav_6_6_label" tabindex="0">
             
   
   
@@ -943,8 +999,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_5_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6_5">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_6">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1550,11 +1606,12 @@
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>=IF(A1 &gt; 0, &quot;pos&quot;, &quot;neg&quot;)             conditionals
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>=IFERROR(B1/C1, 0)                    error catch -- #DIV/0!, #VALUE!, #N/A, ...
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>=SUM(A1:A10)                          range -&gt; 1D array
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>=SUM(A1:A3 * B1:B3)                   element-wise array arithmetic
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>=LET(x, SUM(A1:A9), x/COUNT(A1:A9))   local bindings -- compute once, reuse
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>=FILTER(A1:A9, B1:B9 &gt; 0)             dynamic arrays: FILTER/SORT/UNIQUE
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>=SUM(revenue)                         named range
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>=py.margin(A1, B1)                    HYBRID: call a code-block function
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>=SUM(A1:A3, B1:B3, 100)               several ranges, values or both
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>=SUM(A1:A3 * B1:B3)                   element-wise array arithmetic
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>=LET(x, SUM(A1:A9), x/COUNT(A1:A9))   local bindings -- compute once, reuse
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>=FILTER(A1:A9, B1:B9 &gt; 0)             dynamic arrays: FILTER/SORT/UNIQUE
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>=SUM(revenue)                         named range
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>=py.margin(A1, B1)                    HYBRID: call a code-block function
 </code></pre></div>
 <p>Excel error values (<code>#DIV/0!</code>, <code>#N/A</code>, <code>#NAME?</code>, <code>#REF!</code>, <code>#VALUE!</code>, <code>#NUM!</code>, <code>#NULL!</code>) propagate through arithmetic and are catchable with <code>IFERROR</code>/<code>IFNA</code>.</p>
 <h2 id="the-function-library">The function library<a class="headerlink" href="#the-function-library" title="Permanent link">&para;</a></h2>

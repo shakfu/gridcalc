@@ -3801,3 +3801,109 @@ class TestReferenceFunctions:
         assert g.cells[3][0].val == 20.0
         assert g.cells[3][1].type == SPILL
         assert g.cells[3][2].val == 60.0
+
+
+class TestVariadicAggregates:
+    """`=SUM(A1:A3, B1:B3)` and `=SUM(A1, 5)` are among the most common
+    things anyone types in a spreadsheet, and every aggregate answered
+    `#VALUE!` because each took exactly one argument."""
+
+    def _grid(self) -> Grid:
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        # A1:A3 = 1,2,3   B1:B3 = 10,20,30   C1 = text
+        for i, v in enumerate([1.0, 2.0, 3.0]):
+            g.setcell(0, i, str(v))
+        for i, v in enumerate([10.0, 20.0, 30.0]):
+            g.setcell(1, i, str(v))
+        g.setcell(2, 0, "txt")
+        return g
+
+    def test_sum_two_ranges(self) -> None:
+        g = self._grid()
+        g.setcell(4, 0, "=SUM(A1:A3,B1:B3)")
+        assert g.cells[4][0].val == 66.0
+
+    def test_sum_ref_and_literal(self) -> None:
+        g = self._grid()
+        g.setcell(4, 0, "=SUM(A1,5)")
+        assert g.cells[4][0].val == 6.0
+
+    def test_sum_literals_only(self) -> None:
+        g = self._grid()
+        g.setcell(4, 0, "=SUM(1,2,3)")
+        assert g.cells[4][0].val == 6.0
+
+    def test_average_two_ranges(self) -> None:
+        g = self._grid()
+        g.setcell(4, 0, "=AVERAGE(A1:A3,B1:B3)")
+        assert g.cells[4][0].val == 11.0
+
+    def test_avg_two_ranges(self) -> None:
+        g = self._grid()
+        g.setcell(4, 0, "=AVG(A1:A3,B1:B3)")
+        assert g.cells[4][0].val == 11.0
+
+    def test_min_max_two_refs(self) -> None:
+        g = self._grid()
+        g.setcell(4, 0, "=MIN(A1,B1)")
+        g.setcell(4, 1, "=MAX(A1,B1)")
+        assert g.cells[4][0].val == 1.0
+        assert g.cells[4][1].val == 10.0
+
+    def test_min_max_range_and_literal(self) -> None:
+        g = self._grid()
+        g.setcell(4, 0, "=MIN(A1:A3,-5)")
+        g.setcell(4, 1, "=MAX(A1:A3,99)")
+        assert g.cells[4][0].val == -5.0
+        assert g.cells[4][1].val == 99.0
+
+    def test_count_two_ranges(self) -> None:
+        g = self._grid()
+        g.setcell(4, 0, "=COUNT(A1:A3,B1:B3)")
+        assert g.cells[4][0].val == 6.0
+
+    def test_text_argument_is_skipped(self) -> None:
+        """Excel's aggregates ignore text reached through a reference; the
+        single-argument path already did, and the multi-argument one must
+        agree or `=SUM(A1:A3,C1)` differs from `=SUM(A1:C3)`."""
+        g = self._grid()
+        g.setcell(4, 0, "=SUM(A1:A3,C1)")
+        g.setcell(4, 1, "=COUNT(A1:A3,C1)")
+        assert g.cells[4][0].val == 6.0
+        assert g.cells[4][1].val == 3.0
+
+    def test_error_still_propagates(self) -> None:
+        g = self._grid()
+        g.setcell(3, 0, "=1/0")
+        g.setcell(4, 0, "=SUM(A1:A3,D1)")
+        assert g.cells[4][0].err == ExcelError.DIV0
+
+    def test_no_arguments_is_an_error(self) -> None:
+        """`=SUM()` is a syntax error in Excel; keep it an error here rather
+        than letting the variadic signature answer 0."""
+        g = self._grid()
+        g.setcell(4, 0, "=SUM()")
+        g.setcell(4, 1, "=MAX()")
+        assert g.cells[4][0].err == ExcelError.VALUE
+        assert g.cells[4][1].err == ExcelError.VALUE
+
+    def test_single_argument_unchanged(self) -> None:
+        g = self._grid()
+        g.setcell(4, 0, "=SUM(A1:A3)")
+        g.setcell(4, 1, "=AVERAGE(A1:A3)")
+        g.setcell(4, 2, "=COUNT(A1:A3)")
+        assert g.cells[4][0].val == 6.0
+        assert g.cells[4][1].val == 2.0
+        assert g.cells[4][2].val == 3.0
+
+    def test_ndarray_operand_flattens(self) -> None:
+        import numpy as np
+
+        from gridcalc.engine import COUNT, MAX, SUM
+
+        a = np.array([[1.0, 2.0], [3.0, 4.0]])
+        assert SUM(a, 10.0) == 20.0
+        assert MAX(a, 10.0) == 10.0
+        assert COUNT(a, 10.0) == 5

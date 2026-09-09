@@ -222,9 +222,11 @@ def SIGN(x: float) -> int:
 # -- Aggregate functions --
 
 
-def AVERAGE(x: Vec | float) -> float:
+def AVERAGE(x: Vec | float, *rest: Any) -> float:
     """=AVERAGE(A1:A10) -- alias for AVG."""
     nums = _vec_data(x)
+    for a in rest:
+        nums.extend(_vec_data(a))
     return sum(nums) / len(nums) if nums else 0.0
 
 

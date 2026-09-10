@@ -1664,7 +1664,7 @@ def test_nothing_is_withheld_when_the_sandbox_is_off(monkeypatch) -> None:
 # which argues that a permitted-directory policy would break the feature rather
 # than close a hole. That argument is only sound while nothing untrusted can
 # reach the bridge, and it names exactly two properties that keep it that way.
-# Both were prose until now. The tests below make them load-bearing, so the
+# Both were prose until now. The tests below make them structural, so the
 # change that quietly invalidates the reasoning fails here instead of turning
 # the bridge into an arbitrary local file read/write primitive.
 

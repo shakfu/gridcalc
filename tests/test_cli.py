@@ -225,7 +225,7 @@ def test_eval_leaves_the_workbook_byte_for_byte_unchanged(tmp_path) -> None:
 
     The scratch cell is what makes a relative reference mean the same thing it
     would if typed into the sheet; the cost is that the sheet is mutated
-    mid-run, so the restore is load-bearing rather than tidiness.
+    mid-run, so the restore is structural rather than tidiness.
     """
     baseline = tmp_path / "baseline.json"
     after = tmp_path / "after.json"

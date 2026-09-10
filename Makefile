@@ -61,7 +61,7 @@ test-web:
 	@GRIDCALC_SANDBOX=1 uv run pytest tests/integration/ -v -m browser
 
 # The client toolchain runs on Bun -- one binary that is both the package
-# manager and the runtime, so no Node/npm is required. `--bun` is load-bearing:
+# manager and the runtime, so no Node/npm is required. `--bun` is structural:
 # without it `bun run` honours the `#!/usr/bin/env node` shebang in
 # node_modules/.bin and silently shells out to Node, which defeats the point
 # and fails on a machine that has none.

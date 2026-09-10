@@ -117,7 +117,7 @@ The inline `_HTML` string was right for a spike and is wrong for a product:
 
 - **Decide on a build step deliberately.** Framework-free hand-rolled DOM is fine and dependency-light today. It gets painful at "object editor, dialogs, chart library, i18n." A small bundler (esbuild) or a minimal reactive layer (Preact/lit) is a reversible bet; a full SPA framework is probably over-scoped for a single-window desktop tool.
 
-- **A real charting library** (Plotly/ECharts) replaces the inline SVG. `Api.chart_data` already returns a renderer-agnostic `{title, labels, series}` shape, so this is a client-only swap -- the deliberate seam pays off here.
+- **A real charting library** (Plotly/ECharts) replaces the inline SVG. `Api.chart_data` already returns a renderer-agnostic `{title, labels, series}` shape, so this is a client-only swap -- the deliberate layer pays off here.
 
 - **A real data-grid** only if the hand-rolled virtualized grid gets painful (frozen panes beyond row/col headers, cell merging, rich in-cell widgets). Do not adopt one preemptively.
 

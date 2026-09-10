@@ -263,9 +263,7 @@ Only revisit if profiling shows large ranges as a hot spot. Sparse subscribers s
 
 ## When to actually do this
 
-Retained as the trigger list that was written before the work was done; all
-three were reached and Phases A-D shipped. It still governs **Phase E**, which
-is deferred on the same terms -- see `TODO.md` under Performance.
+Retained as the trigger list that was written before the work was done; all three were reached and Phases A-D shipped. It still governs **Phase E**, which is deferred on the same terms -- see `TODO.md` under Performance.
 
 Defer until at least one of:
 

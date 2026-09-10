@@ -15,7 +15,7 @@ description: >
 # would be slower and would have to be repeated per Python version.
 #
 # Bun is both the package manager and the runtime here, so no Node is set up.
-# `--bun` on the build is load-bearing: without it `bun run` follows the
+# `--bun` on the build is structural: without it `bun run` follows the
 # `#!/usr/bin/env node` shebang in node_modules/.bin and needs a Node that this
 # job deliberately does not install.
 runs:

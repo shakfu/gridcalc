@@ -75,7 +75,7 @@ class TuiSession:
         timeout so the test fails with a useful decoded snapshot rather than
         a bare TimeoutError.
 
-        The settle step is load-bearing, not politeness. curses paints a
+        The settle step is structural, not politeness. curses paints a
         screen in pieces, and the needle a test waits for is usually drawn
         early -- the status line carrying the active cell's contents goes out
         before the grid body. Returning the buffer the instant the needle

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.1]
+
 ### Changed
 
 - **Deleting a referenced row or column gives `#REF!`.** A reference to a deleted line becomes `#REF!`, and a range whose edge was deleted shrinks, as in Excel. Before, the reference silently read the neighbouring cell.

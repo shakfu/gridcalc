@@ -1,5 +1,93 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Deleting a referenced row or column gives `#REF!`.** A reference to a deleted line becomes `#REF!`, and a range whose edge was deleted shrinks, as in Excel. Before, the reference silently read the neighbouring cell.
+
+- **xlsx import keeps each value's type.** Text such as `00123` or `=SUM(1,2)` stays a label, booleans import as `=TRUE`/`=FALSE`, and known error codes as `=#N/A`-style formulas. Values used to cross the extension as input text and were re-parsed. JSON cells gain an optional `"label": true` so such labels survive a save; older readers ignore it.
+
+- **`:w` saves in the format its extension names.** It shares `loader.save_workbook` with `--convert` and the web view's save. It asks before a format that drops formulas, sheets, names, models or code, and before overwriting a different existing file.
+
+- **Undo covers the whole workbook.** Sheet add, delete, rename and move, `:name`, `:unname` and `:mode` are undoable, and undoing a structural operation restores every sheet it rewrote. Entries hold the `Sheet` object rather than its name, so a rename no longer orphans them. A structural entry copies every sheet's cells, about 6.4 MB on a 3-sheet, 25k-cell workbook. JSON snapshots were smaller but drop solver-written values and re-run code, and recalc dominates restore time either way. `UndoManager.undo`/`redo` now return whether an entry was applied; `clear()` and `rollback()` are new.
+
+- **Formula coercion follows Excel.**
+  - Text comparison and `SWITCH` ignore case.
+  - `=""+1`, `="nan"+1` and `="1_000"+1` give `#VALUE!`, and typed `1_000` is a label.
+  - Number-to-text uses 15 significant digits.
+  - Aggregates count a bool or numeric text typed as a direct argument (`=SUM("3",TRUE)` is 4). Values from cells are still skipped.
+  - `IF`/`IFS` give `#VALUE!` for a text condition and pick element-wise over an array condition.
+  - An error cell inside a range stays in its element, so `VLOOKUP`, `INDEX`, `FILTER` and `IFERROR` over the range work. `SUM` still returns the error, and the `SUMIF` family returns one only from a matching row.
+
+- **The solver refuses models it used to solve wrongly.** Strict `<`/`>` tighten by one on integer rows and are refused elsewhere. Integer variables with a quadratic objective, text parameters, and non-finite bounds or goal targets raise an error naming the cell. A solve stops at 60 s with `TIMEOUT`.
+
+### Fixed
+
+- **Saves were not atomic.** A failed write left a truncated file, and xlsx export deleted the original before creating the new one. Every save now writes a temp file beside the target and renames it into place.
+
+- **Numbers lost digits on load.** JSON load, `pdload` and xlsx import formatted non-integer doubles with `%g`, so 1234567.891 reopened as 1234570. `csvsave` wrote `%g` too.
+
+- **`:w` after opening an `.xlsx` wrote JSON over it.**
+
+- **Saving a workbook opened formulas-only deleted its code block.** The withheld code is now written back unexecuted.
+
+- **The web bridge ran calls concurrently.** pywebview runs each JS call on its own thread, so a save could mark the workbook clean after an edit it had not written, which disarmed the close guard. Every `Api` method now holds one lock, and the client sends mutations in order. Solves hold the lock, so the grid does not redraw until a solve finishes.
+
+- **Opening a file discarded unsaved work.** `:o`, `:xlsx load`, `:csv load`, `:pd load` and the web view's open now ask first. Opening clears undo history; before, `u` after `:o` applied the old file's history to the new one. `:csv load` of a missing file no longer empties the sheet.
+
+- **The TUI session ended on resize, on `:e`, and on Ctrl-C.** Shrinking the terminal made the next draw write past its edge. `:e` with a multi-word or missing `$EDITOR` raised after `endwin()`. Ctrl-C quit without asking about unsaved changes.
+
+- **Some edits did not mark the workbook modified**, so `:q` quit without asking: undo, redo, Backspace, Ctrl-B/Ctrl-U, `:width`, `:opt def` and `:opt undef`.
+
+- **Undo history lost entries.** Visual-mode delete saved one entry per cell, so deleting more than 64 cells dropped the oldest. A failed `:goal`/`:opt`, a cancelled `:m` or a failed `:csv load` cleared the redo stack.
+
+- **A malformed `fmt` in a JSON file made `jsonload` raise after wiping the workbook.** It now returns -1 with the workbook unchanged. A NUM of inf saved as `Infinity`, which is not valid JSON, and reloaded as a label.
+
+- **xlsx import failed or dropped data on ordinary workbooks.** One shared or array formula failed the whole load and hid the reason. A chartsheet failed it too. Empty sheets were dropped, the 1904 date system was ignored, cells beyond 256x1024 vanished silently, and the previous workbook's code and models survived. Shared and array formulas now import their cached values, and both they and dropped cells are counted in a warning.
+
+- **xlsx export wrote a cached 0 for text formula results and accepted sheet names Excel rejects.**
+
+- **Solver-written cells had empty or stale source text.** Solve and `:opt sens into` wrote `text=""`, and goal seek left the old text, so copy, paste, fill and edit produced blanks or the old number.
+
+- **Web edits landed in the wrong place.**
+  - Incremental find moved focus to the grid, so the rest of the pattern was typed into a cell.
+  - A late `cell_source` reply put the previous cell's text in the formula bar, and replaced a key typed right after Enter.
+  - Fill-handle drag of a multi-row block copied only its first row.
+  - Cut, then paste at the sheet edge, deleted the cells that did not fit.
+  - Pasting empty clipboard text blanked the active cell.
+
+- **Smaller web view fixes.** Ctrl+S/O/K/F work while editing a cell. Sheet delete asks first. Solver annotations clear on undo, redo, commands and formatting. Status-bar totals and find hits refresh after undo, redo and open. An overflowing selection sum no longer blanks the totals. Goal seek rejects `1,5` instead of reading 1. Solving a selection that replaces the `default` model marks the workbook modified.
+
+- **Smaller TUI and CLI fixes.** The `:name` range prompt accepts `A1:B3`. The startup trust prompt classifies `numpy>=1` by module name, and loads formulas only when stdin is not a terminal. `:th` on the last row stays on the sheet. Invalid UTF-8, a non-integer `width` and an unknown `format` in `gridcalc.toml` warn instead of raising or being ignored. Terminals without colour or cursor control, such as vt100, start. `gridcalc new.json` for a missing file starts an empty workbook with that name.
+
+- **Recalc stopped propagating.** Undo, `:clear`, `:sort`, `:name`, `:unname`, a `:mode` round trip and sheet rename left the dep graph stale. A mixed-case named range registered no dependencies, and consumers of `OFFSET` and `RAND` were never recomputed. A full recalc now always rebuilds the graph; invalidating at each write site was rejected because undo, sort and the CLI write cells directly. `tests/test_dep_graph.py` compares the graph with a fresh rebuild after every operation, its undo and its redo.
+
+- **An unqualified range on two sheets returned one sheet's total on both.** The per-recalc range cache was keyed on the reference's sheet qualifier, which is None for a bare range.
+
+- **`=A1` over an empty cell gave NaN, and a boolean formula result read back as text**, so `=IF(A1,...)` and `=A1+1` over it were wrong.
+
+- **Names ending in digits were misread.** Reference rewriting had no identifier boundary, so inserting a column turned `LOG10` into `LOH10`. The lexer read `LOG10(`, `ATAN2(`, `DAYS360(`, `IMLOG10(`, `IMLOG2(` and `SUMXMY2(` as cell references, and `T.DIST.2T`/`T.INV.2T` failed to parse. `tests/test_builtins_smoke.py` now calls every registered function from a formula.
+
+- **`rename_sheet` missed quoted references and sheet-bound names, and wrote names needing quotes unquoted**, which did not parse.
+
+- **PYTHON mode marked dependency chains longer than 100 cells as `#CIRC!`**, and a cell name inside a string literal as a self-reference. CSV and pandas loads recalculated once per cell: 8000 cells took 8.2 s, now 12 ms.
+
+- **Excel functions returned wrong values in EXCEL mode.** Their tests called the Python implementations directly or ran in PYTHON mode. `tests/test_excel_functions.py` now evaluates them through formulas.
+  - `ROUND(x,n)` gave `#VALUE!` and rounded halves to even. `ROUNDDOWN`, `TRUNC`, `FLOOR`, `CEILING` and `MROUND` leaked float error (`ROUNDDOWN(4.35,2)` was 4.34) and broke Excel's sign rules.
+  - `INT(-2.5)` was -2, `LOG(100)` was ln 100, `ATAN2` swapped its arguments, and `LN` and `PI()` did not resolve.
+  - Text functions rendered numbers with `str(float)`, so `LEN(12345)` was 7.
+  - `DATE` did not roll months and days over. `WEEKDAY`/`WEEKNUM` types 11-17, `DATEDIF` MD/YM/YD and holidays in `NETWORKDAYS`/`WORKDAY` were wrong or missing.
+  - `MEDIAN`, `STDEV`, `VAR`, `MODE` and other statistics took one argument, and `SUMPRODUCT` exactly two.
+  - `XLOOKUP` failed on a horizontal lookup, and its exact modes applied wildcards. Approximate `VLOOKUP`/`MATCH` compared text case-sensitively.
+  - `TEXT`, `FIXED`, `DOLLAR`, `TRIM`, `SEARCH`, `VALUE`, `INDEX`, `LARGE`/`SMALL`, `AVERAGE` of no numbers, `PV`/`FV`/`PMT` with a fractional nper, and `NORM.S.DIST` tails had further Excel divergences.
+
+- **The optimiser read a formula cell between the model and a decision variable as a constant.** With `B1 =2*A1` and `=B1<=10`, it returned `A1=100` as `OPTIMAL`. Helper formulas are now inlined through any chain, and one that cannot be expressed raises `NotLinear` naming it. Inlining was chosen over refusing because helper cells are the normal way to structure a model.
+
+- **Goal seek crashed on an empty variable cell and used a fixed absolute tolerance**, so `=A1*1E-9` sought to 1.234567e-7 stopped at 124. It also ran a full recalc per step: 30 steps beside 5000 formulas took 2.4 s, now 2 ms.
+
+- **The solver held the GIL with no time limit and ignored `Highs_run`'s status**, so a hard MIP froze the TUI and the web view and could not be interrupted.
+
 ## [0.6.0]
 
 ### Added

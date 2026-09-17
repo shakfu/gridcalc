@@ -18,7 +18,7 @@ import math
 from dataclasses import dataclass
 
 from .engine import ref
-from .opt import OptModel, _parse_bound_value, parse_bounds, parse_cells
+from .opt import OptModel, parse_bounds, parse_cells
 
 CellKey = tuple[int, int]
 
@@ -160,18 +160,22 @@ def parse_goal(args: str) -> GoalSpec:
             raise ValueError("bracket needs 'lo:hi' after 'in'")
         lo_s, hi_s = bracket_spec.split(":", 1)
         try:
-            lo = _parse_bound_value(lo_s, positive=False)
-            hi = _parse_bound_value(hi_s, positive=True)
-        except (ValueError, RuntimeError) as e:
+            lo, hi = float(lo_s), float(hi_s)
+        except ValueError as e:
             raise ValueError(f"bad bracket: {e}") from e
+        if not (math.isfinite(lo) and math.isfinite(hi)):
+            raise ValueError(f"bad bracket: bisection needs finite ends: {bracket_spec}")
     elif len(parts) > 5:
         # Trailing junk that isn't `in ...` is a syntax error rather than
         # silently ignored, so typos surface immediately.
         raise ValueError(GOAL_USAGE)
 
+    target = float(parts[2])
+    if not math.isfinite(target):
+        raise ValueError(f"target is not a finite number: {parts[2]}")
     return GoalSpec(
         formula_cell=parse_single_cell(parts[0]),
-        target=float(parts[2]),
+        target=target,
         var_cell=parse_single_cell(parts[4]),
         lo=lo,
         hi=hi,

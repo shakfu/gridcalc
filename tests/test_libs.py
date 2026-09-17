@@ -378,7 +378,7 @@ class TestTextExtras:
 
         assert TEXTJOIN(",", True, "a", "", "b") == "a,b"
         assert TEXTJOIN(",", False, "a", "", "b") == "a,,b"
-        assert TEXTJOIN("-", True, Vec([1.0, 2.0, 3.0])) == "1.0-2.0-3.0"
+        assert TEXTJOIN("-", True, Vec([1.0, 2.0, 3.0])) == "1-2-3"
 
     def test_char_code(self) -> None:
         from gridcalc.libs.xlsx import CHAR, CODE

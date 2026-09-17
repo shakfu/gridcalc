@@ -109,6 +109,10 @@ def _num_str(v: float) -> str:
     return str(int(v)) if abs(v) < 1e9 and v == int(v) else f"{v:g}"
 
 
+def _is_number(v: object) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
 def cell_clip_value(cl: Cell | None) -> str:
     """Plain, unpadded value of a cell for the system clipboard.
 
@@ -124,7 +128,7 @@ def cell_clip_value(cl: Cell | None) -> str:
         return t[1:] if t.startswith('"') else t
     if cl.err is not None:
         return str(cl.err)
-    if cl.arr is not None and len(cl.arr) > 0:
+    if cl.arr and _is_number(cl.arr[0]):
         return _num_str(cl.arr[0])
     if cl.type in (FORMULA, SPILL) and cl.sval is not None:
         return cl.sval
@@ -181,7 +185,8 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
     # the array is laid out in the neighbouring cells. Only a non-spilling
     # array cell (PYTHON mode, where arrays live in one cell) shows the
     # `1[3]` array badge.
-    if cl.arr is not None and len(cl.arr) > 0 and cl.spill_shape is None:
+    # A text, boolean or error first element is already in `sval`/`err`.
+    if cl.arr and _is_number(cl.arr[0]) and cl.spill_shape is None:
         v = cl.arr[0]
         numstr = str(int(v)) if abs(v) < 1e9 and v == int(v) else f"{v:g}"
         t = f"{numstr}[{len(cl.arr)}]"

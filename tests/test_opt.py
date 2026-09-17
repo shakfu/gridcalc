@@ -1756,3 +1756,302 @@ class TestNativeSparseMatrixContract:
         assert r.status == _ext.OPTIMAL
         assert list(r.x[:2]) == pytest.approx([2 / 3, 8 / 3], abs=1e-6)
         assert r.objective == pytest.approx(-28 / 3, abs=1e-6)
+
+
+# --- Helper cells that read decision variables ---------------------------
+
+
+def _excel_grid(cells: list[tuple[str, str]]) -> Grid:
+    """EXCEL-mode grid from ``(A1 ref, text)`` pairs."""
+    from gridcalc.engine import ref
+
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    for name, text in cells:
+        m = ref(name)
+        assert m is not None
+        g.setcell(m[1], m[2], text)
+    return g
+
+
+class TestHelperCells:
+    """A formula cell between the model and a decision variable must be
+    inlined, never read as the constant it evaluated to at the old values."""
+
+    def test_nonlinear_objective_helper_is_refused_not_solved(self):
+        g = _excel_grid([("A1", "1"), ("B1", "=A1*A1"), ("C1", "=B1"), ("D1", "=A1<=10")])
+        with pytest.raises(NotLinear):
+            solve(g, (2, 0), [(0, 0)], [(3, 0)], maximize=True, apply=False)
+
+    def test_quadratic_objective_helper_is_inlined(self):
+        g = _excel_grid([("A1", "0"), ("B1", "=(A1-3)^2"), ("C1", "=B1"), ("D1", "=A1<=10")])
+        res = solve(g, (2, 0), [(0, 0)], [(3, 0)], maximize=False, apply=False)
+        assert res.status_name == "OPTIMAL"
+        assert res.values[(0, 0)] == pytest.approx(3.0, abs=1e-6)
+        assert res.quadratic is True
+
+    def test_linear_constraint_helper_is_inlined(self):
+        g = _excel_grid(
+            [("A1", "0"), ("B1", "=2*A1"), ("C1", "=A1"), ("D1", "=B1<=10"), ("E1", "=A1<=100")]
+        )
+        res = solve(g, (2, 0), [(0, 0)], [(3, 0), (4, 0)], maximize=True)
+        assert res.values[(0, 0)] == pytest.approx(5.0)
+        assert g.cells[3][0].val == 1.0  # D1 reads TRUE at the reported optimum
+
+    def test_chain_of_two_helpers(self):
+        # Objective C1 -> B1 -> A1 and constraint E1 -> D1 -> B1 -> A1.
+        g = _excel_grid(
+            [
+                ("A1", "0"),
+                ("B1", "=2*A1"),
+                ("C1", "=B1+1"),
+                ("D1", "=B1+1"),
+                ("E1", "=D1<=11"),
+            ]
+        )
+        res = solve(g, (2, 0), [(0, 0)], [(4, 0)], maximize=True, apply=False)
+        assert res.status_name == "OPTIMAL"
+        assert res.values[(0, 0)] == pytest.approx(5.0)
+        assert res.objective == pytest.approx(11.0)
+
+    def test_helper_inside_a_sum_range(self):
+        g = _excel_grid(
+            [("A1", "0"), ("B1", "=A1"), ("B2", "=A1"), ("C1", "=A1"), ("D1", "=SUM(B1:B2)<=10")]
+        )
+        res = solve(g, (2, 0), [(0, 0)], [(3, 0)], maximize=True, apply=False)
+        assert res.values[(0, 0)] == pytest.approx(5.0)
+
+    def test_nonlinear_constraint_helper_names_the_helper(self):
+        g = _excel_grid([("A1", "0"), ("B1", "=A1*A1"), ("C1", "=A1"), ("D1", "=B1<=4")])
+        with pytest.raises(NotLinear, match="B1"):
+            solve(g, (2, 0), [(0, 0)], [(3, 0)], maximize=True, apply=False)
+
+    def test_circular_helpers_raise(self):
+        g = _excel_grid(
+            [("A1", "0"), ("B1", "=C1+A1"), ("C1", "=B1"), ("D1", "=B1<=4"), ("E1", "=A1")]
+        )
+        with pytest.raises(OptError, match="circular"):
+            solve(g, (4, 0), [(0, 0)], [(3, 0)], maximize=True, apply=False)
+
+    def test_formula_parameter_not_reading_a_variable_is_still_folded(self):
+        g = _excel_grid(
+            [("A1", "0"), ("C1", "16"), ("B1", "=SQRT(C1)"), ("E1", "=A1"), ("D1", "=A1<=B1")]
+        )
+        res = solve(g, (4, 0), [(0, 0)], [(3, 0)], maximize=True, apply=False)
+        assert res.values[(0, 0)] == pytest.approx(4.0)
+
+    def test_unparseable_python_helper_reading_a_variable_is_refused(self):
+        g = Grid()  # PYTHON mode; `**` is not Excel grammar
+        g.setcell(0, 0, "0")
+        g.setcell(1, 0, "=A1**2")
+        g.setcell(2, 0, "=A1")
+        g.setcell(3, 0, "=B1<=4")
+        with pytest.raises(NotLinear, match="B1"):
+            solve(g, (2, 0), [(0, 0)], [(3, 0)], maximize=True, apply=False)
+
+    @pytest.mark.parametrize("use", ["Rate", "rate"])
+    def test_mixed_case_named_range_in_a_helper_is_seen(self, use):
+        # `extract_refs` looks names up lowercased; the helper must still be
+        # found to read A1 rather than folded as the constant it evaluated to.
+        from gridcalc.engine import NamedRange
+
+        g = _excel_grid([("A1", "0"), ("C1", "=A1")])
+        g.names.append(NamedRange(name="Rate", c1=0, r1=0, c2=0, r2=0))
+        g.setcell(1, 0, f"=2*{use}")
+        g.setcell(3, 0, "=B1<=10")
+        with pytest.raises(NotLinear, match="B1"):
+            solve(g, (2, 0), [(0, 0)], [(3, 0)], maximize=True, apply=False)
+
+    def test_mixed_case_named_range_in_a_python_helper_is_seen(self):
+        from gridcalc.engine import NamedRange
+
+        g = Grid()  # `**` sends B1 down the text fallback
+        g.names.append(NamedRange(name="Rate", c1=0, r1=0, c2=0, r2=0))
+        g.setcell(0, 0, "0")
+        g.setcell(1, 0, "=Rate**2")
+        g.setcell(2, 0, "=A1")
+        g.setcell(3, 0, "=B1<=4")
+        with pytest.raises(NotLinear, match="B1"):
+            solve(g, (2, 0), [(0, 0)], [(3, 0)], maximize=True, apply=False)
+
+    def test_unparseable_python_parameter_is_still_folded(self):
+        g = Grid()
+        g.setcell(0, 0, "0")
+        g.setcell(4, 0, "2")
+        g.setcell(1, 0, "=E1**2")
+        g.setcell(2, 0, "=A1")
+        g.setcell(3, 0, "=A1<=B1")
+        res = solve(g, (2, 0), [(0, 0)], [(3, 0)], maximize=True, apply=False)
+        assert res.values[(0, 0)] == pytest.approx(4.0)
+
+
+# --- Strict inequalities ---------------------------------------------------
+
+
+class TestStrictInequalities:
+    def test_integer_less_than_tightens_by_one(self):
+        g = _excel_grid([("A1", "0"), ("B1", "=A1"), ("C1", "=A1<3")])
+        res = solve(g, (1, 0), [(0, 0)], [(2, 0)], maximize=True, integer_vars={(0, 0)})
+        assert res.values[(0, 0)] == pytest.approx(2.0)
+        assert g.cells[2][0].val == 1.0
+
+    def test_integer_greater_than_with_fractional_rhs(self):
+        g = _excel_grid([("A1", "0"), ("B1", "=A1"), ("C1", "=2*A1>5")])
+        res = solve(g, (1, 0), [(0, 0)], [(2, 0)], maximize=False, integer_vars={(0, 0)})
+        assert res.values[(0, 0)] == pytest.approx(3.0)
+
+    def test_binary_row_tightens(self):
+        g = _excel_grid([("A1", "0"), ("A2", "0"), ("B1", "=A1+A2"), ("C1", "=A1+A2<2")])
+        res = solve(
+            g, (1, 0), [(0, 0), (0, 1)], [(2, 0)], maximize=True, binary_vars={(0, 0), (0, 1)}
+        )
+        assert res.objective == pytest.approx(1.0)
+
+    def test_continuous_strict_is_refused(self):
+        g = _excel_grid([("A1", "0"), ("B1", "=A1"), ("C1", "=A1<3")])
+        with pytest.raises(OptError, match="C1"):
+            solve(g, (1, 0), [(0, 0)], [(2, 0)], maximize=True)
+
+    def test_fractional_coefficient_is_refused_even_for_integers(self):
+        g = _excel_grid([("A1", "0"), ("B1", "=A1"), ("C1", "=0.5*A1<3")])
+        with pytest.raises(OptError, match="strict"):
+            solve(g, (1, 0), [(0, 0)], [(2, 0)], maximize=True, integer_vars={(0, 0)})
+
+
+def test_integer_with_quadratic_objective_is_refused(monkeypatch):
+    from gridcalc import opt as opt_mod
+
+    def not_called(*a, **k):
+        raise AssertionError("solver must not run")
+
+    monkeypatch.setattr(opt_mod._ext, "solve_lp", not_called)
+    g = _excel_grid([("A1", "0"), ("B1", "=(A1-2.5)^2"), ("C1", "=A1<=10")])
+    with pytest.raises(OptError, match="integer"):
+        solve(g, (1, 0), [(0, 0)], [(2, 0)], maximize=False, integer_vars={(0, 0)})
+    with pytest.raises(OptError, match="integer"):
+        solve(g, (1, 0), [(0, 0)], [(2, 0)], maximize=False, binary_vars={(0, 0)})
+
+
+# --- Non-numeric parameters ------------------------------------------------
+
+
+class TestNonNumericParameters:
+    def test_string_formula_parameter_is_refused(self):
+        g = _excel_grid([("A1", "0"), ("B1", "=A1"), ("F1", '="abc"'), ("C1", "=A1<=F1+5")])
+        with pytest.raises(OptError, match="F1"):
+            solve(g, (1, 0), [(0, 0)], [(2, 0)], maximize=True, apply=False)
+
+    def test_numeric_looking_label_parameter_is_refused(self):
+        g = _excel_grid([("A1", "0"), ("B1", "=A1"), ("E1", '"10'), ("C1", "=A1<=E1")])
+        with pytest.raises(OptError, match="E1"):
+            solve(g, (1, 0), [(0, 0)], [(2, 0)], maximize=True, apply=False)
+
+    def test_label_inside_a_sum_range_is_ignored(self):
+        g = _excel_grid(
+            [
+                ("A1", "0"),
+                ("B1", "=A1"),
+                ("E1", "header"),
+                ("E2", "4"),
+                ("E3", "6"),
+                ("C1", "=A1<=SUM(E1:E3)"),
+            ]
+        )
+        res = solve(g, (1, 0), [(0, 0)], [(2, 0)], maximize=True, apply=False)
+        assert res.values[(0, 0)] == pytest.approx(10.0)
+
+
+# --- Bound spec parsing ----------------------------------------------------
+
+
+class TestParseBounds:
+    def test_infinities_in_their_own_direction_are_accepted(self):
+        from gridcalc.opt import parse_bounds
+
+        assert parse_bounds("A1=-inf:inf, A2=-INF:+Infinity") == {
+            (0, 0): (-math.inf, math.inf),
+            (0, 1): (-math.inf, math.inf),
+        }
+
+    @pytest.mark.parametrize(
+        "spec", ["A1=inf:10", "A1=+inf:10", "A1=0:-inf", "A1=nan:1", "A1=0:nan"]
+    )
+    def test_unusable_endpoints_are_rejected(self, spec):
+        from gridcalc.opt import parse_bounds
+
+        with pytest.raises(ValueError, match="A1"):
+            parse_bounds(spec)
+
+
+# --- Written cells keep source text ----------------------------------------
+
+
+def test_applied_values_carry_source_text():
+    """Copy, edit and replicate read `text`; an empty one pasted nothing."""
+    g = _wyndor_grid()
+    g._cells.pop((0, 1))  # A2 starts empty
+    solve(g, (2, 0), [(0, 0), (0, 1)], [(3, 0), (3, 1), (3, 2)], maximize=True)
+    assert g.cells[0][0].text == "2"
+    assert g.cells[0][1].text == "6"
+    for c, r in [(0, 0), (0, 1)]:
+        assert float(g.cells[c][r].text) == g.cells[c][r].val
+
+
+def test_number_text_round_trips():
+    from gridcalc.opt import number_text
+
+    for x in [2.0, -3.0, 0.1, 1 / 3, 1e-5, 1.9999999999999998, 1e20, -0.0]:
+        assert float(number_text(x)) == x
+    assert number_text(2.0) == "2"
+
+
+# --- Solver time limit and GIL ------------------------------------------------
+
+
+def _market_split(time_limit: float):
+    """A 4x40 market-split feasibility MIP: hard for branch and bound."""
+    import random
+
+    rng = random.Random(7)  # noqa: S311 -- a fixed test instance, not a secret
+    m, n = 4, 40
+    A = [[float(rng.randrange(100)) for _ in range(n)] for _ in range(m)]
+    rhs = [float(sum(row) // 2) for row in A]
+    return _ext.solve_lp(
+        [0.0] * n,
+        A,
+        [_ext.EQ] * m,
+        rhs,
+        [0.0] * n,
+        [1.0] * n,
+        binary_vars=list(range(n)),
+        time_limit=time_limit,
+    )
+
+
+def test_a_solve_that_hits_the_time_limit_reports_timeout():
+    assert _market_split(0.2).status == _ext.TIMEOUT
+
+
+def test_a_running_solve_releases_the_gil():
+    import threading
+    import time
+
+    gaps: list[float] = []
+    done = threading.Event()
+
+    def spin() -> None:
+        last = time.perf_counter()
+        while not done.is_set():
+            now = time.perf_counter()
+            gaps.append(now - last)
+            last = now
+
+    t = threading.Thread(target=spin)
+    t.start()
+    try:
+        _market_split(0.6)
+    finally:
+        done.set()
+        t.join()
+    assert max(gaps) < 0.3

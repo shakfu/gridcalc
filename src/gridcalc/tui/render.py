@@ -41,6 +41,8 @@ CP_SPILL = 11
 
 
 def init_colors() -> None:
+    if not curses.has_colors():  # e.g. TERM=vt100: attributes only
+        return
     curses.start_color()
     curses.use_default_colors()
     curses.init_pair(CP_CHROME, curses.COLOR_WHITE, curses.COLOR_BLUE)

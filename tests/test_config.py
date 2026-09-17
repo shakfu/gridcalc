@@ -1,3 +1,5 @@
+import pytest
+
 from gridcalc.config import _parse_config, find_config, load_config
 from gridcalc.keys import ParsedKey
 
@@ -77,6 +79,23 @@ class TestParseConfig:
         assert cfg.format == ""
         assert any("format" in w for w in cfg.warnings)
 
+    @pytest.mark.parametrize("value", [12.9, True, "12"])
+    def test_width_must_be_an_integer(self, value):
+        """`int(12.9)` used to accept a float as 12 without a word."""
+        cfg = _parse_config({"width": value})
+        assert cfg.width == 0
+        assert any("width" in w for w in cfg.warnings)
+
+    def test_format_unknown_letter_warns(self):
+        cfg = _parse_config({"format": "x"})
+        assert cfg.format == ""
+        assert any("format" in w for w in cfg.warnings)
+
+    def test_format_lowercase_is_accepted(self):
+        cfg = _parse_config({"format": "g"})
+        assert cfg.format == "G"
+        assert cfg.warnings == []
+
     def test_clean_config_has_no_warnings(self):
         cfg = _parse_config({"editor": "vim", "sandbox": True, "width": 10})
         assert cfg.warnings == []
@@ -108,6 +127,13 @@ class TestLoadConfig:
     def test_invalid_toml(self, tmp_path):
         f = tmp_path / "gridcalc.toml"
         f.write_text("not valid toml [[[")
+        cfg = load_config(f)
+        assert cfg.editor == ""
+        assert any("TOML parse error" in w for w in cfg.warnings)
+
+    def test_invalid_utf8_warns(self, tmp_path):
+        f = tmp_path / "gridcalc.toml"
+        f.write_bytes(b'editor = "\xff\xfe"\n')
         cfg = load_config(f)
         assert cfg.editor == ""
         assert any("TOML parse error" in w for w in cfg.warnings)

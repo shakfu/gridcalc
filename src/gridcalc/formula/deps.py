@@ -60,7 +60,8 @@ def extract_refs(
     """Return the set of (sheet, col, row) cells that `node` reads.
 
     Range references expand to the full rectangular set. Named ranges
-    are resolved through `named_ranges`; unknown names are ignored.
+    are resolved through `named_ranges`, keyed by lowercase name; unknown
+    names are ignored.
 
     Sheet identity per ref:
       - if the ref carries an explicit sheet (``Sheet2!A1``), use it;

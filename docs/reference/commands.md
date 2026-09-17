@@ -39,3 +39,21 @@ Details by area:
 - [Goal seek](../guide/goal-seek.md) -- `:goal`
 
 - [Configuration](../guide/config.md) -- rebinding any of the keys above
+
+## Saving and opening
+
+`:w` picks the format from the extension: `.xlsx`, `.csv`, or JSON for anything else. It asks before:
+
+- a format that drops formulas, other sheets, names, models or the code block;
+
+- overwriting an existing file other than the one open.
+
+A failed save, in any format, leaves the existing file unchanged.
+
+`:o`, `:xlsx load`, `:csv load` and `:pd load` ask before discarding unsaved changes. `:o` and `:xlsx load` replace the workbook and clear undo history. `:csv load` and `:pd load` replace the active sheet and can be undone.
+
+## Undo
+
+`u` undoes cell edits, formatting, structural commands (`:dr`, `:ic`, `:sort`, `:clear`), `:opt` and `:goal` results, sheet add/delete/rename/move, `:name`, `:unname` and `:mode`. Undoing a command that rewrote formulas on several sheets restores all of them.
+
+Not undoable: `:e`, `:width`, `:opt def` and `:opt undef`.

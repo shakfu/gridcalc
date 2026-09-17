@@ -169,8 +169,8 @@ def test_xlsxload_bool(tmp_path):
 
     g = Grid()
     assert g.xlsxload(str(f)) == 0
-    assert g.cells[0][0].text == "TRUE"
-    assert g.cells[1][0].text == "FALSE"
+    assert g.cells[0][0].val is True and g.cells[0][0].sval == "TRUE"
+    assert g.cells[1][0].val is False and g.cells[1][0].sval == "FALSE"
 
 
 def test_xlsxload_unknown_function_yields_nan(tmp_path):

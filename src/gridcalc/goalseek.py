@@ -20,10 +20,12 @@ the variable cell (otherwise f doesn't change with x and bracketing fails).
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from .engine import EMPTY, FORMULA, NUM, Grid
+from .opt import number_text
 
 CellKey = tuple[int, int]
 
@@ -60,6 +62,10 @@ def seek(
     otherwise the algorithm auto-brackets outward from the variable cell's
     current value.
 
+    ``tol`` is relative: bisection stops when the bracket is within ``tol`` of
+    ``|x|``, and the result is converged when the residual is within
+    ``1e3 * tol * max(1, |target|)``.
+
     On success (residual within tolerance) the variable cell is left holding
     the solved value and the rest of the grid is recalculated to reflect it;
     callers can roll back via undo (the TUI wrapper records a grid snapshot).
@@ -79,15 +85,30 @@ def seek(
         )
     if vcell.type not in (EMPTY, NUM):
         raise GoalSeekError("variable cell must be numeric or empty")
+    if not all(math.isfinite(v) for v in (target, lo or 0.0, hi or 0.0)):
+        raise GoalSeekError("target and bracket must be finite numbers")
+
+    # An empty variable cell is the shared read-only placeholder until created.
+    created = grid.cell(vc, vr) is None
+    vcell = grid._ensure_cell(vc, vr)
 
     orig_type = vcell.type
     orig_val = vcell.val
+
+    def restore() -> None:
+        vcell.type = orig_type
+        vcell.val = orig_val
+        if created:
+            grid._cells.pop((vc, vr), None)
+        grid.recalc()
 
     def f(x: float) -> float:
         """Set var to x, recalc, return formula_value - target."""
         vcell.type = NUM
         vcell.val = x
-        grid.recalc()
+        # Both cells are on the active sheet, so only the variable's dependants
+        # need recomputing; recalc falls back to a full pass without a graph.
+        grid.recalc({(vc, vr)})
         v = fcell.val
         if not isinstance(v, (int, float)) or v != v:  # NaN-safe
             raise GoalSeekError(
@@ -101,24 +122,25 @@ def seek(
         if lo is not None and hi is not None:
             if lo >= hi:
                 raise GoalSeekError(f"bracket is empty: lo={lo} >= hi={hi}")
-            bracket = (lo, hi)
+            x_solved, iters = _bisect(f, lo, hi, tol, max_iter, target)
+        elif f(x_start) == 0.0:
+            # Already at a root; a repeated one has no sign change to bracket.
+            x_solved, iters = x_start, 0
         else:
-            bracket = _auto_bracket(f, x_start)
-
-        x_solved, iters = _bisect(f, bracket[0], bracket[1], tol, max_iter)
+            a, b = _auto_bracket(f, x_start)
+            x_solved, iters = _bisect(f, a, b, tol, max_iter, target)
         # Re-evaluate at the solution to capture the final formula value
         # and leave the grid in the solved state (or restore below).
         residual = f(x_solved)
         formula_value = residual + target
-        converged = abs(residual) <= max(tol * 1e3, tol)
+        converged = abs(residual) <= 1e3 * tol * max(1.0, abs(target))
         applied = False
 
         if apply and converged:
             applied = True  # grid is already in the solved state
+            vcell.text = number_text(x_solved)
         else:
-            vcell.type = orig_type
-            vcell.val = orig_val
-            grid.recalc()
+            restore()
 
         return SeekResult(
             converged=converged,
@@ -130,9 +152,7 @@ def seek(
         )
     except Exception:
         # Any failure path leaves the grid as it was before the search.
-        vcell.type = orig_type
-        vcell.val = orig_val
-        grid.recalc()
+        restore()
         raise
 
 
@@ -149,14 +169,9 @@ def _auto_bracket(
 
     Doubles the step each iteration and tries both directions before
     widening, so monotone f near x0 is found in O(log range) evaluations.
-    Each evaluation triggers a full grid recalc, so the cap is conservative.
+    Each evaluation recalcs the variable's dependants, so the cap is conservative.
     """
     f0 = f(x0)
-    if f0 == 0.0:
-        # Already at a root. Return a tiny bracket around x0 so bisection
-        # has something to chew on and terminates immediately.
-        return (x0 - 1.0, x0 + 1.0)
-
     step = max(abs(x0) * 0.1, 1.0)
     for _ in range(max_expand):
         a, b = x0 - step, x0 + step
@@ -179,8 +194,13 @@ def _bisect(
     b: float,
     tol: float,
     max_iter: int,
+    target: float,
 ) -> tuple[float, int]:
-    """Standard bisection. Assumes f(a) and f(b) have opposite signs."""
+    """Bisection with relative tolerances. Assumes f(a) and f(b) have opposite signs.
+
+    Stops when the residual is within ``tol * |target|`` or the bracket within
+    ``tol * |x|``. An absolute tolerance stops early on a small-scale formula.
+    """
     fa = f(a)
     fb = f(b)
     if fa == 0.0:
@@ -197,7 +217,7 @@ def _bisect(
     for i in range(1, max_iter + 1):
         m = 0.5 * (a + b)
         fm = f(m)
-        if abs(fm) < tol or 0.5 * (b - a) < tol:
+        if abs(fm) <= tol * abs(target) or 0.5 * (b - a) <= tol * max(abs(a), abs(b)):
             return m, i
         if fa * fm < 0.0:
             b, fb = m, fm

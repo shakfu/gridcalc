@@ -27,6 +27,9 @@ else:
 
 CONFIG_FILENAME = "gridcalc.toml"
 
+# Number formats a workbook default can take; the same set `:gf` accepts.
+FORMATS = "LRIGD$%*"
+
 _KNOWN_KEYS = frozenset({"editor", "sandbox", "width", "format", "libs", "allowed_modules", "keys"})
 
 
@@ -91,21 +94,20 @@ def _parse_config(data: dict[str, Any]) -> Config:
             cfg.warnings.append(f"sandbox: expected bool, got {type(data['sandbox']).__name__}")
 
     if "width" in data:
-        try:
-            w = int(data["width"])
-            if 4 <= w <= 40:
-                cfg.width = w
-            else:
-                cfg.warnings.append(f"width: {w} out of range [4, 40]; using default")
-        except (ValueError, TypeError):
-            cfg.warnings.append(f"width: not an integer ({data['width']!r}); using default")
+        w = data["width"]
+        if not isinstance(w, int) or isinstance(w, bool):
+            cfg.warnings.append(f"width: not an integer ({w!r}); using default")
+        elif 4 <= w <= 40:
+            cfg.width = w
+        else:
+            cfg.warnings.append(f"width: {w} out of range [4, 40]; using default")
 
     if "format" in data:
         v = data["format"]
-        if isinstance(v, str) and len(v) == 1:
-            cfg.format = v
+        if isinstance(v, str) and len(v) == 1 and v.upper() in FORMATS:
+            cfg.format = v.upper()
         else:
-            cfg.warnings.append(f"format: expected single-character string, got {v!r}")
+            cfg.warnings.append(f"format: expected one of {' '.join(FORMATS)}, got {v!r}")
 
     if "libs" in data:
         if isinstance(data["libs"], list):
@@ -218,7 +220,7 @@ def load_config(path: Path | str | None = None) -> Config:
         cfg.config_path = str(resolved)
         cfg.warnings.append(f"could not read {resolved}: {exc}")
         return cfg
-    except tomllib.TOMLDecodeError as exc:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         cfg = Config()
         cfg.config_path = str(resolved)
         cfg.warnings.append(f"TOML parse error in {resolved}: {exc}")

@@ -17,6 +17,16 @@
 
 The **model** is sheet-resident: an objective formula in one cell, decision-variable cells holding values, and constraint cells holding comparison formulas like `=A1+A2<=10`. The constraint cells keep evaluating during recalculation, so the sheet shows live feasibility (`TRUE`/`FALSE`) before and after the solve.
 
+Other cells the model reads:
+
+- A formula cell that reads a decision variable, directly or through other formulas, is inlined. With `B1` holding `=2*A1`, the constraint `=B1<=10` means `2*A1<=10`. A helper that cannot be inlined is refused, naming the cell.
+
+- Any other cell is a parameter: its current value is a constant. Text is refused, naming the cell, except inside a `SUM` range, which skips it.
+
+A strict `<` or `>` constraint needs integer variables with integer coefficients, and tightens by one: `=A1<5` becomes `A1<=4`. Any other strict constraint is refused.
+
+A solve stops after 60 seconds and reports `TIMEOUT`.
+
 A worked example (also at `examples/example_lp.json`):
 
 | | A | B | C | D |
@@ -51,7 +61,7 @@ opt: objective is not convex, so it has no interior minimum -- ...
 
 Convexity is checked directly on the Hessian (symmetric elimination, no numpy required), so the message names the real problem rather than reporting a bare solver failure.
 
-Sensitivity analysis and infeasibility diagnosis are **withheld for quadratic models**: their duals do not carry the shadow-price reading the report describes. Integer variables cannot be combined with a quadratic objective.
+Sensitivity analysis and infeasibility diagnosis are **withheld for quadratic models**: their duals do not carry the shadow-price reading the report describes. Integer and binary variables cannot be combined with a quadratic objective.
 
 ## Inferring the model from a selection
 
@@ -74,7 +84,7 @@ The inferred model is saved as `default`, so the block only has to be selected o
 
 Any order after `st`:
 
-- `bounds A1=lo:hi, B2=lo:hi` -- per-variable bounds. `lo` and `hi` accept `inf`, `+inf`, `-inf`. The default is `[0, +inf)`.
+- `bounds A1=lo:hi, B2=lo:hi` -- per-variable bounds. `lo` accepts `-inf` and `hi` accepts `inf`; `A1=inf:10` is rejected. The default is `[0, +inf)`.
 
 - `int <cells>` -- decision variables are integer-valued (branch and bound).
 

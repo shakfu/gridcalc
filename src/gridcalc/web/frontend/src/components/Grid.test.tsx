@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { Grid, type GridHandle } from './Grid'
 import { bridge } from '../bridge/api'
 import { installMockBridge } from '../bridge/mock'
-import { CW } from '../lib/grid'
+import { CH, CW, GW } from '../lib/grid'
 
 beforeEach(() => {
   window.pywebview = undefined
@@ -338,4 +338,67 @@ test('a copy does not mark the workbook dirty', async () => {
   await user.keyboard('{Control>}c{/Control}')
   await new Promise((r) => setTimeout(r, 20))
   expect(onMutate).not.toHaveBeenCalled()
+})
+
+// happy-dom does no layout, so a cell's client position is its canvas offset
+// less the scroll, which cursor moves still write.
+const at = (scroll: HTMLElement, r: number, c: number) => ({
+  clientX: GW + c * CW + 5 - scroll.scrollLeft,
+  clientY: CH + r * CH + 5 - scroll.scrollTop,
+})
+
+test('clicking away to commit leaves the formula bar on the clicked cell', async () => {
+  const { container, cells, scroll, cellEditor, formulaBar, nameBox } = renderGrid()
+  await waitFor(() => cells().getByText('gridcalc demo'))
+  scroll.focus()
+  await userEvent.setup().keyboard('z')
+  await waitFor(() => expect(cellEditor()).toHaveValue('z'))
+  fireEvent.mouseDown(scroll, { ...at(scroll, 3, 1), button: 0 }) // B4 holds 10
+  fireEvent.mouseUp(window)
+  await waitFor(() => expect(cells().getByText('z')).toBeInTheDocument())
+  await new Promise((r) => setTimeout(r, 50))
+  expect(nameBox()).toBe('B4')
+  expect(formulaBar()).toBe('10')
+  expect(container.querySelector('.cell-editor')).not.toBeInTheDocument()
+})
+
+test('a key typed right after Enter is not overwritten by the late cell source', async () => {
+  const { container, cells, scroll } = renderGrid()
+  await waitFor(() => cells().getByText('gridcalc demo'))
+  const api = window.pywebview!.api
+  const source = api.cell_source.bind(api)
+  api.cell_source = (r, c) =>
+    new Promise((res) => setTimeout(() => void source(r, c).then(res), 40))
+  scroll.focus()
+  fireEvent.keyDown(scroll, { key: 'Enter' })
+  fireEvent.keyDown(scroll, { key: 'q' })
+  await new Promise((r) => setTimeout(r, 120))
+  expect((container.querySelector('.cell-editor') as HTMLInputElement).value).toBe('q')
+})
+
+test('dragging the fill handle repeats a multi-row block', async () => {
+  const { container, cells, scroll } = renderGrid()
+  await waitFor(() => cells().getByText('Widget')) // A4, Gadget A5
+  scroll.focus()
+  const user = userEvent.setup()
+  await user.keyboard('{ArrowDown}{ArrowDown}{ArrowDown}{Shift>}{ArrowDown}{/Shift}') // A4:A5
+  fireEvent.mouseDown(container.querySelector('.fill-handle') as HTMLElement, { button: 0 })
+  fireEvent.mouseMove(scroll, { ...at(scroll, 7, 0), buttons: 1 }) // down to A8
+  fireEvent.mouseUp(window)
+  const api = window.pywebview!.api
+  await waitFor(async () => expect(await api.cell_source(6, 0)).toBe('Gadget'))
+  const col = await Promise.all([3, 4, 5, 6, 7].map((r) => api.cell_source(r, 0)))
+  expect(col).toEqual(['Widget', 'Gadget', 'Widget', 'Gadget', 'Widget'])
+})
+
+test('goto can move the cursor without taking focus', async () => {
+  const ref = createRef<GridHandle>()
+  const { container, cells } = renderGrid({ ref })
+  await waitFor(() => cells().getByText('gridcalc demo'))
+  const box = container.querySelector('.name-box') as HTMLInputElement
+  box.focus()
+  act(() => {
+    ref.current?.goto('C3', false)
+  })
+  expect(document.activeElement).toBe(box)
 })

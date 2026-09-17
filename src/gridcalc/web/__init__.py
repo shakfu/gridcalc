@@ -66,10 +66,13 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
+import inspect
 import math
-from collections.abc import Iterable
+import threading
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from .. import __version__, goalseek, opt
 from .. import commands as shared
@@ -89,7 +92,7 @@ from ..engine import (
     col_name,
     ref,
 )
-from ..loader import demo_grid, load_workbook, needs_trust
+from ..loader import demo_grid, load_workbook, needs_trust, save_workbook
 from ..opt import OptError, OptModel, cells_to_spec, parse_bounds, parse_cells
 from ..report import goal_json, solve_json, sweep_json
 from ..sandbox import FileInfo, LoadPolicy, classify_module
@@ -101,7 +104,42 @@ from ..undo import UndoManager
 # a time, and the true count rides along separately.
 MAX_SEARCH_MATCHES = 1000
 
+_T = TypeVar("_T")
 
+# Public methods that wait on the user in a native dialog rather than on the
+# engine; they reach the workbook only through methods that do lock.
+_UNLOCKED = frozenset({"save_dialog", "open_dialog"})
+
+
+def _serialised(cls: type[_T]) -> type[_T]:
+    """Run every public method of ``cls`` under the instance's ``_lock``.
+
+    pywebview starts a thread per bridge call, so without this a viewport read
+    iterates cells an edit is resizing, and undo pops a stack another undo
+    emptied. Long solves hold the lock too, so reads queue behind them: the
+    solve writes the cells those reads would show, and running it off-lock
+    would mean solving a copy of the workbook.
+    """
+    for name, fn in list(vars(cls).items()):
+        if name.startswith("_") or name in _UNLOCKED or not inspect.isfunction(fn):
+            continue
+        setattr(cls, name, _locked(fn))
+    return cls
+
+
+def _locked(fn: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(fn)
+    def call(self: Api, *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            return fn(self, *args, **kwargs)
+
+    # pywebview names the JS stub's parameters via getfullargspec, which
+    # ignores __wrapped__ but honours __signature__.
+    call.__signature__ = inspect.signature(fn)  # type: ignore[attr-defined]
+    return call
+
+
+@_serialised
 class Api:
     """The ``js_api`` bridge object exposed to the browser view.
 
@@ -112,6 +150,7 @@ class Api:
 
     def __init__(self, g: Grid) -> None:
         self._g = g
+        self._lock = threading.RLock()  # see `_serialised`
         self._clip: dict[str, Any] | None = None  # internal copy/cut buffer
         self._undo = UndoManager()
         self._window: Any = None  # set by run() for the native save dialog
@@ -201,22 +240,12 @@ class Api:
         return self._touch()
 
     def undo(self) -> dict[str, Any]:
-        """Undo the last mutation (recomputes derived cells).
-
-        An empty history is a no-op that must not dirty the workbook -- the
-        stack is checked first, since `UndoManager.undo` reports nothing back.
-        """
-        if not self._undo.undo_stack:
-            return {"ok": True, "dirty": self._dirty}
-        self._undo.undo(self._g)
-        return self._touch()
+        """Undo the last mutation; nothing to undo leaves the workbook clean."""
+        return self._touch() if self._undo.undo(self._g) else {"ok": True, "dirty": self._dirty}
 
     def redo(self) -> dict[str, Any]:
-        """Redo the last undone mutation; an empty history is a no-op."""
-        if not self._undo.redo_stack:
-            return {"ok": True, "dirty": self._dirty}
-        self._undo.redo(self._g)
-        return self._touch()
+        """Redo the last undone mutation; nothing to redo is a no-op."""
+        return self._touch() if self._undo.redo(self._g) else {"ok": True, "dirty": self._dirty}
 
     def clear_range(self, r0: int, c0: int, r1: int, c1: int) -> dict[str, Any]:
         """Blank every cell in a rectangle (Delete on a selection).
@@ -300,7 +329,10 @@ class Api:
                 v = self._num_at(c, r)
                 if v is not None:
                     nums.append(v)
-        total = math.fsum(nums) if nums else None
+        try:
+            total = math.fsum(nums) if nums else None
+        except OverflowError:
+            total = None  # the true sum is not a finite float
         return {
             "count": count,
             "numeric": len(nums),
@@ -339,7 +371,8 @@ class Api:
 
         Formula references are shifted by the paste offset (absolute ``$``
         refs stay put), matching replicate/Excel. A cut clears the source
-        cells that the paste did not overwrite.
+        cells that the paste did not overwrite. A paste that would put a cell
+        off the sheet is refused: a cut would otherwise delete that cell.
         """
         clip = self._clip
         if not clip:
@@ -347,14 +380,14 @@ class Api:
         r, c = int(r), int(c)
         dcol, drow = c - clip["c0"], r - clip["r0"]
         g = self._g
-        self._undo.save_grid(g)  # paste (and cut's source clear) can touch scattered cells
         dest = {(c + cell["dc"], r + cell["dr"]) for cell in clip["cells"]}
+        if any(not (0 <= tc < NCOL and 0 <= tr < NROW) for tc, tr in dest):
+            return {"ok": False, "error": "the paste does not fit on the sheet"}
+        self._undo.save_grid(g)  # paste (and cut's source clear) can touch scattered cells
         for cell in clip["cells"]:
-            dc, dr, text = cell["dc"], cell["dr"], cell["text"]
-            tc, tr = c + dc, r + dr
-            if not (0 <= tc < NCOL and 0 <= tr < NROW):
-                continue
-            g.setcell(tc, tr, adjust_refs(text, dcol, drow) if text.startswith("=") else text)
+            text = cell["text"]
+            adjusted = adjust_refs(text, dcol, drow) if text.startswith("=") else text
+            g.setcell(c + cell["dc"], r + cell["dr"], adjusted)
         if clip["cut"]:
             for cell in clip["cells"]:
                 sc, sr = clip["c0"] + cell["dc"], clip["r0"] + cell["dr"]
@@ -375,8 +408,10 @@ class Api:
         gridcalc and carries no relative-reference intent to preserve (a leading
         ``=`` still becomes a formula, matching a spreadsheet paste). The written
         rectangle is snapshotted first, so the paste is a single undo step.
+        Text holding no values (only newlines and tabs) is refused rather than
+        blanking cells.
         """
-        if not text:
+        if not text or not text.strip("\r\n\t"):
             return {"ok": False}
         rows = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
         if rows and rows[-1] == "":
@@ -395,34 +430,35 @@ class Api:
         g.recalc()
         return {**self._touch(), "rows": len(rows), "cols": ncols}
 
-    def fill(self, r0: int, c0: int, r1: int, c1: int, direction: str) -> dict[str, Any]:
+    def fill(
+        self, r0: int, c0: int, r1: int, c1: int, direction: str, span: int = 1
+    ) -> dict[str, Any]:
         """Fill a selection from its leading edge (Ctrl+D down / Ctrl+R right).
 
-        ``down`` copies the top row of the rectangle into the rows below;
-        ``right`` copies the left column into the columns to its right.
-        Formula references are shifted per destination (via ``adjust_refs``),
-        so ``=A1`` filled down becomes ``=A2``, ``=A3``, ...
+        ``down`` copies the top ``span`` rows of the rectangle into the rows
+        below, repeating them as a block; ``right`` does the same with the left
+        ``span`` columns. Formula references are shifted per destination (via
+        ``adjust_refs``), so ``=A1`` filled down becomes ``=A2``, ``=A3``, ...
         """
         g = self._g
         r0, r1 = sorted((int(r0), int(r1)))
         c0, c1 = sorted((int(c0), int(c1)))
+        n = max(1, int(span))
         if direction not in ("down", "right"):
             return {"ok": False}
         self._undo.save_region(g, c0, r0, c1, r1)
         if direction == "down":
             for c in range(c0, c1 + 1):
-                src = g.cell(c, r0)
-                text = src.text if src is not None and src.type != EMPTY else ""
-                for r in range(r0 + 1, r1 + 1):
-                    g.setcell(c, r, adjust_refs(text, 0, r - r0) if text.startswith("=") else text)
-        elif direction == "right":
-            for r in range(r0, r1 + 1):
-                src = g.cell(c0, r)
-                text = src.text if src is not None and src.type != EMPTY else ""
-                for c in range(c0 + 1, c1 + 1):
-                    g.setcell(c, r, adjust_refs(text, c - c0, 0) if text.startswith("=") else text)
+                for r in range(r0 + n, r1 + 1):
+                    sr = r0 + (r - r0) % n
+                    text = self._source_at(c, sr)
+                    g.setcell(c, r, adjust_refs(text, 0, r - sr) if text.startswith("=") else text)
         else:
-            return {"ok": False}
+            for r in range(r0, r1 + 1):
+                for c in range(c0 + n, c1 + 1):
+                    sc = c0 + (c - c0) % n
+                    text = self._source_at(sc, r)
+                    g.setcell(c, r, adjust_refs(text, c - sc, 0) if text.startswith("=") else text)
         g.recalc()
         return self._touch()
 
@@ -535,18 +571,22 @@ class Api:
         new_name = (name or "").strip()
         if not new_name:
             return {"ok": False, "error": "a sheet needs a name", **self.sheets()}
+        self._undo.save_grid(self._g)
         try:
             self._g.add_sheet(new_name)
         except ValueError as exc:
+            self._undo.discard_last()
             return {"ok": False, "error": str(exc), **self.sheets()}
         self._g.set_active(len(self._g.sheets) - 1)
         return {**self._touch(), **self.sheets()}
 
     def delete_sheet(self, name: str) -> dict[str, Any]:
         """Remove a sheet by name; the last remaining sheet cannot be removed."""
+        self._undo.save_grid(self._g)
         try:
             self._g.remove_sheet(name)
         except (ValueError, KeyError) as exc:
+            self._undo.discard_last()
             return {"ok": False, "error": self._sheet_error(exc, name), **self.sheets()}
         self._g.recalc()
         return {**self._touch(), **self.sheets()}
@@ -554,27 +594,27 @@ class Api:
     def rename_sheet(self, old: str, new: str) -> dict[str, Any]:
         """Rename a sheet, rewriting formula text that references the old name.
 
-        Sheet identity is part of the dependency-graph keys, so the graph is
-        rebuilt before recalculating -- otherwise edges still pointing at the
-        old name would go stale. This mirrors ``cmd_sheet``'s rename path.
+        The rename marks the dependency graph stale, so the recalc rebuilds it.
         """
         new_name = (new or "").strip()
         if not new_name:
             return {"ok": False, "error": "a sheet needs a name", **self.sheets()}
+        self._undo.save_grid(self._g)
         try:
             self._g.rename_sheet(old, new_name)
         except (ValueError, KeyError) as exc:
+            self._undo.discard_last()
             return {"ok": False, "error": self._sheet_error(exc, old), **self.sheets()}
-        self._g._dep_graph_built = False
-        self._g._rebuild_dep_graph()
         self._g.recalc()
         return {**self._touch(), **self.sheets()}
 
     def move_sheet(self, name: str, index: int) -> dict[str, Any]:
         """Reorder a sheet to zero-based ``index``; the active sheet follows."""
+        self._undo.save_grid(self._g)
         try:
             self._g.move_sheet(name, int(index))
         except (IndexError, KeyError, ValueError) as exc:
+            self._undo.discard_last()
             return {"ok": False, "error": self._sheet_error(exc, name), **self.sheets()}
         return {**self._touch(), **self.sheets()}
 
@@ -599,15 +639,10 @@ class Api:
         target = path or (getattr(g, "filename", "") or "")
         if not target:
             return {"ok": False, "needs_path": True}
-        low = target.lower()
-        if low.endswith(".xlsx"):
-            rc = g.xlsxsave(target)
-        elif low.endswith(".csv"):
-            rc = g.csvsave(target)
-        else:
-            rc = g.jsonsave(target)
-        if rc < 0:
-            return {"ok": False, "error": f"could not save: {target}"}
+        try:
+            save_workbook(g, target)
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
         g.filename = target
         self._mark_clean()
         return {"ok": True, "path": target}
@@ -711,19 +746,24 @@ class Api:
         failure comes back as ``{"ok": False, "error": ...}`` and leaves the
         current workbook untouched.
         """
-        info = needs_trust(path)
-        if info is not None and policy is None:
-            return {"ok": False, "needs_trust": True, **self._trust_info(path, info)}
+        # Any exception is a failed open: a pathological file can raise
+        # RecursionError from the parser or a recalc, and must not end the session.
         try:
+            info = needs_trust(path)
+            if info is not None and policy is None:
+                return {"ok": False, "needs_trust": True, **self._trust_info(path, info)}
             g = load_workbook(path, self._policy_from(info, policy) if info else None)
-        except OSError as exc:
-            return {"ok": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc) or type(exc).__name__}
         self._g = g
-        self._undo = UndoManager()
+        self._undo.clear()
         self._clip = None
         self._mark_clean()
         self._pending_trust = None
-        return {"ok": True, "filename": getattr(g, "filename", "") or ""}
+        res: dict[str, Any] = {"ok": True, "filename": getattr(g, "filename", "") or ""}
+        if g.load_warnings:
+            res["warnings"] = list(g.load_warnings)
+        return res
 
     def open_dialog(self) -> dict[str, Any]:
         """Prompt for a workbook with the native open dialog, then load it."""
@@ -864,7 +904,8 @@ class Api:
         which is what the dialog's "write the solution to the sheet" control
         means. The inferred model is stored as ``default`` either way -- that
         records *what was selected*, not the solution, so it is not a write the
-        control governs.
+        control governs. Storing a different model dirties the workbook, and
+        the reply's ``dirty`` says so even when nothing was applied.
         """
         g = self._g
         ra, rb = sorted((int(r0), int(r1)))
@@ -876,19 +917,23 @@ class Api:
         # Store what was inferred as `default`, matching `:opt max` in the TUI:
         # the block only has to be selected once, and the model is then a
         # workbook object the user can re-run, edit, or rename.
-        g.models["default"] = OptModel(
+        model = OptModel(
             sense="min" if sense == "min" else "max",
             objective=self._a1(m.objective),
             vars=cells_to_spec(m.decision_vars),
             constraints=cells_to_spec(m.constraint_cells),
         )
-        return self._run_solve(
+        if g.models.get("default") != model:
+            g.models["default"] = model
+            self._touch()
+        res = self._run_solve(
             objective=m.objective,
             decision_vars=m.decision_vars,
             constraint_cells=m.constraint_cells,
             maximize=(sense != "min"),
             apply=bool(apply),
         )
+        return {**res, "dirty": self._dirty}
 
     def solve_model(self, spec: dict[str, Any]) -> dict[str, Any]:
         """Solve an explicit A1-specified model.
@@ -1187,6 +1232,10 @@ class Api:
         c0, c1 = sorted((ca, cb))
         r0, r1 = sorted((rowa, rowb))
         return c0, r0, c1, r1
+
+    def _source_at(self, c: int, r: int) -> str:
+        cl = self._g.cell(c, r)
+        return cl.text if cl is not None and cl.type != EMPTY else ""
 
     def _is_label(self, c: int, r: int) -> bool:
         cl = self._g.cell(c, r)

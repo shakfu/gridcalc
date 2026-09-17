@@ -222,3 +222,30 @@ class TestLexerErrors:
     def test_unknown_char(self):
         with pytest.raises(FormulaError):
             tokenize("@")
+
+
+class TestLexerFunctionNamesWithDigits:
+    @pytest.mark.parametrize("name", ["LOG10", "ATAN2", "DAYS360", "IMLOG2", "SUMXMY2"])
+    def test_cellref_shape_before_paren_is_ident(self, name):
+        assert kinds(f"{name}(1)") == [IDENT, LPAREN, NUMBER, RPAREN]
+
+    def test_cellref_shape_elsewhere_is_still_cellref(self):
+        assert kinds("LOG10+1") == [CELLREF, PLUS, NUMBER]
+
+    def test_digit_led_dotted_segment_is_ident(self):
+        assert kinds("T.DIST.2T(1)") == [IDENT, DOT, IDENT, DOT, IDENT, LPAREN, NUMBER, RPAREN]
+        assert tokenize("T.DIST.2T(1)")[4].value == "2T"
+
+
+class TestParseNumber:
+    @pytest.mark.parametrize("text,val", [("1", 1.0), ("-2.5", -2.5), (".5e1", 5.0), ("+3.", 3.0)])
+    def test_decimal(self, text, val):
+        from gridcalc.formula.lexer import parse_number
+
+        assert parse_number(text) == val
+
+    @pytest.mark.parametrize("text", ["nan", "inf", "-Infinity", "1_000", "", " 1", "0x10", "١"])
+    def test_rejects_what_float_accepts(self, text):
+        from gridcalc.formula.lexer import parse_number
+
+        assert parse_number(text) is None

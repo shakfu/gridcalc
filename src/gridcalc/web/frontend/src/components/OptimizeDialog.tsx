@@ -82,9 +82,10 @@ export function OptimizeDialog({
     try {
       const res = await fn()
       setResult(res)
+      // Before painting: a mutation clears annotations, including these.
+      if (res.applied || res.dirty) onMutated?.()
       // Only a solve that actually reached an optimum has something to paint.
       onAnnotations?.(annotationsFrom(res, model.objective || undefined))
-      if (res.applied) onMutated?.()
       await refreshModels() // a selection solve stores `default`
     } catch (e) {
       setResult({ ok: false, error: e instanceof Error ? e.message : String(e) })

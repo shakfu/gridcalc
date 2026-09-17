@@ -32,7 +32,8 @@ export interface OkResult {
 }
 
 // Selection summary for the status bar. `count` includes labels; the
-// aggregates cover only the numeric cells and are null when there are none.
+// aggregates cover only the numeric cells and are null when there are none,
+// or (sum and avg) when the sum overflows.
 export interface Stats {
   count: number
   numeric: number
@@ -172,22 +173,24 @@ export interface CopyResult {
 }
 
 // --- optimization ---
+// Every numeric field in a result is null when the engine's value is not
+// finite (`report.num`): JSON has no Infinity or NaN.
 
 export interface VarSensitivity {
   cell: string
-  value: number
-  reduced_cost: number
-  obj_coef: number
+  value: number | null
+  reduced_cost: number | null
+  obj_coef: number | null
   obj_from: number | null
   obj_till: number | null
 }
 
 export interface ConSensitivity {
   cell: string
-  shadow_price: number
-  rhs: number
-  activity: number
-  slack: number
+  shadow_price: number | null
+  rhs: number | null
+  activity: number | null
+  slack: number | null
   binding: boolean
   rhs_from: number | null
   rhs_till: number | null
@@ -204,12 +207,15 @@ export interface SolveResult {
   status?: string
   optimal?: boolean
   objective?: number | null
-  values?: Record<string, number>
+  values?: Record<string, number | null>
   applied?: boolean
   quadratic?: boolean
   sensitivity?: Sensitivity
   conflict?: string[]
   unbounded?: string[]
+  // `solve_selection` only: the workbook's unsaved state after it stored the
+  // inferred model as `default`, which can change it even when not applied.
+  dirty?: boolean
 }
 
 export interface GoalResult {
@@ -217,14 +223,17 @@ export interface GoalResult {
   error?: string
   converged?: boolean
   iterations?: number
-  var_value?: number
-  formula_value?: number
-  residual?: number
+  formula_cell?: string
+  var_cell?: string
+  target?: number | null
+  var_value?: number | null
+  formula_value?: number | null
+  residual?: number | null
   applied?: boolean
 }
 
 export interface SweepPoint {
-  rhs: number
+  rhs: number | null
   status: string
   objective: number | null
   shadow_price: number | null
@@ -235,7 +244,9 @@ export interface SweepPoint {
 export interface SweepResult {
   ok: boolean
   error?: string
+  constraint?: string
   points?: SweepPoint[]
+  breakpoints?: (number | null)[]
 }
 
 export interface ChartSeries {
@@ -325,9 +336,19 @@ export interface PywebviewApi {
   ): Promise<OkResult & { error?: string }>
   set_global_format(fmt: string): Promise<OkResult & { error?: string }>
   copy(r0: number, c0: number, r1: number, c1: number, cut: boolean): Promise<CopyResult>
-  paste(r: number, c: number): Promise<OkResult>
-  paste_text(r: number, c: number, text: string): Promise<OkResult>
-  fill(r0: number, c0: number, r1: number, c1: number, direction: 'down' | 'right'): Promise<OkResult>
+  // Refusals (`ok: false`): an empty buffer, a paste that would not fit on the
+  // sheet, or clipboard text holding no values.
+  paste(r: number, c: number): Promise<OkResult & { error?: string }>
+  paste_text(r: number, c: number, text: string): Promise<OkResult & { rows?: number; cols?: number }>
+  // `span` rows (down) or columns (right) at the leading edge repeat as a block.
+  fill(
+    r0: number,
+    c0: number,
+    r1: number,
+    c1: number,
+    direction: 'down' | 'right',
+    span?: number,
+  ): Promise<OkResult>
   solve_selection(
     r0: number,
     c0: number,
@@ -343,6 +364,7 @@ export interface PywebviewApi {
     var_ref: string,
     lo?: number | null,
     hi?: number | null,
+    apply?: boolean,
   ): Promise<GoalResult>
   opt_sweep(spec: ModelSpec): Promise<SweepResult>
   list_models(): Promise<ModelsResult>

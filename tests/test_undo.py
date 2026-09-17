@@ -10,7 +10,10 @@ answer with no error anywhere.
 
 from __future__ import annotations
 
-from gridcalc.engine import Grid, NamedRange
+import pytest
+
+from gridcalc import commands as C
+from gridcalc.engine import Grid, Mode, NamedRange
 from gridcalc.undo import UndoManager
 
 
@@ -149,4 +152,208 @@ class TestCellUndoLeavesMetadataAlone:
         u.save_cell(g, 0, 0)
         entry = u.undo_stack[-1]
         assert entry.names is None
-        assert entry.widths is None
+        assert entry.book is None
+
+
+def _two_sheets() -> Grid:
+    """Sheet1!A1:A3 = 1..3; S2!A1 = =Sheet1!A2*2 (EXCEL mode)."""
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    for r in range(3):
+        g.setcell(0, r, str(r + 1))
+    g.add_sheet("S2")
+    g.set_active("S2")
+    g.setcell(0, 0, "=Sheet1!A2*2")
+    g.set_active(0)
+    g.recalc()
+    return g
+
+
+def _s2a1(g: Grid) -> tuple[str, float]:
+    cl = next(s for s in g.sheets if s.name == "S2")._cells[(0, 0)]
+    return (cl.text, cl.val)
+
+
+class TestStructuralUndoRestoresEverySheet:
+    """T4: an insert/delete on one sheet rewrites references on every sheet."""
+
+    @pytest.mark.parametrize(
+        ("name", "sel"),
+        [("insrow", (0, 0, 0, 0)), ("delrow", (0, 0, 0, 0)), ("inscol", (0, 0, 0, 0))],
+    )
+    def test_undo_puts_other_sheets_formulas_back(self, name, sel):
+        g = _two_sheets()
+        u = UndoManager()
+        assert C.run(name, g, u, [], sel).ok
+        assert _s2a1(g)[0] != "=Sheet1!A2*2"
+        assert u.undo(g) is True
+        assert _s2a1(g) == ("=Sheet1!A2*2", 4.0)
+        g.setcell(0, 1, "5")
+        assert _s2a1(g) == ("=Sheet1!A2*2", 10.0)
+
+
+class TestSheetOpsAreUndoable:
+    """T10: a sheet op snapshots the workbook; cell entries follow the sheet."""
+
+    def test_undo_restores_a_deleted_sheet_with_its_cells(self):
+        g = _two_sheets()
+        u = UndoManager()
+        g.set_active("S2")
+        u.save_cell(g, 1, 0)
+        g.setcell(1, 0, "keep")
+        g.set_active(0)
+        u.save_grid(g)
+        g.remove_sheet("S2")
+        g.recalc()
+        assert u.undo(g) is True
+        assert g.sheet_names() == ["Sheet1", "S2"]
+        assert _s2a1(g) == ("=Sheet1!A2*2", 4.0)
+        assert u.undo(g) is True  # the earlier edit on S2 still applies
+        assert (1, 0) not in g.sheets[1]._cells
+        assert u.redo(g) and u.redo(g)
+        assert g.sheet_names() == ["Sheet1"]
+
+    def test_undo_of_add_move_and_rename(self):
+        g = _two_sheets()
+        u = UndoManager()
+        u.save_grid(g)
+        g.add_sheet("S3")
+        u.save_grid(g)
+        g.move_sheet("S3", 0)
+        u.save_grid(g)
+        g.rename_sheet("Sheet1", "Main")
+        g.recalc()
+        assert _s2a1(g)[0] == "=Main!A2*2"
+        u.undo(g)
+        assert g.sheet_names() == ["S3", "Sheet1", "S2"]
+        assert _s2a1(g) == ("=Sheet1!A2*2", 4.0)
+        u.undo(g)
+        assert g.sheet_names() == ["Sheet1", "S2", "S3"]
+        u.undo(g)
+        assert g.sheet_names() == ["Sheet1", "S2"]
+        assert g.active == 0
+
+    def test_cell_entry_follows_its_sheet_through_a_rename(self):
+        g = _two_sheets()
+        u = UndoManager()
+        g.set_active("S2")
+        u.save_cell(g, 2, 0)
+        g.setcell(2, 0, "edited")
+        g.set_active(0)
+        g.rename_sheet("S2", "Data")  # not recorded: the entry must still apply
+        assert u.undo(g) is True
+        assert g.sheets[1].name == "Data"
+        assert (2, 0) not in g.sheets[1]._cells
+
+    def test_rename_then_readd_old_name_does_not_misdirect_undo(self):
+        g = _two_sheets()
+        u = UndoManager()
+        g.set_active("S2")
+        u.save_cell(g, 2, 0)
+        g.setcell(2, 0, "edited")
+        g.set_active(0)
+        g.rename_sheet("S2", "Data")
+        g.add_sheet("S2")
+        g.set_active("S2")
+        g.setcell(2, 0, "other")
+        u.undo(g)
+        assert g.sheets[2]._cells[(2, 0)].text == "other"
+        assert (2, 0) not in g.sheets[1]._cells
+
+
+class TestNamesAndModeAreUndoable:
+    """T11: `:name`, `:unname`, `:mode` record an entry, so `u` undoes them."""
+
+    def _edited(self) -> tuple[Grid, UndoManager]:
+        g = _two_sheets()
+        u = UndoManager()
+        u.save_cell(g, 1, 0)
+        g.setcell(1, 0, "=SUM(A1:A3)")
+        return g, u
+
+    @pytest.mark.parametrize(
+        "args", [("name", "Tot", "A1:A2"), ("mode", "python"), ("gformat", "$")]
+    )
+    def test_undo_reverts_the_command_not_the_earlier_edit(self, args):
+        g, u = self._edited()
+        before = (_names(g), g.mode, g.fmt)
+        res = C.run(args[0], g, u, list(args[1:]))
+        assert res.ok and res.changed
+        assert u.undo(g) is True
+        assert (_names(g), g.mode, g.fmt) == before
+        assert g.cell(1, 0).text == "=SUM(A1:A3)"
+        assert u.redo(g) is True
+        assert (_names(g), g.mode, g.fmt) != before
+
+    def test_unname_and_redefine(self):
+        g, u = self._edited()
+        g.names.append(NamedRange("Tot", 0, 0, 0, 2))
+        assert C.run("name", g, u, ["Tot", "A1"]).ok
+        assert C.run("unname", g, u, ["Tot"]).ok
+        u.undo(g)
+        assert _names(g) == [("Tot", 0, 0, 0, 0)]
+        u.undo(g)
+        assert _names(g) == [("Tot", 0, 0, 0, 2)]
+        assert g.cell(1, 0).text == "=SUM(A1:A3)"
+
+
+def _names(g: Grid) -> list[tuple[str, int, int, int, int]]:
+    return [(n.name, n.c1, n.r1, n.c2, n.r2) for n in g.names]
+
+
+class TestManagerApi:
+    def test_undo_and_redo_report_whether_they_applied(self):
+        g = Grid()
+        u = UndoManager()
+        assert u.undo(g) is False and u.redo(g) is False
+        u.save_cell(g, 0, 0)
+        g.setcell(0, 0, "1")
+        assert u.undo(g) is True and u.redo(g) is True
+
+    def test_applying_an_entry_dirties_the_grid(self):
+        g = Grid()
+        u = UndoManager()
+        u.save_cell(g, 0, 0)
+        g.setcell(0, 0, "1")
+        g.dirty = 0
+        u.undo(g)
+        assert g.dirty == 1
+
+    def test_clear_drops_both_stacks(self):
+        g = Grid()
+        u = UndoManager()
+        u.save_cell(g, 0, 0)
+        u.save_cell(g, 0, 0)
+        u.undo(g)
+        u.clear()
+        assert u.undo_stack == [] and u.redo_stack == []
+
+    def _with_redo(self) -> tuple[Grid, UndoManager]:
+        g = Grid()
+        u = UndoManager()
+        u.save_cell(g, 0, 0)
+        g.setcell(0, 0, "1")
+        u.undo(g)
+        assert len(u.redo_stack) == 1
+        return g, u
+
+    def test_discard_last_restores_the_redo_stack_a_save_cleared(self):
+        g, u = self._with_redo()
+        u.save_grid(g)
+        assert u.redo_stack == []
+        u.discard_last()
+        assert u.undo_stack == [] and len(u.redo_stack) == 1
+        assert u.redo(g) is True
+        assert g.cell(0, 0).val == 1.0
+
+    def test_rollback_restores_without_a_redo_entry(self):
+        g, u = self._with_redo()
+        g.setcell(1, 0, "keep")
+        g.dirty = 0
+        u.save_grid(g)
+        g.clear_all()
+        assert u.rollback(g) is True
+        assert g.cell(1, 0).text == "keep"
+        assert u.undo_stack == [] and len(u.redo_stack) == 1
+        assert g.dirty == 0

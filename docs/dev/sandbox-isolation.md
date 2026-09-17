@@ -6,15 +6,17 @@ Status: **not implemented**. This note records the design and the reasons it has
 
 `docs/security-plan.md` lists four layers, none of which is a process boundary. Two consequences are documented there as caveats:
 
-- **Filesystem reach.** `_make_eval_globals` (`engine.py:379`) puts whole module objects in the namespace, so approved workbook code calls `np.savetxt('/anywhere', ...)`. AST validation cannot stop this: `savetxt` is an ordinary attribute on an approved module.
+- **Filesystem reach.** `_make_eval_globals` (`engine.py:414`) puts whole module objects in the namespace, so approved workbook code calls `np.savetxt('/anywhere', ...)`. AST validation cannot stop this: `savetxt` is an ordinary attribute on an approved module.
 
-- **No resource ceiling.** Workbook code runs in the application's own process (`engine.py:1573`). `while True: pass` hangs gridcalc and an unbounded allocation exhausts its memory. Neither is distinguishable from legitimate computation by inspecting a syntax tree.
+- **No resource ceiling.** Workbook code runs in the application's own process (`engine.py:1739`). `while True: pass` hangs gridcalc and an unbounded allocation exhausts its memory. Neither is distinguishable from legitimate computation by inspecting a syntax tree.
 
 These are separate goals. Isolation addresses both, but by different mechanisms and with different portability.
 
+A third gap needs no approval: PYTHON-mode formulas are `eval()`ed at load, and the formula validator can be bypassed for read-only disclosure. See "Known gaps" in `docs/security-plan.md`.
+
 ## Unit of isolation
 
-Relocate `_recalc_python` (`engine.py:1552`), not individual cells. The parent sends the populated cell values and the code block; the child runs `exec` and the whole 100-pass fixpoint loop; the parent receives one value per cell. That is one round trip per recalc.
+Relocate `_recalc_python` (`engine.py:1718`), not individual cells. The parent sends the populated cell values and the code block; the child runs `exec` and the whole 100-pass fixpoint loop; the parent receives one value per cell. That is one round trip per recalc.
 
 Per-cell IPC is not viable. The sheet is 256 x 1024 and the loop runs up to 100 passes, so per-cell calls would cost millions of round trips per recalc.
 
@@ -64,7 +66,7 @@ The channel needs a typed wire format that refuses anything it does not recognis
 
 PYTHON mode fits the model above. HYBRID does not.
 
-Its `py.*` gateway is resolved by `_eval_pycall` (`formula/evaluator.py:842`) against a registry built by `_build_py_registry` (`engine.py:1755`). That call happens *mid-expression*, inside the Excel evaluator, which runs in the parent. So HYBRID needs either a round trip per `py.*` call, or the Excel evaluator moved into the child as well.
+Its `py.*` gateway is resolved by `_eval_pycall` (`formula/evaluator.py:1022`) against a registry built by `_build_py_registry` (`engine.py:1929`). That call happens *mid-expression*, inside the Excel evaluator, which runs in the parent. So HYBRID needs either a round trip per `py.*` call, or the Excel evaluator moved into the child as well.
 
 Neither is attractive. Moving the evaluator across drags the dependency graph and the cell store with it.
 
@@ -82,9 +84,9 @@ The filesystem reach exists only because whole module objects are handed to work
 
 ### Decline to run untrusted code
 
-Already built. `LoadPolicy.formulas_only()` (`sandbox.py:395`) loads cells and formulas and never executes the code block; the web loader defaults to it.
+Already built. `LoadPolicy.formulas_only()` (`sandbox.py:395`) loads cells and formulas and never executes the code block; the web loader defaults to it. It still `eval()`s PYTHON-mode formulas, so it declines the code block, not all Python.
 
-Isolation is only worth its cost if gridcalc wants to *offer* "run a stranger's workbook code" as a feature. Declining is free and is the current answer for every frontend except the TUI trust prompt.
+Isolation is only worth its cost if gridcalc wants to *offer* "run a stranger's workbook code" as a feature. Declining is free and is the current answer in both frontends until the user approves at the trust prompt.
 
 ## Recommendation
 
@@ -96,4 +98,4 @@ Ordered by cost against risk removed:
 
 3. Build process isolation only if untrusted execution becomes a supported feature, and scope it to PYTHON mode first. Treat HYBRID's `py.*` gateway as a separate decision.
 
-Do not describe the current sandbox as a security boundary in the meantime. `docs/security-plan.md` says the trust gate is the boundary, which remains accurate.
+Do not describe the current sandbox as a security boundary in the meantime. `docs/security-plan.md` says the trust gate is the boundary. That holds for code blocks and modules; formulas pass no gate.

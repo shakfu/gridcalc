@@ -138,6 +138,23 @@ export function installMockBridge(): void {
     return { ok: true, dirty: true }
   }
 
+  // Cell history, so undo and redo revert something as the engine's do.
+  // `snap` runs before each cell mutation; styles are not tracked.
+  const undoStack: Map<string, string>[] = []
+  const redoStack: Map<string, string>[] = []
+  const snap = () => {
+    undoStack.push(new Map(cells))
+    redoStack.length = 0
+  }
+  const swap = (from: Map<string, string>[], to: Map<string, string>[]) => {
+    const prev = from.pop()
+    if (!prev) return { ok: true, dirty: dims.dirty } // empty history dirties nothing
+    to.push(new Map(cells))
+    cells.clear()
+    for (const [k, v] of prev) cells.set(k, v)
+    return touch()
+  }
+
   interface Style {
     bold: boolean
     italic: boolean
@@ -238,6 +255,7 @@ export function installMockBridge(): void {
         // palette test should be able to see the grid change, not just that a
         // call happened.
         const sel = selection ?? { r0: 0, c0: 0, r1: 0, c1: 0 }
+        if (['insrow', 'inscol', 'delrow', 'delcol', 'blank'].includes(name)) snap()
         const rows = sel.r1 - sel.r0 + 1
         const cols = sel.c1 - sel.c0 + 1
         if (name === 'insrow') shift('r', sel.r0, rows)
@@ -337,8 +355,8 @@ export function installMockBridge(): void {
         touch()
         return { ...sheets, ok: true }
       },
-      undo: async () => touch(),
-      redo: async () => touch(),
+      undo: async () => swap(undoStack, redoStack),
+      redo: async () => swap(redoStack, undoStack),
       save: async (path?: string): Promise<SaveResult> => {
         const target = path || dims.filename
         if (!target) return { ok: false, needs_path: true }
@@ -449,11 +467,13 @@ export function installMockBridge(): void {
       set_global_format: async () => touch(),
       cell_source: async (r: number, c: number): Promise<string> => cells.get(key(r, c)) ?? '',
       set_cell: async (r: number, c: number, text: string) => {
+        snap()
         if (text) cells.set(key(r, c), text)
         else cells.delete(key(r, c))
         return touch()
       },
       clear_range: async (r0: number, c0: number, r1: number, c1: number) => {
+        snap()
         for (let r = Math.min(r0, r1); r <= Math.max(r0, r1); r++) {
           for (let c = Math.min(c0, c1); c <= Math.max(c0, c1); c++) cells.delete(key(r, c))
         }
@@ -478,6 +498,9 @@ export function installMockBridge(): void {
       },
       paste: async (r: number, c: number) => {
         if (!clip) return { ok: false }
+        const fits = clip.cells.every((x) => r + x.dr < dims.nrow && c + x.dc < dims.ncol)
+        if (!fits) return { ok: false, error: 'the paste does not fit on the sheet' }
+        snap()
         for (const cell of clip.cells) cells.set(key(r + cell.dr, c + cell.dc), cell.text)
         if (clip.cut) {
           const dest = new Set(clip.cells.map((x) => key(r + x.dr, c + x.dc)))
@@ -490,6 +513,8 @@ export function installMockBridge(): void {
         return touch()
       },
       paste_text: async (r: number, c: number, text: string) => {
+        if (!text.replace(/[\r\n\t]/g, '')) return { ok: false }
+        snap()
         const rows = text.replace(/\r\n?/g, '\n').split('\n')
         if (rows.length && rows[rows.length - 1] === '') rows.pop()
         rows.forEach((line, dr) =>
@@ -500,21 +525,29 @@ export function installMockBridge(): void {
         )
         return touch()
       },
-      fill: async (r0: number, c0: number, r1: number, c1: number, direction: 'down' | 'right') => {
+      fill: async (
+        r0: number,
+        c0: number,
+        r1: number,
+        c1: number,
+        direction: 'down' | 'right',
+        span = 1,
+      ) => {
+        snap()
+        const put = (r: number, c: number, src: string | undefined) => {
+          if (src) cells.set(key(r, c), src)
+          else cells.delete(key(r, c))
+        }
         if (direction === 'down') {
           for (let c = c0; c <= c1; c++) {
-            const src = cells.get(key(r0, c))
-            for (let r = r0 + 1; r <= r1; r++) {
-              if (src) cells.set(key(r, c), src)
-              else cells.delete(key(r, c))
+            for (let r = r0 + span; r <= r1; r++) {
+              put(r, c, cells.get(key(r0 + ((r - r0) % span), c)))
             }
           }
         } else {
           for (let r = r0; r <= r1; r++) {
-            const src = cells.get(key(r, c0))
-            for (let c = c0 + 1; c <= c1; c++) {
-              if (src) cells.set(key(r, c), src)
-              else cells.delete(key(r, c))
+            for (let c = c0 + span; c <= c1; c++) {
+              put(r, c, cells.get(key(r, c0 + ((c - c0) % span))))
             }
           }
         }

@@ -32,6 +32,8 @@ ALL_FIXTURES = [
     "empty.xlsx",
     "named_ranges.xlsx",
     "table_and_chart.xlsx",
+    "shared_formulas.xlsx",
+    "chartsheet.xlsx",
 ]
 
 
@@ -67,9 +69,9 @@ class TestScalarTypes:
     def test_strings_and_bools(self) -> None:
         g = _load("types.xlsx")
         assert g.cells[1][0].type == LABEL and g.cells[1][0].text == "hello"
-        # Booleans import as text labels, not 1/0.
-        assert g.cells[1][2].type == LABEL and g.cells[1][2].text == "TRUE"
-        assert g.cells[1][3].type == LABEL and g.cells[1][3].text == "FALSE"
+        # Booleans import as boolean constants (=TRUE), not as text labels.
+        assert g.cells[1][2].text == "=TRUE" and g.cells[1][2].val is True
+        assert g.cells[1][3].text == "=FALSE" and g.cells[1][3].val is False
 
     def test_gap_cell_is_empty(self) -> None:
         # B2 was intentionally left blank between B1 and B3.
@@ -129,20 +131,22 @@ class TestSparse:
 
     def test_bounds(self) -> None:
         # A cell on the last valid column/row survives; one past the bound
-        # is silently dropped rather than crashing the import.
+        # is dropped, and the load reports how many were.
         g = _load("sparse.xlsx")
         assert g.cells[255][0].text == "col256"  # last column (0-based 255)
         assert (256, 0) not in g._active._cells  # column past the bound
         assert g.cells[0][1023].text == "row1024"  # last row (0-based 1023)
         assert (0, 1024) not in g._active._cells  # row past the bound
+        assert g.load_warnings == ["2 cells beyond 256 columns x 1024 rows were not imported"]
 
 
 class TestTextAndNumbers:
-    def test_numeric_text_becomes_number(self) -> None:
+    def test_numeric_text_stays_text(self) -> None:
+        # A string cell is text in Excel however it looks: "007" keeps its zeros.
         g = _load("text_and_numbers.xlsx")
-        assert g.cells[0][0].type == NUM and g.cells[0][0].val == 7.0  # "007"
-        assert g.cells[0][1].val == 3.5  # "3.5"
-        assert g.cells[0][4].val == -42.0  # "-42"
+        assert g.cells[0][0].type == LABEL and g.cells[0][0].text == "007"
+        assert g.cells[0][1].type == LABEL and g.cells[0][1].text == "3.5"
+        assert g.cells[0][4].type == LABEL and g.cells[0][4].text == "-42"
 
     def test_non_numeric_text_stays_label(self) -> None:
         g = _load("text_and_numbers.xlsx")
@@ -184,11 +188,10 @@ class TestUnicode:
 class TestEmpty:
     def test_empty_workbook_loads_with_no_cells(self) -> None:
         g = _load("empty.xlsx")
-        # An entirely empty workbook imports cleanly with zero cells. Its one
-        # sheet keeps the default name -- the reader only reports sheets that
-        # have data, so an all-empty sheet's name does not round-trip.
+        # An entirely empty workbook imports cleanly with zero cells, and its
+        # empty sheet keeps its name.
         assert sum(len(s._cells) for s in g.sheets) == 0
-        assert len(g.sheets) == 1
+        assert g.sheet_names() == ["empty"]
 
 
 class TestDefinedRefParser:
@@ -285,3 +288,23 @@ class TestTableAndChart:
         cell = g.cells[0][1]
         assert cell.text == "=SUM(SalesTable[Amount])"
         assert isinstance(cell.val, float) and math.isnan(cell.val)
+
+
+class TestSharedAndArrayFormulas:
+    def test_unreadable_formulas_fall_back_to_cached_values(self) -> None:
+        # OpenXLSX cannot return shared or array formula text; the load keeps
+        # each one's cached value and says so, rather than failing outright.
+        g = _load("shared_formulas.xlsx")
+        assert [g.cells[1][r].val for r in range(3)] == [2.0, 4.0, 6.0]  # B1:B3 shared
+        assert g.cells[2][0].val == 12.0  # C1 array
+        assert g.cells[3][0].type == FORMULA and g.cells[3][0].text == "=SUM(A1:A3)"
+        assert g.load_warnings == [
+            "4 shared or array formulas were imported as their cached values"
+        ]
+
+
+class TestChartsheet:
+    def test_a_chartsheet_does_not_fail_the_load(self) -> None:
+        g = _load("chartsheet.xlsx")
+        assert g.sheet_names() == ["Data"]
+        assert g.cells[0][2].val == 7.0

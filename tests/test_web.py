@@ -1715,3 +1715,295 @@ def test_the_frontend_has_no_html_injection_sink() -> None:
         "content is untrusted; rendering it as markup would expose the js_api "
         "bridge (see the Trust model docstring in gridcalc/web)."
     )
+
+
+# --- concurrency (pywebview runs each bridge call on its own thread) --------
+
+
+def test_concurrent_bridge_calls_do_not_raise(tmp_path) -> None:
+    """Edits, undo, paste, save and viewport reads from several threads at once.
+
+    Unserialised, this raised `dictionary changed size during iteration` in
+    the viewport and `pop from empty list` in undo within a second or two.
+    """
+    import threading
+
+    g = _grid()
+    for r in range(100):
+        g.setcell(0, r, str(r))
+        g.setcell(1, r, f"=A{r + 1}*2")
+    g.recalc()
+    api = Api(g)
+    path = str(tmp_path / "book.json")
+    errors: list[str] = []
+    stop = threading.Event()
+    k = [0]
+
+    def writer() -> None:
+        k[0] += 1
+        api.set_cell(300, 0, f"=SEQUENCE({1 + k[0] % 40})")  # spill grows and shrinks
+        api.set_cell(0, 0, str(k[0]))
+
+    def paster() -> None:
+        api.copy(0, 0, 20, 1)
+        api.paste(0, 5)
+        api.paste_text(0, 8, "1\t2\n3\t4")
+
+    ops = [
+        writer,
+        paster,
+        lambda: (api.undo(), api.redo()),
+        lambda: api.save(path),
+        lambda: api.viewport(0, 0, 400, 12),
+        lambda: api.stats(0, 0, 400, 12),
+    ]
+
+    def loop(fn) -> None:
+        while not stop.is_set():
+            try:
+                fn()
+            except Exception as exc:  # noqa: BLE001 -- the assertion is "nothing raised"
+                errors.append(f"{type(exc).__name__}: {exc}")
+                return
+
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)  # force frequent thread switches
+    try:
+        threads = [threading.Thread(target=loop, args=(fn,)) for fn in ops]
+        for t in threads:
+            t.start()
+        stop.wait(1.5)
+        stop.set()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(old)
+    assert errors == []
+
+
+def test_an_edit_during_save_is_either_saved_or_left_dirty(tmp_path) -> None:
+    """Save serialises, an edit lands, then save marks the workbook clean.
+
+    Without serialisation the file lacked the edit while `dirty` read False,
+    which also disarmed the close guard.
+    """
+    import json
+    import threading
+
+    g = _grid()
+    api = Api(g)
+    path = tmp_path / "book.json"
+    api.set_cell(0, 0, "old")
+    api.save(str(path))
+    api.set_cell(1, 0, "earlier")  # dirty, as in normal use
+
+    serialised = threading.Event()
+    release = threading.Event()
+    edited = threading.Event()
+    real_save = g.jsonsave
+
+    def paused_save(fname: str) -> int:
+        rc = real_save(fname)
+        serialised.set()
+        release.wait(5)  # the window between writing and marking clean
+        return rc
+
+    g.jsonsave = paused_save  # type: ignore[method-assign]
+    saver = threading.Thread(target=api.save)
+    saver.start()
+    assert serialised.wait(5)
+
+    def edit() -> None:
+        api.set_cell(0, 0, "new")
+        edited.set()
+
+    editor = threading.Thread(target=edit)
+    editor.start()
+    edited.wait(0.3)  # without a lock the edit completes here, mid-save
+    release.set()
+    saver.join()
+    editor.join()
+
+    in_file = "new" in json.dumps(json.loads(path.read_text())["sheets"])
+    assert in_file or api.dims()["dirty"] is True
+
+
+def test_bridge_methods_keep_their_parameter_names() -> None:
+    """pywebview names each JS stub's parameters from `getfullargspec`, which
+    does not follow `__wrapped__`; the lock wrapper must not hide them."""
+    import inspect
+
+    api = Api(_grid())
+    assert inspect.getfullargspec(api.set_cell).args == ["self", "r", "c", "text"]
+
+
+# --- edge cases in the bridge -----------------------------------------------
+
+
+def test_fill_tiles_a_multi_row_source_block() -> None:
+    """A fill-handle drag of A1:A2 to A5 repeats the whole block."""
+    api = Api(_grid())
+    api.set_cell(0, 0, "1")
+    api.set_cell(1, 0, "2")
+    api.set_cell(0, 1, "=A1*10")
+    api.set_cell(1, 1, "=A2*10")
+    api.fill(0, 0, 4, 1, "down", 2)
+    assert [api.cell_source(r, 0) for r in range(5)] == ["1", "2", "1", "2", "1"]
+    assert [api.cell_source(r, 1) for r in range(2, 5)] == ["=A3*10", "=A4*10", "=A5*10"]
+
+
+def test_fill_tiles_a_multi_column_source_block() -> None:
+    api = Api(_grid())
+    api.set_cell(0, 0, "a")
+    api.set_cell(0, 1, "b")
+    api.fill(0, 0, 0, 4, "right", 2)
+    assert [api.cell_source(0, c) for c in range(5)] == ["a", "b", "a", "b", "a"]
+
+
+def test_paste_that_does_not_fit_is_refused_and_a_cut_loses_nothing() -> None:
+    api = Api(_grid())
+    api.set_cell(0, 0, "keep-a")
+    api.set_cell(0, 1, "keep-b")
+    api.copy(0, 0, 0, 1, cut=True)
+    undo_depth = len(api._undo.undo_stack)
+    res = api.paste(0, NCOL - 1)
+    assert res["ok"] is False and res["error"]
+    assert api.cell_source(0, 0) == "keep-a"
+    assert api.cell_source(0, 1) == "keep-b"
+    assert api.cell_source(0, NCOL - 1) == ""
+    assert len(api._undo.undo_stack) == undo_depth
+
+
+@pytest.mark.parametrize("text", ["\n", "\r\n", "\t", "\t\n\t\n"])
+def test_paste_text_with_no_values_is_refused(text: str) -> None:
+    api = Api(_grid())
+    api.set_cell(0, 0, "keep")
+    api._mark_clean()
+    assert api.paste_text(0, 0, text) == {"ok": False}
+    assert api.cell_source(0, 0) == "keep"
+    assert api.dims()["dirty"] is False
+
+
+def test_stats_survive_a_sum_that_overflows() -> None:
+    g = _grid()
+    g.setcell(0, 0, "1e308")
+    g.setcell(0, 1, "1e308")
+    g.recalc()
+    s = Api(g).stats(0, 0, 1, 0)
+    assert s["numeric"] == 2
+    assert s["sum"] is None and s["avg"] is None
+    assert s["max"] == 1e308
+
+
+def test_undo_of_an_entry_whose_sheet_is_gone_does_not_dirty(tmp_path) -> None:
+    api = Api(_grid())
+    api.add_sheet("Gone")
+    api.set_cell(0, 0, "x")
+    api.set_active(0)
+    api._g.remove_sheet("Gone")  # outside history: `delete_sheet` is undoable
+    api.save(str(tmp_path / "book.json"))
+    assert api.undo() == {"ok": True, "dirty": False}
+    assert api.dims()["dirty"] is False
+
+
+def test_solve_selection_storing_a_new_default_model_dirties(tmp_path) -> None:
+    """The inferred model is a workbook change; a clean workbook must say so.
+    Re-solving the same selection stores nothing new and stays clean."""
+    g = _wyndor()
+    api = Api(g)
+    assert api.solve_selection(0, 0, 3, 2, "max", apply=False)["ok"] is True
+    assert "default" in g.models
+    assert api.dims()["dirty"] is True
+    api.save(str(tmp_path / "book.json"))
+    assert api.solve_selection(0, 0, 3, 2, "max", apply=False)["dirty"] is False
+    assert api.dims()["dirty"] is False
+
+
+def test_sheet_ops_are_undoable_and_redoable() -> None:
+    g = _grid()
+    api = Api(g)
+    api.add_sheet("Data")
+    api.set_cell(0, 0, "7")
+    api.set_active(0)
+    api.set_cell(0, 0, "=Data!A1*2")
+    api.rename_sheet("Data", "Inputs")
+    api.move_sheet("Inputs", 0)
+    api.delete_sheet("Inputs")
+    assert api.sheets()["names"] == ["Sheet1"]
+    api._mark_clean()
+
+    assert api.undo() == {"ok": True, "dirty": True}
+    assert api.sheets()["names"] == ["Inputs", "Sheet1"]
+    api.undo()
+    api.undo()
+    assert api.sheets()["names"] == ["Sheet1", "Data"]
+    assert g.sheets[0]._cells[(0, 0)].text == "=Data!A1*2"
+    assert g.sheets[0]._cells[(0, 0)].val == 14.0
+    api.redo()
+    api.redo()
+    api.redo()
+    assert api.sheets()["names"] == ["Sheet1"]
+
+
+def test_failed_sheet_op_records_no_undo_entry() -> None:
+    api = Api(_grid())
+    api.add_sheet("Data")
+    depth = len(api._undo.undo_stack)
+    api.add_sheet("Data")
+    api.delete_sheet("Nope")
+    api.rename_sheet("Nope", "X")
+    api.move_sheet("Data", 9)
+    assert len(api._undo.undo_stack) == depth
+
+
+def test_name_and_mode_commands_are_undoable() -> None:
+    g = _grid()
+    api = Api(g)
+    api.set_cell(0, 0, "1")
+    assert api.run_command("name", ["Tot", "A1"])["ok"] is True
+    assert api.run_command("mode", ["hybrid"])["ok"] is True
+    api.undo()
+    assert g.mode == Mode.EXCEL and [n.name for n in g.names] == ["Tot"]
+    api.undo()
+    assert g.names == [] and api.cell_source(0, 0) == "1"
+
+
+def test_save_to_xlsx_goes_through_the_loader_and_reports_why_it_failed(tmp_path) -> None:
+    g = _grid()
+    g.sheets[0].name = "a/b"  # a name xlsx forbids
+    api = Api(g)
+    api.set_cell(0, 0, "1")
+    res = api.save(str(tmp_path / "out.xlsx"))
+    assert res["ok"] is False and "sheet name" in res["error"]
+    assert not (tmp_path / "out.xlsx").exists()
+
+
+def test_open_file_reports_a_pathological_file_instead_of_raising(tmp_path) -> None:
+    deep = tmp_path / "deep.json"
+    deep.write_text("[" * 100_000 + "]" * 100_000)
+    api = Api(_grid())
+    api.set_cell(0, 0, "keep")
+    res = api.open_file(str(deep))
+    assert res["ok"] is False and res["error"]
+    assert api.cell_source(0, 0) == "keep"
+
+
+def test_open_file_passes_load_warnings_to_the_client(tmp_path) -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    wb = openpyxl.Workbook()
+    wb.active.cell(row=1, column=300, value=1)
+    src = tmp_path / "wide.xlsx"
+    wb.save(str(src))
+    res = Api(_grid()).open_file(str(src))
+    assert res["ok"] is True
+    assert res["warnings"] == ["1 cells beyond 256 columns x 1024 rows were not imported"]
+
+
+def test_formulas_only_open_then_save_keeps_the_code_block(tmp_path) -> None:
+    import json
+
+    api = Api(_grid())
+    assert api.open_file(str(HYBRID), {"load_code": False})["ok"] is True
+    out = tmp_path / "saved.json"
+    assert api.save(str(out))["ok"] is True
+    assert json.loads(out.read_text())["code"] == json.loads(HYBRID.read_text())["code"]

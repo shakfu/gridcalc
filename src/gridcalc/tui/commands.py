@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import curses
 import os
+import shlex
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -27,6 +28,7 @@ from ..engine import (
     col_name,
     ref,
 )
+from ..loader import save_losses, save_workbook
 from ..sandbox import (
     SANDBOX_ENABLED,
     FileInfo,
@@ -57,6 +59,16 @@ def _arrow_move(g: Grid, ch: int) -> None:
 def movecmd(stdscr: curses.window, g: Grid, undo: UndoManager) -> None:
     origc, origr = g.cc, g.cr
     src = f"{col_name(origc)}{origr + 1}"
+    # Snapshot at the first swap, so a move cancelled before it starts leaves
+    # the undo and redo stacks alone.
+    saved = False
+
+    def snapshot() -> None:
+        nonlocal saved
+        if not saved:
+            undo.save_grid(g)
+            saved = True
+
     while True:
         draw(stdscr, g, "MOVE", "")
         if g.cc == origc and g.cr == origr:
@@ -87,28 +99,36 @@ def movecmd(stdscr: curses.window, g: Grid, undo: UndoManager) -> None:
                     g.swaprow(g.cr, g.cr - 1)
                     g.cr -= 1
             g.recalc()
+            if saved:
+                undo.discard_last()
             break
         elif k in (10, 13, curses.KEY_ENTER):
             if g.cc != origc or g.cr != origr:
                 g.dirty = 1
+            elif saved:
+                undo.discard_last()
             g.recalc()
             break
         elif k == curses.KEY_UP and g.cc == origc:
             lo = g.tr if g.tr > 0 else 0
             if g.cr > lo:
+                snapshot()
                 g.swaprow(g.cr, g.cr - 1)
                 g.cr -= 1
         elif k == curses.KEY_DOWN and g.cc == origc:
             if g.cr < NROW - 1:
+                snapshot()
                 g.swaprow(g.cr, g.cr + 1)
                 g.cr += 1
         elif k == curses.KEY_LEFT and g.cr == origr:
             lo = g.tc if g.tc > 0 else 0
             if g.cc > lo:
+                snapshot()
                 g.swapcol(g.cc, g.cc - 1)
                 g.cc -= 1
         elif k == curses.KEY_RIGHT and g.cr == origr:
             if g.cc < NCOL - 1:
+                snapshot()
                 g.swapcol(g.cc, g.cc + 1)
                 g.cc += 1
 
@@ -148,8 +168,9 @@ def selectrange(
                 n, c1, r1 = r
                 c2, r2 = c1, r1
                 rest = buf[n:]
-                if rest.startswith("..."):
-                    r3 = ref(rest[3:])
+                sep = 3 if rest.startswith("...") else 1 if rest.startswith(":") else 0
+                if sep:
+                    r3 = ref(rest[sep:])
                     if not r3:
                         return None
                     _, c2, r2 = r3
@@ -205,6 +226,7 @@ def replcmd(stdscr: curses.window, g: Grid, undo: UndoManager) -> None:
                 _, tc1, tr1 = r
             else:
                 tc1, tr1 = g.cc, g.cr
+            undo.save_grid(g)
             for ri in range(sh):
                 for ci in range(sw):
                     g.replicatecell(sc1 + ci, sr1 + ri, tc1 + ci, tr1 + ri)
@@ -223,14 +245,28 @@ def replcmd(stdscr: curses.window, g: Grid, undo: UndoManager) -> None:
             buf += chr(ch).upper()
 
 
+def _confirm(stdscr: curses.window, question: str) -> bool:
+    """Ask a y/N question on the status line; only y or Y confirms."""
+    stdscr.addnstr(curses.LINES - 1, 0, f"{question} (y/N)", curses.COLS - 1)
+    stdscr.clrtoeol()
+    stdscr.refresh()
+    return stdscr.getch() in (ord("y"), ord("Y"))
+
+
 def cmd_quit(stdscr: curses.window, g: Grid) -> bool:
-    if g.dirty:
-        stdscr.addnstr(curses.LINES - 1, 0, "Unsaved changes. Quit anyway? (y/N)", curses.COLS - 1)
-        stdscr.clrtoeol()
-        stdscr.refresh()
-        ch = stdscr.getch()
-        return ch in (ord("y"), ord("Y"))
-    return True
+    return not g.dirty or _confirm(stdscr, "Unsaved changes. Quit anyway?")
+
+
+def _discard_ok(stdscr: curses.window, g: Grid) -> bool:
+    """Whether replacing the workbook may drop unsaved changes."""
+    return not g.dirty or _confirm(stdscr, "Unsaved changes. Discard them?")
+
+
+def _same_file(a: str, b: str) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
 
 
 def _do_save(stdscr: curses.window, g: Grid, args: str) -> bool:
@@ -240,12 +276,23 @@ def _do_save(stdscr: curses.window, g: Grid, args: str) -> bool:
         fn = prompt_filename(stdscr, "Save as: ")
         if not fn:
             return False
-    if g.jsonsave(fn) == 0:
-        g.filename = fn
-        g.dirty = 0
-        return True
-    show_error(stdscr, f"Failed to save: {fn}. Press any key.")
-    return False
+    if (
+        os.path.exists(fn)
+        and not (g.filename and _same_file(fn, g.filename))
+        and not _confirm(stdscr, f"{fn} exists. Overwrite?")
+    ):
+        return False
+    lost = save_losses(g, fn)
+    if lost and not _confirm(stdscr, f"{os.path.basename(fn)} drops {', '.join(lost)}. Save?"):
+        return False
+    try:
+        save_workbook(g, fn)
+    except OSError:
+        show_error(stdscr, f"Failed to save: {fn}. Press any key.")
+        return False
+    g.filename = fn
+    g.dirty = 0
+    return True
 
 
 def cmd_save(stdscr: curses.window, g: Grid, args: str) -> bool:
@@ -259,6 +306,12 @@ def cmd_savequit(stdscr: curses.window, g: Grid, args: str) -> bool:
 
 def cmd_edit(stdscr: curses.window, g: Grid) -> bool:
     editor = os.environ.get("EDITOR") or _state._cfg.editor or "vi"
+    try:
+        # $EDITOR may carry arguments, e.g. "code --wait".
+        argv = shlex.split(editor) or ["vi"]
+    except ValueError as exc:
+        show_error(stdscr, f"Bad editor command {editor!r}: {exc}")
+        return False
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
         if g.code:
             f.write(g.code)
@@ -266,14 +319,26 @@ def cmd_edit(stdscr: curses.window, g: Grid) -> bool:
     try:
         curses.def_prog_mode()
         curses.endwin()
-        subprocess.run([editor, tmppath], check=False)
-        curses.reset_prog_mode()
-        stdscr.refresh()
+        err = ""
+        try:
+            rc = subprocess.run([*argv, tmppath], check=False).returncode
+        except OSError as exc:
+            rc, err = -1, f"Cannot run editor {argv[0]!r}: {exc.strerror or exc}"
+        finally:
+            curses.reset_prog_mode()
+            stdscr.refresh()
+        if err:
+            show_error(stdscr, err)
+            return False
+        if rc != 0:
+            show_error(stdscr, f"Editor exited with status {rc}; code block unchanged.")
+            return False
         with open(tmppath) as f:
-            content = f.read()
-        g.code = content[:MAXCODE]
-        g.dirty = 1
-        g.recalc()
+            content = f.read()[:MAXCODE]
+        if content != g.code:
+            g.code = content
+            g.dirty = 1
+            g.recalc()
     finally:
         with contextlib.suppress(OSError):
             os.unlink(tmppath)
@@ -365,7 +430,7 @@ def trust_prompt(stdscr: curses.window, filename: str, info: FileInfo) -> LoadPo
             return None
 
 
-def cmd_open(stdscr: curses.window, g: Grid, args: str) -> bool:
+def cmd_open(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bool:
     fn = args.strip() if args.strip() else None
     if not fn:
         fn = prompt_filename(stdscr, "Open: ", g.filename)
@@ -375,6 +440,8 @@ def cmd_open(stdscr: curses.window, g: Grid, args: str) -> bool:
     info = inspect_file(fn)
     if info is None:
         show_error(stdscr, f"Failed to read: {fn}. Press any key.")
+        return False
+    if not _discard_ok(stdscr, g):
         return False
 
     policy = None
@@ -402,17 +469,14 @@ def cmd_open(stdscr: curses.window, g: Grid, args: str) -> bool:
     if rc == 0:
         g.filename = fn
         g.dirty = 0
+        undo.clear()
     else:
         show_error(stdscr, f"Failed to load: {fn}. Press any key.")
     return False
 
 
 def cmd_clear(stdscr: curses.window, g: Grid, undo: UndoManager) -> bool:
-    stdscr.addnstr(curses.LINES - 1, 0, "Clear entire sheet? (y/N)", curses.COLS - 1)
-    stdscr.clrtoeol()
-    stdscr.refresh()
-    ch = stdscr.getch()
-    if ch in (ord("y"), ord("Y")):
+    if _confirm(stdscr, "Clear entire sheet?"):
         undo.save_grid(g)
         g.clear_all()
         g.dirty = 1
@@ -516,7 +580,9 @@ def cmd_width(stdscr: curses.window, g: Grid, args: str) -> bool:
         show_error(stdscr, "Invalid width. Use 4-40.")
         return False
     if 4 <= w <= 40:
-        g.cw = w
+        if w != g.cw:
+            g.cw = w
+            g.dirty = 1
     else:
         show_error(stdscr, "Invalid width. Use 4-40.")
     return False
@@ -682,7 +748,7 @@ def cmd_view(stdscr: curses.window, g: Grid) -> bool:
     return False
 
 
-def cmd_sheet(stdscr: curses.window, g: Grid, args: str) -> bool:
+def cmd_sheet(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bool:
     """Multi-sheet management.
 
     Subcommands:
@@ -708,9 +774,11 @@ def cmd_sheet(stdscr: curses.window, g: Grid, args: str) -> bool:
         if len(parts) < 2:
             show_error(stdscr, "usage: :sheet add NAME")
             return False
+        undo.save_grid(g)
         try:
             g.add_sheet(parts[1])
         except ValueError as exc:
+            undo.discard_last()
             show_error(stdscr, f"sheet add: {exc}")
             return False
         g.dirty = 1
@@ -720,9 +788,11 @@ def cmd_sheet(stdscr: curses.window, g: Grid, args: str) -> bool:
         if len(parts) < 2:
             show_error(stdscr, "usage: :sheet del NAME")
             return False
+        undo.save_grid(g)
         try:
             g.remove_sheet(parts[1])
         except (ValueError, KeyError) as exc:
+            undo.discard_last()
             show_error(stdscr, f"sheet del: {exc}")
             return False
         g.recalc()
@@ -739,9 +809,11 @@ def cmd_sheet(stdscr: curses.window, g: Grid, args: str) -> bool:
         except ValueError:
             show_error(stdscr, f"sheet move: bad index {idx_str!r}")
             return False
+        undo.save_grid(g)
         try:
             g.move_sheet(name, idx)
         except (IndexError, KeyError) as exc:
+            undo.discard_last()
             show_error(stdscr, f"sheet move: {exc}")
             return False
         g.dirty = 1
@@ -752,17 +824,14 @@ def cmd_sheet(stdscr: curses.window, g: Grid, args: str) -> bool:
             show_error(stdscr, "usage: :sheet rename OLD NEW")
             return False
         old, new = parts[1], parts[2]
+        undo.save_grid(g)
         try:
             g.rename_sheet(old, new)
         except (ValueError, KeyError) as exc:
+            undo.discard_last()
             show_error(stdscr, f"sheet rename: {exc}")
             return False
-        # Sheet identity changed -- dep graph keys carry sheet names,
-        # so any subscriber edges referencing `old` are now stale. The
-        # cheapest correct fix is a full rebuild.
-        g._dep_graph_built = False
-        g._rebuild_dep_graph()
-        g.recalc()
+        g.recalc()  # rename marks the dep graph stale, so this rebuilds it
         g.dirty = 1
         return False
 
@@ -809,13 +878,16 @@ def _io_command(
     save_ext: str,
     clear_on_load: bool,
     dirty_on_load: bool,
+    opens: bool = False,
 ) -> bool:
     """Shared save/load dispatch for the :csv, :xlsx and :pd commands.
 
     ``save_fn``/``load_fn`` are the grid's serializers (e.g. ``g.csvsave``).
     The three commands differ only in: the default save extension, whether a
-    load clears the grid first, and whether a load marks the grid dirty --
-    captured by ``save_ext`` / ``clear_on_load`` / ``dirty_on_load``.
+    load clears the grid first, whether a load marks the grid dirty, and
+    whether it replaces the whole workbook like `:o` (``opens``: no undo
+    entry, history cleared) -- captured by ``save_ext`` / ``clear_on_load`` /
+    ``dirty_on_load`` / ``opens``.
     """
     parts = args.strip().split(None, 1)
     if not parts:
@@ -843,14 +915,24 @@ def _io_command(
             fn = prompt_filename(stdscr, f"{label} load: ")
             if not fn:
                 return False
-        undo.save_grid(g)
+        if not os.path.isfile(fn):
+            show_error(stdscr, f"Failed to load: {fn}. Press any key.")
+            return False
+        if not _discard_ok(stdscr, g):
+            return False
+        if not opens:
+            undo.save_grid(g)
         if clear_on_load:
             g.clear_all()
         if load_fn(fn) == 0:
             g.recalc()
             if dirty_on_load:
                 g.dirty = 1
+            if opens:
+                undo.clear()
         else:
+            if clear_on_load:
+                undo.rollback(g)  # put back the sheet the clear removed
             show_error(stdscr, f"Failed to load: {fn}. Press any key.")
         return False
 
@@ -888,6 +970,7 @@ def cmd_xlsx(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bo
         save_ext=".xlsx",
         clear_on_load=False,
         dirty_on_load=False,
+        opens=True,
     )
 
 
@@ -1049,7 +1132,7 @@ def cmdexec(
     if cmd in ("e", "edit"):
         return cmd_edit(stdscr, g)
     if cmd in ("o", "open"):
-        return cmd_open(stdscr, g, args)
+        return cmd_open(stdscr, g, undo, args)
     if cmd == "clear":
         return cmd_clear(stdscr, g, undo)
     if cmd == "width":
@@ -1067,15 +1150,13 @@ def cmdexec(
     if cmd == "goal":
         return cmd_goal(stdscr, g, undo, args)
     if cmd in ("m", "move"):
-        undo.save_grid(g)
         movecmd(stdscr, g, undo)
         return False
     if cmd in ("r", "replicate"):
-        undo.save_grid(g)
         replcmd(stdscr, g, undo)
         return False
     if cmd in ("sheet", "s"):
-        return cmd_sheet(stdscr, g, args)
+        return cmd_sheet(stdscr, g, undo, args)
     if cmd == "sheets":
         return cmd_sheets(stdscr, g)
 

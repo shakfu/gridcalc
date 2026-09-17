@@ -153,3 +153,150 @@ def test_iterations_counted():
     g = _grid_with("=2*A1+3")
     result = seek(g, formula_cell=(1, 0), target=11.0, var_cell=(0, 0))
     assert 1 <= result.iterations < 100
+
+
+def test_empty_variable_cell_is_created():
+    g = Grid()
+    g.setcell(1, 0, "=A1*2")
+    result = seek(g, formula_cell=(1, 0), target=10.0, var_cell=(0, 0))
+    assert result.converged and result.applied
+    assert g.cells[0][0].val == pytest.approx(5.0)
+    assert g.cells[1][0].val == pytest.approx(10.0)
+
+
+def test_empty_variable_cell_stays_absent_without_apply():
+    g = Grid()
+    g.setcell(1, 0, "=A1*2")
+    seek(g, formula_cell=(1, 0), target=10.0, var_cell=(0, 0), apply=False)
+    assert g.cell(0, 0) is None
+    assert Grid().cells[0][0].type == 0  # the shared placeholder is untouched
+
+
+def test_small_scale_formula_converges_to_the_true_root():
+    """An absolute residual tolerance of 1e-9 stopped at A1=124 here."""
+    g = _grid_with("=A1*1E-9")
+    result = seek(g, formula_cell=(1, 0), target=1.234567e-7, var_cell=(0, 0))
+    assert result.converged
+    assert result.var_value == pytest.approx(123.4567, rel=1e-8)
+
+
+def test_large_scale_formula_reports_converged():
+    g = _grid_with("=A1*1E9+0.1")
+    result = seek(g, formula_cell=(1, 0), target=1e12, var_cell=(0, 0))
+    assert result.converged
+    assert result.var_value == pytest.approx((1e12 - 0.1) / 1e9, rel=1e-9)
+
+
+def test_discontinuity_is_not_reported_converged():
+    g = Grid()
+    g.setcell(0, 0, "0")
+    g.setcell(1, 0, "=1 if A1>=5 else -1")
+    result = seek(g, formula_cell=(1, 0), target=0.0, var_cell=(0, 0))
+    assert not result.converged
+    assert g.cells[0][0].val == 0.0
+
+
+def test_start_at_a_repeated_root_returns_converged():
+    g = _grid_with("=(A1-2)*(A1-2)", var_start=2.0)
+    result = seek(g, formula_cell=(1, 0), target=0.0, var_cell=(0, 0))
+    assert result.converged
+    assert result.var_value == 2.0
+    assert result.iterations == 0
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"target": float("nan")},
+        {"target": 10.0, "lo": float("-inf"), "hi": float("inf")},
+        {"target": 10.0, "lo": 0.0, "hi": float("inf")},
+    ],
+)
+def test_non_finite_target_or_bracket_is_refused(kwargs):
+    g = _grid_with("=2*A1", var_start=1.0)
+    with pytest.raises(GoalSeekError):
+        seek(g, formula_cell=(1, 0), var_cell=(0, 0), **kwargs)
+    assert g.cells[0][0].val == 1.0
+
+
+def test_applied_value_carries_source_text():
+    """Copy, edit and replicate read `text`; a stale one showed '1' for 2.5."""
+    g = _grid_with("=A1*2", var_start=1.0)
+    seek(g, formula_cell=(1, 0), target=5.0, var_cell=(0, 0))
+    assert g.cells[0][0].text == "2.5"
+    assert g.cells[0][0].val == 2.5
+
+
+def test_unapplied_seek_keeps_source_text():
+    g = Grid()
+    g.setcell(0, 0, "1")
+    g.setcell(1, 0, "=A1*2")
+    seek(g, formula_cell=(1, 0), target=5.0, var_cell=(0, 0), apply=False)
+    assert g.cells[0][0].text == "1"
+    assert g.cells[0][0].val == 1.0
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        "B1 = nan by A1",
+        "B1 = inf by A1",
+        "B1 = 10 by A1 in -inf:inf",
+        "B1 = 10 by A1 in 0:inf",
+        "B1 = 10 by A1 in nan:1",
+    ],
+)
+def test_parse_goal_rejects_non_finite_numbers(args):
+    from gridcalc.optspec import parse_goal
+
+    with pytest.raises(ValueError):
+        parse_goal(args)
+
+
+def test_parse_goal_accepts_a_finite_bracket():
+    from gridcalc.optspec import parse_goal
+
+    spec = parse_goal("B1 = 10 by A1 in -5:1e3")
+    assert (spec.lo, spec.hi, spec.target) == (-5.0, 1000.0, 10.0)
+
+
+def _excel_grid() -> Grid:
+    from gridcalc.engine import Mode
+
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    return g
+
+
+def test_goal_seek_follows_a_chain_through_another_sheet():
+    g = _excel_grid()
+    g.add_sheet("Other")
+    g.setcell(0, 0, "1")  # Sheet1!A1, the variable
+    g.set_active("Other")
+    g.setcell(0, 0, "=Sheet1!A1*Sheet1!A1")
+    g.set_active("Sheet1")
+    g.setcell(1, 0, "=Other!A1+1")
+    g.recalc()
+    result = seek(g, formula_cell=(1, 0), target=10.0, var_cell=(0, 0))
+    assert result.converged
+    assert result.var_value == pytest.approx(3.0)
+    assert g.sheets[1]._cells[(0, 0)].val == pytest.approx(9.0)
+
+
+def test_goal_seek_recalcs_only_the_variables_dependants(monkeypatch):
+    g = _excel_grid()
+    g.setcells_bulk([(0, 0, "1"), (1, 0, "=A1^3+A1"), (2, 0, "=SIN(1)")])
+    g.recalc()
+    full = []
+    real = g.recalc
+
+    def spy(dirty=None):
+        if dirty is None:
+            full.append(1)
+        real(dirty)
+
+    monkeypatch.setattr(g, "recalc", spy)
+    result = seek(g, formula_cell=(1, 0), target=50.0, var_cell=(0, 0))
+    assert result.converged and result.iterations > 10
+    assert full == []  # no whole-workbook pass per iteration

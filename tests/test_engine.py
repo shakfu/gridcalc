@@ -24,6 +24,7 @@ from gridcalc.engine import (
     col_name,
     ref,
 )
+from gridcalc.formula.errors import ExcelError
 from gridcalc.tui import fmtcell
 
 
@@ -948,7 +949,8 @@ class TestStringLiteralsAreNotRewritten:
         g = self._grid()
         g.deleterow(0)
         assert g.cells[0][0].text == '="hello A2 world"'
-        assert g.cells[1][0].text == "=A1*3"
+        # A1 was on the deleted row: Excel rewrites it to #REF!.
+        assert g.cells[1][0].text == "=#REF!*3"
 
     def test_insertcol_does_not_rewrite_literals(self):
         g = self._grid()
@@ -3498,3 +3500,177 @@ class TestStructuralEditsRespectSheetBoundaries:
         g = self._grid()
         g.swaprow(0, 1)
         assert g.cells[0][1].text == "=Data!A2"
+
+
+def _excel_grid():
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    return g
+
+
+class TestRewriteNeedsIdentifierBoundary:
+    """A reference-shaped run inside a name (`LOG10`, `Sheet1`) is not a ref."""
+
+    def test_adjust_refs_skips_function_and_sheet_names(self):
+        text = "=Sheet1!A1+LOG10(B1)+ATAN2(1,1)"
+        assert adjust_refs(text, 0, 1) == "=Sheet1!A2+LOG10(B2)+ATAN2(1,1)"
+
+    def test_insertcol_leaves_function_names(self):
+        g = _excel_grid()
+        g.setcell(1, 0, "=LOG10(100)")
+        g.setcell(1, 1, "=ATAN2(1,1)+B1")
+        g.insertcol(0)
+        assert g.cells[2][0].text == "=LOG10(100)"
+        assert g.cells[2][1].text == "=ATAN2(1,1)+C1"
+
+    def test_insertrow_leaves_function_names(self):
+        g = _excel_grid()
+        g.setcell(0, 11, "=LOG10(100)+A1")
+        g.insertrow(0)
+        assert g.cells[0][12].text == "=LOG10(100)+A2"
+
+    def test_expand_ranges_skips_identifiers(self):
+        assert _expand_ranges("sum(xfa1:b2)") == "sum(xfa1:b2)"
+
+
+class TestDeleteReferencedLine:
+    """Excel semantics: a deleted single ref is #REF!; a range shrinks."""
+
+    def _grid(self):
+        g = _excel_grid()
+        for i in range(4):
+            g.setcell(0, i, str(i + 1))
+        return g
+
+    def test_single_ref_becomes_ref_error(self):
+        g = self._grid()
+        g.setcell(1, 0, "=A2+1")
+        g.deleterow(1)
+        g.recalc()
+        assert g.cells[1][0].text == "=#REF!+1"
+        assert g.cells[1][0].err == ExcelError.REF
+
+    def test_qualified_ref_becomes_ref_error(self):
+        g = self._grid()
+        g.add_sheet("S2")
+        g.set_active("S2")
+        g.setcell(0, 0, "=Sheet1!B1*2")
+        g.set_active(0)
+        g.deletecol(1)
+        assert g.sheets[1]._cells[(0, 0)].text == "=#REF!*2"
+
+    def test_range_end_deleted_shrinks(self):
+        g = self._grid()
+        g.setcell(1, 0, "=SUM(A1:A3)")
+        g.deleterow(2)
+        g.recalc()
+        assert g.cells[1][0].text == "=SUM(A1:A2)"
+        assert g.cells[1][0].val == 3.0
+
+    def test_range_start_deleted_shrinks(self):
+        g = self._grid()
+        g.setcell(1, 0, "=SUM(A2:A4)")
+        g.deleterow(1)
+        g.recalc()
+        assert g.cells[1][0].text == "=SUM(A2:A3)"
+        assert g.cells[1][0].val == 7.0
+
+    def test_reversed_range_end_deleted(self):
+        g = self._grid()
+        g.setcell(1, 0, "=SUM(A3:A1)")
+        g.deleterow(2)
+        assert g.cells[1][0].text == "=SUM(A2:A1)"
+
+    def test_range_wholly_deleted_is_ref_error(self):
+        g = self._grid()
+        g.setcell(1, 0, "=SUM(A2:A2)")
+        g.deleterow(1)
+        g.recalc()
+        assert g.cells[1][0].text == "=SUM(#REF!)"
+        assert g.cells[1][0].err == ExcelError.REF
+
+    def test_range_below_shifts_up(self):
+        g = self._grid()
+        g.setcell(2, 5, "=SUM(A3:A4)")
+        g.deleterow(0)
+        assert g.cells[2][4].text == "=SUM(A2:A3)"
+
+
+class TestRenameSheetQuoting:
+    def test_quoted_ref_is_rewritten(self):
+        g = _excel_grid()
+        g.sheets[0].name = "My Data"
+        g.add_sheet("S2")
+        g.set_active("My Data")
+        g.setcell(0, 0, "5")
+        g.set_active("S2")
+        g.setcell(0, 0, "='My Data'!A1*2")
+        g.rename_sheet("My Data", "Other")
+        g.setcell(1, 0, "1")
+        assert g.cells[0][0].text == "=Other!A1*2"
+        assert g.cells[0][0].val == 10.0
+
+    def test_named_range_sheet_follows(self):
+        g = _excel_grid()
+        g.add_sheet("S2")
+        g.setcell(0, 0, "5")
+        g.names.append(NamedRange("nm", 0, 0, 0, 0, sheet="Sheet1"))
+        g.set_active("S2")
+        g.setcell(0, 0, "=nm*3")
+        g.rename_sheet("Sheet1", "Inputs")
+        g.setcell(1, 0, "1")
+        assert g.names[0].sheet == "Inputs"
+        assert g.cells[0][0].val == 15.0
+
+    def test_new_name_is_quoted_when_needed(self):
+        g = _excel_grid()
+        g.add_sheet("S2")
+        g.setcell(0, 0, "5")
+        g.set_active("S2")
+        g.setcell(0, 0, "=Sheet1!A1*2")
+        g.rename_sheet("Sheet1", "New Name")
+        g.setcell(1, 0, "1")
+        assert g.cells[0][0].text == "='New Name'!A1*2"
+        assert g.cells[0][0].val == 10.0
+
+    def test_apostrophe_is_doubled(self):
+        from gridcalc.engine import _rewrite_sheet_prefix
+
+        assert _rewrite_sheet_prefix("=S!A1", "S", "Bob's") == "='Bob''s'!A1"
+        assert _rewrite_sheet_prefix("='Bob''s'!A1", "Bob's", "T") == "=T!A1"
+
+
+class TestPythonModeLongChain:
+    def test_chain_longer_than_100_is_not_circular(self):
+        g = Grid()
+        g.setcell(0, 0, "1")
+        g.setcells_bulk([(0, i, f"=A{i}+1") for i in range(1, 130)])
+        assert g.cells[0][129].err is None
+        assert g.cells[0][129].val == 130.0
+
+    def test_real_cycle_still_circular(self):
+        g = Grid()
+        g.setcells_bulk([(0, 0, "=B1+1"), (1, 0, "=A1+1")] + [(2, i, "1") for i in range(150)])
+        assert g.cells[0][0].err == ExcelError.CIRC
+
+    def test_self_reference_scan_ignores_string_literals(self):
+        g = Grid()
+        g.setcell(0, 0, '=len("A1")')
+        assert g.cells[0][0].err is None
+        assert g.cells[0][0].val == 2.0
+
+
+class TestTypedNumberInput:
+    @pytest.mark.parametrize("text", ["1_000", "1__0"])
+    def test_underscore_is_a_label(self, text):
+        g = make_grid()
+        g.setcell(0, 0, text)
+        assert g.cells[0][0].type == LABEL
+
+    @pytest.mark.parametrize("text,val", [("1e3", 1000.0), ("-.5", -0.5), ("+2", 2.0), ("3.", 3.0)])
+    def test_numbers_still_parse(self, text, val):
+        g = make_grid()
+        g.setcell(0, 0, text)
+        assert g.cells[0][0].type == NUM
+        assert g.cells[0][0].val == val

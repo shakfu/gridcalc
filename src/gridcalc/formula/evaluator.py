@@ -23,6 +23,7 @@ from .ast_nodes import (
     UnaryOp,
 )
 from .errors import ExcelError, first_error
+from .lexer import parse_number
 
 Value = Any
 
@@ -81,6 +82,9 @@ class Env:
         # `RAW_ARG_FUNCS` (e.g. ROW(), COLUMN()) consult this when called
         # with no arguments.
         self.current_cell: tuple[int, int] | None = None
+        # Name of the sheet `current_cell` is on. An unqualified range resolves
+        # against it, so it is part of the range cache key.
+        self.current_sheet: str | None = None
         # Per-recalc cache for materialised range Vecs. Key is
         # `(sheet, c1, r1, c2, r2)`. Cleared at the start of each recalc
         # pass -- downstream consumers re-evaluate when sources change,
@@ -226,13 +230,9 @@ def _to_number(v: object) -> float | ExcelError:
     if isinstance(v, (int, float)):
         return float(v)
     if isinstance(v, str):
-        s = v.strip()
-        if not s:
-            return 0.0
-        try:
-            return float(s)
-        except ValueError:
-            return ExcelError.VALUE
+        # Excel: `=""+1` is #VALUE!; an empty *cell* is None, handled above.
+        n = parse_number(v.strip())
+        return ExcelError.VALUE if n is None else n
     return ExcelError.VALUE
 
 
@@ -264,9 +264,8 @@ def _to_string(v: object) -> str | ExcelError:
     if isinstance(v, bool):
         return "TRUE" if v else "FALSE"
     if isinstance(v, float):
-        if v == int(v) and abs(v) < 1e15:
-            return str(int(v))
-        return repr(v)
+        # Excel converts with 15 significant digits: `=0.1+0.2&""` is "0.3".
+        return "0" if v == 0 else format(v, ".15g")
     if isinstance(v, int):
         return str(v)
     if isinstance(v, str):
@@ -462,9 +461,9 @@ def _compare(op: str, a: Any, b: Any) -> Any:
     if a_is_num and b_is_num:
         x: Any = a
         y: Any = b
-    elif (isinstance(a, str) and isinstance(b, str)) or (
-        isinstance(a, bool) and isinstance(b, bool)
-    ):
+    elif isinstance(a, str) and isinstance(b, str):
+        x, y = a.lower(), b.lower()  # Excel compares text case-insensitively
+    elif isinstance(a, bool) and isinstance(b, bool):
         x, y = a, b
     else:
         # mixed: rank by type (number < string < bool) approximating Excel
@@ -551,20 +550,16 @@ def _eval(node: Node, env: Env) -> Value:
     raise AssertionError(f"unknown node {type(node).__name__}")
 
 
-def _eval_range(node: RangeRef, env: Env, keep_errors: bool = False) -> Any:
-    """Evaluate a range to a ``Vec``, or to the first cell error in it.
-
-    ``keep_errors`` puts the errors *in* the Vec instead, for the handful of
-    functions Excel defines as ignoring them -- see
-    ``_RANGE_ERROR_TOLERANT_FUNCS``. That result is not cached: the cache is
-    keyed by rectangle alone, and the two forms of the same rectangle differ.
-    """
+def _eval_range(node: RangeRef, env: Env) -> Any:
+    """Evaluate a range to a ``Vec``. A cell error stays in its element;
+    ``_eval_call`` decides whether a function sees it (see
+    ``_ARRAY_ERROR_TOLERANT_FUNCS``)."""
     # Normalise B3:A1 -> A1:B3. Matches Excel's range semantics.
     c1, c2 = sorted([node.start.col, node.end.col])
     r1, r2 = sorted([node.start.row, node.end.row])
     sheet = node.start.sheet  # parser guarantees start.sheet == end.sheet
-    key = (sheet, c1, r1, c2, r2)
-    cached = None if keep_errors else env._range_cache.get(key)
+    key = (sheet if sheet is not None else env.current_sheet, c1, r1, c2, r2)
+    cached = env._range_cache.get(key)
     if cached is not None:
         # Re-register dependencies even on a cache hit -- consumers
         # rely on `refs_used` to know which cells they touched.
@@ -576,11 +571,6 @@ def _eval_range(node: RangeRef, env: Env, keep_errors: bool = False) -> Any:
     for r in range(r1, r2 + 1):
         for c in range(c1, c2 + 1):
             v = env.get_cell(c, r, sheet)
-            if isinstance(v, ExcelError):
-                if not keep_errors:
-                    return v
-                data.append(v)
-                continue
             if v is None:
                 data.append(0.0)
             elif isinstance(v, bool):
@@ -592,8 +582,7 @@ def _eval_range(node: RangeRef, env: Env, keep_errors: bool = False) -> Any:
     from ..engine import Vec  # lazy import to break cycle
 
     result = Vec(data, cols=c2 - c1 + 1)
-    if not keep_errors:
-        env._range_cache[key] = result
+    env._range_cache[key] = result
     return result
 
 
@@ -633,13 +622,110 @@ _ERROR_AWARE_FUNCS = frozenset(
     }
 )
 
-# Functions whose *range* arguments tolerate cell errors instead of collapsing
-# to them: Excel's COUNT family ignores error values inside a reference, where
-# every other aggregate propagates (`=SUM(A1:A3)` over a `#DIV/0!` is
-# `#DIV/0!`, `=COUNT(A1:A3)` is the count of the numbers beside it). COUNTA
-# counts the error cell, which falls out of counting everything non-empty.
-# A scalar error argument still short-circuits: only the range read changes.
-_RANGE_ERROR_TOLERANT_FUNCS = frozenset({"count", "counta", "countblank", "countif", "countifs"})
+# Functions whose array arguments may hold error elements. Every other function
+# receives the first error in an array argument instead, so aggregates
+# propagate (`=SUM(A1:A3)` over a `#DIV/0!` is `#DIV/0!`). The COUNT family
+# ignores error values (COUNTA counts them); lookups and reshapers only touch
+# the elements they return. Conditional aggregates propagate an error only from
+# a matching row. A scalar error argument still short-circuits.
+_ARRAY_ERROR_TOLERANT_FUNCS = frozenset(
+    {
+        "count",
+        "counta",
+        "countblank",
+        "countif",
+        "countifs",
+        "sumif",
+        "sumifs",
+        "averageif",
+        "averageifs",
+        "maxifs",
+        "minifs",
+        "vlookup",
+        "hlookup",
+        "lookup",
+        "index",
+        "match",
+        "xlookup",
+        "xmatch",
+        "filter",
+        "sort",
+        "unique",
+        "take",
+        "drop",
+        "choosecols",
+        "chooserows",
+        "vstack",
+        "hstack",
+        "tocol",
+        "torow",
+        "wraprows",
+        "wrapcols",
+        "transpose",
+        "expand",
+        "map",
+        "byrow",
+        "bycol",
+        "reduce",
+        "scan",
+    }
+)
+
+# Aggregates that coerce a value typed directly as an argument (`SUM("3",TRUE)`
+# is 4) but skip the same value read from a cell or range. COUNT skips
+# non-numeric text instead of failing on it.
+_DIRECT_ARG_COERCE_FUNCS = frozenset(
+    {
+        "sum",
+        "average",
+        "min",
+        "max",
+        "count",
+        "product",
+        "median",
+        "stdev",
+        "stdev.s",
+        "stdev.p",
+        "stdevp",
+        "var",
+        "var.s",
+        "var.p",
+        "varp",
+        "mode",
+        "mode.sngl",
+        "geomean",
+        "harmean",
+        "avedev",
+        "devsq",
+        "skew",
+        "kurt",
+    }
+)
+
+
+def _coerce_direct_args(name: str, nodes: tuple[Node, ...], env: Env) -> list[Any] | ExcelError:
+    """Evaluate aggregate arguments, converting direct scalar values to numbers."""
+    out: list[Any] = []
+    for node in nodes:
+        raw = _eval(node, env)
+        is_ref = isinstance(raw, Reference) or isinstance(node, (CellRef, RangeRef, SpillRef))
+        if isinstance(node, Name) and not env.lookup_local(node.name)[0]:
+            is_ref = True  # a named range
+        v = _deref(raw, env)
+        if not is_ref and isinstance(v, (bool, str)):
+            n = _to_number(v)
+            if isinstance(n, ExcelError) and name != "count":
+                return n
+            v = v if isinstance(n, ExcelError) else n
+        out.append(v)
+    return out
+
+
+# Scalar predicates applied per element when given an array, so
+# `ISNUMBER(A1:A3)` is an array of booleans (TYPE is not: it reports 64).
+_ELEMENTWISE_PREDICATES = frozenset(
+    {"iserror", "iserr", "isna", "isblank", "islogical", "isnumber", "istext", "isnontext"}
+)
 
 # Functions that receive raw AST nodes (CellRef/RangeRef/...) plus the
 # Env, instead of evaluated values. Used for functions whose semantics
@@ -671,24 +757,19 @@ def _eval_lazy(name: str, node: Call, env: Env) -> Any:
     if name == "if":
         if not 2 <= len(args) <= 3:
             return ExcelError.VALUE
-        cond = val(0)
-        if isinstance(cond, ExcelError):
-            return cond
-        if cond:
-            return val(1)
         # Two-argument IF answers 0, matching the library function's default.
-        return val(2) if len(args) == 3 else 0
+        return _choose(val(0), lambda: val(1), lambda: val(2) if len(args) == 3 else 0)
 
     if name == "ifs":
         if not args or len(args) % 2 != 0:
             return ExcelError.NA
-        for i in range(0, len(args), 2):
-            cond = val(i)
-            if isinstance(cond, ExcelError):
-                return cond
-            if cond:
-                return val(i + 1)
-        return ExcelError.NA
+
+        def ifs_from(i: int) -> Any:
+            if i == len(args):
+                return ExcelError.NA
+            return _choose(val(i), lambda: val(i + 1), lambda: ifs_from(i + 2))
+
+        return ifs_from(0)
 
     if name == "switch":
         if not args:
@@ -701,7 +782,7 @@ def _eval_lazy(name: str, node: Call, env: Env) -> Any:
             match = val(1 + 2 * i)
             if isinstance(match, ExcelError):
                 return match
-            if subject == match:
+            if _compare("=", subject, match) is True:
                 return val(2 + 2 * i)
         # A trailing unpaired argument is the default.
         return val(len(args) - 1) if rest % 2 == 1 else ExcelError.NA
@@ -709,16 +790,18 @@ def _eval_lazy(name: str, node: Call, env: Env) -> Any:
     if name == "iferror":
         if len(args) != 2:
             return ExcelError.VALUE
-        v = val(0)
-        if isinstance(v, ExcelError) or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
-            return val(1)
-        return v
+
+        def is_error(x: Any) -> bool:
+            return isinstance(x, ExcelError) or (
+                isinstance(x, float) and (math.isnan(x) or math.isinf(x))
+            )
+
+        return _replace_where(val(0), is_error, lambda: val(1))
 
     if name == "ifna":
         if len(args) != 2:
             return ExcelError.VALUE
-        v = val(0)
-        return val(1) if v is ExcelError.NA else v
+        return _replace_where(val(0), lambda x: x is ExcelError.NA, lambda: val(1))
 
     if name == "choose":
         if len(args) < 2:
@@ -730,6 +813,44 @@ def _eval_lazy(name: str, node: Call, env: Env) -> Any:
         return val(i) if 1 <= i <= len(args) - 1 else ExcelError.VALUE
 
     raise AssertionError(f"unhandled lazy function {name}")
+
+
+def _element(v: Any, i: int) -> Any:
+    """Element ``i`` of an array branch, or the scalar itself. An array shorter
+    than the condition gives #N/A past its end, as in Excel."""
+    if not _is_vec(v):
+        return v
+    data = _vec_data(v)
+    return data[i] if i < len(data) else ExcelError.NA
+
+
+def _choose(cond: Any, then: Callable[[], Any], other: Callable[[], Any]) -> Any:
+    """IF semantics: a scalar condition evaluates one branch; an array
+    condition evaluates both and picks per element."""
+    if not _is_vec(cond):
+        b = _to_bool(cond)
+        if isinstance(b, ExcelError):
+            return b
+        return then() if b else other()
+    t, f = then(), other()
+    out = []
+    for i, c in enumerate(_vec_data(cond)):
+        b = _to_bool(c)
+        out.append(b if isinstance(b, ExcelError) else _element(t if b else f, i))
+    return _make_vec(out, cols=_vec_cols(cond))
+
+
+def _replace_where(v: Any, test: Callable[[Any], bool], fallback: Callable[[], Any]) -> Any:
+    """IFERROR/IFNA: ``fallback()`` where ``test`` holds, per element for an array."""
+    if not _is_vec(v):
+        return fallback() if test(v) else v
+    data = _vec_data(v)
+    if not any(test(x) for x in data):
+        return v
+    fb = fallback()
+    return _make_vec(
+        [_element(fb, i) if test(x) else x for i, x in enumerate(data)], cols=_vec_cols(v)
+    )
 
 
 RAW_ARG_FUNCS = frozenset(
@@ -862,19 +983,23 @@ def _eval_call(node: Call, env: Env) -> Any:
             return ExcelError.VALUE
     # Normal (value) functions receive materialised values: any Reference
     # argument (from a nested OFFSET) is dereferenced before the call.
-    if name_lower in _RANGE_ERROR_TOLERANT_FUNCS:
-        args = [
-            _eval_range(a, env, keep_errors=True)
-            if isinstance(a, RangeRef)
-            else _deref(_eval(a, env), env)
-            for a in node.args
-        ]
+    if name_lower in _DIRECT_ARG_COERCE_FUNCS:
+        coerced = _coerce_direct_args(name_lower, node.args, env)
+        if isinstance(coerced, ExcelError):
+            return coerced
+        args = coerced
     else:
         args = [_deref(_eval(a, env), env) for a in node.args]
     if name_lower not in _ERROR_AWARE_FUNCS:
         err = first_error(*args)
         if err:
             return err
+        if name_lower not in _ARRAY_ERROR_TOLERANT_FUNCS:
+            err = _first_array_error(args)
+            if err:
+                return err
+    if name_lower in _ELEMENTWISE_PREDICATES and len(args) == 1 and _is_vec(args[0]):
+        return _vec_apply1(fn, args[0])
     try:
         return fn(*args)
     except ZeroDivisionError:
@@ -885,12 +1010,21 @@ def _eval_call(node: Call, env: Env) -> Any:
         return ExcelError.VALUE
 
 
+def _first_array_error(args: list[Any]) -> ExcelError | None:
+    for a in args:
+        if _is_vec(a):
+            err = first_error(*_vec_data(a))
+            if err:
+                return err
+    return None
+
+
 def _eval_pycall(node: PyCall, env: Env) -> Any:
     fn = env.py_registry.get(node.name)
     if fn is None:
         return ExcelError.NAME
     args = [_eval(a, env) for a in node.args]
-    err = first_error(*args)
+    err = first_error(*args) or _first_array_error(args)
     if err:
         return err
     try:

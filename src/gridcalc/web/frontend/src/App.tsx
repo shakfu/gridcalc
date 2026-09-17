@@ -9,6 +9,7 @@ import { SweepDialog } from './components/SweepDialog'
 import { ChartDialog } from './components/ChartDialog'
 import { SheetDialog, type SheetMode } from './components/SheetDialog'
 import { TrustDialog } from './components/TrustDialog'
+import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { FindBar } from './components/FindBar'
 import { CommandPalette } from './components/CommandPalette'
 import { buildRegistry } from './lib/registry'
@@ -35,7 +36,23 @@ function isTextField(target: EventTarget | null): boolean {
 // handle instead, and everything that acts on the grid -- menu items, the
 // keyboard -- goes through that one command set.
 export function App() {
-  const wb = useWorkbook()
+  // Solver output painted on the sheet. Cleared on every mutation, since an
+  // annotation describes one particular solution.
+  const [annotations, setAnnotations] = useState<Record<string, CellAnnotation>>({})
+  // Nothing is written when there is nothing painted, so a clear on an
+  // unannotated sheet is not a re-render.
+  const clearAnnotations = useCallback(() => {
+    setAnnotations((a) => (Object.keys(a).length ? {} : a))
+  }, [])
+  // The pending confirmation, with the resolver of the promise `confirm` returned.
+  const [asking, setAsking] = useState<(ConfirmRequest & { answer: (yes: boolean) => void }) | null>(
+    null,
+  )
+  const confirm = useCallback(
+    (q: ConfirmRequest) => new Promise<boolean>((answer) => setAsking({ ...q, answer })),
+    [],
+  )
+  const wb = useWorkbook({ confirm, onMutate: clearAnnotations })
   const grid = useRef<GridHandle>(null)
   const [selection, setSelection] = useState<Selection | null>(null)
   const [aboutOpen, setAboutOpen] = useState(false)
@@ -50,16 +67,6 @@ export function App() {
   // The shared command registry, fetched once. The palette is built from it,
   // so a command added on the Python side needs no change here.
   const [sharedCommands, setSharedCommands] = useState<SharedCommand[]>([])
-  // Solver output painted on the sheet. Cleared when the workbook changes
-  // underneath it, since an annotation describes one particular solution.
-  const [annotations, setAnnotations] = useState<Record<string, CellAnnotation>>({})
-
-  // Kept as one function because the invalidation rule is one rule, applied
-  // from two places. Nothing is written when there is nothing painted, so a
-  // clear on an unannotated sheet is not a re-render.
-  const clearAnnotations = useCallback(() => {
-    setAnnotations((a) => (Object.keys(a).length ? {} : a))
-  }, [])
 
   // Where each sheet was last left. A ref rather than state: it is written on
   // the way out of a sheet and read on the way in, so re-rendering the shell
@@ -80,15 +87,9 @@ export function App() {
   const sheetName = wb.sheets ? (wb.sheets.names[wb.sheets.active] ?? '') : ''
   const viewKey = wb.dims ? `${wb.dims.filename}\u0000${sheetName}` : ''
 
-  // An edit invalidates the last solve: shadow prices describe the sheet as it
-  // was solved, so keeping them painted after a change would be a lie.
-  const onGridMutate = useCallback(() => {
-    wb.markDirty()
-    clearAnnotations()
-  }, [wb, clearAnnotations])
-
-  // So does leaving the sheet. Annotations are addressed in A1 but painted by
-  // position, and an A1 reference names a different cell on a different sheet
+  // Leaving the sheet invalidates the last solve too. Annotations are addressed
+  // in A1 but painted by position, and an A1 reference names a different cell
+  // on a different sheet
   // -- so carrying them across a tab switch does not merely show a stale
   // result, it shows it against the wrong cells. Driven by the same key the
   // view state is stashed under, so opening another workbook clears them too.
@@ -279,7 +280,7 @@ export function App() {
           setFindOpen(false)
           grid.current?.focus()
         }}
-        onGoto={(ref) => grid.current?.goto(ref)}
+        onGoto={(ref) => grid.current?.goto(ref, false)}
         onError={wb.fail}
         revision={wb.mutations}
       />
@@ -294,7 +295,7 @@ export function App() {
             onSelectionChange={setSelection}
             annotations={annotations}
             onError={wb.fail}
-            onMutate={onGridMutate}
+            onMutate={wb.markDirty}
             initialView={sheetViews.current.get(viewKey) ?? null}
             onViewChange={(v) => sheetViews.current.set(viewKey, v)}
           />
@@ -334,6 +335,13 @@ export function App() {
         onOpenChange={setSheetOpen}
       />
       <TrustDialog info={wb.trust} onDecide={(policy) => void wb.actions.resolveTrust(policy)} />
+      <ConfirmDialog
+        request={asking}
+        onAnswer={(yes) => {
+          asking?.answer(yes)
+          setAsking(null)
+        }}
+      />
     </div>
   )
 }

@@ -14,6 +14,8 @@ The body below is unchanged from when it was written; this section records where
 
 - **P3 is untouched.** No frozen builds, no per-platform QA, no signing. The IME/CJK and accessibility claims from Section 5e remain unvalidated in a real webview; the grid still has no ARIA grid semantics.
 
+- **The bridge is serialised.** pywebview runs each JS call on its own thread. Every public `Api` method now holds one `threading.RLock`, and the client queues mutating calls in order. Solves hold the lock, so viewport reads wait until a solve finishes; the alternative, solving off-lock, would solve a copy of the workbook. See `CHANGELOG.md` (Unreleased, Fixed).
+
 - **Security now has the trust flow** Section 5a called for. Formulas-only is still what an unanswered open loads; a workbook carrying code raises a dialog reporting what it would run, and its answer becomes the `LoadPolicy` the load uses. `inspect_file` disclosure, the blocked/I-O/unknown split, and the separate answer for unclassified modules all match the curses prompt.
 
 ## 1. The premise, challenged
@@ -32,7 +34,7 @@ Solid, keep:
 
 - **The `Api` boundary.** All engine<->view logic is a plain-Python class with no `webview` import (`web/__init__.py`), unit-tested without a display (`tests/test_web.py`). This is the right architecture and scales.
 
-- **Headless regression testing of the JS/DOM.** The same page is driven in Chromium with the bridge mocked from real `Api` output (`tests/integration/test_web_playwright.py`). Rare and valuable for a webview app.
+- **Headless regression testing of the JS/DOM.** The built bundle is driven in Chromium with a mocked bridge (`tests/integration/test_web_bundle.py`; originally `test_web_playwright.py` against `_HTML`). Rare and valuable for a webview app.
 
 - **Shared formatting.** Cells format identically to the TUI via `display.cell_text` / `cell_right_aligned`. No divergence risk.
 
@@ -44,9 +46,9 @@ Spike-grade, must change:
 
 - ~~**Security punted.** `open_file` hardcodes `LoadPolicy.formulas_only()` (`loader.py`); code blocks are never run, no trust UI, no `inspect_file` disclosure. Fine for a spike, a product-defining hole otherwise (Section 5a).~~ Closed: `open_file` takes a policy, `inspect`/`pending_trust` report the decision, and `TrustDialog` asks it.
 
-- **No error surface.** `Api` methods return `{ok: false}` shapes the client largely ignores; a failed save/open/recalc has no user-visible channel beyond an ad-hoc `flashSave`.
+- ~~**No error surface.** `Api` methods return `{ok: false}` shapes the client largely ignores; a failed save/open/recalc has no user-visible channel beyond an ad-hoc `flashSave`.~~ Closed in P0: see "What has since landed".
 
-- **One hard-coded demo, no chrome.** No menu bar, no About, no keyboard-help, no recent-files, no window-title lifecycle beyond a best-effort retitle.
+- **One hard-coded demo, no chrome.** No menu bar, no About, no keyboard-help, no recent-files, no window-title lifecycle beyond a best-effort retitle. Partly closed: a menu bar with shortcuts, an About dialog and a Ctrl-K palette exist. Recent files do not.
 
 ## 3. Feature gap: TUI vs web `Api`
 
@@ -96,6 +98,8 @@ The spike is safe precisely because it does nothing: `formulas_only()` never sto
 2. **Full trust flow, ported.** Reproduce `inspect_file` -> `FileInfo` disclosure (blocked / side-effect modules, code preview) -> a consent dialog equivalent to `tui/commands.py trust_prompt` -> `LoadPolicy(load_code=True, ...)`. This is real product work and, critically, `validate_code` (sandbox.py) is a *denylist, not a container* -- once it passes, code runs with the process's full privileges. On the desktop that is the same trust the TUI already asks for, so it is acceptable *with an honest consent UI*. It is not acceptable on a served/multi-user deployment without OS-level isolation (subprocess, container, seccomp), which is out of scope for the recommended desktop product.
 
 **Recommendation:** ship P0/P1 as formulas-only (option 1), then add option 2's consent flow as an explicit, well-labelled feature -- not silently. Never wire `load_code=True` without a trust dialog. This is the one area where "polish" means *restraint*, not features.
+
+**Correction.** Formulas-only is not a code-free load: PYTHON-mode formulas are still `eval()`ed at load, with no prompt. Option 1 is not "honestly safe". See "Known gaps" in `docs/security-plan.md`.
 
 ### 5b. Distribution / packaging
 
@@ -198,6 +202,8 @@ def discard_last(self) -> None:
         self.undo_stack.pop()
 ```
 
+As built, `discard_last` also restores the redo stack that the matching `save_*` cleared. `UndoManager` later gained `clear()` and `rollback()`, and `undo()`/`redo()` now return whether an entry applied (`gridcalc/undo.py`).
+
 ### Endpoints
 
 Coordinate/serialization helpers: `_key(a1) -> (c, r)` (rejecting trailing garbage), `_a1((c, r)) -> "B4"`, `_num(x)` (non-finite -> None).
@@ -210,7 +216,7 @@ Coordinate/serialization helpers: `_key(a1) -> (c, r)` (rejecting trailing garba
 
 - `opt_sweep(spec)` -- parametric RHS sweep (`opt.sweep`); never mutates the sheet, so no undo snapshot.
 
-All applied paths route through a shared `_run_solve` that snapshots, calls `opt.solve`, and on `OptError` or a non-applied result (INFEASIBLE/UNBOUNDED) calls `discard_last`. Results serialize through `_solve_json` (CellKeys -> A1 strings, ranging floats through `_num`).
+Applied solves route through a shared `_run_solve` that snapshots, calls `opt.solve`, and on `OptError` or a non-applied result (INFEASIBLE/UNBOUNDED) calls `discard_last`. `goal_seek` does the same inline. Results serialize through `_solve_json` (CellKeys -> A1 strings, ranging floats through `_num`).
 
 ### Client-facing return contract
 
@@ -229,7 +235,7 @@ SolveResponse =
 
 - `apply=True` mutates the sheet -- the UI must make a solve feel like an action, not a preview (`apply:false` gives a dry run for `solve_model`).
 
-- Snapshot/redo caveat: `save_grid` clears the redo stack, so a *failed* applied solve still wipes redo after `discard_last`. Acceptable; tighten by saving/restoring the redo stack in `discard_last` if it matters.
+- ~~Snapshot/redo caveat: `save_grid` clears the redo stack, so a *failed* applied solve still wipes redo after `discard_last`. Acceptable; tighten by saving/restoring the redo stack in `discard_last` if it matters.~~ Tightened: `discard_last` restores the redo stack, so a failed solve keeps redo.
 
 - Sensitivity is `None` for MIPs by design (integer duals mislead) -- the client renders "no sensitivity for integer models," not an empty table.
 

@@ -48,7 +48,7 @@ from typing import Any, TextIO, cast
 from . import goalseek, opt
 from .display import cell_text
 from .engine import EMPTY, NCOL, NROW, SPILL, Grid
-from .loader import load_workbook
+from .loader import load_workbook, save_workbook
 from .optspec import (
     GoalSpec,
     SweepSpec,
@@ -162,8 +162,8 @@ def _load(path: str | None) -> Grid:
         raise CliError("headless mode needs a workbook: gridcalc FILE --solve ...")
     try:
         return load_workbook(path)
-    except OSError as exc:
-        raise CliError(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 -- e.g. RecursionError from a pathological file
+        raise CliError(str(exc) or f"could not load workbook: {path}") from exc
 
 
 def _select_sheet(g: Grid, name: str | None) -> None:
@@ -321,18 +321,10 @@ def run_eval(g: Grid, formulas: list[str]) -> list[dict[str, Any]]:
 
 
 def run_convert(g: Grid, path: str) -> dict[str, Any]:
-    low = path.lower()
-    if low.endswith(".xlsx"):
-        rc = g.xlsxsave(path)
-        fmt = "xlsx"
-    elif low.endswith(".csv"):
-        rc = g.csvsave(path)
-        fmt = "csv"
-    else:
-        rc = g.jsonsave(path)
-        fmt = "json"
-    if rc < 0:
-        raise CliError(f"could not write {path}")
+    try:
+        fmt = save_workbook(g, path)
+    except OSError as exc:
+        raise CliError(f"could not write {path}") from exc
     return {"path": str(Path(path)), "format": fmt, "cells": _cell_count(g)}
 
 
@@ -455,6 +447,8 @@ def run(args: argparse.Namespace, out: TextIO | None = None, err: TextIO | None 
     failed = False
     try:
         g = _load(args.file)
+        for warning in g.load_warnings:
+            print(f"gridcalc: warning: {warning}", file=err)
         _select_sheet(g, getattr(args, "sheet", None))
 
         if args.eval:

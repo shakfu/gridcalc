@@ -34,3 +34,50 @@ test('every field has an accessible name', () => {
     expect(screen.getByLabelText(name)).toBeInTheDocument()
   }
 })
+
+// `parseFloat('1,5')` is 1, and `parseFloat('abc')` is NaN, which crosses the
+// bridge as null -- both used to run a seek on a number the user never typed.
+test.each(['1,5', 'abc', '5x'])('refuses a target of %s instead of guessing', async (bad) => {
+  const seek = vi.spyOn(window.pywebview!.api, 'goal_seek')
+  render(<GoalDialog open onOpenChange={() => {}} activeRef="B1" />)
+  const user = userEvent.setup()
+  await user.type(screen.getByLabelText('To value'), bad)
+  await user.type(screen.getByLabelText('By cell'), 'A1')
+  await user.click(screen.getByRole('button', { name: 'Run' }))
+  expect(screen.getByText(/not a number/)).toBeInTheDocument()
+  expect(seek).not.toHaveBeenCalled()
+})
+
+test('refuses a bracket that is not a number', async () => {
+  const seek = vi.spyOn(window.pywebview!.api, 'goal_seek')
+  render(<GoalDialog open onOpenChange={() => {}} activeRef="B1" />)
+  const user = userEvent.setup()
+  await user.type(screen.getByLabelText('To value'), '10')
+  await user.type(screen.getByLabelText('By cell'), 'A1')
+  await user.type(screen.getByLabelText('Bracket low'), '1,5')
+  await user.click(screen.getByRole('button', { name: 'Run' }))
+  expect(screen.getByText(/not a number/)).toBeInTheDocument()
+  expect(seek).not.toHaveBeenCalled()
+})
+
+test('Run is disabled while a seek is in flight', async () => {
+  let finish = () => {}
+  const seek = vi.fn(
+    () =>
+      new Promise<{ ok: boolean }>((res) => {
+        finish = () => res({ ok: false })
+      }),
+  )
+  window.pywebview!.api.goal_seek = seek
+  render(<GoalDialog open onOpenChange={() => {}} activeRef="B1" />)
+  const user = userEvent.setup()
+  await user.type(screen.getByLabelText('To value'), '10')
+  await user.type(screen.getByLabelText('By cell'), 'A1')
+  const run = screen.getByRole('button', { name: 'Run' })
+  await user.click(run)
+  expect(run).toBeDisabled()
+  await user.click(run)
+  expect(seek).toHaveBeenCalledOnce()
+  finish()
+  await waitFor(() => expect(run).not.toBeDisabled())
+})

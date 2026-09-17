@@ -839,6 +839,7 @@ def test_delete_sheet_removes_the_active_one(page) -> None:
     page.get_by_role("option", name="Data").click()
     page.get_by_role("menuitem", name="Sheet").click()
     page.get_by_role("menuitem", name="Delete").click()
+    page.get_by_role("button", name="Delete").click()  # the confirmation
     page.wait_for_function(
         '() => JSON.stringify(window.__calls.sheet_ops) === \'[["del","Data"]]\''
     )

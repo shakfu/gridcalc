@@ -23,6 +23,8 @@ JSON, version 2. Version 1 files (single sheet, top-level `cells`) still load.
 
 - **sheets** (v2): each is `{name, cells}` with a 2D `cells` array.
 
+- **cells**: rows of cell entries. An entry is `null`, a number, a string (label or `=` formula), or an object with `v` and optional `bold`, `underline`, `italic`, `fmt`, `fmtstr` and `label` keys. `"label": true` keeps text that looks like a number or formula, such as `"00123"`, as a label. Infinity is saved as the string `"1e999"` or `"-1e999"`, and NaN as `null`.
+
 - **active** (v2): the name of the sheet to focus on load.
 
 - **names**: workbook-global named ranges (sheet-relative when used).

@@ -593,10 +593,11 @@ class TestCountFamilyIgnoresCellErrors:
             ("=COUNTBLANK(A1:A3)", "0"),
             ('=COUNTIF(A1:A3, ">0")', "2"),
             ('=COUNTIFS(A1:A3, ">0")', "2"),
+            # An error cell does not match ">0", so SUMIF skips it.
+            ('=SUMIF(A1:A3, ">0")', "4"),
             # Unchanged: everything else still propagates.
             ("=SUM(A1:A3)", "#DIV/0!"),
             ("=AVERAGE(A1:A3)", "#DIV/0!"),
-            ('=SUMIF(A1:A3, ">0")', "#DIV/0!"),
         ],
     )
     def test_count_over_a_range_holding_an_error(self, formula, expected):
@@ -695,3 +696,260 @@ class TestMetadataFormulasTrackTheirReference:
         assert extract_refs(parse("ROWS(A1:B10)")) == set()
         assert extract_refs(parse("ISREF(A1)")) == set()
         assert extract_refs(parse("ISFORMULA(A1)")) == {(None, 0, 0)}
+
+
+def _xg():
+    g = make_excel_grid()
+    g._apply_mode_libs()
+    return g
+
+
+class TestRangeCachePerSheet:
+    def test_same_range_text_on_two_sheets(self):
+        g = _xg()
+        g.add_sheet("S2")
+        g.setcell(0, 0, "1")
+        g.setcell(0, 1, "2")
+        g.setcell(1, 0, "=SUM(A1:A2)")
+        g.set_active("S2")
+        g.setcell(0, 0, "10")
+        g.setcell(0, 1, "20")
+        g.setcell(1, 0, "=SUM(A1:A2)")
+        g.recalc()
+        assert g.sheets[0]._cells[(1, 0)].val == 3.0
+        assert g.sheets[1]._cells[(1, 0)].val == 30.0
+
+
+class TestEmptyReferenceResult:
+    def test_bare_reference_to_empty_cell_is_zero(self):
+        g = _xg()
+        g.setcell(1, 0, "=A1")
+        cl = g.cells[1][0]
+        assert cl.err is None
+        assert cl.val == 0.0
+        assert cell_text(cl) == "0"
+
+
+class TestBooleanResultsStayBoolean:
+    @pytest.mark.parametrize(
+        "formula,expected",
+        [
+            ('=IF(A1,"y","n")', "n"),
+            ("=A1+1", "1"),
+            ("=A1=FALSE", "TRUE"),
+            ("=ISLOGICAL(A1)", "TRUE"),
+            ("=A1", "FALSE"),
+        ],
+    )
+    def test_reading_a_boolean_cell(self, formula, expected):
+        g = _xg()
+        g.setcell(0, 0, "=1>2")
+        g.setcell(1, 0, formula)
+        assert cell_text(g.cells[0][0]) == "FALSE"
+        assert cell_text(g.cells[1][0]) == expected
+
+    def test_text_true_is_still_text(self):
+        g = _xg()
+        g.setcell(0, 0, '="TRUE"')
+        g.setcell(1, 0, "=ISTEXT(A1)")
+        assert cell_text(g.cells[1][0]) == "TRUE"
+
+    def test_spilled_boolean(self):
+        g = _xg()
+        g.setcell(0, 0, "1")
+        g.setcell(0, 1, "5")
+        g.setcell(1, 0, "=A1:A2>2")
+        g.setcell(2, 0, "=B2+1")
+        g.setcell(2, 1, "=B1+1")
+        assert cell_text(g.cells[2][0]) == "2"
+        assert cell_text(g.cells[2][1]) == "1"
+
+
+class TestMixedCaseNamedRangeDeps:
+    def test_edit_propagates(self):
+        g = _xg()
+        g.setcell(0, 0, "1")
+        g.setcell(0, 1, "2")
+        g.names.append(NamedRange("Sales", 0, 0, 0, 1))
+        g.setcell(1, 0, "=SUM(Sales)")
+        g.setcell(2, 0, "=SUM(sales)")
+        g.setcell(0, 0, "100")
+        assert g.cells[1][0].val == 102.0
+        assert g.cells[2][0].val == 102.0
+
+
+class TestVolatileSubscribers:
+    def test_offset_consumer_recomputes(self):
+        g = _xg()
+        g.setcell(0, 0, "1")
+        g.setcell(0, 1, "2")
+        g.setcell(1, 0, "=OFFSET(A1,1,0)")
+        g.setcell(2, 0, "=B1*10")
+        g.setcell(0, 1, "7")
+        assert g.cells[2][0].val == 70.0
+
+    def test_rand_consumer_consistent(self):
+        g = _xg()
+        g.setcell(2, 0, "=RAND()")
+        g.setcell(3, 0, "=C1*2")
+        g.setcell(5, 5, "1")
+        assert g.cells[3][0].val == 2 * g.cells[2][0].val
+
+
+class TestErrorsInsideRangesAreElementwise:
+    """An error cell stays in its slot; only functions that aggregate it fail."""
+
+    @staticmethod
+    def _grid():
+        g = _xg()
+        for r, (k, v) in enumerate([("a", "1"), ("b", "=1/0"), ("c", "3")]):
+            g.setcell(0, r, k)
+            g.setcell(1, r, v)
+        return g
+
+    @pytest.mark.parametrize(
+        "formula,expected",
+        [
+            ('=VLOOKUP("a",A1:B3,2,FALSE)', "1"),
+            ('=VLOOKUP("b",A1:B3,2,FALSE)', "#DIV/0!"),
+            ("=INDEX(B1:B3,3)", "3"),
+            ('=XLOOKUP("c",A1:A3,B1:B3)', "3"),
+            ("=MATCH(3,B1:B3,0)", "3"),
+            ("=SUM(IFERROR(B1:B3,0))", "4"),
+            ("=SUM(IFNA(B1:B3,0))", "#DIV/0!"),
+            ("=SUM(FILTER(B1:B3,ISNUMBER(B1:B3)))", "4"),
+            ("=SUM(B1:B3)", "#DIV/0!"),
+            ("=SUM(B1:B3*2)", "#DIV/0!"),
+            ('=SUMIF(A1:A3,"c",B1:B3)', "3"),
+            ('=SUMIF(A1:A3,"b",B1:B3)', "#DIV/0!"),
+            ("=ROWS(B1:B3)", "3"),
+            ("=B1:B3", "1"),
+        ],
+    )
+    def test_formula(self, formula, expected):
+        g = self._grid()
+        g.setcell(3, 0, formula)
+        assert cell_text(g.cells[3][0]) == expected
+
+    def test_spill_keeps_error_in_its_slot(self):
+        g = self._grid()
+        g.setcell(3, 0, "=B1:B3*2")
+        assert [cell_text(g.cells[3][r]) for r in range(3)] == ["2", "#DIV/0!", "6"]
+
+
+class TestIfConditionCoercion:
+    @pytest.mark.parametrize(
+        "formula,expected",
+        [
+            ('=IF("abc",1,2)', "#VALUE!"),
+            ('=IF("FALSE",1,2)', "2"),
+            ('=IF("true",1,2)', "1"),
+            ('=IFS("abc",1)', "#VALUE!"),
+            ("=IFS(0,1,1,2)", "2"),
+            ("=SUM(IF(A1:A3>1,A1:A3,0))", "5"),
+            ("=SUM(IF(A1:A3>1,A1:A3))", "5"),
+            ("=SUM(IF(A1:A3>1,10,A1:A3))", "21"),
+            ("=SUM(IFS(A1:A3>2,100,A1:A3>1,10,TRUE,1))", "111"),
+        ],
+    )
+    def test_formula(self, formula, expected):
+        g = _xg()
+        for r in range(3):
+            g.setcell(0, r, str(r + 1))
+        g.setcell(3, 0, formula)
+        assert cell_text(g.cells[3][0]) == expected
+
+    def test_array_if_only_evaluates_needed_scalars(self):
+        g = _xg()
+        g.setcell(0, 0, "1")
+        g.setcell(3, 0, "=IF(TRUE,1,1/0)")
+        assert cell_text(g.cells[3][0]) == "1"
+
+
+class TestExcelCoercions:
+    @pytest.mark.parametrize(
+        "formula,expected",
+        [
+            ('=""+1', "#VALUE!"),
+            ('="nan"+1', "#VALUE!"),
+            ('="inf"+1', "#VALUE!"),
+            ('="1_000"+1', "#VALUE!"),
+            ('=" 2 "+1', "3"),
+            ('=0.1+0.2&""', "0.3"),
+            ('=1/3&""', "0.333333333333333"),
+            ('=-0.5&""', "-0.5"),
+            ('="abc"="ABC"', "TRUE"),
+            ('="abc"<>"ABC"', "FALSE"),
+            ('="a"<"B"', "TRUE"),
+            ('="B">"a"', "TRUE"),
+        ],
+    )
+    def test_formula(self, formula, expected):
+        g = _xg()
+        g.setcell(0, 0, formula)
+        assert cell_text(g.cells[0][0]) == expected
+
+    def test_empty_text_cell_in_arithmetic(self):
+        g = _xg()
+        g.setcell(0, 0, '=""')
+        g.setcell(1, 0, "=A1+1")
+        g.setcell(2, 0, "=Z9+1")
+        assert g.cells[1][0].err == ExcelError.VALUE
+        assert g.cells[2][0].val == 1.0
+
+
+class TestAggregateDirectArguments:
+    """Excel coerces a value typed as an aggregate argument, but skips the same
+    value read from a cell or range."""
+
+    @pytest.mark.parametrize(
+        "formula,expected",
+        [
+            ('=SUM("3",1)', "4"),
+            ("=SUM(TRUE,1)", "2"),
+            ("=SUM(1=1,1)", "2"),
+            ('=SUM("abc",1)', "#VALUE!"),
+            ("=AVERAGE(TRUE,0)", "0.5"),
+            ('=COUNT(TRUE,1,"2")', "3"),
+            ('=COUNT("abc",1)', "1"),
+            ("=MAX(TRUE,0)", "1"),
+            ('=PRODUCT("2",3)', "6"),
+            ("=LET(x,TRUE,SUM(x,1))", "2"),
+            # From cells, ranges and names: skipped.
+            ("=SUM(A1,1)", "1"),
+            ("=SUM(A2,1)", "1"),
+            ("=SUM(A1:A2,1)", "1"),
+            ("=SUM(nm,1)", "1"),
+            ("=COUNT(A1,A2)", "0"),
+            ("=SUM(A1:A2=A1:A2)", "0"),
+        ],
+    )
+    def test_formula(self, formula, expected):
+        g = _xg()
+        g.setcell(0, 0, "=1=1")
+        g.setcell(0, 1, "'3")
+        g.names.append(NamedRange("nm", 0, 0, 0, 0))
+        g.setcell(3, 0, formula)
+        assert cell_text(g.cells[3][0]) == expected
+
+
+class TestSwitchMatchesTextCaseInsensitively:
+    def test_switch(self):
+        g = _xg()
+        g.setcell(0, 0, '=SWITCH("a","A",1,2)')
+        assert g.cells[0][0].val == 1.0
+
+
+class TestSingleElementArrayDisplay:
+    @pytest.mark.parametrize(
+        "formula,expected", [("=B2:B2", "#DIV/0!"), ("=A1:A1", "x"), ('=A1:A1&"y"', "xy")]
+    )
+    def test_non_numeric_element(self, formula, expected):
+        from gridcalc.display import cell_clip_value
+
+        g = _xg()
+        g.setcell(1, 1, "=1/0")
+        g.setcell(0, 0, "x")
+        g.setcell(3, 0, formula)
+        assert cell_text(g.cells[3][0]) == expected
+        assert cell_clip_value(g.cells[3][0]) == expected

@@ -11,6 +11,7 @@ from ..opt import (
     OptError,
     OptModel,
     infer_model,
+    number_text,
 )
 from ..opt import (
     cells_to_spec as _cells_to_spec,
@@ -103,7 +104,8 @@ def _write_sensitivity(
             else:
                 cell.type = NUM
                 cell.val = float(value)
-                cell.text = ""
+                # Copy and replicate read `text`; empty text pasted as a blank.
+                cell.text = number_text(cell.val)
     g.recalc()
     g.dirty = 1
     return None
@@ -245,7 +247,7 @@ def _execute_model(
             diagnose=True,
         )
     except OptError as e:
-        undo.undo_stack.pop()
+        undo.discard_last()
         show_error(stdscr, f"opt: {e}")
         return False
     except (ValueError, RuntimeError) as e:
@@ -255,12 +257,12 @@ def _execute_model(
         # If one ever escapes, report it and keep the session alive -- an
         # uncaught exception here tears down curses and takes the user's
         # unsaved sheet with it.
-        undo.undo_stack.pop()
+        undo.discard_last()
         show_error(stdscr, f"opt: invalid model ({e})")
         return False
 
     if not result.applied:
-        undo.undo_stack.pop()
+        undo.discard_last()
         msg = f"opt: {result.status_name}"
         if result.conflict is not None:
             msg += "  " + format_conflict(result.conflict, len(constraint_cells), cellname)
@@ -367,6 +369,7 @@ def cmd_opt(
             show_error(stdscr, f"opt: no model named {name!r}")
             return False
         del g.models[name]
+        g.dirty = 1
         _flash(stdscr, f"opt: removed model {name!r}")
         return False
 
@@ -425,6 +428,7 @@ def cmd_opt(
             show_error(stdscr, f"opt: {e}")
             return False
         g.models[name] = model
+        g.dirty = 1
         _flash(stdscr, f"opt: defined model {name!r}")
         return False
 
@@ -478,13 +482,13 @@ def cmd_goal(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bo
             apply=True,
         )
     except GoalSeekError as e:
-        undo.undo_stack.pop()
+        undo.discard_last()
         show_error(stdscr, f"goal: {e}")
         return False
 
     if not result.applied:
         # The search ran but didn't converge; no mutation, no undo entry.
-        undo.undo_stack.pop()
+        undo.discard_last()
         show_error(
             stdscr,
             f"goal: did not converge (residual={result.residual:.3g} "

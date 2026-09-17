@@ -13,9 +13,11 @@ model is sheet-resident:
     indicate live feasibility; the optimizer reads the underlying AST.
 
 Linearity is enforced by walking gridcalc's formula AST. Cell references
-that resolve to decision variables become coefficients; everything else is
-folded into the constant term using the cell's currently evaluated value.
-This means non-decision cells act as parameters: edit them and re-run.
+that resolve to decision variables become coefficients. A formula cell that
+reads a decision variable, directly or through other formulas, is inlined:
+its AST is walked in place of its stale value. Everything else is folded into
+the constant term using the cell's currently evaluated value, so non-decision
+cells act as parameters: edit them and re-run. A text parameter is refused.
 
 Supported AST shapes:
   Number, CellRef, BinOp(+,-,*,/), UnaryOp(+,-), Percent,
@@ -28,11 +30,25 @@ SUM, Name) raises NotLinear with a message naming the offending node.
 from __future__ import annotations
 
 import math
+import numbers
+import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 from . import _opt as _ext  # type: ignore[attr-defined]  # nanobind extension
-from .engine import EMPTY, FORMULA, NUM, Cell, Grid, ref
+from .engine import (
+    _REF_RE,
+    EMPTY,
+    FORMULA,
+    LABEL,
+    NUM,
+    SPILL,
+    Cell,
+    Grid,
+    _expand_ranges,
+    ref,
+)
 from .formula.ast_nodes import (
     BinOp,
     Bool,
@@ -48,6 +64,7 @@ from .formula.ast_nodes import (
     String,
     UnaryOp,
 )
+from .formula.deps import extract_refs
 from .formula.parser import ParseError
 from .formula.parser import parse as _formula_parse
 
@@ -85,9 +102,9 @@ def _cell_ast(cell: Cell) -> Node | None:
     return parsed
 
 
-# Map gridcalc comparison-op strings to _opt sense codes. Strict inequalities
-# are folded onto their non-strict counterparts because LP has no strict-form
-# equivalent; "<>" has no LP analogue and is rejected upstream.
+# Map gridcalc comparison-op strings to _opt sense codes. LP has no strict
+# form: `solve` tightens a strict all-integer row by one and refuses any other.
+# "<>" has no LP analogue and is rejected upstream.
 _SENSE = {
     "<=": _ext.LE,
     "<": _ext.LE,
@@ -173,14 +190,23 @@ def parse_cells(spec: str) -> list[tuple[int, int]]:
 def _parse_bound_value(s: str, *, positive: bool) -> float:
     """Parse a bound endpoint, accepting 'inf' / '-inf' for +-infinity.
 
-    `positive` decides which way a bare 'inf' goes; '+inf'/'-inf' override it.
+    ``positive`` marks the upper end. Raises ``ValueError`` on ``nan`` or on an
+    infinity pointing the wrong way (``inf`` as a lower bound).
     """
-    s = s.strip().lower()
-    if s in ("inf", "+inf", "infinity", "+infinity"):
-        return math.inf
-    if s in ("-inf", "-infinity"):
-        return -math.inf
-    return float(s)
+    v = float(s)
+    if math.isnan(v):
+        raise ValueError(f"bound is not numeric: {s.strip()}")
+    if v == (-math.inf if positive else math.inf):
+        raise ValueError(f"{'upper' if positive else 'lower'} bound cannot be {s.strip()}")
+    return v
+
+
+def number_text(x: float) -> str:
+    """Source text for a number written into a cell, as ``setcell`` would store it.
+
+    Integral values drop the ``.0``; others use ``repr``, which round-trips.
+    """
+    return str(int(x)) if x.is_integer() and abs(x) < 1e15 else repr(x)
 
 
 def cells_to_spec(cells: list[tuple[int, int]]) -> str:
@@ -226,10 +252,13 @@ def parse_bounds(spec: str) -> dict[tuple[int, int], tuple[float, float]]:
         if ":" not in range_str:
             raise ValueError(f"bounds range needs 'lo:hi': {range_str}")
         lo_s, hi_s = range_str.split(":", 1)
-        out[(c, r)] = (
-            _parse_bound_value(lo_s, positive=False),
-            _parse_bound_value(hi_s, positive=True),
-        )
+        try:
+            out[(c, r)] = (
+                _parse_bound_value(lo_s, positive=False),
+                _parse_bound_value(hi_s, positive=True),
+            )
+        except ValueError as e:
+            raise ValueError(f"bad bounds for {cellref_str.strip()}: {e}") from e
     return out
 
 
@@ -461,6 +490,9 @@ def extract_quadratic(node: Node, decision_vars: set[CellKey], grid: Grid) -> Qu
         key: CellKey = (node.col, node.row)
         if key in decision_vars:
             return QuadForm({}, {key: 1.0}, 0.0)
+        helper = _helper_ast(grid, key, decision_vars)
+        if helper is not None:
+            return _inline(extract_quadratic, helper, key, decision_vars, grid)
         return QuadForm({}, {}, _cell_value(grid, node.col, node.row))
 
     if isinstance(node, UnaryOp):
@@ -612,18 +644,116 @@ class SolveResult:
 # --- Linearity walker -------------------------------------------------------
 
 
+def _is_text(cell: Cell) -> bool:
+    """Whether a cell holds text: a label, or a formula/spill string result."""
+    if cell.type == LABEL:
+        return True
+    if cell.type == EMPTY:
+        return False
+    return (cell.sval is not None and cell.sval not in ("TRUE", "FALSE")) or not isinstance(
+        cell.val, numbers.Real
+    )
+
+
 def _cell_value(grid: Grid, c: int, r: int) -> float:
-    """Current numeric value of a cell, treating EMPTY/non-numeric as 0."""
+    """Current numeric value of a parameter cell; EMPTY reads as 0.
+
+    Text raises ``OptError``: reading it as 0 solves a different model. An
+    error value reads as NaN, which the callers reject as non-finite.
+    """
     cell = grid.cells[c][r]
-    if cell.type == NUM:
-        return float(cell.val)
-    if cell.type == FORMULA:
-        # Use the most recently evaluated numeric value. Non-numeric formula
-        # results (errors, strings) collapse to 0 here -- they make the
-        # linearization meaningless anyway, so the LP would be wrong even
-        # if we propagated NaN.
-        return float(cell.val) if isinstance(cell.val, (int, float)) else 0.0
-    return 0.0
+    if cell.type == EMPTY:
+        return 0.0
+    if _is_text(cell):
+        raise OptError(f"{_cellname(c, r)} holds text, not a number")
+    return float(cell.val)
+
+
+def _precedents(cell: Cell, sheet: str, named: dict[str, Any]) -> set[tuple[str | None, int, int]]:
+    """Cells a formula reads, as ``(sheet, col, row)``.
+
+    Formulas the Excel parser rejects (PYTHON-mode syntax) fall back to every
+    A1-shaped token and range name in the text, which over-approximates.
+    """
+    node = _cell_ast(cell)
+    if node is not None:
+        return extract_refs(node, named, formula_sheet=sheet)
+    text = _expand_ranges(cell.text)
+    out: set[tuple[str | None, int, int]] = set()
+    for m in _REF_RE.finditer(text):
+        hit = ref(m.group(0))
+        if hit is not None:
+            out.add((sheet, hit[1], hit[2]))
+    for word in re.findall(r"[A-Za-z_]\w*", text):
+        if word.lower() in named:
+            out |= extract_refs(named[word.lower()], named, formula_sheet=sheet)
+    return out
+
+
+def _helper_ast(grid: Grid, key: CellKey, decision_vars: set[CellKey]) -> Node | None:
+    """The formula of active-sheet cell ``key`` if it reads a decision variable.
+
+    Returns None for a cell that does not. Raises ``OptError`` on a circular
+    reference and ``NotLinear`` when the formula cannot be inlined.
+    """
+    if grid.cells[key[0]][key[1]].type not in (FORMULA, SPILL):
+        return None
+    active = _active_sheet_name(grid)
+    named = grid._dep_named_ranges()
+    done: dict[tuple[str | None, int, int], bool] = {}
+    path: set[tuple[str | None, int, int]] = set()
+
+    def reads(k: tuple[str | None, int, int]) -> bool:
+        sheet, c, r = k
+        if sheet == active and (c, r) in decision_vars:
+            return True
+        if k in done:
+            return done[k]
+        cell = grid._sheet_cells(sheet).get((c, r))
+        if cell is None or sheet is None:
+            return False
+        precedents: set[tuple[str | None, int, int]]
+        if cell.type == SPILL and cell.spill_parent is not None:
+            precedents = {(sheet, cell.spill_parent[0], cell.spill_parent[1])}
+        elif cell.type == FORMULA:
+            precedents = _precedents(cell, sheet, named)
+        else:
+            return False
+        if k in path:
+            raise OptError(f"circular reference through {_cellname(c, r)}")
+        path.add(k)
+        # No short-circuit: every precedent is explored so a cycle cannot hide
+        # behind a path that reaches a variable first.
+        done[k] = any([reads(p) for p in precedents])
+        path.discard(k)
+        return done[k]
+
+    if not reads((active, key[0], key[1])):
+        return None
+    cell = grid.cells[key[0]][key[1]]
+    node = _cell_ast(cell) if cell.type == FORMULA else None
+    if node is None:
+        raise NotLinear(
+            f"{_cellname(*key)} depends on a decision variable but its formula cannot be inlined"
+        )
+    return node
+
+
+_Form = TypeVar("_Form", LinearForm, QuadForm)
+
+
+def _inline(
+    walk: Callable[[Node, set[CellKey], Grid], _Form],
+    node: Node,
+    key: CellKey,
+    decision_vars: set[CellKey],
+    grid: Grid,
+) -> _Form:
+    """Walk a helper cell's formula in place of its value; errors name the helper."""
+    try:
+        return walk(node, decision_vars, grid)
+    except NotLinear as exc:
+        raise type(exc)(f"{_cellname(*key)}: {exc}") from exc
 
 
 def _active_sheet_name(grid: Grid) -> str:
@@ -659,6 +789,9 @@ def extract_linear(node: Node, decision_vars: set[CellKey], grid: Grid) -> Linea
         key: CellKey = (node.col, node.row)
         if key in decision_vars:
             return LinearForm({key: 1.0}, 0.0)
+        helper = _helper_ast(grid, key, decision_vars)
+        if helper is not None:
+            return _inline(extract_linear, helper, key, decision_vars, grid)
         return LinearForm({}, _cell_value(grid, node.col, node.row))
 
     if isinstance(node, UnaryOp):
@@ -728,7 +861,9 @@ def _sum_arg(arg: Node, decision_vars: set[CellKey], grid: Grid) -> LinearForm:
                 key = (c, r)
                 if key in decision_vars:
                     out.coeffs[key] = out.coeffs.get(key, 0.0) + 1.0
-                else:
+                elif (helper := _helper_ast(grid, key, decision_vars)) is not None:
+                    out = out.add(_inline(extract_linear, helper, key, decision_vars, grid))
+                elif not _is_text(grid.cells[c][r]):  # SUM skips text in a range
                     out.constant += _cell_value(grid, c, r)
         return out
     return extract_linear(arg, decision_vars, grid)
@@ -847,6 +982,7 @@ def solve(
     # linear part. We add it back to the reported objective below.
 
     # Constraints.
+    integral = (integer_vars or set()) | (binary_vars or set())
     A: list[list[float]] = []
     sense: list[int] = []
     rhs: list[float] = []
@@ -868,6 +1004,19 @@ def solve(
                 f"constraint cell {_cellname(c, r)} has a non-finite value; "
                 "check the cells it references"
             )
+        if isinstance(cell_ast, BinOp) and cell_ast.op in ("<", ">"):
+            # An integer row has integer activity, so `< b` is `<= ceil(b) - 1`.
+            # A continuous row has no strict LP form and no nearest bound.
+            if not all(
+                x.is_integer() and (x == 0.0 or decision_vars[j] in integral)
+                for j, x in enumerate(row)
+            ):
+                raise OptError(
+                    f"constraint cell {_cellname(c, r)} uses strict '{cell_ast.op}', which "
+                    f"LP cannot express; use '{cell_ast.op}=' or make its variables integer "
+                    "with integer coefficients"
+                )
+            rhs_val = math.ceil(rhs_val) - 1.0 if cell_ast.op == "<" else math.floor(rhs_val) + 1.0
         A.append(row)
         sense.append(op_code)
         rhs.append(rhs_val)
@@ -931,11 +1080,14 @@ def solve(
     # indefinite Hessian rather than returning a plausible wrong answer.
     hessian: list[list[float]] = []
     if obj_is_quadratic:
+        if int_indices or bin_indices:
+            raise OptError(
+                "integer or binary variables cannot be combined with a quadratic objective"
+            )
         hessian = obj_quad.hessian(decision_vars)
         check_convexity(hessian, maximize=maximize)
         # A quadratic model's duals do not carry the shadow-price reading the
-        # sensitivity report describes, and branch-and-bound over a Hessian is
-        # not supported at all. Withhold both, as for MIPs.
+        # sensitivity report describes. Withhold them, as for MIPs.
         sensitivity = False
         diagnose = False
 
@@ -981,7 +1133,7 @@ def solve(
             cell = grid._ensure_cell(c, r)
             cell.type = NUM
             cell.val = x
-            cell.text = ""
+            cell.text = number_text(x)
             cell.ast = None
             cell.ast_text = ""
             cell.err = None

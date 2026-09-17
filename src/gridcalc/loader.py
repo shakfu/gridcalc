@@ -1,4 +1,4 @@
-"""Workbook loading shared by frontends -- engine + sandbox only, no view.
+"""Workbook loading and saving shared by frontends -- engine + sandbox only, no view.
 
 A frontend (the web view today, `gridcalc.web`) needs to open a workbook and
 show a first-run demo. That logic is frontend-neutral, so it lives here below
@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import sandbox
-from .engine import Grid, Mode
+from .engine import FORMULA, Grid, Mode
 from .sandbox import FileInfo, LoadPolicy, inspect_file
 
 
@@ -31,17 +31,68 @@ def load_workbook(path: str | Path, policy: LoadPolicy | None = None) -> Grid:
     low = p.lower()
     g = Grid()
     if low.endswith(".xlsx"):
-        if g.xlsxload(p) < 0:
-            raise OSError(f"could not load workbook: {p}")
+        rc = g.xlsxload(p)
     elif low.endswith(".csv"):
-        if g.csvload(p) < 0:
-            raise OSError(f"could not load workbook: {p}")
+        rc = g.csvload(p)
     else:
-        if g.jsonload(p, policy=policy or _default_policy(p)) < 0:
-            raise OSError(f"could not load workbook: {p}")
+        rc = g.jsonload(p, policy=policy or _default_policy(p))
+    if rc < 0:
+        raise OSError(_failure("could not load workbook", p, g))
     g.filename = p
     g.recalc()
     return g
+
+
+def save_workbook(g: Grid, path: str | Path) -> str:
+    """Write ``g`` to ``path`` in the format its extension names; return that format.
+
+    ``.xlsx`` and ``.csv`` go through the grid's exporters, anything else is
+    JSON. Raises ``OSError`` when the write fails. :func:`save_losses` says
+    what the non-JSON formats would drop.
+    """
+    p = str(path)
+    low = p.lower()
+    if low.endswith(".xlsx"):
+        fmt, rc = "xlsx", g.xlsxsave(p)
+    elif low.endswith(".csv"):
+        fmt, rc = "csv", g.csvsave(p)
+    else:
+        fmt, rc = "json", g.jsonsave(p)
+    if rc < 0:
+        raise OSError(_failure("could not write workbook", p, g))
+    return fmt
+
+
+def _failure(what: str, path: str, g: Grid) -> str:
+    return f"{what}: {path}" + (f" ({g.io_error})" if g.io_error else "")
+
+
+def save_losses(g: Grid, path: str | Path) -> list[str]:
+    """What :func:`save_workbook` would not write for ``g`` at ``path``.
+
+    Empty for JSON. xlsx keeps every sheet but not the code block, saved
+    models or names, and keeps formulas only in EXCEL mode. csv keeps the
+    active sheet's values only.
+    """
+    low = str(path).lower()
+    csv = low.endswith(".csv")
+    if not (csv or low.endswith(".xlsx")):
+        return []
+    sheets = [g._active] if csv else g.sheets
+    lost: list[str] = []
+    if (csv or g.mode != Mode.EXCEL) and any(
+        cl.type == FORMULA for s in sheets for cl in s._cells.values()
+    ):
+        lost.append("formulas")
+    if csv and len(g.sheets) > 1:
+        lost.append("other sheets")
+    if g.names:
+        lost.append("names")
+    if g.models:
+        lost.append("models")
+    if g.code or g.withheld_code:
+        lost.append("code")
+    return lost
 
 
 def _default_policy(path: str) -> LoadPolicy:

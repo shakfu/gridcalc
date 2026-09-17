@@ -17,7 +17,7 @@ gridcalc-web                    # demo workbook, or: gridcalc-web book.json
 
 ## Editing
 
-In-cell and formula-bar editing, keyboard navigation, rectangular selection by drag or shift-click, and clicking a row or column header to select the whole line. Copy/cut/paste (formula references adjust, `$` absolutes do not), fill down and right, undo/redo, insert and delete rows and columns sized to the selection. Sheets can be added, renamed, deleted, and reordered. Column edges drag to resize and the width is saved with the workbook. A status bar reports the selection's aggregates and an unsaved-changes marker; closing with unsaved work asks first.
+In-cell and formula-bar editing, keyboard navigation, rectangular selection by drag or shift-click, and clicking a row or column header to select the whole line. Copy/cut/paste (formula references adjust, `$` absolutes do not; a paste that would run off the sheet is refused), fill down and right, undo/redo, insert and delete rows and columns sized to the selection. Dragging the fill handle from a block of several rows or columns repeats the block. Sheets can be added, renamed, deleted, and reordered, and undo reverses each; deleting asks first. Column edges drag to resize and the width is saved with the workbook. A status bar reports the selection's aggregates and an unsaved-changes marker; closing or opening a workbook over unsaved work asks first.
 
 **Formula point mode** works as it does in the terminal: while typing a `=` formula, clicking or dragging on the grid inserts the reference at the caret.
 

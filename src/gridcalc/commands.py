@@ -348,13 +348,15 @@ def _name(ctx: Context) -> Result:
     if rect is None:
         return fail(f"bad range: {spec}")
     c1, r1, c2, r2 = rect
+    existing = any(nr.name == key for nr in g.names)
+    if not existing and len(g.names) >= MAXNAMES:
+        return fail(f"too many names (limit {MAXNAMES})")
+    ctx.undo.save_global(g)
     for nr in g.names:
         if nr.name == key:
             nr.c1, nr.r1, nr.c2, nr.r2 = c1, r1, c2, r2
             g.recalc()
             return ok(f"{key} = {range_a1(c1, r1, c2, r2)}", changed=True)
-    if len(g.names) >= MAXNAMES:
-        return fail(f"too many names (limit {MAXNAMES})")
     g.names.append(NamedRange(key, c1, r1, c2, r2))
     g.recalc()
     return ok(f"{key} = {range_a1(c1, r1, c2, r2)}", changed=True)
@@ -376,6 +378,7 @@ def _unname(ctx: Context) -> Result:
     g = ctx.grid
     for i, nr in enumerate(g.names):
         if nr.name == target:
+            ctx.undo.save_global(g)
             g.names.pop(i)
             g.recalc()
             g.dirty = 1
@@ -427,6 +430,7 @@ def _mode(ctx: Context) -> Result:
     errors = g.validate_for_mode(parsed)
     if errors:
         return fail(f"cannot switch to {parsed.name.lower()}: {errors[0]}")
+    ctx.undo.save_global(g)
     g.mode = parsed
     g._apply_mode_libs()
     g.recalc()
@@ -437,16 +441,16 @@ def _title(ctx: Context) -> Result:
     """Freeze rows/columns at the cursor (the TUI's `:tv`/`:th`/`:tb`/`:tn`)."""
     g = ctx.grid
     ch = ctx.arg(0)[:1].upper()
+    # Clamped so a freeze at the last row or column stays on the sheet.
     if ch == "V":
-        g.tc, g.tr = g.cc + 1, 0
-        g.cc += 1
+        g.cc = g.tc = min(g.cc + 1, NCOL - 1)
+        g.tr = 0
     elif ch == "H":
-        g.tr, g.tc = g.cr + 1, 0
-        g.cr += 1
+        g.cr = g.tr = min(g.cr + 1, NROW - 1)
+        g.tc = 0
     elif ch == "B":
-        g.tc, g.tr = g.cc + 1, g.cr + 1
-        g.cc += 1
-        g.cr += 1
+        g.cc = g.tc = min(g.cc + 1, NCOL - 1)
+        g.cr = g.tr = min(g.cr + 1, NROW - 1)
     elif ch == "N":
         g.tc = g.tr = g.vc = g.vr = 0
     else:

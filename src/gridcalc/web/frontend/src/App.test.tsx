@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { App } from './App'
 import { installMockBridge } from './bridge/mock'
@@ -188,4 +188,131 @@ test('reopening a workbook at the same path resets the cursor', async () => {
   // workbook behind it is new.
   await openWorkbook()
   await waitFor(() => expect(nameBox()).toBe('A1'))
+})
+
+async function solveOnSheet(user: ReturnType<typeof userEvent.setup>, container: HTMLElement) {
+  await user.click(screen.getByRole('menuitem', { name: 'Data' }))
+  await user.click(await screen.findByRole('menuitem', { name: /Optimize/ }))
+  await user.click(screen.getByRole('button', { name: 'Solve selection' }))
+  await screen.findByTestId('solve-result')
+  await waitFor(() => expect(container.querySelectorAll('.annot').length).toBeGreaterThan(0))
+  await user.keyboard('{Escape}') // close the dialog
+}
+
+test('undo clears the solver annotations', async () => {
+  const { container } = render(<App />)
+  await waitFor(() => expect(container.querySelector('.cell-layer')).toHaveTextContent('Widget'))
+  const user = userEvent.setup()
+  await solveOnSheet(user, container)
+  ;(container.querySelector('.grid-scroll') as HTMLElement).focus()
+  await user.keyboard('{Control>}z{/Control}')
+  await waitFor(() => expect(container.querySelectorAll('.annot').length).toBe(0))
+})
+
+test('formatting clears the solver annotations', async () => {
+  const { container } = render(<App />)
+  await waitFor(() => expect(container.querySelector('.cell-layer')).toHaveTextContent('Widget'))
+  const user = userEvent.setup()
+  await solveOnSheet(user, container)
+  await user.click(screen.getByRole('button', { name: 'B' }))
+  await waitFor(() => expect(container.querySelectorAll('.annot').length).toBe(0))
+})
+
+test('the status-bar totals follow an undo', async () => {
+  const { container } = render(<App />)
+  await waitFor(() => expect(container.querySelector('.cell-layer')).toHaveTextContent('Widget'))
+  const user = userEvent.setup()
+  ;(container.querySelector('.grid-scroll') as HTMLElement).focus()
+  await user.keyboard('{ArrowRight}{ArrowDown}{ArrowDown}{ArrowDown}') // B4
+  await user.keyboard('{Shift>}{ArrowDown}{ArrowDown}{/Shift}') // B4:B6 = 10, 4, 7
+  await waitFor(() => expect(screen.getByText('sum 21')).toBeInTheDocument())
+  await user.keyboard('{Shift>}{ArrowUp}{ArrowUp}{/Shift}') // back to B4 alone
+  await user.keyboard('{Delete}')
+  await user.keyboard('{Shift>}{ArrowDown}{ArrowDown}{/Shift}')
+  await waitFor(() => expect(screen.getByText('sum 11')).toBeInTheDocument())
+  await user.keyboard('{Control>}z{/Control}')
+  await waitFor(() => expect(screen.getByText('sum 21')).toBeInTheDocument())
+})
+
+// The first hit used to move the grid's cursor *and focus*, so the rest of the
+// pattern was typed into the active cell and Enter committed it.
+test('incremental find keeps typing in the find box', async () => {
+  const { container } = render(<App />)
+  await waitFor(() => expect(container.querySelector('.cell-layer')).toHaveTextContent('Widget'))
+  const user = userEvent.setup()
+  ;(container.querySelector('.grid-scroll') as HTMLElement).focus()
+  await user.keyboard('{Control>}f{/Control}')
+  const find = container.querySelector('.find-input') as HTMLInputElement
+  await waitFor(() => expect(document.activeElement).toBe(find))
+  for (const ch of 'Gad') {
+    await user.keyboard(ch)
+    await new Promise((r) => setTimeout(r, 30)) // slower than a bridge round trip
+  }
+  expect(find.value).toBe('Gad')
+  expect(document.activeElement).toBe(find)
+  expect(container.querySelector('.cell-editor')).not.toBeInTheDocument()
+  await waitFor(() =>
+    expect((container.querySelector('.name-box') as HTMLInputElement).value).toBe('A5'),
+  )
+  await user.keyboard('{Enter}')
+  expect(await window.pywebview!.api.cell_source(0, 0)).toBe('gridcalc demo')
+})
+
+test('Ctrl+S saves while a cell is being edited', async () => {
+  const { container } = render(<App />)
+  await waitFor(() => expect(container.querySelector('.cell-layer')).toHaveTextContent('Widget'))
+  const save = vi.spyOn(window.pywebview!.api, 'save')
+  const user = userEvent.setup()
+  ;(container.querySelector('.grid-scroll') as HTMLElement).focus()
+  await user.keyboard('x')
+  await waitFor(() => expect(container.querySelector('.cell-editor')).toBeInTheDocument())
+  await user.keyboard('{Control>}s{/Control}')
+  await waitFor(() => expect(save).toHaveBeenCalled())
+})
+
+test('opening over unsaved changes asks, and Cancel keeps them', async () => {
+  const { container } = render(<App />)
+  await waitFor(() => expect(container.querySelector('.cell-layer')).toHaveTextContent('Widget'))
+  const openDialog = vi.spyOn(window.pywebview!.api, 'open_dialog')
+  const user = userEvent.setup()
+  ;(container.querySelector('.grid-scroll') as HTMLElement).focus()
+  await user.keyboard('{Delete}')
+  await waitFor(() => expect(screen.getByText('modified')).toBeInTheDocument())
+  await user.click(screen.getByRole('button', { name: 'Open' }))
+  const dialog = await screen.findByRole('dialog')
+  expect(dialog).toHaveTextContent(/unsaved/i)
+  await user.click(screen.getByRole('button', { name: 'Cancel' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  expect(openDialog).not.toHaveBeenCalled()
+})
+
+test('deleting a sheet asks first', async () => {
+  const { container } = render(<App />)
+  await waitFor(() => expect(container.querySelector('.cell-layer')).toHaveTextContent('Widget'))
+  const del = vi.spyOn(window.pywebview!.api, 'delete_sheet')
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Sheet' }))
+  await user.click(await screen.findByRole('menuitem', { name: 'Delete' }))
+  await screen.findByRole('dialog')
+  expect(del).not.toHaveBeenCalled()
+  await user.click(screen.getByRole('button', { name: 'Delete' }))
+  await waitFor(() => expect(del).toHaveBeenCalledWith('Sheet1'))
+})
+
+test('held Ctrl+Z does not send overlapping undos', async () => {
+  const { container } = render(<App />)
+  await waitFor(() => expect(container.querySelector('.cell-layer')).toHaveTextContent('Widget'))
+  let inflight = 0
+  let most = 0
+  window.pywebview!.api.undo = async () => {
+    most = Math.max(most, ++inflight)
+    await new Promise((r) => setTimeout(r, 20))
+    inflight--
+    return { ok: true, dirty: true }
+  }
+  const scroll = container.querySelector('.grid-scroll') as HTMLElement
+  scroll.focus()
+  for (let i = 0; i < 3; i++) fireEvent.keyDown(scroll, { key: 'z', ctrlKey: true })
+  await new Promise((r) => setTimeout(r, 120))
+  expect(most).toBe(1)
 })

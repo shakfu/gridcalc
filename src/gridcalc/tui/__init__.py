@@ -18,9 +18,12 @@ reference to it is the patchable ``gridcalc.tui.draw``.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import curses
+import os
 import sys
 from collections.abc import Callable
+from typing import Any, cast
 
 # The module, not the flag: `configure_sandbox` rebinds `SANDBOX_ENABLED` in
 # `sandbox`, so a name imported here would keep the import-time value and
@@ -49,6 +52,7 @@ from ..opt import parse_cells as _parse_cells
 from ..sandbox import (
     FileInfo,
     LoadPolicy,
+    _parse_requirement,
     classify_module,
     configure_sandbox,
     inspect_file,
@@ -314,14 +318,18 @@ def visual_mode(stdscr: curses.window, g: Grid, undo: UndoManager, clipboard: Cl
                 clipboard.paste(g, undo, c1, r1)
             break
         elif action == "delete" or ch in (ord("d"), 127, 8, curses.KEY_BACKSPACE):
-            count = 0
-            for c in range(c1, c2 + 1):
-                for r in range(r1, r2 + 1):
-                    cl = g.cell(c, r)
-                    if cl and cl.type != EMPTY:
-                        undo.save_cell(g, c, r)
-                        g._cells.pop((c, r), None)
-                        count += 1
+            doomed = [
+                (c, r)
+                for (c, r), cl in g._cells.items()
+                if c1 <= c <= c2 and r1 <= r <= r2 and cl.type != EMPTY
+            ]
+            count = len(doomed)
+            if doomed:
+                # One entry for the region: per-cell entries overflow UNDO_MAX.
+                undo.save_region(g, c1, r1, c2, r2)
+                for key in doomed:
+                    g._cells.pop(key, None)
+                g.dirty = 1
             g.recalc()
             stdscr.addnstr(
                 curses.LINES - 1,
@@ -411,6 +419,34 @@ def _dispatch_grid_key(
     return True
 
 
+class _SafeScreen:
+    """``stdscr`` proxy that follows terminal resizes and drops off-screen writes.
+
+    After a shrink, ``curses.LINES``/``COLS`` go stale until
+    ``update_lines_cols``, and a write past the edge raises ``curses.error``.
+    """
+
+    def __init__(self, win: curses.window) -> None:
+        self._win = win
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._win, name)
+
+    def getch(self) -> int:
+        ch = self._win.getch()
+        if ch == curses.KEY_RESIZE:
+            curses.update_lines_cols()
+        return ch
+
+    def addnstr(self, *args: Any) -> None:
+        with contextlib.suppress(curses.error):
+            self._win.addnstr(*args)
+
+    def move(self, y: int, x: int) -> None:
+        with contextlib.suppress(curses.error):
+            self._win.move(y, x)
+
+
 def mainloop(stdscr: curses.window, g: Grid) -> None:
     undo = UndoManager()
     clipboard = Clipboard(SystemClipboard())
@@ -470,7 +506,8 @@ def mainloop(stdscr: curses.window, g: Grid) -> None:
             continue
 
         if ch == 0x1F & ord("c"):
-            break
+            if cmd_quit(stdscr, g):
+                break
         elif ch == ord("u") or ch == 0x1F & ord("z"):
             # vi-style u / Ctrl-R are the documented bindings; Ctrl-Z and
             # Ctrl-Y stay as aliases. `u` must be tested before the
@@ -486,6 +523,7 @@ def mainloop(stdscr: curses.window, g: Grid) -> None:
                     cl.bold = 1 - cl.bold
                 else:
                     cl.underline = 1 - cl.underline
+                g.dirty = 1
         elif ch == curses.KEY_UP and g.cr > lr:
             g.cr -= 1
         elif ch == curses.KEY_DOWN and g.cr < NROW - 1:
@@ -507,6 +545,7 @@ def mainloop(stdscr: curses.window, g: Grid) -> None:
             if cl and cl.type != EMPTY:
                 undo.save_cell(g, g.cc, g.cr)
                 g._cells.pop((g.cc, g.cr), None)
+                g.dirty = 1
             g.recalc()
         elif ch == ord("!"):
             # Same command object `:recalc` runs, so the key and the command
@@ -566,7 +605,7 @@ def startup_trust_prompt(filename: str, info: FileInfo) -> LoadPolicy | None:
     print(f"  Cells: {info.cell_count} ({info.formula_count} formulas)")
     if info.requires:
         for mod in info.requires:
-            cls = classify_module(mod)
+            cls = classify_module(_parse_requirement(mod)[0])
             tag = f" [{cls}]" if cls != "safe" else ""
             print(f"  Requires: {mod}{tag}")
     if info.has_code:
@@ -577,9 +616,16 @@ def startup_trust_prompt(filename: str, info: FileInfo) -> LoadPolicy | None:
 
     while True:
         prompt = "  [l]oad code  [s]kip code  [q]uit: "
-        resp = input(prompt).strip().lower()
+        try:
+            resp = input(prompt).strip().lower()
+        except EOFError:
+            # No terminal to answer on: load formulas only.
+            print("\nNo input; skipping code.")
+            return LoadPolicy.formulas_only()
         if resp == "l":
-            approved = [m for m in info.requires if classify_module(m) != "blocked"]
+            approved = [
+                m for m in info.requires if classify_module(_parse_requirement(m)[0]) != "blocked"
+            ]
             return LoadPolicy(load_code=True, approved_modules=approved)
         elif resp == "s":
             return LoadPolicy.formulas_only()
@@ -641,15 +687,18 @@ def main() -> None:
     g.mc = -1
     g.mr = -1
     g.cw = _state._cfg.width if _state._cfg.width else CW_DEFAULT
-    if _state._cfg.format and _state._cfg.format.upper() in "LRIGD$%*":
-        g.fmt = _state._cfg.format.upper()
+    if _state._cfg.format:
+        g.fmt = _state._cfg.format
     for lib in _state._cfg.libs:
         g.load_lib(lib)
     if _state._cfg.allowed_modules:
         g.load_requires(_state._cfg.allowed_modules)
         g.requires = list(_state._cfg.allowed_modules)
 
-    if args.file:
+    if args.file and not os.path.exists(args.file):
+        # A new workbook: `:w` creates the file.
+        g.filename = args.file
+    elif args.file:
         fn = args.file
         if fn.lower().endswith(".xlsx"):
             # xlsx files have no code block / sandbox surface; load
@@ -681,9 +730,10 @@ def main() -> None:
 
     def _main(stdscr: curses.window) -> None:
         curses.raw()
-        curses.curs_set(0)
+        with contextlib.suppress(curses.error):  # unsupported on e.g. TERM=vt100
+            curses.curs_set(0)
         init_colors()
-        mainloop(stdscr, g)
+        mainloop(cast(curses.window, _SafeScreen(stdscr)), g)
 
     curses.wrapper(_main)
 

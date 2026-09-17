@@ -43,7 +43,8 @@ export interface GridHandle {
   fillDown(): void
   fillRight(): void
   edit(): void
-  goto(ref: string): boolean
+  // `focus` false moves the cursor but leaves the keyboard where it is (find).
+  goto(ref: string, focus?: boolean): boolean
   focus(): void
 }
 
@@ -240,10 +241,15 @@ export function Grid({
     }
   }, [doFetch])
 
+  // Only the latest request may land, and only while the cursor is still on
+  // its cell: a click-commit otherwise left the bar showing the old cell.
+  const sourceSeq = useRef(0)
   const loadSource = useCallback(
     async (r: number, c: number) => {
+      const seq = ++sourceSeq.current
       const s = await guard('cell', () => bridge.cell_source(r, c))
-      if (s !== null) setSource(s)
+      const at = curRef.current
+      if (s !== null && seq === sourceSeq.current && at.r === r && at.c === c) setSource(s)
     },
     [guard],
   )
@@ -359,13 +365,18 @@ export function Grid({
     pointing.current = false
   }
 
+  // A newer edit supersedes one still waiting on its cell source, so a key
+  // typed right after Enter is not overwritten when that source arrives.
+  const editSeq = useRef(0)
   const beginEdit = useCallback(
     async (r: number, c: number, initial?: string, inBar = false) => {
+      const seq = ++editSeq.current
       putCur({ r, c })
       putAnchor({ r, c })
       resetPoint()
       let src = initial
       if (src === undefined) src = (await guard('cell', () => bridge.cell_source(r, c))) ?? ''
+      if (seq !== editSeq.current) return
       setEditValue(src)
       setEditInBar(inBar)
       setEditing({ r, c })
@@ -485,9 +496,9 @@ export function Grid({
   }, [refresh, loadSource, mutate])
 
   const fillSelection = useCallback(
-    async (direction: 'down' | 'right') => {
+    async (direction: 'down' | 'right', span = 1) => {
       const s = selRect(curRef.current, anchorRef.current)
-      await mutate('fill', () => bridge.fill(s.r0, s.c0, s.r1, s.c1, direction))
+      await mutate('fill', () => bridge.fill(s.r0, s.c0, s.r1, s.c1, direction, span))
       await refresh()
     },
     [refresh, mutate],
@@ -502,11 +513,11 @@ export function Grid({
   }, [refresh, loadSource, mutate])
 
   const gotoRef = useCallback(
-    (text: string): boolean => {
+    (text: string, focus = true): boolean => {
       const hit = parseRef(text)
       if (!hit || hit.r >= nrow || hit.c >= ncol) return false
       moveCursor(hit.r, hit.c, false)
-      scrollEl.current?.focus()
+      if (focus) scrollEl.current?.focus()
       return true
     },
     [moveCursor, ncol, nrow],
@@ -568,8 +579,9 @@ export function Grid({
         filling.current = false
         const s = selRect(curRef.current, anchorRef.current)
         const ff = fillFrom.current
-        const dir = s.r1 > ff.r1 ? 'down' : s.c1 > ff.c1 ? 'right' : null
-        if (dir) void fillSelection(dir)
+        // The dragged-from block repeats, so its height or width is the span.
+        if (s.r1 > ff.r1) void fillSelection('down', ff.r1 - ff.r0 + 1)
+        else if (s.c1 > ff.c1) void fillSelection('right', ff.c1 - ff.c0 + 1)
       }
       if (resizing.current) {
         const { col } = resizing.current
@@ -850,13 +862,15 @@ export function Grid({
           onFocus={(e) => e.target.select()}
           onBlur={() => setNameDraft(null)}
           onKeyDown={(e) => {
+            // Only the keys handled here stop; Ctrl+S and the like reach the app.
             if (e.key === 'Enter') {
+              e.stopPropagation()
               if (gotoRef(nameDraft ?? '')) setNameDraft(null)
             } else if (e.key === 'Escape') {
+              e.stopPropagation()
               setNameDraft(null)
               scrollEl.current?.focus()
             }
-            e.stopPropagation()
           }}
         />
         {/* Editing here drives the same edit session as the in-cell editor, so
@@ -877,13 +891,14 @@ export function Grid({
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault()
+              e.stopPropagation()
               void commit('down')
             } else if (e.key === 'Escape') {
               e.preventDefault()
+              e.stopPropagation()
               cancelEdit()
               void loadSource(cur.r, cur.c)
             }
-            e.stopPropagation()
           }}
         />
       </div>
@@ -950,17 +965,13 @@ export function Grid({
                 resetPoint()
               }}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') {
+                if (e.key === 'Enter' || e.key === 'Tab' || e.key === 'Escape') {
                   e.preventDefault()
-                  void commit('down')
-                } else if (e.key === 'Tab') {
-                  e.preventDefault()
-                  void commit('right')
-                } else if (e.key === 'Escape') {
-                  e.preventDefault()
-                  cancelEdit()
+                  e.stopPropagation()
                 }
-                e.stopPropagation()
+                if (e.key === 'Enter') void commit('down')
+                else if (e.key === 'Tab') void commit('right')
+                else if (e.key === 'Escape') cancelEdit()
               }}
               autoFocus
             />

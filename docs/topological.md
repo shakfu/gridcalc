@@ -4,6 +4,18 @@ Design note for replacing the fixed-point recalc loop with a dependency-graph dr
 
 `Grid._recalc_topo` (`src/gridcalc/engine.py`) is what `Grid.recalc()` calls in EXCEL and HYBRID mode, wrapped in a bounded fixpoint so a spill whose shape changed can re-drive its consumers. Phase A's two indexes are `Grid._dep_of` / `Grid._subscribers`; Phase C's incremental path is the `dirty` argument `setcell` and `setcells_bulk` pass down; Phase D's structural cycle detection is the "left in the closure but not in `order`" step, which marks `#CIRC!` instead of the old "didn't converge in 100 iterations" guess. **Phase E (range aggregation) is the one part still open** -- see `TODO.md` under Performance.
 
+Graph upkeep as the code stands:
+
+- A full `recalc()` (no `dirty` set) rebuilds the graph every time. Undo, sort and the CLI write cells directly and rely on it (`CHANGELOG.md`, Unreleased).
+
+- `setcell` and `setcells_bulk` update the graph incrementally.
+
+- `clear_all`, a `mode` change, `rename_sheet` and `remove_sheet` mark it stale, so the next recalc is a full one.
+
+- Volatile cells seed every incremental walk. A cell is volatile when it calls the `RAND` family, `OFFSET` or `INDEX`, or `py.*` (`formula/deps.py`).
+
+- `tests/test_dep_graph.py` checks the graph against a fresh rebuild after each mutating operation.
+
 Everything below is the design as originally written, in the future tense it was written in. It is kept as the rationale -- why the indexes are shaped the way they are, and what the hard cases were -- not as a description of pending work. The one section that no longer describes the code is "How recalc worked before this", which records the fixed-point loop this replaced.
 
 ## Why
@@ -257,9 +269,9 @@ Only revisit if profiling shows large ranges as a hot spot. Sparse subscribers s
 
 - **Granularity of "changed".** Today the loop checks `cl.val != oldval` after evaluation. With topo, do we still check that, or trust the static graph? Static is faster but propagates on edits that don't actually change a downstream value. Probably keep the value-equality check at the leaf to short-circuit no-op propagation; it's cheap.
 
-- **Volatile functions** (`NOW()`, `RAND()`, `TODAY()`). Excel marks these as volatile and recomputes on every recalc. We don't have them yet; if/when we do, they're equivalent to the always-recompute fallback.
+- ~~**Volatile functions** (`NOW()`, `RAND()`, `TODAY()`). Excel marks these as volatile and recomputes on every recalc. We don't have them yet; if/when we do, they're equivalent to the always-recompute fallback.~~ Resolved: `RAND`, `RANDBETWEEN` and `RANDARRAY` join the always-recompute set. `NOW` and `TODAY` are not in it, so they update only on a full recalc.
 
-- **Concurrency.** None of this is thread-safe. The TUI is single-threaded; not a current concern.
+- **Concurrency.** None of this is thread-safe. The TUI is single-threaded; not a current concern. The web bridge is multi-threaded; its `Api` serialises every call on one lock (`docs/web.md`).
 
 ## When to actually do this
 

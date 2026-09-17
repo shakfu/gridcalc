@@ -15,12 +15,15 @@ Invoke them with ``make test-tty`` or ``pytest -m tty``.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import os
 import re
 import select
 import signal
+import struct
 import subprocess
 import sys
+import termios
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -138,8 +141,21 @@ class TuiSession:
         return _strip_ansi(bytes(self._buffer))
 
 
-def _spawn(args: list[str | os.PathLike[str]]) -> tuple[subprocess.Popen[bytes], int]:
-    """Fork gridcalc with a PTY on stdin/stdout/stderr."""
+def set_winsize(fd: int, rows: int, cols: int) -> None:
+    """Set the pty's window size, as a terminal emulator does on resize."""
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+
+def _spawn(
+    args: list[str | os.PathLike[str]],
+    env_overrides: dict[str, str | None] | None = None,
+    size: tuple[int, int] | None = None,
+) -> tuple[subprocess.Popen[bytes], int]:
+    """Fork gridcalc with a PTY on stdin/stdout/stderr.
+
+    ``env_overrides`` replaces environment entries (``None`` removes one);
+    ``size`` sets the pty's rows and columns before the child starts.
+    """
     master, slave = pty.openpty()
     env = {
         **os.environ,
@@ -148,6 +164,13 @@ def _spawn(args: list[str | os.PathLike[str]]) -> tuple[subprocess.Popen[bytes],
         "COLUMNS": "120",
         "GRIDCALC_SANDBOX": "1",
     }
+    for key, value in (env_overrides or {}).items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+    if size is not None:
+        set_winsize(master, *size)
     proc = subprocess.Popen(
         [str(a) for a in args],
         stdin=slave,

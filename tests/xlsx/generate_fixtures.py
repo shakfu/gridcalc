@@ -19,6 +19,8 @@ used; unicode coverage relies on accents, CJK, Cyrillic, and math symbols.
 from __future__ import annotations
 
 import datetime as dt
+import re
+import zipfile
 from pathlib import Path
 
 import openpyxl
@@ -89,8 +91,8 @@ def multisheet_xlsx() -> None:
 
 def sparse_xlsx() -> None:
     """Scattered cells with large gaps, plus cells exactly on and one past
-    gridcalc's 256-column / 1024-row bounds (the out-of-bounds cells must be
-    silently dropped, not crash the import)."""
+    gridcalc's 256-column / 1024-row bounds (the out-of-bounds cells are
+    dropped and counted, not a crash)."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "sparse"
@@ -105,16 +107,16 @@ def sparse_xlsx() -> None:
 
 
 def text_and_numbers_xlsx() -> None:
-    """The text-vs-number interpretation: numeric-looking text becomes a
-    number, non-numeric text stays a label, spaces are preserved."""
+    """Text-vs-number: string cells stay labels even when they look numeric,
+    spaces are preserved, numbers keep their precision."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "mix"
-    ws["A1"] = "007"  # numeric text -> number 7
-    ws["A2"] = "3.5"  # numeric text -> number 3.5
+    ws["A1"] = "007"  # numeric text -> label "007"
+    ws["A2"] = "3.5"  # numeric text -> label "3.5"
     ws["A3"] = "  padded  "  # spaces preserved -> label
     ws["A4"] = "123abc"  # not fully numeric -> label
-    ws["A5"] = "-42"  # signed numeric text -> number -42
+    ws["A5"] = "-42"  # signed numeric text -> label "-42"
     ws["A6"] = 12345678901234  # large integer stays exact
     ws["A7"] = 0.1  # float precision
     _save(wb, "text_and_numbers.xlsx")
@@ -203,6 +205,53 @@ def table_and_chart_xlsx() -> None:
     _save(wb, "table_and_chart.xlsx")
 
 
+def shared_formulas_xlsx() -> None:
+    """Excel's fill-down output: a shared formula (B1:B3), an array formula
+    (C1), and a plain formula (D1), each with a cached value. openpyxl cannot
+    write the shared form, so the sheet XML is replaced in the saved zip."""
+    wb = openpyxl.Workbook()
+    wb.active.title = "fill"
+    wb.active["A1"] = 0  # placeholder; the sheet data is rewritten below
+    _save(wb, "shared_formulas.xlsx")
+    rows = (
+        '<row r="1"><c r="A1"><v>1</v></c>'
+        '<c r="B1"><f t="shared" ref="B1:B3" si="0">A1*2</f><v>2</v></c>'
+        '<c r="C1"><f t="array" ref="C1">SUM(A1:A3*2)</f><v>12</v></c>'
+        '<c r="D1"><f>SUM(A1:A3)</f><v>6</v></c></row>'
+        '<row r="2"><c r="A2"><v>2</v></c><c r="B2"><f t="shared" si="0"/><v>4</v></c></row>'
+        '<row r="3"><c r="A3"><v>3</v></c><c r="B3"><f t="shared" si="0"/><v>6</v></c></row>'
+    )
+    _rewrite_member(
+        HERE / "shared_formulas.xlsx",
+        "xl/worksheets/sheet1.xml",
+        lambda xml: re.sub(r"<sheetData>.*</sheetData>", f"<sheetData>{rows}</sheetData>", xml),
+    )
+
+
+def chartsheet_xlsx() -> None:
+    """A worksheet followed by a chartsheet; only the worksheet has cells."""
+    wb = openpyxl.Workbook()
+    data = wb.active
+    data.title = "Data"
+    for i, v in enumerate([3, 5, 7], start=1):
+        data.cell(row=i, column=1, value=v)
+    chart = BarChart()
+    chart.add_data(Reference(data, min_col=1, min_row=1, max_row=3))
+    wb.create_chartsheet("Chart").add_chart(chart)
+    _save(wb, "chartsheet.xlsx")
+
+
+def _rewrite_member(path: Path, member: str, edit) -> None:
+    """Replace one zip member's text with ``edit(text)``."""
+    with zipfile.ZipFile(path) as z:
+        items = [(info, z.read(info.filename)) for info in z.infolist()]
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        for info, data in items:
+            if info.filename == member:
+                data = edit(data.decode("utf-8")).encode("utf-8")
+            z.writestr(info, data)
+
+
 def main() -> None:
     types_xlsx()
     formulas_xlsx()
@@ -214,6 +263,8 @@ def main() -> None:
     empty_xlsx()
     named_ranges_xlsx()
     table_and_chart_xlsx()
+    shared_formulas_xlsx()
+    chartsheet_xlsx()
     print(f"wrote fixtures to {HERE}")
 
 

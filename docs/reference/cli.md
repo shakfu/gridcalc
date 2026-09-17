@@ -1,6 +1,6 @@
 # Headless CLI
 
-`gridcalc book.json` opens the editor. Add any operation flag and the same command line becomes a batch run that never opens a window, prints its result to stdout, and exits — so a solve can be driven by cron, a Makefile, a CI job, or another program.
+`gridcalc book.json` opens the editor. If `book.json` does not exist, the editor starts an empty workbook and `:w` creates the file. Add any operation flag and the same command line becomes a batch run that never opens a window, prints its result to stdout, and exits — so a solve can be driven by cron, a Makefile, a CI job, or another program.
 
 ```sh
 gridcalc plan.json --solve                       # run the saved 'default' model
@@ -51,7 +51,7 @@ The result is in the exit code as well as the output, so a shell can branch on i
 | Code | Meaning |
 |---|---|
 | `0` | The operation ran and succeeded. |
-| `2` | It ran and the answer was negative: `INFEASIBLE`, `UNBOUNDED`, or a goal seek that iterated without converging. There is output to read. |
+| `2` | It ran and the answer was negative: `INFEASIBLE`, `UNBOUNDED`, `TIMEOUT`, or a goal seek that iterated without converging. There is output to read. |
 | `1` | It never ran: a bad spec, a missing file, no such model, or a goal seek rejected before searching. The message is on stderr and **stdout is empty**. |
 
 The distinction between `2` and `1` is the one that matters in automation:
@@ -159,7 +159,7 @@ Two conventions hold everywhere. **Cells are A1 strings**, because a JSON object
 
 ## Notes
 
-- Configuration still loads, so sandbox policy and enabled libraries are the same as they would be interactively — a batch answer has to match the one you would get on screen. Config warnings go to stderr, where they cannot corrupt the JSON a caller is parsing.
+- Configuration still loads, so sandbox policy and enabled libraries are the same as they would be interactively — a batch answer has to match the one you would get on screen. Config warnings and load warnings, such as xlsx cells dropped past the grid, go to stderr, where they cannot corrupt the JSON a caller is parsing.
 
 - A workbook carrying a `code` block loads formulas-only, exactly as an unanswered interactive open does. There is no prompt to answer in a batch run, and the safe default is the only one that can be taken without asking.
 

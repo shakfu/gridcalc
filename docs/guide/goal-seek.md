@@ -11,7 +11,7 @@ For one-dimensional what-if ("what input makes this output equal X?"), use `:goa
 :goal B10 = 0 by A1 in -50:50         explicit search bracket
 ```
 
-Uses bisection over `Grid.recalc()`, which converges in milliseconds at spreadsheet scale. The variable cell must hold a value, not a formula. On success the variable cell is overwritten; `u` rolls back.
+Uses bisection over `Grid.recalc()`, which converges in milliseconds at spreadsheet scale. The variable cell must be empty or hold a number. The target and any bracket must be finite. The tolerance is relative to the size of the target and the variable. If the variable already hits the target, the search converges in zero steps. On success the variable cell is overwritten; `u` rolls back.
 
 Unlike [`:opt`](optimization.md), goal seek is not persisted in the workbook -- the three arguments fit on one line, so retyping is faster than naming.
 

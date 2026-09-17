@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 import csv
 import json
 import math
+import os
 import re
+import shutil
+import stat
+import tempfile
 from collections.abc import Callable, Iterable, Iterator
 from enum import IntEnum
 from io import StringIO
@@ -11,6 +16,7 @@ from types import MappingProxyType
 from typing import Any, NamedTuple
 
 from .dates import is_date_format, normalise_format
+from .formula.lexer import parse_number
 from .sandbox import load_modules, validate_code, validate_formula
 
 
@@ -493,6 +499,8 @@ class Cell:
 
     def __init__(self) -> None:
         self.type: int = EMPTY
+        # A bool for a boolean formula result (with `sval` "TRUE"/"FALSE"), so
+        # a reader can tell it from the text "TRUE"; numerically still 1/0.
         self.val: float = 0.0
         self.sval: str | None = None
         self.arr: list[float] | None = None
@@ -629,6 +637,23 @@ def ref(s: str) -> tuple[int, int, int] | None:
     return (n, col, row)
 
 
+def _ref_at(text: str, i: int) -> RefMatch | None:
+    """``refabs`` at ``text[i]``, or None when the match is part of a name.
+
+    A reference cannot continue an identifier or number (`LOG10`, `Sheet1`,
+    `1E5`) or be followed by a letter or `(` (`A1B`, `X1(`).
+    """
+    if i > 0 and (text[i - 1].isalnum() or text[i - 1] in "_."):
+        return None
+    m = refabs(text[i:])
+    if m is None:
+        return None
+    j = i + m.chars_consumed
+    if j < len(text) and (text[j].isalnum() or text[j] in "_("):
+        return None
+    return m
+
+
 def col_name(c: int) -> str:
     if c < 26:
         return chr(ord("A") + c)
@@ -685,19 +710,41 @@ def _skip_quoted(text: str, i: int) -> int | None:
     return len(text)
 
 
+def _strip_literals(text: str) -> str:
+    """``text`` with every string literal emptied, e.g. ``len("A1")`` to
+    ``len("")``, so a scan for references ignores prose."""
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        end = _skip_quoted(text, i)
+        if end is None:
+            out.append(text[i])
+            i += 1
+        else:
+            out.append(text[i] * 2)
+            i = end
+    return "".join(out)
+
+
 # `Sheet1!`, `'My Sheet'!` -- the sheet qualifier ahead of a reference.
 _SHEET_QUAL_RE = re.compile(r"(?:'((?:[^']|'')*)'|([A-Za-z_][A-Za-z0-9_.]*))!")
+
+
+# Maps a reference's corners ``(c1, r1, c2, r2)`` (equal for a single cell) to
+# new corners, or to None when the lines it covered were all deleted.
+_RefMove = Callable[[int, int, int, int], "tuple[int, int, int, int] | None"]
 
 
 def _rewrite_refs_on_sheet(
     text: str,
     home_sheet: str,
     edited_sheet: str,
-    move: Callable[[int, int], tuple[int, int]],
+    move: _RefMove,
 ) -> str | None:
     """Rewrite the references in ``text`` that resolve against ``edited_sheet``.
 
-    Returns the new text, or None when nothing moved.
+    Returns the new text, or None when nothing moved. A reference ``move``
+    deletes becomes ``#REF!``, qualifier included.
 
     ``home_sheet`` is the sheet the formula lives on, which is what a bare
     reference resolves against; a reference carrying a qualifier resolves
@@ -711,43 +758,44 @@ def _rewrite_refs_on_sheet(
     n = len(text)
     changed = False
 
-    def take_refs(at: int, sheet: str) -> tuple[int, bool]:
+    def take_refs(at: int, sheet: str, qual: str) -> tuple[int, bool]:
         """Consume a reference at ``at``, plus the ``:ref`` completing a range
-        so a qualifier governs both ends, and append the result."""
-        moved = False
-        first = True
-        while True:
-            result = refabs(text[at:])
-            if not result:
-                if first:
-                    out.append(text[at])
-                    return at + 1, False
-                return at, moved
-            width, rc, rr, ac, ar = result
-            if sheet == edited_sheet:
-                nrc, nrr = move(rc, rr)
-                if (nrc, nrr) != (rc, rr):
-                    rc, rr = nrc, nrr
-                    moved = True
-            out.append(_emitref(rc, rr, ac, ar))
-            at += width
-            first = False
-            if at < n and text[at] == ":" and refabs(text[at + 1 :]):
-                out.append(":")
-                at += 1
-                continue
-            return at, moved
+        so a qualifier governs both ends, and append it after ``qual``."""
+        m1 = _ref_at(text, at)
+        if m1 is None:
+            if qual:
+                out.append(qual)
+                return at, False
+            out.append(text[at])
+            return at + 1, False
+        at += m1.chars_consumed
+        m2 = _ref_at(text, at + 1) if at < n and text[at] == ":" else None
+        end = m2 if m2 is not None else m1
+        rect = (m1.col, m1.row, end.col, end.row)
+        new = move(*rect) if sheet == edited_sheet else rect
+        if m2 is not None:
+            at += 1 + m2.chars_consumed
+        if new is None:
+            out.append("#REF!")
+            return at, True
+        out.append(qual + _emitref(new[0], new[1], m1.abs_col, m1.abs_row))
+        if m2 is not None:
+            out.append(":" + _emitref(new[2], new[3], m2.abs_col, m2.abs_row))
+        return at, new != rect
 
     while i < n:
+        if i > 0 and (text[i - 1].isalnum() or text[i - 1] in "_."):
+            out.append(text[i])  # inside a name: `LOG10`, `Sheet1`
+            i += 1
+            continue
         # The qualifier is matched before `_skip_quoted`, or a quoted sheet
         # name would be mistaken for a string literal and its reference left
         # to resolve against the wrong sheet.
         q = _SHEET_QUAL_RE.match(text, i)
         if q:
-            out.append(q.group(0))
             quoted, bare = q.group(1), q.group(2)
             sheet = bare if quoted is None else quoted.replace("''", "'")
-            i, moved = take_refs(q.end(), sheet)
+            i, moved = take_refs(q.end(), sheet, q.group(0))
             changed = changed or moved
             continue
         end = _skip_quoted(text, i)
@@ -755,7 +803,7 @@ def _rewrite_refs_on_sheet(
             out.append(text[i:end])
             i = end
             continue
-        i, moved = take_refs(i, home_sheet)
+        i, moved = take_refs(i, home_sheet, "")
         changed = changed or moved
 
     return "".join(out) if changed else None
@@ -776,7 +824,7 @@ def adjust_refs(text: str, dcol: int, drow: int) -> str:
             out.append(text[i:end])  # a literal is copied through untouched
             i = end
             continue
-        result = refabs(text[i:])
+        result = _ref_at(text, i)
         if result:
             n, rc, rr, ac, ar = result
             if not ac:
@@ -801,13 +849,13 @@ def _expand_ranges(expr: str) -> str:
             result.append(expr[i:end])  # `"A1:B2"` is text, not a range
             i = end
             continue
-        r1 = ref(expr[i:])
+        r1 = _ref_at(expr, i)
         if r1:
-            n1, c1, row1 = r1
+            n1, c1, row1, _, _ = r1
             if i + n1 < len(expr) and expr[i + n1] == ":":
-                r2 = ref(expr[i + n1 + 1 :])
+                r2 = _ref_at(expr, i + n1 + 1)
                 if r2:
-                    n2, c2, row2 = r2
+                    n2, c2, row2, _, _ = r2
                     # Normalise B1:A1 -> A1:B1. Matches Excel, which treats
                     # A1:B3 and B3:A1 as identical ranges.
                     if c1 > c2:
@@ -826,12 +874,41 @@ def _expand_ranges(expr: str) -> str:
     return "".join(result)
 
 
-def _xlsx_read_cells(filename: str) -> list[tuple[str, int, int, str, str, int]] | None:
+def _number_text(v: float) -> str:
+    """Source text that ``setcell`` parses back to exactly ``v``."""
+    return str(int(v)) if v.is_integer() and abs(v) < 1e15 else repr(v)
+
+
+def _write_atomic(filename: str, write: Callable[[str], object]) -> None:
+    """Run ``write(tmp)`` on a new file beside ``filename``, then rename it over ``filename``.
+
+    Raises on any failure and leaves ``filename`` untouched. ``tmp`` sits in a
+    private directory, so scratch files a writer leaves on failure go with it.
+    """
+    target = os.path.realpath(filename)
+    head, base = os.path.split(target)
+    tmpdir = tempfile.mkdtemp(prefix=f".{base}.", dir=head)
+    tmp = os.path.join(tmpdir, base)
+    try:
+        # 0o666 lets the umask set a new file's mode, as open() would.
+        os.close(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666))
+        write(tmp)
+        with contextlib.suppress(FileNotFoundError):
+            os.chmod(tmp, stat.S_IMODE(os.stat(target).st_mode))
+        with open(tmp, "rb") as f:
+            os.fsync(f.fileno())
+        os.replace(tmp, target)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _xlsx_read_cells(filename: str) -> tuple[list[str], list[tuple[Any, ...]], int]:
     """Read xlsx via the OpenXLSX-backed `_core.xlsx_read`.
 
-    Returns the list of ``(sheet_name, col0, row0, text, numfmt_code,
-    numfmt_id)`` tuples across every sheet in the workbook (workbook order),
-    or ``None`` if the file cannot be opened.
+    Returns ``(worksheet_names, cells, fallbacks)``: every worksheet in
+    workbook order, ``(sheet_name, col0, row0, kind, value, numfmt_code,
+    numfmt_id)`` tuples, and the count of shared or array formulas read as
+    their cached value. Raises if the file cannot be read.
 
     The number format rides along because xlsx has no date type: a date is a
     serial wearing a date format, so the format is the only thing that says
@@ -839,10 +916,8 @@ def _xlsx_read_cells(filename: str) -> list[tuple[str, int, int, str, str, int]]
     """
     from gridcalc import _core
 
-    try:
-        return list(_core.xlsx_read(filename))
-    except Exception:
-        return None
+    names, cells, fallbacks = _core.xlsx_read(filename)
+    return list(names), list(cells), int(fallbacks)
 
 
 def _parse_defined_ref(text: str) -> tuple[str, int, int, int, int] | None:
@@ -873,29 +948,44 @@ def _parse_defined_ref(text: str) -> tuple[str, int, int, int, int] | None:
     return sheet, min(c1, c2), min(r1, r2), max(c1, c2), max(r1, r2)
 
 
-def _xlsx_read_defined_names(filename: str) -> list[tuple[str, str, int, int, int, int]]:
-    """Read simple cell/range defined names straight from the xlsx zip
-    (``xl/workbook.xml``), which OpenXLSX does not expose. Returns
-    ``(name, sheet, c1, r1, c2, r2)`` tuples. Built-in names (``_xlnm.*``)
-    and non-reference names are skipped. Never raises -- a malformed or
-    name-less workbook yields an empty list."""
+def _xlsx_workbook_xml(filename: str) -> Any:
+    """The root of the xlsx zip's ``xl/workbook.xml``, or None if unreadable.
+
+    OpenXLSX exposes neither defined names nor the date system, so both are
+    read here. Never raises.
+    """
     import xml.etree.ElementTree as ET
     import zipfile
 
-    ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
-    out: list[tuple[str, str, int, int, int, int]] = []
     try:
         with zipfile.ZipFile(filename) as z, z.open("xl/workbook.xml") as f:
             # noqa justification: `filename` is an xlsx the user explicitly
             # chose to open; the C++ reader already parses all of its XML, so
             # reading one more member here adds no attack surface.
-            root = ET.parse(f).getroot()  # noqa: S314
+            return ET.parse(f).getroot()  # noqa: S314
     except (KeyError, zipfile.BadZipFile, OSError, ET.ParseError):
-        return out
-    container = root.find(f"{ns}definedNames")
+        return None
+
+
+_XLSX_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+
+
+def _xlsx_date1904(root: Any) -> bool:
+    """Whether the workbook counts date serials from 1904 (old Mac Excel)."""
+    pr = None if root is None else root.find(f"{_XLSX_NS}workbookPr")
+    return pr is not None and pr.get("date1904", "").lower() in ("1", "true")
+
+
+def _xlsx_read_defined_names(root: Any) -> list[tuple[str, str, int, int, int, int]]:
+    """Read simple cell/range defined names from a parsed ``xl/workbook.xml``.
+    Returns ``(name, sheet, c1, r1, c2, r2)`` tuples. Built-in names
+    (``_xlnm.*``) and non-reference names are skipped. Never raises -- a
+    malformed or name-less workbook yields an empty list."""
+    out: list[tuple[str, str, int, int, int, int]] = []
+    container = None if root is None else root.find(f"{_XLSX_NS}definedNames")
     if container is None:
         return out
-    for el in container.findall(f"{ns}definedName"):
+    for el in container.findall(f"{_XLSX_NS}definedName"):
         name = el.get("name", "")
         if not name or name.startswith("_xlnm."):
             continue
@@ -905,26 +995,38 @@ def _xlsx_read_defined_names(filename: str) -> list[tuple[str, str, int, int, in
     return out
 
 
+def _xlsx_sheet_name_error(names: list[str]) -> str | None:
+    """Why Excel would reject this list of sheet names, or None."""
+    seen: set[str] = set()
+    for name in names:
+        if not name.strip() or len(name) > 31:
+            return f"sheet name {name!r} must be 1-31 characters for xlsx"
+        if any(ch in name for ch in ":\\/?*[]") or name[0] == "'" or name[-1] == "'":
+            return f"sheet name {name!r} has a character xlsx forbids (: \\ / ? * [ ] or edge ')"
+        if name.lower() == "history":
+            return "sheet name 'History' is reserved in xlsx"
+        if name.lower() in seen:
+            return f"sheet name {name!r} differs from another only by case, which xlsx forbids"
+        seen.add(name.lower())
+    return None
+
+
 def _xlsx_write_cells(
     filename: str, cells: list[tuple[Any, ...]], sheet_names: list[str] | None = None
-) -> int:
+) -> None:
     """Write ``(sheet_name, col0, row0, kind, value[, cached])`` tuples.
 
-    ``kind`` is in ``{'s','n','f'}``. For ``'f'``, ``value`` is the
+    ``kind`` is in ``{'s','n','b','f'}``. For ``'f'``, ``value`` is the
     formula text (with or without leading ``=``) and the optional 6th
-    element is a cached numeric value (or ``None``). ``sheet_names`` lists
-    every sheet in workbook order and fixes both the sheet order and the
-    fate of sheets holding no cells; without it, sheets are created in the
-    order they first appear in ``cells``. Returns 0 on success, -1 on
+    element is a cached number or bool (``None`` writes no cached value).
+    ``sheet_names`` lists every sheet in workbook order and fixes both the
+    sheet order and the fate of sheets holding no cells; without it, sheets
+    are created in the order they first appear in ``cells``. Raises on
     failure.
     """
     from gridcalc import _core
 
-    try:
-        _core.xlsx_write(filename, cells, list(sheet_names or []))
-        return 0
-    except Exception:
-        return -1
+    _core.xlsx_write(filename, cells, list(sheet_names or []))
 
 
 def _ast_has_pycall(node: Any) -> bool:
@@ -1019,19 +1121,25 @@ class _CellsProxy:
         return _ColProxy(self._cells, c)
 
 
+def _quote_sheet(name: str) -> str:
+    """``name`` as a formula sheet qualifier: bare when it lexes as one
+    identifier, else in single quotes with ``'`` doubled."""
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) and name.upper() not in ("TRUE", "FALSE"):
+        return name
+    return "'" + name.replace("'", "''") + "'"
+
+
 def _rewrite_sheet_prefix(text: str, old: str, new: str) -> str:
     """Replace ``<old>!`` sheet prefixes in formula ``text`` with ``<new>!``.
 
-    Skips matches inside double-quoted string literals (gridcalc's only
-    string syntax; ``""`` is the escape for a literal quote). Matches
-    are anchored on a non-identifier boundary before the name, so
-    ``X<old>!`` does not match.
+    Matches bare and quoted (``'My Data'!``) qualifiers, and quotes ``new``
+    when it needs quoting. Skips double-quoted string literals (``""`` is
+    the escape for a literal quote). A qualifier must start on a
+    non-identifier boundary, so ``X<old>!`` does not match.
     """
     out: list[str] = []
     i = 0
     n = len(text)
-    old_with_bang = f"{old}!"
-    new_with_bang = f"{new}!"
     while i < n:
         ch = text[i]
         if ch == '"':
@@ -1051,14 +1159,14 @@ def _rewrite_sheet_prefix(text: str, old: str, new: str) -> str:
                 out.append(text[i])
                 i += 1
             continue
-        # Try to match `<old>!` here, anchored on a non-identifier
-        # boundary on the left.
-        if text.startswith(old_with_bang, i):
-            prev = text[i - 1] if i > 0 else ""
-            if not (prev.isalnum() or prev == "_"):
-                out.append(new_with_bang)
-                i += len(old_with_bang)
-                continue
+        prev = text[i - 1] if i > 0 else ""
+        q = None if prev.isalnum() or prev == "_" else _SHEET_QUAL_RE.match(text, i)
+        if q:
+            quoted, bare = q.group(1), q.group(2)
+            sheet = bare if quoted is None else quoted.replace("''", "'")
+            out.append(_quote_sheet(new) + "!" if sheet == old else q.group(0))
+            i = q.end()
+            continue
         out.append(ch)
         i += 1
     return "".join(out)
@@ -1135,6 +1243,12 @@ class Grid:
         # serialized back on jsonsave; consumed by the `:opt` dispatcher.
         self.models: dict[str, Any] = {}
         self.code: str = ""
+        # A file's code block that the load policy refused. Never executed;
+        # jsonsave writes it back so saving does not delete it.
+        self.withheld_code: str = ""
+        # Why the last load or save returned -1, and what the last load dropped.
+        self.io_error: str | None = None
+        self.load_warnings: list[str] = []
         self.mc: int = -1
         self.mr: int = -1
         self._eval_globals: dict[str, Any] = _make_eval_globals()
@@ -1142,7 +1256,7 @@ class Grid:
         self.libs: list[str] = []
         self._module_errors: list[str] = []
         self.code_error: str | None = None
-        self.mode: Mode = Mode.PYTHON
+        self._mode: Mode = Mode.PYTHON
         # Topological recalc bookkeeping. Workbook-wide dep graph keyed by
         # (sheet, c, r) 3-tuples; `sheet` is the sheet name, never None for
         # entries that _refresh_deps installs (only `extract_refs` may emit
@@ -1155,12 +1269,22 @@ class Grid:
         # dependency on the cell blocking it, so any edit re-attempts every
         # blocked anchor -- cheap, since the set is normally empty.
         self._spill_blocked: set[tuple[str | None, int, int]] = set()
-        # Set True by `_rebuild_dep_graph`; remains True while
-        # `_refresh_deps`/`_clear_deps` maintain the graph incrementally.
-        # Reset to False on mode entry into EXCEL/HYBRID (LEGACY skips
-        # graph maintenance, so the graph is stale on mode transition).
-        # `_recalc_topo` skips its rebuild call when this flag is True.
+        # True means the graph matches the cells. Set by `_rebuild_dep_graph`,
+        # kept by `_refresh_deps`/`_clear_deps`; cleared by any change the
+        # incremental path misses (mode, `clear_all`, sheet rename/removal).
+        # While False, the next recalc is a full one, which always rebuilds.
         self._dep_graph_built: bool = False
+
+    @property
+    def mode(self) -> Mode:
+        return self._mode
+
+    @mode.setter
+    def mode(self, value: Mode) -> None:
+        # PYTHON mode maintains no graph, so any switch leaves it stale.
+        if value != self._mode:
+            self._dep_graph_built = False
+        self._mode = value
 
     # -- Per-sheet state delegated to the active sheet --
 
@@ -1231,6 +1355,7 @@ class Grid:
         if idx < 0:
             raise KeyError(name)
         del self.sheets[idx]
+        self._dep_graph_built = False
         if self.active >= len(self.sheets):
             self.active = len(self.sheets) - 1
         elif self.active > idx:
@@ -1265,12 +1390,8 @@ class Grid:
         Walks every formula cell on every sheet and rewrites any
         ``<old>!`` sheet prefix to ``<new>!``. Skips matches inside
         double-quoted string literals so a user formula like
-        ``="Other!A1"`` is left untouched. Invalidates the cached AST
-        on each rewritten cell so the next recalc re-parses with the
-        new sheet name.
-
-        Caller is responsible for rebuilding the dep graph and
-        triggering a recalc; ``cmd_sheet`` does both.
+        ``="Other!A1"`` is left untouched. Named ranges bound to ``old``
+        follow it. The dep graph is marked stale; the caller recalcs.
         """
         if old == new:
             return
@@ -1290,6 +1411,10 @@ class Grid:
                     cl.text = rewritten
                     cl.ast = None
                     cl.ast_text = ""
+        for nr in self.names:
+            if nr.sheet == old:
+                nr.sheet = new
+        self._dep_graph_built = False
 
     def set_active(self, name_or_idx: str | int) -> None:
         if isinstance(name_or_idx, int):
@@ -1380,12 +1505,9 @@ class Grid:
         return cl
 
     def clear_all(self) -> None:
-        """Remove all cells from the grid."""
+        """Remove all cells from the active sheet."""
         self._cells.clear()
-        self._dep_of.clear()
-        self._subscribers.clear()
-        self._volatile.clear()
-        self._spill_blocked.clear()
+        self._dep_graph_built = False
 
     def _clear_deps(self, key: tuple[str | None, int, int]) -> None:
         """Drop `key` from forward + reverse indexes and the volatile set."""
@@ -1426,13 +1548,23 @@ class Grid:
         self._subscribers.clear()
         self._volatile.clear()
         self._spill_blocked.clear()
+        named = self._dep_named_ranges()
         for s in self.sheets:
             for (c, r), cl in s._cells.items():
                 if cl.type == FORMULA:
-                    self._refresh_deps(c, r, cl, sheet=s.name)
+                    self._refresh_deps(c, r, cl, sheet=s.name, named=named)
+                elif cl.type == SPILL and cl.spill_parent is not None:
+                    self._register_deps((s.name, c, r), {(s.name, *cl.spill_parent)}, False)
         self._dep_graph_built = True
 
-    def _refresh_deps(self, c: int, r: int, cl: Cell, sheet: str | None = None) -> None:
+    def _refresh_deps(
+        self,
+        c: int,
+        r: int,
+        cl: Cell,
+        sheet: str | None = None,
+        named: dict[str, Any] | None = None,
+    ) -> None:
         """Recompute the dep graph for one cell. Call after writing the cell.
 
         Parses the formula text if the AST cache is stale, extracts the
@@ -1464,7 +1596,8 @@ class Grid:
                 cl.ast = None
         if cl.ast is None:
             return
-        named = self._build_named_ranges()
+        if named is None:
+            named = self._dep_named_ranges()
         deps = extract_refs(cl.ast, named, formula_sheet=sheet)
         volatile = has_dynamic_refs(cl.ast)
         self._register_deps(key, deps, volatile)
@@ -1498,17 +1631,9 @@ class Grid:
 
         if text.startswith("="):
             cl.type = FORMULA
-        elif (
-            text[0].isdigit()
-            or text[0] == "."
-            or (text[0] in "+-" and len(text) > 1 and (text[1].isdigit() or text[1] == "."))
-        ):
-            try:
-                cl.val = float(text)
-                cl.type = NUM
-            except ValueError:
-                cl.type = LABEL
-                cl.val = 0
+        elif (num := parse_number(text.rstrip())) is not None:
+            cl.val = num
+            cl.type = NUM
         else:
             cl.type = LABEL
             cl.val = 0
@@ -1579,6 +1704,8 @@ class Grid:
         # workbook keys once, then run the topo pass in a bounded fixpoint so
         # spills whose shape changed can recompute their new/old consumers.
         active_name = self._active.name
+        if not self._dep_graph_built:
+            dirty = None
         dirty3: set[tuple[str | None, int, int]] | None = (
             None if dirty is None else {(active_name, c, r) for (c, r) in dirty}
         )
@@ -1616,9 +1743,17 @@ class Grid:
         else:
             self.code_error = None
 
+        # A value moves at least one link per pass, so an acyclic chain needs up
+        # to one pass per formula. Past 100 passes, an unchanged set of changing
+        # cells means a cycle: an acyclic graph cannot repeat that set.
+        n_formulas = sum(1 for cl in self._cells.values() if cl.type == FORMULA)
         changed_cells: set[tuple[int, int]] = set()
-        for _ in range(100):
-            changed_cells.clear()
+        prev_changed: set[tuple[int, int]] = set()
+        for npass in range(max(100, n_formulas + 1)):
+            if npass >= 100 and changed_cells == prev_changed:
+                break
+            prev_changed = changed_cells
+            changed_cells = set()
 
             # Inject cell values (only populated cells)
             for (c, r), cl in self._cells.items():
@@ -1773,7 +1908,7 @@ class Grid:
                 continue
             name = cellname(c, r)
             formula = cl.text[1:] if cl.text.startswith("=") else cl.text
-            stripped = _addr_only_re.sub("", formula.replace("$", ""))
+            stripped = _addr_only_re.sub("", _strip_literals(formula.replace("$", "")))
             expanded = _expand_ranges(stripped)
             if re.search(r"\b" + re.escape(name) + r"\b", expanded):
                 self._circular.add((c, r))
@@ -1829,6 +1964,11 @@ class Grid:
                 named[nr.name] = F_RangeRef(start, end)
         return named
 
+    def _dep_named_ranges(self) -> dict[str, Any]:
+        """Named ranges keyed lowercase, as `extract_refs` looks them up:
+        names are case-insensitive, so `=SUM(sales)` depends on `Sales`."""
+        return {k.lower(): v for k, v in self._build_named_ranges().items()}
+
     def _sheet_cells(self, sheet: str | None) -> dict[tuple[int, int], Cell]:
         """Return the cell store for the named sheet, or active when None.
 
@@ -1879,7 +2019,7 @@ class Grid:
         # overlaps a spill -- `=SUM(A1:A3)` -- avoid double-counting the
         # anchor's array against the materialised spill cells.
         if cl.sval is not None:
-            return cl.sval
+            return cl.val if isinstance(cl.val, bool) else cl.sval
         return cl.val
 
     def _cell_spill_value(self, c: int, r: int, sheet: str | None = None) -> object:
@@ -1897,7 +2037,7 @@ class Grid:
         if cl.type == LABEL:
             return cl.text
         if cl.sval is not None:
-            return cl.sval
+            return cl.val if isinstance(cl.val, bool) else cl.sval
         return cl.val
 
     def _store_formula_result(self, cl: Cell, result: Any) -> None:
@@ -1926,7 +2066,7 @@ class Grid:
             cl.arr = None
             cl.arr_cols = None
             cl.sval = "TRUE" if result else "FALSE"
-            cl.val = 1.0 if result else 0.0
+            cl.val = result
             return
         if _is_dataframe(result):
             cl.matrix = result
@@ -1977,7 +2117,7 @@ class Grid:
                 cl.val = float("nan")
                 cl.err = first
             elif isinstance(first, bool):
-                cl.val = 1.0 if first else 0.0
+                cl.val = first
                 cl.sval = "TRUE" if first else "FALSE"
             elif isinstance(first, str):
                 cl.val = 0.0
@@ -1990,6 +2130,9 @@ class Grid:
         cl.matrix = None
         cl.arr = None
         cl.arr_cols = None
+        if result is None:
+            cl.val = 0.0  # `=A1` over an empty cell is 0, as in Excel
+            return
         try:
             cl.val = float(result)
         except (TypeError, ValueError):
@@ -2058,7 +2201,7 @@ class Grid:
             sc.val = float("nan")
             sc.err = val
         elif isinstance(val, bool):
-            sc.val = 1.0 if val else 0.0
+            sc.val = val
             sc.sval = "TRUE" if val else "FALSE"
         elif isinstance(val, str):
             sc.val = 0.0
@@ -2189,31 +2332,31 @@ class Grid:
 
         spill_changed: set[tuple[str | None, int, int]] = set()
 
-        # Build the closure: BFS over `_subscribers` from the dirty set,
-        # plus all volatile cells. If dirty is None, the closure is every
-        # formula cell across every sheet.
+        # Build the closure: BFS over `_subscribers` from the dirty set and
+        # the volatile cells, so a volatile cell's consumers recompute too.
+        # If dirty is None, the closure is every formula cell across every
+        # sheet, and the graph is rebuilt: callers such as undo and sort
+        # write cells directly and rely on a full recalc to catch up.
         if dirty3 is None:
-            if not self._dep_graph_built:
-                self._rebuild_dep_graph()
+            self._rebuild_dep_graph()
             closure: set[tuple[str | None, int, int]] = set()
             for s in self.sheets:
                 for (c, r), cl in s._cells.items():
                     if cl.type == FORMULA:
                         closure.add((s.name, c, r))
         else:
-            closure = set()
+            closure = set(self._volatile)
             for k in dirty3:
                 cl_dirty = self._cell_at(k)
                 if cl_dirty is not None and cl_dirty.type == FORMULA:
                     closure.add(k)
-            stack = list(dirty3)
+            stack = list(dirty3 | self._volatile)
             while stack:
                 k = stack.pop()
                 for sub in self._subscribers.get(k, ()):
                     if sub not in closure:
                         closure.add(sub)
                         stack.append(sub)
-            closure |= self._volatile
 
         # Topological order via Kahn's algorithm. In-edges restricted to
         # cells inside the closure -- deps outside the closure are already
@@ -2269,6 +2412,7 @@ class Grid:
                             self.active = i
                             break
                 env.current_cell = (c, r)
+                env.current_sheet = sheet_name
                 try:
                     result = evaluate(fcl.ast, env)
                 except Exception:
@@ -2325,7 +2469,7 @@ class Grid:
                 return s
         return None
 
-    def _rewrite_all_sheets(self, move: Callable[[int, int], tuple[int, int]]) -> None:
+    def _rewrite_all_sheets(self, move: _RefMove) -> None:
         """Apply ``move`` to every reference in the workbook that resolves
         against the active sheet -- the one a structural edit acts on.
 
@@ -2346,34 +2490,30 @@ class Grid:
                     cl.text = new
 
     def _fixrefs(self, axis: str, a: int, b: int) -> None:
-        def move(rc: int, rr: int) -> tuple[int, int]:
+        def swap(v: int) -> int:
+            return b if v == a else a if v == b else v
+
+        def move(c1: int, r1: int, c2: int, r2: int) -> tuple[int, int, int, int]:
             if axis == "R":
-                if rr == a:
-                    return rc, b
-                if rr == b:
-                    return rc, a
-            else:
-                if rc == a:
-                    return b, rr
-                if rc == b:
-                    return a, rr
-            return rc, rr
+                return c1, swap(r1), c2, swap(r2)
+            return swap(c1), r1, swap(c2), r2
 
         self._rewrite_all_sheets(move)
 
     def _shiftrefs(self, axis: str, pos: int, direction: int) -> None:
-        def move(rc: int, rr: int) -> tuple[int, int]:
-            if axis == "R":
-                if direction > 0 and rr >= pos:
-                    return rc, rr + 1
-                if direction < 0 and rr > pos:
-                    return rc, rr - 1
+        def move(c1: int, r1: int, c2: int, r2: int) -> tuple[int, int, int, int] | None:
+            a1, a2 = (r1, r2) if axis == "R" else (c1, c2)
+            if direction > 0:
+                n1 = a1 + 1 if a1 >= pos else a1
+                n2 = a2 + 1 if a2 >= pos else a2
+            elif a1 == pos and a2 == pos:
+                return None  # Excel: #REF!
             else:
-                if direction > 0 and rc >= pos:
-                    return rc + 1, rr
-                if direction < 0 and rc > pos:
-                    return rc - 1, rr
-            return rc, rr
+                # A deleted range corner lands on the surviving line next to it
+                # on the range's side, so the range shrinks.
+                n1 = a1 - 1 if a1 > pos or (a1 == pos and a2 < pos) else a1
+                n2 = a2 - 1 if a2 > pos or (a2 == pos and a1 < pos) else a2
+            return (c1, n1, c2, n2) if axis == "R" else (n1, r1, n2, r2)
 
         self._rewrite_all_sheets(move)
 
@@ -2619,14 +2759,19 @@ class Grid:
                 cell_italic = 0
                 cell_fmt = ""
                 cell_fmtstr = ""
+                label = False
                 if isinstance(v, dict):
+                    label = v.get("label") is True
                     cell_bold = 1 if v.get("bold") else 0
                     cell_underline = 1 if v.get("underline") else 0
                     cell_italic = 1 if v.get("italic") else 0
                     fmt_val = v.get("fmt", "")
-                    if fmt_val:
-                        cell_fmt = fmt_val[0]
                     cell_fmtstr = v.get("fmtstr", "")
+                    if not isinstance(fmt_val, str) or not isinstance(cell_fmtstr, str):
+                        raise ValueError(
+                            f"{cellname(c_idx, r_idx)}: fmt and fmtstr must be strings"
+                        )
+                    cell_fmt = fmt_val[:1]
                     v = v.get("v", None)
                 if v is None or (isinstance(v, str) and v == ""):
                     continue
@@ -2636,10 +2781,14 @@ class Grid:
                     if isinstance(v, int) or (abs(v) < 1e15 and v == int(v)):
                         text = str(int(v))
                     else:
-                        text = f"{v:g}"
+                        # repr round-trips a double; "%g" kept 6 digits.
+                        text = repr(v)
                 else:
                     continue
-                self._setcell_no_recalc(c_idx, r_idx, text)
+                if label:
+                    self._put_label(c_idx, r_idx, text)
+                else:
+                    self._setcell_no_recalc(c_idx, r_idx, text)
                 cl = self._cells.get((c_idx, r_idx))
                 if not cl:
                     continue
@@ -2650,10 +2799,12 @@ class Grid:
                 cl.fmtstr = cell_fmtstr
 
     def jsonload(self, filename: str, policy: Any = None) -> int:
+        self.io_error = None
         try:
             with open(filename) as f:
                 d = json.load(f)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
+            self.io_error = str(exc)
             return -1
 
         # A workbook is a JSON *object*. `[]`, `null`, a bare number or string
@@ -2682,16 +2833,21 @@ class Grid:
         if isinstance(requires_field, list) and not all(isinstance(r, str) for r in requires_field):
             return -1
 
-        # A load *replaces* the workbook; it does not merge into it. Without an
-        # explicit reset the v1 path wrote its cells into whichever sheet was
-        # already open, so anything outside the incoming payload survived -- a
-        # second workbook silently inherited the first one's data. Worse, a file
-        # whose code the policy refused kept the *previous* workbook's code, and
-        # its functions stayed callable, which is precisely what refusing to
-        # load code is meant to prevent.
-        #
-        # Every `return -1` above happens before any mutation, so resetting here
-        # cannot leave a half-cleared workbook behind on a file that is rejected.
+        # A malformed nested field, or a recalc that raises, is found only
+        # while loading, after the reset.
+        return self._load_or_restore(lambda: self._jsonload_into(d, policy))
+
+    def _reset_workbook(self) -> None:
+        """Drop every sheet and workbook-level field before a load.
+
+        A load *replaces* the workbook; it does not merge into it. Without an
+        explicit reset the v1 path wrote its cells into whichever sheet was
+        already open, so anything outside the incoming payload survived -- a
+        second workbook silently inherited the first one's data. Worse, a file
+        whose code the policy refused kept the *previous* workbook's code, and
+        its functions stayed callable, which is precisely what refusing to
+        load code is meant to prevent.
+        """
         self.sheets = [Sheet()]
         self.active = 0
         self.clear_all()  # also drops the workbook-wide dep graph
@@ -2700,11 +2856,17 @@ class Grid:
         self.libs = []
         self.requires = []
         self.code = ""
+        self.withheld_code = ""
         self.code_error = None
         self._module_errors = []
+        self.load_warnings = []
         # Rebuild the eval namespace from the bare base: a previous workbook's
         # libs and required modules must not stay reachable either.
         self._eval_globals = _make_eval_globals()
+
+    def _jsonload_into(self, d: dict[str, Any], policy: Any) -> None:
+        """Replace the workbook with the decoded file ``d``; may raise part-way."""
+        self._reset_workbook()
 
         if "mode" in d:
             parsed = Mode.parse(d.get("mode"))
@@ -2717,6 +2879,8 @@ class Grid:
         # not "whatever was loaded before".
         if policy is None or policy.load_code:
             self.code = d.get("code", "")
+        else:
+            self.withheld_code = d.get("code", "")
 
         libs = d.get("libs", [])
         if isinstance(libs, list):
@@ -2858,7 +3022,6 @@ class Grid:
         if self.mode != Mode.PYTHON:
             self._dep_graph_built = True
         self.recalc()
-        return 0
 
     def _encode_sheet_rows(self, cells: dict[tuple[int, int], Cell]) -> list[list[Any]]:
         """Encode one sheet's cell store as a v2 ``cells`` rows list."""
@@ -2881,17 +3044,29 @@ class Grid:
                     row.append(None)
                     continue
                 elif sc.type == NUM:
-                    if abs(sc.val) < 1e15 and sc.val == int(sc.val):
-                        val: Any = int(sc.val)
+                    if math.isinf(sc.val):
+                        # JSON has no infinity; this text reloads as one.
+                        val: Any = "1e999" if sc.val > 0 else "-1e999"
+                    elif math.isnan(sc.val):
+                        val = None  # no text reloads as NaN
+                    elif abs(sc.val) < 1e15 and sc.val == int(sc.val):
+                        val = int(sc.val)
                     else:
                         val = sc.val
                     row.append(val)
                 else:
                     row.append(sc.text)
+                # A label whose text would load back as a number or formula
+                # (an imported "00123") says so; older readers ignore the key.
+                label = sc.type == LABEL and (
+                    sc.text.startswith("=") or parse_number(sc.text.rstrip()) is not None
+                )
 
-                has_style = sc.bold or sc.underline or sc.italic or sc.fmt or sc.fmtstr
+                has_style = sc.bold or sc.underline or sc.italic or sc.fmt or sc.fmtstr or label
                 if has_style:
                     styled: dict[str, Any] = {"v": row[-1]}
+                    if label:
+                        styled["label"] = True
                     if sc.bold:
                         styled["bold"] = True
                     if sc.underline:
@@ -2915,8 +3090,8 @@ class Grid:
         if self.requires:
             out["requires"] = self.requires
 
-        if self.code:
-            out["code"] = self.code
+        if self.code or self.withheld_code:
+            out["code"] = self.code or self.withheld_code
 
         if self.names:
             out["names"] = {}
@@ -2948,48 +3123,45 @@ class Grid:
                 entry["widths"] = {str(c): w for c, w in sorted(s.widths.items())}
             out["sheets"].append(entry)
 
-        try:
-            with open(filename, "w") as f:
-                json.dump(out, f, indent=2)
+        def write(path: str) -> None:
+            with open(path, "w") as f:
+                json.dump(out, f, indent=2, allow_nan=False)
                 f.write("\n")
-        except OSError:
+
+        return self._save_via(filename, write)
+
+    def _save_via(self, filename: str, write: Callable[[str], object]) -> int:
+        """Write ``filename`` atomically with ``write``; 0, or -1 with ``io_error`` set."""
+        self.io_error = None
+        try:
+            _write_atomic(filename, write)
+        except Exception as exc:  # noqa: BLE001
+            self.io_error = str(exc) or type(exc).__name__
             return -1
         return 0
 
     def xlsxload(self, filename: str) -> int:
-        cells = _xlsx_read_cells(filename)
-        if cells is None:
+        self.io_error = None
+        try:
+            sheet_order, cells, fallbacks = _xlsx_read_cells(filename)
+        except Exception as exc:  # noqa: BLE001
+            self.io_error = str(exc) or type(exc).__name__
             return -1
-        self.mode = Mode.EXCEL
-        # Reset the workbook to a single empty sheet, then create
-        # additional sheets as encountered in the payload.
-        self.sheets = [Sheet()]
-        self.active = 0
-        self._dep_of.clear()
-        self._subscribers.clear()
-        self._volatile.clear()
-        self._spill_blocked.clear()
-        self._apply_mode_libs()
+        return self._load_or_restore(
+            lambda: self._xlsxload_into(filename, sheet_order, cells, fallbacks)
+        )
 
-        # Group payload by sheet, preserving first-seen order. Date formats
-        # are collected separately and applied after the cells are written:
-        # `setcells_bulk` takes text, and a format is not text.
-        per_sheet: dict[str, list[tuple[int, int, str]]] = {}
-        per_sheet_fmt: dict[str, list[tuple[int, int, str]]] = {}
-        sheet_order: list[str] = []
-        for sname, c, r, text, numfmt_code, numfmt_id in cells:
-            if sname not in per_sheet:
-                per_sheet[sname] = []
-                per_sheet_fmt[sname] = []
-                sheet_order.append(sname)
-            per_sheet[sname].append((c, r, text))
-            datefmt = normalise_format(numfmt_code, numfmt_id)
-            if datefmt:
-                per_sheet_fmt[sname].append((c, r, datefmt))
+    def _xlsxload_into(
+        self, filename: str, sheet_order: list[str], cells: list[tuple[Any, ...]], fallbacks: int
+    ) -> None:
+        """Replace the workbook with the cells ``_xlsx_read_cells`` returned."""
+        self._reset_workbook()
+        self.mode = Mode.EXCEL
+        self._apply_mode_libs()
 
         # Replace the auto-created Sheet1 with the first xlsx sheet
         # (preserves the source workbook's first-sheet name) and add
-        # the rest.
+        # the rest, empty ones included.
         if sheet_order:
             self.sheets[0].name = sheet_order[0]
             for extra in sheet_order[1:]:
@@ -3002,42 +3174,104 @@ class Grid:
                     final_name = f"{extra}_{suffix}"
                     suffix += 1
                 self.sheets.append(Sheet(name=final_name))
+        sheet_index = {name: i for i, name in enumerate(sheet_order)}
 
         # Import simple defined names as sheet-qualified named ranges, so
-        # formulas like `=SUM(SalesData)` resolve. Done before loading cells
-        # so the dep graph picks them up; the final recalc settles any
-        # cross-sheet name that pointed at a not-yet-loaded sheet.
+        # formulas like `=SUM(SalesData)` resolve.
+        root = _xlsx_workbook_xml(filename)
         self.names = [
             NamedRange(name=nm, c1=c1, r1=r1, c2=c2, r2=r2, sheet=sh)
-            for (nm, sh, c1, r1, c2, r2) in _xlsx_read_defined_names(filename)
+            for (nm, sh, c1, r1, c2, r2) in _xlsx_read_defined_names(root)
         ]
+        # 1462 days separate the 1904 and 1900 epochs. A value under 1 is a
+        # time of day, which has no epoch.
+        date_shift = 1462.0 if _xlsx_date1904(root) else 0.0
 
-        # Bulk-load each sheet's cells via setcells_bulk on the active
-        # sheet, switching active per sheet.
-        for i, sname in enumerate(sheet_order):
-            self.active = i
-            # Use the resolved name rather than `sname` in case the
-            # de-dupe path renamed it.
-            self.setcells_bulk(per_sheet[sname])
-            for c, r, datefmt in per_sheet_fmt[sname]:
-                cl = self._active._cells.get((c, r))
-                if cl is not None and cl.type in (NUM, FORMULA):
-                    cl.fmtstr = datefmt
+        # Each value is stored by its xlsx type, not re-parsed as input text:
+        # the string "00123" stays text and "TRUE" the boolean stays a boolean.
+        from .formula.errors import parse_error_literal
+
+        dropped = 0
+        for sname, c, r, kind, value, numfmt_code, numfmt_id in cells:
+            if not (0 <= c < NCOL and 0 <= r < NROW):
+                dropped += 1
+                continue
+            self.active = sheet_index[sname]
+            datefmt = normalise_format(numfmt_code, numfmt_id)
+            if kind == "s":
+                self._put_label(c, r, value)
+            elif kind == "e":
+                if parse_error_literal(value) is not None:
+                    self._setcell_no_recalc(c, r, "=" + value)
+                else:
+                    self._put_label(c, r, value)
+            elif kind == "b":
+                self._setcell_no_recalc(c, r, "=TRUE" if value else "=FALSE")
+            elif kind == "n":
+                if not math.isfinite(value):
+                    continue
+                if datefmt and value >= 1:
+                    value += date_shift
+                self._setcell_no_recalc(c, r, _number_text(value))
+            else:
+                self._setcell_no_recalc(c, r, value)
+            cl = self._cells.get((c, r))
+            if datefmt and cl is not None and cl.type in (NUM, FORMULA):
+                cl.fmtstr = datefmt
         self.active = 0
+        if dropped:
+            self.load_warnings.append(
+                f"{dropped} cells beyond {NCOL} columns x {NROW} rows were not imported"
+            )
+        if fallbacks:
+            self.load_warnings.append(
+                f"{fallbacks} shared or array formulas were imported as their cached values"
+            )
 
-        # A single full recalc so every formula sees the final workbook,
-        # including cross-sheet named ranges loaded out of order.
-        if self.names:
-            self._rebuild_dep_graph()
-            self.recalc()
-
+        # One full recalc, which rebuilds the dep graph, so every formula sees
+        # the final workbook, including cross-sheet names loaded out of order.
+        self.recalc()
         self.dirty = 0
         self.filename = filename
+
+    def _put_label(self, c: int, r: int, text: str) -> None:
+        """Store ``text`` as a label on the active sheet without parsing it."""
+        if not text:
+            return
+        cl = self._ensure_cell(c, r)
+        cl.clear()
+        cl.type = LABEL
+        cl.text = text
+        self._clear_deps((self._active.name, c, r))
+        self.dirty = 1
+
+    def _load_or_restore(self, load: Callable[[], None]) -> int:
+        """Run ``load``; if it raises, put the previous workbook back and return -1.
+
+        A load replaces sheets, names and globals rather than mutating them, so
+        restoring the attributes restores the workbook. The dep graph dicts are
+        mutated in place, hence the forced rebuild.
+        """
+        saved = dict(self.__dict__)
+        try:
+            load()
+        except Exception as exc:  # noqa: BLE001
+            self.__dict__.clear()
+            self.__dict__.update(saved)
+            self._dep_graph_built = False
+            self.io_error = f"{type(exc).__name__}: {exc}"
+            return -1
         return 0
 
     def xlsxsave(self, filename: str) -> int:
+        self.io_error = None
         # Empty workbook: nothing to write.
         if all(cl.type == EMPTY for s in self.sheets for cl in s._cells.values()):
+            self.io_error = "workbook is empty"
+            return -1
+        bad = _xlsx_sheet_name_error([s.name for s in self.sheets])
+        if bad:
+            self.io_error = bad
             return -1
 
         # In EXCEL mode, formula text is preserved (with cached numeric
@@ -3056,23 +3290,33 @@ class Grid:
                 # used to mean in practice.
                 datefmt = cl.fmtstr if cl.fmtstr and is_date_format(cl.fmtstr) else ""
                 if cl.type == LABEL:
-                    payload.append((s.name, c, r, "s", cl.text))
+                    text = cl.text[1:] if cl.text.startswith('"') else cl.text
+                    payload.append((s.name, c, r, "s", text))
                 elif cl.type == NUM:
                     payload.append((s.name, c, r, "n", float(cl.val), datefmt))
-                elif cl.type == FORMULA:
+                elif cl.type == FORMULA or (cl.type == SPILL and not preserve_formulas):
+                    # The cached result: a bool or a finite float. A text or
+                    # error result is written with no cached value.
                     val = cl.val
-                    cached: float | None
-                    if isinstance(val, (int, float)) and not (
-                        isinstance(val, float) and math.isnan(val)
-                    ):
-                        cached = float(val)
-                    else:
-                        cached = None
-                    if preserve_formulas and cl.text:
+                    result = cl.sval if cl.err is None and not isinstance(val, bool) else None
+                    cached: float | bool | None = None
+                    if cl.err is None and result is None:
+                        if isinstance(val, bool):
+                            cached = val
+                        elif math.isfinite(val):
+                            cached = float(val)
+                    if preserve_formulas and cl.type == FORMULA and cl.text:
                         payload.append((s.name, c, r, "f", cl.text, cached, datefmt))
+                    elif result is not None:
+                        payload.append((s.name, c, r, "s", result))
+                    elif isinstance(cached, bool):
+                        payload.append((s.name, c, r, "b", cached))
                     elif cached is not None:
                         payload.append((s.name, c, r, "n", cached, datefmt))
-        return _xlsx_write_cells(filename, payload, [s.name for s in self.sheets])
+        return self._save_via(
+            filename,
+            lambda path: _xlsx_write_cells(path, payload, [s.name for s in self.sheets]),
+        )
 
     def csvsave(self, filename: str) -> int:
         """Export evaluated cell values to CSV."""
@@ -3085,48 +3329,40 @@ class Grid:
                 if c > maxc:
                     maxc = c
 
-        if maxr < 0:
-            try:
-                with open(filename, "w", newline="") as f:
-                    f.write("")
-            except OSError:
-                return -1
-            return 0
+        def value(cl: Cell | None) -> str:
+            if not cl or cl.type == EMPTY:
+                return ""
+            if cl.type == LABEL:
+                return cl.text[1:] if cl.text.startswith('"') else cl.text
+            if cl.err is not None:
+                return ""
+            if cl.sval is not None:
+                return cl.sval  # a text or boolean result
+            v = cl.val
+            if isinstance(v, float) and math.isnan(v):
+                return ""
+            return str(int(v)) if abs(v) < 1e15 and v == int(v) else repr(float(v))
 
-        try:
-            with open(filename, "w", newline="") as f:
+        def write(path: str) -> None:
+            with open(path, "w", newline="") as f:
                 writer = csv.writer(f)
                 for r in range(maxr + 1):
-                    row: list[str] = []
-                    for c in range(maxc + 1):
-                        cl = self._cells.get((c, r))
-                        if not cl or cl.type == EMPTY:
-                            row.append("")
-                        elif cl.type == LABEL:
-                            row.append(cl.text)
-                        elif cl.type in (NUM, FORMULA):
-                            if isinstance(cl.val, float) and math.isnan(cl.val):
-                                row.append("")
-                            elif abs(cl.val) < 1e15 and cl.val == int(cl.val):
-                                row.append(str(int(cl.val)))
-                            else:
-                                row.append(f"{cl.val:g}")
-                        else:
-                            row.append("")
-                    writer.writerow(row)
-        except OSError:
-            return -1
-        return 0
+                    writer.writerow([value(self._cells.get((c, r))) for c in range(maxc + 1)])
+
+        return self._save_via(filename, write)
 
     def csvload(self, filename: str) -> int:
         """Import cells from a CSV file. Numbers become NUM cells, rest become LABELs."""
+        self.io_error = None
         try:
             with open(filename, newline="") as f:
                 content = f.read()
-        except OSError:
+        except (OSError, UnicodeDecodeError) as exc:
+            self.io_error = str(exc)
             return -1
 
         reader = csv.reader(StringIO(content))
+        cells: list[tuple[int, int, str]] = []
         for r_idx, row in enumerate(reader):
             if r_idx >= NROW:
                 break
@@ -3134,9 +3370,10 @@ class Grid:
                 if c_idx >= NCOL:
                     break
                 val = val.strip()
-                if not val:
-                    continue
-                self.setcell(c_idx, r_idx, val)
+                if val:
+                    cells.append((c_idx, r_idx, val))
+        # One recalc: a PYTHON-mode recalc per setcell made this quadratic.
+        self.setcells_bulk(cells)
         return 0
 
     def pdload(self, filename: str, header: bool = True) -> int:
@@ -3167,12 +3404,13 @@ class Grid:
             # Truncate to grid limits
             df = df.iloc[: NROW - (1 if header else 0), :NCOL]
 
+        cells: list[tuple[int, int, str]] = []
         r_offset = 0
         if header:
             for c_idx, col_name_str in enumerate(df.columns):
                 if c_idx >= NCOL:
                     break
-                self.setcell(c_idx, 0, str(col_name_str))
+                cells.append((c_idx, 0, str(col_name_str)))
             r_offset = 1
 
         for r_idx in range(len(df)):
@@ -3185,14 +3423,14 @@ class Grid:
                 if pd.isna(val):
                     continue
                 if isinstance(val, (int, float)):
-                    if isinstance(val, int) or (
-                        isinstance(val, float) and val == int(val) and abs(val) < 1e15
-                    ):
-                        self.setcell(c_idx, r_idx + r_offset, str(int(val)))
+                    if isinstance(val, int) or (abs(val) < 1e15 and val == int(val)):
+                        text = str(int(val))
                     else:
-                        self.setcell(c_idx, r_idx + r_offset, f"{val:g}")
+                        text = repr(float(val))
                 else:
-                    self.setcell(c_idx, r_idx + r_offset, str(val))
+                    text = str(val)
+                cells.append((c_idx, r_idx + r_offset, text))
+        self.setcells_bulk(cells)
         return 0
 
     def pdsave(self, filename: str) -> int:
@@ -3235,7 +3473,9 @@ class Grid:
                 elif cl.type == LABEL:
                     row.append(cl.text)
                 elif cl.type in (NUM, FORMULA):
-                    if isinstance(cl.val, float) and math.isnan(cl.val):
+                    if cl.sval is not None and not isinstance(cl.val, bool):
+                        row.append(cl.sval)  # a text result; val is a 0 placeholder
+                    elif isinstance(cl.val, float) and math.isnan(cl.val):
                         row.append(None)
                     else:
                         row.append(cl.val)
@@ -3245,17 +3485,17 @@ class Grid:
 
         df = pd.DataFrame(data, columns=columns)
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-        try:
+
+        def write(path: str) -> None:
             if ext in ("xlsx", "xls"):
-                df.to_excel(filename, index=False)
+                df.to_excel(path, index=False)
             elif ext == "parquet":
-                df.to_parquet(filename, index=False)
+                df.to_parquet(path, index=False)
             elif ext == "json":
-                df.to_json(filename, orient="records", indent=2)
+                df.to_json(path, orient="records", indent=2)
             elif ext in ("tsv", "tab"):
-                df.to_csv(filename, sep="\t", index=False)
+                df.to_csv(path, sep="\t", index=False)
             else:
-                df.to_csv(filename, index=False)
-        except Exception:
-            return -1
-        return 0
+                df.to_csv(path, index=False)
+
+        return self._save_via(filename, write)

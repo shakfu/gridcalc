@@ -16,8 +16,10 @@ This plan takes a layered approach: no single layer is sufficient, but together 
 | User types code in `:e` editor  | None -- intentional                 | No    |
 | User loads untrusted .json file | Malicious formulas + code blocks    | Yes   |
 | User shares a spreadsheet       | Accidental code exposure            | Low   |
+| User loads a .json with no or unknown `mode` | Loads as PYTHON mode; formulas `eval()` with no prompt | Yes |
+| User starts gridcalc in a directory holding a `gridcalc.toml` | `sandbox = false` there turns off validation and the trust prompt | Yes |
 
-The only real threat is **loading a file from an untrusted source**. The user sitting at the keyboard is the trust boundary.
+The only real threat is **loading a file from an untrusted source**. The user sitting at the keyboard is the trust boundary. A config file in the working directory is untrusted content too (see "Known gaps").
 
 ## Architecture: Four Layers
 
@@ -61,7 +63,7 @@ What remains allowed:
 
 - Subscript and slice access (`vals[0]`, `arr[1:3]`)
 
-This is not airtight -- new escape vectors get discovered. But it blocks all *known* Python sandbox escapes while preserving full library access. It is defense-in-depth, not the primary security boundary.
+This is not airtight -- new escape vectors get discovered. ~~But it blocks all *known* Python sandbox escapes while preserving full library access.~~ It does not: the check is syntactic, and string-borne attribute access passes it (see "Known gaps"). It is defense-in-depth, not the primary security boundary.
 
 ### Layer 3: Trust Gate on File Load
 
@@ -84,13 +86,13 @@ Options:
 
 - **Approve** -- load everything (code block, modules, formulas)
 
-- **Formulas only** -- load cell data and formulas, skip code block and modules
+- **Formulas only** -- load cell data and formulas, skip code block and modules. This is not a code-free load: a PYTHON-mode file's formulas are still `eval()`ed at load.
 
 - **View code** -- display the code block for review
 
 - **Cancel** -- abort the load
 
-Files with no code block and no `requires` field load silently (backward compatible). AST validation still applies to all formulas.
+Files with no code block and no `requires` field load silently (backward compatible). AST validation still applies to all formulas. The trust gate covers the code block and modules, not formulas.
 
 This is the same trust model browsers use for Office macros: the file format can carry executable content, but loading it requires explicit consent.
 
@@ -104,7 +106,7 @@ The eval globals dict restricts `__builtins__` to a curated set: `abs`, `min`, `
 |--------------------|---------------------------------------------|------------------------------------------|
 | Module registry    | Controls what is in the namespace           | Blocks os/subprocess/socket entirely     |
 | AST validation     | Blocks dunder introspection chains          | Privilege escalation from objects         |
-| Trust gate on load | User approves before code/formulas execute  | Malicious .json files                    |
+| Trust gate on load | User approves before code/modules execute   | Malicious code blocks in .json files     |
 | Restricted builtins| Limits Python builtins in eval              | Direct access to dangerous functions     |
 
 ## JSON File Format Extension
@@ -135,6 +137,24 @@ Files without `requires` are fully backward compatible.
 - Named ranges that shadow module aliases (e.g., a range named `np`) will override the module in the eval namespace. This is documented behavior.
 
 - The `exec()` of the code block runs on every recalc pass. Functions defined in code blocks are redefined each time. This is harmless but wasteful.
+
+## Known gaps
+
+Open findings from `REVIEW.md` section 5.1, verified against the code. None is fixed.
+
+- **Formula validation misses string-borne attribute access (S1).** `validate_formula` walks `ast.Attribute` and `ast.Name` nodes only. A format string can name dunder attributes and globals of a callable in the namespace. `str.format`, `%`, f-string format specs and `format_map` all work. The demonstrated effect is read-only disclosure, such as environment variables. No call primitive has been shown.
+
+- **Formulas-only still evaluates formulas (S2).** `LoadPolicy.formulas_only()` gates the code block and modules. `recalc()` still `eval()`s every PYTHON-mode formula at load. `needs_trust` asks only about code and `requires`, so S1 runs on the default load path with no prompt.
+
+- **A missing or unknown `mode` loads as PYTHON (S3).** `jsonload` defaults to `Mode.PYTHON` when `mode` is absent or unparseable. A file that omits `mode` gets `eval()` semantics. v1 files predate modes, so changing the default needs a migration decision.
+
+- **A working-directory `gridcalc.toml` can disable the sandbox (S4).** Config lookup checks the CWD before `$XDG_CONFIG_HOME`. The TUI and the headless CLI apply its `sandbox` key. With `sandbox = false`, validation and the startup trust prompt are both off. `GRIDCALC_SANDBOX` overrides config when set.
+
+- **The startup trust prompt prints the code preview unescaped (S5).** Terminal escape sequences in a code comment can hide lines on screen.
+
+- **Module classification uses the top-level name (S6).** `classify_module("numpy.ctypeslib")` returns `safe`.
+
+- **No limit on formula depth or run time (S7).** Neither needs approval. A deeply nested formula raises `RecursionError`, which the web and CLI load paths now catch. A formula that builds a 10^8-element array hangs the session.
 
 ## Implementation
 

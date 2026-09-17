@@ -146,11 +146,11 @@ export function SweepDialog({
                     isAnimationActive={false}
                   />
                   {solved
-                    .filter((p) => p.breakpoint)
+                    .filter((p) => p.breakpoint && p.rhs !== null)
                     .map((p) => (
                       <ReferenceDot
                         key={p.rhs}
-                        x={p.rhs}
+                        x={p.rhs as number}
                         y={p.objective as number}
                         r={4}
                         fill="var(--err)"

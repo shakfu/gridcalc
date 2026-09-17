@@ -1,5 +1,7 @@
 # 2D-aware Vec — design scope
 
+Status: Phases 1-4 shipped (`CHANGELOG.md`). From Phase 5, `FREQUENCY` and `TEXTSPLIT` `pad_with` shipped; `CHISQ.TEST` still treats a 2D table as 1D. Spill and the lexical-scope functions, out of scope below, shipped later (`docs/function_coverage.md`). The body is the original scope.
+
 ## Goal
 
 Make `Vec` carry shape (rows × cols) end-to-end so that:

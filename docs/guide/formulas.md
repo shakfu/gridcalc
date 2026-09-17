@@ -19,15 +19,33 @@
 
 Excel error values (`#DIV/0!`, `#N/A`, `#NAME?`, `#REF!`, `#VALUE!`, `#NUM!`, `#NULL!`) propagate through arithmetic and are catchable with `IFERROR`/`IFNA`.
 
+## Excel coercion
+
+In `EXCEL` and `HYBRID`, values convert as they do in Excel:
+
+- Text comparison and `SWITCH` ignore case: `="a"="A"` is `TRUE`.
+
+- Arithmetic on text that is not a number gives `#VALUE!`: `=""+1`, `="1_000"+1`.
+
+- An `IF` or `IFS` condition that is text gives `#VALUE!`.
+
+- Aggregates count a boolean or numeric text typed as an argument: `=SUM("3",TRUE)` is 4. They skip text and booleans read from cells.
+
+- Numbers convert to text with 15 significant digits: `=1/3&""` is `0.333333333333333`.
+
+- An error inside a range stays in its element. `=SUM(IFERROR(A1:A3,0))` and `VLOOKUP` over the range work; `=SUM(A1:A3)` returns the error. The `SUMIF` family returns it only from a matching row.
+
 ## The function library
 
-**Built-in functions** (always available): `SUM`, `AVG`, `MIN`, `MAX`, `COUNT`, `ABS`, `SQRT`, `INT`, plus everything in `math` (`sin`, `cos`, `log`, `pi`, `e`, and the rest).
+**Built-in functions** (every mode): `SUM`, `AVG`, `MIN`, `MAX`, `COUNT`, `ABS`, `SQRT`, `INT`.
+
+Some names differ by mode. In `EXCEL` and `HYBRID`, `LOG(100)` is 2, `LN` is the natural log, pi is `PI()`, and `INT(-2.5)` is -3. In `PYTHON`, `log` is the natural log, `pi` is a constant, and `INT(-2.5)` is -2.
 
 **Excel-compatible library** (auto-loaded in `EXCEL` and `HYBRID`): `IF`, `IFERROR`, `AND`, `OR`, `NOT`, `ROUND`, `AVERAGE`, `MEDIAN`, `SUMIF`, `COUNTIF`, `AVERAGEIF`, `LET`, `VLOOKUP`, `HLOOKUP`, `XLOOKUP`, `XMATCH`, `INDEX`, `MATCH`, `FILTER`, `SORT`, `UNIQUE`, `SEQUENCE`, `CONCATENATE`, `LEFT`, `RIGHT`, `MID`, `LEN`, `TRIM`, `UPPER`, `LOWER`, `SUBSTITUTE`, and 280 others. Dynamic-array functions return whole rows and columns and compose: `=INDEX(SORT(A1:B9), 1, 2)`.
 
 The [function coverage audit](../function_coverage.md) tracks the library against Microsoft's documented function set, including what is deliberately absent.
 
-**PYTHON-only extras**: the `math` module, Python builtins (`sum`, `min`, `max`, `abs`, `len`), list comprehensions, and -- when the relevant extras are installed -- `np.array(...)`, `np.linalg`, matrix multiply (`@`), and `pd.DataFrame(...)`.
+**PYTHON-only extras**: the `math` module (`sin`, `log`, `pi`, `e`, and the rest), Python builtins (`sum`, `min`, `max`, `abs`, `len`), list comprehensions, and -- when the relevant extras are installed -- `np.array(...)`, `np.linalg`, matrix multiply (`@`), and `pd.DataFrame(...)`.
 
 ![A cell holding =np.array([[1,2],[3,4]]); the status line reads ndarray(2, 2) [1, 2, 3, 4]](../media/terminal-large-ndarray.png)
 
@@ -68,5 +86,7 @@ In `HYBRID`: `=py.margin(A1, B1)`. In `PYTHON`: `=margin(A1, B1)`. `EXCEL` mode 
 ## Cell references
 
 `$A$1` fixes both; `$A1` fixes the column; `A$1` fixes the row. References adjust automatically on insert, delete, and replicate.
+
+Deleting a row or column that a formula references turns that reference into `#REF!`, `$` or not. A range shrinks by the lines deleted from it: deleting row 3 turns `=SUM(A1:A3)` into `=SUM(A1:A2)`. A range with every line deleted becomes `#REF!`.
 
 Cross-sheet references (`=Sheet2!A1`) are covered in [Multi-sheet workbooks](sheets.md).

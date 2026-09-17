@@ -9,6 +9,8 @@ make typecheck  # mypy
 make qa         # lint + typecheck + test + format (Python and TypeScript)
 ```
 
+`make build` runs `uv sync`, which removes packages outside the core dependencies and the `dev` group. That drops the `web` extra (pywebview) and the `docs` group from `.venv`. Restore both with `uv sync --extra web --group docs`.
+
 ## Desktop frontend
 
 ```sh
@@ -46,5 +48,13 @@ The abi3 build is gated on `GRIDCALC_STABLE_ABI=ON` (CMake) plus `wheel.py-api=c
 ## Tests
 
 Tests are pytest, in `tests/`, roughly mirroring the source layout, and run with `GRIDCALC_SANDBOX=1` so sandbox validation is always active. `tests/integration/test_tui_pty.py` drives the real curses app over a pty.
+
+Some suites cross modules rather than mirror one:
+
+- `test_builtins_smoke.py` calls every `BUILTINS` function from EXCEL-mode formula text.
+- `test_excel_functions.py` checks Excel function results through `Grid` in EXCEL mode.
+- `test_dep_graph.py` compares the dependency graph with a fresh rebuild after each mutating operation, its undo and its redo.
+- `test_io_roundtrip.py` checks that values survive save and reload through JSON, CSV, xlsx and pandas.
+- `test_save_atomic.py` checks that a save failing part-way leaves the old file intact.
 
 The web frontend's automated layers run against substitutes -- vitest in happy-dom, and a Chromium suite against a mocked bridge -- so `scripts/drive_web.py` (`make web-drive`) exists to drive the shipped bundle against the shipped engine in the real webview, with screenshots. It needs a display and is excluded from `make qa`.

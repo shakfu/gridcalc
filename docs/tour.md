@@ -22,9 +22,10 @@ Press `:` for the command line. The basics:
 
 | Command | Purpose |
 |---|---|
-| `:w [file]` | save (extension `.json` or `.xlsx`) |
-| `:o file` | open |
-| `:q`, `:q!` | quit, force-quit |
+| `:w [file]` | save; the extension picks the format (`.json`, `.xlsx`, `.csv`) |
+| `:o file` | open a JSON workbook |
+| `:q`, `:q!` | quit (asks about unsaved changes), force-quit |
+| `Ctrl-C` | same as `:q` |
 | `:e` | edit the workbook's Python code block in `$EDITOR` |
 | `u`, `Ctrl-R` | undo / redo |
 | `v` | enter visual selection mode (then `y` yanks, `p` pastes) |

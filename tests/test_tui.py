@@ -237,11 +237,13 @@ class TestUndoManagerAcrossSheets:
         g = Grid()
         g.add_sheet("Data")
         g.setcell(0, 0, "10")
-        undo = UndoManager()
-        undo.save_grid(g)  # is_grid entries clear_all() before restoring
-        g.setcell(1, 0, "extra")
         g.set_active("Data")
         g.setcell(0, 0, "keepme")
+        g.set_active(0)
+        undo = UndoManager()
+        undo.save_grid(g)  # grid entries restore every sheet, active or not
+        g.setcell(1, 0, "extra")
+        g.set_active("Data")
 
         undo.undo(g)
 
@@ -688,6 +690,48 @@ class TestCmdSheet:
         cmdexec(self.stdscr, self.g, self.undo, "sheet Sheet1")
         assert self.g.cells[0][0].val == 100.0
 
+    def test_sheet_ops_are_undoable(self):
+        from gridcalc.engine import Mode
+        from gridcalc.tui import cmdexec
+
+        self.g.mode = Mode.EXCEL
+        self.g._apply_mode_libs()
+        cmdexec(self.stdscr, self.g, self.undo, "sheet add Data")
+        self.g.set_active("Data")
+        self.g.setcell(0, 0, "42")
+        self.g.set_active(0)
+        self.g.setcell(0, 0, "=Data!A1+1")
+        for cmd in ("sheet add Tmp", "sheet move Tmp 0", "sheet rename Data D2", "sheet del D2"):
+            self.g.dirty = 0
+            cmdexec(self.stdscr, self.g, self.undo, cmd)
+            assert self.g.dirty == 1
+        assert self.g.sheet_names() == ["Tmp", "Sheet1"]
+        assert len(self.undo.undo_stack) == 5
+        self.undo.undo(self.g)
+        assert self.g.sheet_names() == ["Tmp", "Sheet1", "D2"]
+        assert self.g.cells[0][0].text == "=D2!A1+1"
+        self.undo.undo(self.g)
+        assert self.g.cells[0][0].text == "=Data!A1+1"
+        assert self.g.cells[0][0].val == 43.0
+        self.undo.undo(self.g)
+        self.undo.undo(self.g)
+        assert self.g.sheet_names() == ["Sheet1", "Data"]
+
+    def test_failed_sheet_op_leaves_history_alone(self):
+        from gridcalc.tui import cmdexec
+
+        self.undo.save_cell(self.g, 0, 0)
+        self.g.setcell(0, 0, "1")
+        self.undo.undo(self.g)
+        for cmd in (
+            "sheet del Sheet1",
+            "sheet rename Nope X",
+            "sheet move Sheet1 9",
+            "sheet add Sheet1",
+        ):
+            cmdexec(self.stdscr, self.g, self.undo, cmd)
+        assert self.undo.undo_stack == [] and len(self.undo.redo_stack) == 1
+
     def test_sheets_picker_switches_to_selection(self):
         from gridcalc.tui import cmdexec
 
@@ -1067,6 +1111,7 @@ class TestCsvCommands:
         path = str(tmp_path / "in.csv")
         with open(path, "w") as f:
             f.write("replaced\n")
+        self.stdscr.queue_getch(ord("y"))  # discard the unsaved "original"
         cmdexec(self.stdscr, self.g, self.undo, f"csv load {path}")
         assert self.g.cells[0][0].text == "replaced"
         self.undo.undo(self.g)
@@ -1625,6 +1670,7 @@ class TestPdCommands:
         path = str(tmp_path / "data.csv")
         with open(path, "w") as f:
             f.write("replaced\n")
+        self.stdscr.queue_getch(ord("y"))  # discard the unsaved "original"
         cmdexec(self.stdscr, self.g, self.undo, f"pd load {path}")
         assert self.g.cells[0][0].text == "replaced"
         self.undo.undo(self.g)
@@ -2444,6 +2490,18 @@ class TestCmdGoal:
         assert self.g.cells[0][0].val == 0.0
         assert len(self.undo.undo_stack) == 0
         assert "goal:" in self.stdscr._last_addnstr
+
+    def test_failed_goal_keeps_the_redo_stack(self):
+        from gridcalc.tui import cmdexec
+
+        self.undo.save_cell(self.g, 3, 0)
+        self.g.setcell(3, 0, "x")
+        self.undo.undo(self.g)
+        self.g.setcell(1, 0, "=2")  # B1 no longer depends on A1
+        cmdexec(self.stdscr, self.g, self.undo, "goal B1 = 99 by A1")
+        assert "goal:" in self.stdscr._last_addnstr
+        assert self.undo.redo(self.g) is True
+        assert self.g.cell(3, 0).text == "x"
 
     def test_goal_rejects_trailing_garbage(self):
         """Tokens after the var cell that aren't `in ...` are a typo, not
@@ -3662,3 +3720,596 @@ class TestTheVersionIsDeclaredOnce:
             text=True,
         )
         assert rc.returncode != 0
+
+
+# -- save, open, and session-safety fixes (REVIEW.md 5.4) --
+
+
+class _Exhausted(Exception):
+    """Raised by `_ScriptedStdscr` when its key script runs out."""
+
+
+class _ScriptedStdscr(MockStdscr):
+    """MockStdscr that raises instead of returning Esc forever, so a keyloop
+    driven past its script stops rather than spinning."""
+
+    def getch(self):
+        if self._getch_queue:
+            return self._getch_queue.pop(0)
+        raise _Exhausted
+
+
+def _keys(text):
+    return [ord(ch) for ch in text]
+
+
+class TestSaveByExtension:
+    """`:w` used to write JSON whatever the filename, so `:w` after opening an
+    .xlsx replaced the spreadsheet with a JSON document of the same name."""
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = MockStdscr()
+        self.undo = UndoManager()
+
+    def _excel_book(self, path):
+        from gridcalc.engine import Mode
+
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(0, 0, "1")
+        g.setcell(1, 0, "=A1+1")
+        assert g.xlsxsave(str(path)) == 0
+        g2 = Grid()
+        assert g2.xlsxload(str(path)) == 0
+        return g2
+
+    def test_w_after_xlsx_open_writes_xlsx(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        book = tmp_path / "book.xlsx"
+        g = self._excel_book(book)
+        g.setcell(0, 0, "5")
+        cmdexec(self.stdscr, g, self.undo, "w")
+        assert book.read_bytes()[:2] == b"PK"  # a zip container, not JSON
+        g3 = Grid()
+        assert g3.xlsxload(str(book)) == 0
+        assert g3.cell(1, 0).val == 6.0
+        assert g.dirty == 0
+
+    def test_lossy_target_is_confirmed_and_declining_writes_nothing(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        g = Grid()
+        g.setcell(0, 0, "1")
+        g.setcell(1, 0, "=A1+1")
+        out = tmp_path / "out.csv"
+        self.stdscr.queue_getch(ord("n"))
+        cmdexec(self.stdscr, g, self.undo, f"w {out}")
+        assert not out.exists()
+        assert not g.filename
+        assert g.dirty == 1
+
+    def test_lossy_target_confirmed_writes(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        g = Grid()
+        g.setcell(1, 0, "=1+1")
+        out = tmp_path / "out.csv"
+        self.stdscr.queue_getch(ord("y"))
+        cmdexec(self.stdscr, g, self.undo, f"w {out}")
+        assert out.read_text().strip() == ",2"
+
+    def test_overwriting_another_existing_file_is_confirmed(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        other = tmp_path / "other.json"
+        other.write_text('{"keep": "me"}')
+        g = Grid()
+        g.setcell(0, 0, "1")
+        self.stdscr.queue_getch(ord("n"))
+        cmdexec(self.stdscr, g, self.undo, f"w {other}")
+        assert other.read_text() == '{"keep": "me"}'
+        self.stdscr.queue_getch(ord("y"))
+        cmdexec(self.stdscr, g, self.undo, f"w {other}")
+        assert json.loads(other.read_text())["version"] == 2
+
+    def test_saving_over_the_open_file_does_not_ask(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        book = tmp_path / "book.json"
+        g = Grid()
+        g.setcell(0, 0, "1")
+        assert g.jsonsave(str(book)) == 0
+        g.filename = str(book)
+        g.setcell(0, 0, "2")
+        # MockStdscr answers any prompt with Esc, which would decline.
+        cmdexec(self.stdscr, g, self.undo, "w")
+        g2 = Grid()
+        assert g2.jsonload(str(book)) == 0
+        assert g2.cell(0, 0).val == 2.0
+
+
+class TestOpenDiscardPrompt:
+    """`:o`, `:xlsx load`, `:csv load` and `:pd load` replaced unsaved work
+    without asking, and `:o` kept the undo history of the previous file."""
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = MockStdscr()
+        self.g = Grid()
+        self.undo = UndoManager()
+        self.undo.save_cell(self.g, 0, 0)
+        self.g.setcell(0, 0, "999")  # dirty, with an undo entry
+
+    def _json_book(self, tmp_path):
+        other = Grid()
+        other.setcell(0, 0, "111")
+        path = tmp_path / "b.json"
+        assert other.jsonsave(str(path)) == 0
+        return path
+
+    def test_open_while_dirty_declined_keeps_work(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        path = self._json_book(tmp_path)
+        self.stdscr.queue_getch(ord("n"))
+        cmdexec(self.stdscr, self.g, self.undo, f"o {path}")
+        assert self.g.cell(0, 0).val == 999.0
+        assert "nsaved" in self.stdscr._last_addnstr or self.g.filename == ""
+
+    def test_open_confirmed_loads_and_clears_undo(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        path = self._json_book(tmp_path)
+        self.stdscr.queue_getch(ord("y"))
+        cmdexec(self.stdscr, self.g, self.undo, f"o {path}")
+        assert self.g.cell(0, 0).val == 111.0
+        assert self.g.filename == str(path)
+        assert self.undo.undo_stack == [] and self.undo.redo_stack == []
+        self.undo.undo(self.g)  # `u` must not edit the newly opened file
+        assert self.g.cell(0, 0).val == 111.0
+
+    def test_open_when_clean_does_not_ask(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        path = self._json_book(tmp_path)
+        self.g.dirty = 0
+        cmdexec(self.stdscr, self.g, self.undo, f"o {path}")  # Esc would decline
+        assert self.g.cell(0, 0).val == 111.0
+
+    def test_xlsx_load_while_dirty_declined_keeps_work(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        book = tmp_path / "b.xlsx"
+        src = Grid()
+        src.setcell(0, 0, "7")
+        assert src.xlsxsave(str(book)) == 0
+        self.stdscr.queue_getch(ord("n"))
+        cmdexec(self.stdscr, self.g, self.undo, f"xlsx load {book}")
+        assert self.g.cell(0, 0).val == 999.0
+        assert len(self.undo.undo_stack) == 1
+
+    def test_xlsx_load_is_an_open(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        book = tmp_path / "b.xlsx"
+        src = Grid()
+        src.setcell(0, 0, "7")
+        assert src.xlsxsave(str(book)) == 0
+        self.stdscr.queue_getch(ord("y"))
+        cmdexec(self.stdscr, self.g, self.undo, f"xlsx load {book}")
+        assert self.g.cell(0, 0).val == 7.0
+        assert self.g.filename == str(book)
+        assert self.undo.undo_stack == [] and self.undo.redo_stack == []
+
+    def test_failed_xlsx_load_leaves_no_undo_entry(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        self.g.dirty = 0
+        cmdexec(self.stdscr, self.g, self.undo, f"xlsx load {tmp_path / 'nope.xlsx'}")
+        assert len(self.undo.undo_stack) == 1
+        assert self.g.cell(0, 0).val == 999.0
+
+    def test_csv_load_of_a_missing_file_keeps_the_grid(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        self.g.dirty = 0
+        cmdexec(self.stdscr, self.g, self.undo, f"csv load {tmp_path / 'nope.csv'}")
+        assert self.g.cell(0, 0).val == 999.0
+        assert len(self.undo.undo_stack) == 1
+
+    @pytest.mark.skipif(not _HAS_PANDAS, reason="pandas not installed")
+    def test_unparseable_pd_load_restores_the_sheet(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        f = tmp_path / "bad.parquet"
+        f.write_bytes(b"not parquet")
+        self.stdscr.queue_getch(ord("y"))
+        cmdexec(self.stdscr, self.g, self.undo, f"pd load {f}")
+        assert self.g.cell(0, 0).val == 999.0
+        assert len(self.undo.undo_stack) == 1 and self.undo.redo_stack == []
+
+    def test_csv_load_while_dirty_declined_keeps_work(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        f = tmp_path / "x.csv"
+        f.write_text("1,2\n")
+        self.stdscr.queue_getch(ord("n"))
+        cmdexec(self.stdscr, self.g, self.undo, f"csv load {f}")
+        assert self.g.cell(0, 0).val == 999.0
+
+
+class TestEditorLaunch:
+    """`:e` ran `[editor, path]`: a multi-word $EDITOR or a missing binary
+    raised after `endwin()`, and a failed editor still marked the code dirty."""
+
+    @pytest.fixture(autouse=True)
+    def _curses_stubs(self, monkeypatch):
+        _setup_curses_constants()
+        self.calls = []
+        for name in ("def_prog_mode", "endwin", "reset_prog_mode"):
+            monkeypatch.setattr(curses, name, lambda n=name: self.calls.append(n))
+        self.stdscr = MockStdscr()
+        self.g = Grid()
+        self.g.code = "x = 1\n"
+        self.g.dirty = 0
+
+    def _editor(self, tmp_path, body, rc=0):
+        script = tmp_path / "ed.sh"
+        script.write_text(f"#!/bin/sh\n{body}\nexit {rc}\n")
+        script.chmod(0o755)
+        return str(script)
+
+    def test_editor_with_arguments_is_split(self, monkeypatch, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        ed = self._editor(tmp_path, 'echo "y = 2" > "$2"')
+        monkeypatch.setenv("EDITOR", f"{ed} --wait")
+        cmdexec(self.stdscr, self.g, UndoManager(), "e")
+        assert self.g.code == "y = 2\n"
+        assert self.g.dirty == 1
+
+    def test_missing_editor_reports_and_restores_curses(self, monkeypatch, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        monkeypatch.setenv("EDITOR", str(tmp_path / "no-such-editor"))
+        cmdexec(self.stdscr, self.g, UndoManager(), "e")
+        assert self.calls[-1] == "reset_prog_mode"
+        assert self.g.code == "x = 1\n"
+        assert self.g.dirty == 0
+
+    def test_nonzero_exit_leaves_code_alone(self, monkeypatch, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        ed = self._editor(tmp_path, 'echo "junk" > "$1"', rc=1)
+        monkeypatch.setenv("EDITOR", ed)
+        cmdexec(self.stdscr, self.g, UndoManager(), "e")
+        assert self.g.code == "x = 1\n"
+        assert self.g.dirty == 0
+
+    def test_unchanged_content_is_not_dirty(self, monkeypatch, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        monkeypatch.setenv("EDITOR", self._editor(tmp_path, "true"))
+        cmdexec(self.stdscr, self.g, UndoManager(), "e")
+        assert self.g.dirty == 0
+
+
+class TestMainloopSessionSafety:
+    """Keyloop paths that lost work: Ctrl-C quit without asking, and several
+    edits never set `dirty`, so `:q` exited without a prompt."""
+
+    @pytest.fixture(autouse=True)
+    def _stubs(self, monkeypatch):
+        from gridcalc import tui
+
+        _setup_curses_constants()
+        monkeypatch.setattr(tui, "draw", lambda *a, **kw: None)
+        monkeypatch.setattr(tui, "SystemClipboard", lambda: None)
+        self.g = Grid()
+        self.g.setcell(0, 0, "1")
+        self.g.dirty = 0
+
+    def _run(self, *keys):
+        from gridcalc.tui import mainloop
+
+        s = _ScriptedStdscr()
+        s.queue_getch(*keys)
+        try:
+            mainloop(s, self.g)
+        except _Exhausted:
+            return False
+        return True
+
+    def test_ctrl_c_with_unsaved_changes_asks(self):
+        self.g.dirty = 1
+        assert self._run(3, ord("n")) is False  # declined: still running
+        assert self._run(3, ord("y")) is True
+
+    def test_ctrl_c_when_clean_quits(self):
+        assert self._run(3) is True
+
+    def test_backspace_sets_dirty(self):
+        self._run(127)
+        assert self.g.cell(0, 0) is None
+        assert self.g.dirty == 1
+
+    @pytest.mark.parametrize("key", [2, 21])  # Ctrl-B, Ctrl-U
+    def test_style_toggle_sets_dirty(self, key):
+        self._run(key)
+        assert self.g.dirty == 1
+
+    def test_undo_after_save_sets_dirty(self, tmp_path):
+        path = tmp_path / "u.json"
+        self._run(*_keys("5"), 10, *_keys(f":w {path}"), 10, ord("u"))
+        assert self.g.dirty == 1
+
+    def test_redo_sets_dirty(self, tmp_path):
+        path = tmp_path / "u.json"
+        self._run(*_keys("5"), 10, ord("u"), *_keys(f":w {path}"), 10, 0x1F & ord("r"))
+        assert self.g.dirty == 1
+
+
+class TestDirtyFromCommands:
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = MockStdscr()
+        self.g = Grid()
+        self.g.dirty = 0
+        self.undo = UndoManager()
+
+    def test_width_sets_dirty(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "width 12")
+        assert self.g.dirty == 1
+
+    def test_opt_def_and_undef_set_dirty(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, "opt def m1 max B4 vars A4:A5 st D4:D6")
+        assert "m1" in self.g.models and self.g.dirty == 1
+        self.g.dirty = 0
+        cmdexec(self.stdscr, self.g, self.undo, "opt undef m1")
+        assert "m1" not in self.g.models and self.g.dirty == 1
+
+
+class TestVisualDeleteUndo:
+    def test_large_delete_is_one_undo_entry(self):
+        from gridcalc.tui import Clipboard, visual_mode
+
+        _setup_curses_constants()
+        g = Grid()
+        for r in range(100):
+            g.setcell(0, r, str(r + 1))
+        g.dirty = 0
+        undo = UndoManager()
+        s = MockStdscr()
+        s.queue_getch(*([curses.KEY_DOWN] * 99), ord("d"))
+        visual_mode(s, g, undo, Clipboard(None))
+        assert all(g.cell(0, r) is None for r in range(100))
+        assert g.dirty == 1
+        assert len(undo.undo_stack) == 1
+        undo.undo(g)
+        assert [g.cell(0, r).val for r in range(100)] == [float(r + 1) for r in range(100)]
+
+
+class TestSensitivityCellsKeepText:
+    def test_numbers_carry_source_text(self):
+        """Copy, fill and replicate read `text`; an empty one pasted blanks."""
+        t = TestSensitivityIntoCells()
+        t.setup_method()
+        t._run("opt sens into F1")
+        g2 = Grid()
+        from gridcalc.engine import NUM
+
+        nums = [cl for cl in t.g._cells.values() if cl.type == NUM and math.isfinite(cl.val)]
+        assert nums
+        for cl in nums:
+            g2.setcell(0, 0, cl.text)
+            assert g2.cell(0, 0).type == NUM and g2.cell(0, 0).val == cl.val
+
+
+class TestPromptEdgeCases:
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = MockStdscr()
+        self.g = Grid()
+        self.undo = UndoManager()
+
+    def test_name_range_prompt_accepts_colon(self, monkeypatch):
+        from gridcalc import tui
+        from gridcalc.tui import cmdexec
+
+        monkeypatch.setattr(tui.commands, "draw", lambda *a, **kw: None)
+        self.stdscr.queue_getch(*_keys("foo"), 10, *_keys("A1:B3"), 10)
+        cmdexec(self.stdscr, self.g, self.undo, "name")
+        assert [(n.name, n.c1, n.r1, n.c2, n.r2) for n in self.g.names] == [("foo", 0, 0, 1, 2)]
+
+    def _with_redo(self):
+        self.undo.save_cell(self.g, 0, 0)
+        self.g.setcell(0, 0, "1")
+        self.undo.undo(self.g)
+        assert len(self.undo.redo_stack) == 1
+
+    def test_cancelled_move_keeps_redo_and_adds_no_entry(self):
+        from gridcalc.tui import cmdexec
+
+        self._with_redo()
+        self.stdscr.queue_getch(27)
+        cmdexec(self.stdscr, self.g, self.undo, "m")
+        assert self.undo.undo_stack == []
+        assert len(self.undo.redo_stack) == 1
+
+    def test_move_cancelled_after_moving_adds_no_entry(self):
+        from gridcalc.tui import cmdexec
+
+        self.g.setcell(0, 0, "a")
+        self.g.setcell(0, 1, "b")
+        self.stdscr.queue_getch(curses.KEY_DOWN, 27)
+        cmdexec(self.stdscr, self.g, self.undo, "m")
+        assert self.g.cell(0, 0).text == "a"
+        assert self.undo.undo_stack == []
+
+    def test_move_cancelled_after_moving_keeps_redo(self):
+        from gridcalc.tui import cmdexec
+
+        self._with_redo()
+        self.stdscr.queue_getch(curses.KEY_DOWN, 27)
+        cmdexec(self.stdscr, self.g, self.undo, "m")
+        assert self.undo.undo_stack == []
+        assert len(self.undo.redo_stack) == 1
+
+    def test_failed_csv_load_keeps_redo_and_the_grid(self, tmp_path, monkeypatch):
+        from gridcalc.tui import cmdexec
+
+        self._with_redo()
+        self.g.setcell(1, 0, "keep")
+        self.g.dirty = 0
+        bad = tmp_path / "bad.csv"
+        bad.write_text("x")
+        monkeypatch.setattr(Grid, "csvload", lambda self, fn: -1)
+        cmdexec(self.stdscr, self.g, self.undo, f"csv load {bad}")
+        assert "Failed" in self.stdscr._last_addnstr
+        assert self.g.cell(1, 0).text == "keep" and self.g.dirty == 0
+        assert self.undo.undo_stack == [] and len(self.undo.redo_stack) == 1
+
+    def test_title_on_the_last_row_and_column_stays_in_range(self):
+        from gridcalc.engine import NCOL, NROW
+        from gridcalc.tui import cmdexec
+
+        self.g.cc, self.g.cr = NCOL - 1, NROW - 1
+        cmdexec(self.stdscr, self.g, self.undo, "tb")
+        assert (self.g.tc, self.g.tr, self.g.cc, self.g.cr) == (
+            NCOL - 1,
+            NROW - 1,
+            NCOL - 1,
+            NROW - 1,
+        )
+        cmdexec(self.stdscr, self.g, self.undo, "th")
+        assert (self.g.tr, self.g.cr) == (NROW - 1, NROW - 1)
+
+    def test_cancelled_replicate_keeps_redo_and_adds_no_entry(self):
+        from gridcalc.tui import cmdexec
+
+        self._with_redo()
+        self.stdscr.queue_getch(27)
+        cmdexec(self.stdscr, self.g, self.undo, "r")
+        assert self.undo.undo_stack == []
+        assert len(self.undo.redo_stack) == 1
+
+    def test_replicate_is_undoable(self):
+        from gridcalc.tui import cmdexec
+
+        self.g.setcell(0, 0, "7")
+        self.stdscr.queue_getch(10, curses.KEY_RIGHT, 10)
+        cmdexec(self.stdscr, self.g, self.undo, "r")
+        assert self.g.cell(1, 0).val == 7.0
+        self.undo.undo(self.g)
+        assert self.g.cell(1, 0) is None
+
+
+class TestStartupTrustPrompt:
+    def _info(self, tmp_path, requires):
+        from gridcalc.sandbox import inspect_file
+
+        p = tmp_path / "req.json"
+        p.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "mode": "PYTHON",
+                    "requires": requires,
+                    "code": "x = 1\n",
+                    "sheets": [{"name": "Sheet1", "cells": [["=1"]]}],
+                }
+            )
+        )
+        return str(p), inspect_file(str(p))
+
+    def test_versioned_requirements_are_classified_by_name(self, tmp_path, monkeypatch, capsys):
+        import builtins
+
+        from gridcalc.tui import startup_trust_prompt
+
+        path, info = self._info(tmp_path, ["os>=1.0", "numpy>=1"])
+        monkeypatch.setattr(builtins, "input", lambda prompt="": "l")
+        policy = startup_trust_prompt(path, info)
+        out = capsys.readouterr().out
+        assert "numpy>=1 [unknown]" not in out
+        assert "os>=1.0 [blocked]" in out
+        assert policy.approved_modules == ["numpy>=1"]
+
+    def test_no_tty_declines_code(self, tmp_path, monkeypatch):
+        import builtins
+
+        from gridcalc.tui import startup_trust_prompt
+
+        path, info = self._info(tmp_path, [])
+
+        def eof(prompt=""):
+            raise EOFError
+
+        monkeypatch.setattr(builtins, "input", eof)
+        policy = startup_trust_prompt(path, info)
+        assert policy is not None and not policy.load_code
+
+
+class TestMainStartup:
+    @pytest.fixture
+    def launched(self, monkeypatch, tmp_path):
+        from gridcalc import tui
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        seen = {}
+
+        def no_cursor(n):
+            raise curses.error("setupterm: could not find terminal")
+
+        monkeypatch.setattr(curses, "wrapper", lambda fn: fn(MockStdscr()))
+        monkeypatch.setattr(curses, "raw", lambda: None)
+        monkeypatch.setattr(curses, "curs_set", no_cursor)
+        monkeypatch.setattr(tui, "init_colors", lambda: None)
+        monkeypatch.setattr(tui, "mainloop", lambda stdscr, g: seen.setdefault("g", g))
+
+        def launch(*argv):
+            monkeypatch.setattr(sys, "argv", ["gridcalc", *argv])
+            tui.main()
+            return seen.get("g")
+
+        return launch
+
+    def test_a_new_filename_starts_an_empty_workbook_bound_to_it(self, launched, tmp_path):
+        g = launched(str(tmp_path / "new.json"))
+        assert g is not None
+        assert g.filename == str(tmp_path / "new.json")
+        assert not g._cells
+
+    def test_terminal_without_cursor_visibility_still_starts(self, launched):
+        assert launched() is not None
+
+
+class TestResizeSafeScreen:
+    def test_resize_updates_size_and_off_screen_writes_are_ignored(self, monkeypatch):
+        from gridcalc.tui import _SafeScreen
+
+        updated = []
+        monkeypatch.setattr(curses, "update_lines_cols", lambda: updated.append(1))
+
+        class Win(MockStdscr):
+            def addnstr(self, *a):
+                raise curses.error("addnwstr() returned ERR")
+
+            move = addnstr
+
+        win = Win()
+        win.queue_getch(curses.KEY_RESIZE)
+        scr = _SafeScreen(win)
+        assert scr.getch() == curses.KEY_RESIZE
+        assert updated == [1]
+        scr.addnstr(30, 0, "x", 5)
+        scr.move(30, 0)
+        scr.clrtoeol()  # delegated

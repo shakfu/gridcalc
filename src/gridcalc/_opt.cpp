@@ -50,6 +50,10 @@ constexpr int ST_NUMFAILURE = 5;
 constexpr int ST_USERABORT  = 6;
 constexpr int ST_TIMEOUT    = 7;
 
+// Seconds before a solve stops with ST_TIMEOUT. Spreadsheet models finish in
+// milliseconds; this bounds a hard MIP that would otherwise run for hours.
+constexpr double DEFAULT_TIME_LIMIT = 60.0;
+
 int translate_status(int highs_status) {
     if (highs_status == kHighsModelStatusOptimal)     return ST_OPTIMAL;
     if (highs_status == kHighsModelStatusInfeasible)  return ST_INFEASIBLE;
@@ -123,7 +127,8 @@ Solution solve_lp(
     const std::vector<int>& integer_vars,
     const std::vector<int>& binary_vars,
     bool sensitivity,
-    const std::vector<std::vector<double>>& hessian)
+    const std::vector<std::vector<double>>& hessian,
+    double time_limit)
 {
     const int n = static_cast<int>(c.size());
     const int m = static_cast<int>(A.size());
@@ -166,6 +171,8 @@ Solution solve_lp(
     HighsGuard guard{highs};
     // The solver is chatty by default and would corrupt the curses display.
     Highs_setBoolOptionValue(highs, "output_flag", 0);
+    if (!(time_limit > 0.0)) throw std::invalid_argument("time_limit must be positive");
+    Highs_setDoubleOptionValue(highs, "time_limit", time_limit);
 
     const double inf = Highs_getInfinity(highs);
 
@@ -286,7 +293,14 @@ Solution solve_lp(
     }
 
     Solution out;
-    Highs_run(highs);
+    HighsInt run_status;
+    {
+        // The solve touches no Python object; releasing the GIL keeps a UI
+        // thread responsive while a MIP runs.
+        nb::gil_scoped_release release;
+        run_status = Highs_run(highs);
+    }
+    if (run_status == kHighsStatusError) throw std::runtime_error("Highs_run failed");
     out.status = translate_status(static_cast<int>(Highs_getModelStatus(highs)));
     out.objective = 0.0;
     out.x.assign(static_cast<size_t>(n), 0.0);
@@ -377,6 +391,7 @@ NB_MODULE(_opt, m) {
         nb::arg("binary_vars")  = std::vector<int>{},
         nb::arg("sensitivity")  = false,
         nb::arg("hessian")      = std::vector<std::vector<double>>{},
+        nb::arg("time_limit")   = DEFAULT_TIME_LIMIT,
         "Solve an LP, MIP, or convex QP. Returns a Solution with .status, "
         ".objective, .x. integer_vars / binary_vars are 0-based column indices; "
         "binary columns are clamped to [0,1]. hessian is the dense lower "
@@ -384,5 +399,6 @@ NB_MODULE(_opt, m) {
         "objective. sensitivity=True populates .duals (shadow price per "
         "constraint), .reduced_costs, and the .dual_from / .dual_till / "
         ".obj_from / .obj_till ranging arrays; it is ignored for MIPs and QPs "
-        "-- check .sensitivity_valid.");
+        "-- check .sensitivity_valid. time_limit is in seconds; a solve that "
+        "reaches it returns status TIMEOUT.");
 }

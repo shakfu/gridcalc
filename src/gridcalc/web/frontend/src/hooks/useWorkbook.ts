@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { bridge, whenReady } from '../bridge/api'
 import type { Dims, Sheets, SheetsResult, TrustInfo, TrustPolicy } from '../bridge/types'
 import type { Rect } from '../lib/grid'
 import { failureOf } from '../bridge/result'
+import type { ConfirmRequest } from '../components/ConfirmDialog'
 
 export interface WorkbookActions {
   open(): Promise<void>
@@ -63,6 +64,13 @@ export interface Workbook {
   touched(): void
 }
 
+export interface WorkbookOptions {
+  // Asks the user before an action that discards work; resolves to the answer.
+  confirm: (q: ConfirmRequest) => Promise<boolean>
+  // Called on every mutation from any source, e.g. to drop solver annotations.
+  onMutate?: () => void
+}
+
 // An error stays up long enough to read; a routine confirmation does not.
 const INFO_MS = 1800
 const ERROR_MS = 6000
@@ -71,7 +79,7 @@ const ERROR_MS = 6000
 // line) and the actions the menubar/toolbar invoke. Actions that change the
 // workbook (open, save, undo/redo) refresh the derived state, so the chrome
 // always reflects what the engine holds.
-export function useWorkbook(): Workbook {
+export function useWorkbook({ confirm, onMutate }: WorkbookOptions): Workbook {
   const [dims, setDims] = useState<Dims | null>(null)
   const [sheets, setSheets] = useState<Sheets | null>(null)
   const [status, setStatus] = useState('')
@@ -81,6 +89,8 @@ export function useWorkbook(): Workbook {
   const [mutations, setMutations] = useState(0)
   const [loads, setLoads] = useState(0)
   const [trust, setTrust] = useState<TrustInfo | null>(null)
+  const onMutateRef = useRef(onMutate)
+  onMutateRef.current = onMutate
 
   const refresh = useCallback(async () => {
     const [d, s] = await Promise.all([bridge.dims(), bridge.sheets()])
@@ -100,16 +110,23 @@ export function useWorkbook(): Workbook {
 
   const flash = useCallback((msg: string) => show(msg, 'info'), [show])
   const fail = useCallback((msg: string) => show(msg, 'error'), [show])
+  // Every mutation passes through here. `refetch` also bumps `revision`, for
+  // changes the grid did not make itself and so must refetch to see.
+  const mutated = useCallback((refetch: boolean) => {
+    setMutations((n) => n + 1)
+    if (refetch) setRevision((n) => n + 1)
+    onMutateRef.current?.()
+  }, [])
+
   const markDirty = useCallback(() => {
     setDirty(true)
-    setMutations((n) => n + 1)
-  }, [])
+    mutated(false)
+  }, [mutated])
 
   const touched = useCallback(() => {
     setDirty(true)
-    setMutations((n) => n + 1)
-    setRevision((n) => n + 1)
-  }, [])
+    mutated(true)
+  }, [mutated])
 
   useEffect(() => {
     let alive = true
@@ -154,11 +171,9 @@ export function useWorkbook(): Workbook {
         fail(r.error ?? 'sheet operation failed')
         return
       }
-      setDirty(true)
-      setMutations((n) => n + 1)
-      setRevision((n) => n + 1)
+      touched()
     },
-    [guard, fail],
+    [guard, fail, touched],
   )
 
   // Every shared command goes through here. A command that reports `changed`
@@ -179,19 +194,34 @@ export function useWorkbook(): Workbook {
         fail(r.message || `${name} failed`)
         return
       }
-      if (r.changed) {
-        setDirty(true)
-        setMutations((n) => n + 1)
-        setRevision((n) => n + 1)
-      }
+      if (r.changed) touched()
       if (r.message) flash(r.message)
     },
-    [guard, fail, flash],
+    [guard, fail, flash, touched],
   )
+
+  // A load replaces every cell, so it counts as a mutation as well as a load.
+  const loaded = useCallback(async () => {
+    await refresh()
+    setLoads((n) => n + 1)
+    mutated(true)
+  }, [refresh, mutated])
 
   const actions = useMemo<WorkbookActions>(
     () => ({
       open: async () => {
+        // Asked before the file dialog: the engine is the authority on dirty.
+        const d = await guard('open', () => bridge.dims())
+        if (!d) return
+        if (
+          d.dirty &&
+          !(await confirm({
+            title: 'Discard unsaved changes?',
+            message: `${d.filename || 'This workbook'} has unsaved changes. Opening another workbook discards them.`,
+            action: 'Discard and open',
+          }))
+        )
+          return
         const r = await guard('open', () => bridge.open_dialog())
         if (!r || r.cancelled) return
         if (r.needs_trust) {
@@ -201,9 +231,7 @@ export function useWorkbook(): Workbook {
           return
         }
         if (r.ok) {
-          await refresh()
-          setRevision((n) => n + 1)
-          setLoads((n) => n + 1)
+          await loaded()
           flash('opened')
         } else {
           fail(r.error ?? 'could not open that workbook')
@@ -219,9 +247,7 @@ export function useWorkbook(): Workbook {
           fail(r.error ?? 'could not open that workbook')
           return
         }
-        await refresh()
-        setRevision((n) => n + 1)
-        setLoads((n) => n + 1)
+        await loaded()
         flash(policy.load_code ? 'opened with code' : 'opened, formulas only')
       },
       save: async () => {
@@ -248,19 +274,26 @@ export function useWorkbook(): Workbook {
       undo: async () => {
         await guard('undo', () => bridge.undo())
         await refresh()
-        setRevision((n) => n + 1)
+        mutated(true)
       },
       redo: async () => {
         await guard('redo', () => bridge.redo())
         await refresh()
-        setRevision((n) => n + 1)
+        mutated(true)
       },
       setSheet: async (idx: number) => {
         const s = await guard('sheet', () => bridge.set_active(idx))
         if (s) setSheets(s)
       },
       addSheet: (name: string) => sheetOp('sheet', () => bridge.add_sheet(name)),
-      deleteSheet: (name: string) => sheetOp('sheet', () => bridge.delete_sheet(name)),
+      deleteSheet: async (name: string) => {
+        const yes = await confirm({
+          title: `Delete sheet ${name}?`,
+          message: 'Its cells are removed. Undo restores the sheet.',
+          action: 'Delete',
+        })
+        if (yes) await sheetOp('sheet', () => bridge.delete_sheet(name))
+      },
       renameSheet: (old: string, name: string) =>
         sheetOp('sheet', () => bridge.rename_sheet(old, name)),
       moveSheet: (name: string, index: number) =>
@@ -280,9 +313,7 @@ export function useWorkbook(): Workbook {
           fail(`format: ${why}`)
           return
         }
-        setDirty(true)
-        setMutations((n) => n + 1)
-        setRevision((n) => n + 1) // re-fetch the viewport with the new formatting
+        touched() // re-fetch the viewport with the new formatting
       },
       setDefaultFormat: async (fmt: string) => {
         const res = await guard('format', () => bridge.set_global_format(fmt))
@@ -292,12 +323,10 @@ export function useWorkbook(): Workbook {
           fail(`format: ${why}`)
           return
         }
-        setDirty(true)
-        setMutations((n) => n + 1)
-        setRevision((n) => n + 1)
+        touched()
       },
     }),
-    [refresh, flash, fail, guard, sheetOp, runShared, trust],
+    [refresh, flash, fail, guard, sheetOp, runShared, trust, confirm, loaded, mutated, touched],
   )
 
   return {

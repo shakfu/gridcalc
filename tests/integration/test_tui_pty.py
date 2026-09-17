@@ -257,3 +257,73 @@ def test_dynamic_array_spills_into_neighbours(tui_session) -> None:
     # Spilled: the last element is present and the anchor is not a badge.
     assert "9" in render
     assert "1[9]" not in render
+
+
+# -- session safety: resize, Ctrl-C, terminals without capabilities --
+
+
+@pytest.fixture
+def spawn():
+    """Start gridcalc with custom environment or pty size; shut all down after."""
+    from .conftest import GRIDCALC_BIN, TuiSession, _shutdown, _spawn
+
+    if not GRIDCALC_BIN.exists():
+        pytest.skip(f"gridcalc entry point not found at {GRIDCALC_BIN}")
+    started = []
+
+    def start(*args, env_overrides=None, size=None):
+        proc, master = _spawn([GRIDCALC_BIN, *args], env_overrides, size)
+        started.append((proc, master))
+        return TuiSession(proc=proc, master_fd=master, _buffer=bytearray())
+
+    yield start
+    for proc, master in started:
+        _shutdown(proc, master)
+
+
+def test_shrinking_the_terminal_keeps_the_session(spawn) -> None:
+    """A draw after a shrink wrote past the new edge and `curses.error` ended
+    the session, taking unsaved work with it."""
+    import signal
+
+    from .conftest import set_winsize
+
+    # LINES/COLUMNS would pin ncurses to the launch size.
+    s = spawn(env_overrides={"LINES": None, "COLUMNS": None}, size=(40, 120))
+    s.wait_for("[HYBRID]", timeout=5.0)
+    s.send('"QQKEEPQQ\n')
+    s.wait_for("QQKEEPQQ", timeout=4.0)
+    for rows, cols in ((12, 40), (3, 20), (1, 8), (30, 100)):
+        set_winsize(s.master_fd, rows, cols)
+        s.proc.send_signal(signal.SIGWINCH)
+        s.send("\x12")  # a no-op key so the loop redraws at the new size
+        s.drain()
+        assert s.proc.poll() is None, f"exited after resize to {rows}x{cols}"
+    s.send('"QQAFTERQQ\n')
+    s.wait_for("QQAFTERQQ", timeout=4.0)
+    assert s.proc.poll() is None
+
+
+def test_ctrl_c_with_unsaved_changes_asks(spawn) -> None:
+    s = spawn()
+    s.wait_for("[HYBRID]", timeout=5.0)
+    s.send('"edited\n')
+    s.wait_for("edited", timeout=4.0)
+    s.send("\x03")
+    s.wait_for("Unsaved changes", timeout=4.0)
+    s.send("n")
+    s.drain()
+    assert s.proc.poll() is None
+    s._buffer.clear()
+    s.send("\x03")
+    s.wait_for("Unsaved changes", timeout=4.0)
+    s.send("y")
+    s.drain()  # keep the pty from filling while curses tears down
+    assert s.proc.wait(timeout=4.0) == 0
+
+
+def test_terminal_without_cursor_visibility_starts(spawn) -> None:
+    """`curs_set(0)` raises on terminals such as vt100 that cannot hide it."""
+    s = spawn(env_overrides={"TERM": "vt100"})
+    s.wait_for("[HYBRID]", timeout=5.0)
+    assert s.proc.poll() is None

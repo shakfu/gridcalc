@@ -18,7 +18,7 @@ import pytest
 
 from gridcalc import cli
 from gridcalc.engine import Grid, Mode
-from gridcalc.loader import load_workbook
+from gridcalc.loader import load_workbook, save_losses, save_workbook
 from gridcalc.tui import cli_parser
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
@@ -273,6 +273,36 @@ def test_convert_round_trips_a_workbook_through_xlsx(tmp_path) -> None:
     assert g.cell(1, 3).val == pytest.approx(load_workbook(EXCEL).cell(1, 3).val)
 
 
+def test_convert_to_an_unwritable_path_is_a_usage_error(tmp_path) -> None:
+    code, out, err = _run(EXCEL, "--convert", str(tmp_path / "missing-dir" / "o.json"))
+    assert code == cli.EXIT_ERROR and not out
+    assert "could not write" in err
+
+
+# --- save_workbook: the one save-by-extension path (cli, TUI :w) -------------
+
+
+def test_save_losses_names_what_each_format_drops(tmp_path) -> None:
+    g = Grid()
+    g.mode = Mode.HYBRID
+    g.setcell(0, 0, "1")
+    g.setcell(1, 0, "=A1+1")
+    g.add_sheet("S2")
+    assert save_losses(g, tmp_path / "b.json") == []
+    assert save_losses(g, tmp_path / "b.xlsx") == ["formulas"]
+    assert save_losses(g, tmp_path / "b.CSV") == ["formulas", "other sheets"]
+    g.mode = Mode.EXCEL
+    assert save_losses(g, tmp_path / "b.xlsx") == []
+
+
+def test_save_workbook_raises_on_failure(tmp_path) -> None:
+    g = Grid()
+    g.setcell(0, 0, "1")
+    assert save_workbook(g, tmp_path / "ok.json") == "json"
+    with pytest.raises(OSError):
+        save_workbook(g, tmp_path / "missing-dir" / "b.csv")
+
+
 # --- output contract --------------------------------------------------------
 
 
@@ -337,3 +367,31 @@ def test_goal_and_sweep_parsers_are_shared_with_the_tui() -> None:
     assert tui_solve._parse_goal is optspec.parse_goal
     assert tui_solve._parse_sweep is optspec.parse_sweep
     assert tui_solve._resolve_model is optspec.resolve_model
+
+
+def test_a_pathological_workbook_is_a_usage_error_not_a_crash(tmp_path) -> None:
+    deep = tmp_path / "deep.json"
+    deep.write_text("[" * 100_000 + "]" * 100_000)
+    code, _, err = _run(str(deep), "--eval", "=1+1")
+    assert code == 1
+    assert "could not load" in err
+
+
+def test_convert_keeps_a_withheld_code_block(tmp_path) -> None:
+    src = Path(__file__).resolve().parents[1] / "examples" / "example_hybrid.json"
+    out = tmp_path / "out.json"
+    code, _, _ = _run(str(src), "--convert", str(out))
+    assert code == 0
+    assert json.loads(out.read_text())["code"] == json.loads(src.read_text())["code"]
+
+
+def test_load_warnings_go_to_stderr(tmp_path) -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    wb = openpyxl.Workbook()
+    wb.active["A1"] = 1
+    wb.active.cell(row=5000, column=1, value=2)
+    src = tmp_path / "tall.xlsx"
+    wb.save(str(src))
+    code, payload, err = _run(str(src), "--eval", "=A1")
+    assert code == 0 and payload["eval"][0]["value"] == 1
+    assert "warning: 1 cells beyond 256 columns x 1024 rows were not imported" in err

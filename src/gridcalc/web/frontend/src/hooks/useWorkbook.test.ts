@@ -17,6 +17,9 @@ const trustInfo = (path: string): TrustInfo => ({
   unknown: [],
 })
 
+// Answers every confirmation with yes, for tests not about asking.
+const YES = { confirm: async () => true }
+
 // The mock bridge holds mutable workbook state; reset it before each test so
 // order-dependent mutations (a save recording a filename, an open replacing the
 // sheets) do not leak between cases.
@@ -26,14 +29,14 @@ beforeEach(() => {
 })
 
 test('loads dimensions and sheets once the bridge is ready', async () => {
-  const { result } = renderHook(() => useWorkbook())
+  const { result } = renderHook(() => useWorkbook(YES))
   await waitFor(() => expect(result.current.ready).toBe(true))
   expect(result.current.dims?.ncol).toBe(256)
   expect(result.current.sheets?.names).toEqual(['Sheet1', 'Data'])
 })
 
 test('save with no filename falls back to the save dialog', async () => {
-  const { result } = renderHook(() => useWorkbook())
+  const { result } = renderHook(() => useWorkbook(YES))
   await waitFor(() => expect(result.current.ready).toBe(true))
   expect(result.current.dims?.filename).toBe('')
   await act(async () => {
@@ -44,7 +47,7 @@ test('save with no filename falls back to the save dialog', async () => {
 })
 
 test('open replaces the workbook and refreshes the sheet list', async () => {
-  const { result } = renderHook(() => useWorkbook())
+  const { result } = renderHook(() => useWorkbook(YES))
   await waitFor(() => expect(result.current.ready).toBe(true))
   await act(async () => {
     await result.current.actions.open()
@@ -54,7 +57,7 @@ test('open replaces the workbook and refreshes the sheet list', async () => {
 })
 
 test('switching sheets updates the active index', async () => {
-  const { result } = renderHook(() => useWorkbook())
+  const { result } = renderHook(() => useWorkbook(YES))
   await waitFor(() => expect(result.current.ready).toBe(true))
   await act(async () => {
     await result.current.actions.setSheet(1)
@@ -67,7 +70,7 @@ test('switching sheets updates the active index', async () => {
 // status bar and the close-confirmation guard claimed unsaved changes over a
 // sheet nothing had touched.
 test('a refused format does not mark the workbook dirty', async () => {
-  const { result } = renderHook(() => useWorkbook())
+  const { result } = renderHook(() => useWorkbook(YES))
   await waitFor(() => expect(result.current.ready).toBe(true))
   expect(result.current.dirty).toBe(false)
 
@@ -80,7 +83,7 @@ test('a refused format does not mark the workbook dirty', async () => {
 })
 
 test('an accepted format does mark the workbook dirty', async () => {
-  const { result } = renderHook(() => useWorkbook())
+  const { result } = renderHook(() => useWorkbook(YES))
   await waitFor(() => expect(result.current.ready).toBe(true))
 
   await act(async () => {
@@ -96,12 +99,12 @@ test('an accepted format does mark the workbook dirty', async () => {
 test('a startup workbook whose code was withheld raises the decision on boot', async () => {
   window.pywebview!.api.pending_trust = () =>
     Promise.resolve({ needs_trust: true, ...trustInfo('/tmp/hybrid.json') } as const)
-  const { result } = renderHook(() => useWorkbook())
+  const { result } = renderHook(() => useWorkbook(YES))
   await waitFor(() => expect(result.current.trust?.path).toBe('/tmp/hybrid.json'))
 })
 
 test('nothing is asked when the startup workbook has no code', async () => {
-  const { result } = renderHook(() => useWorkbook())
+  const { result } = renderHook(() => useWorkbook(YES))
   await waitFor(() => expect(result.current.ready).toBe(true))
   expect(result.current.trust).toBeNull()
 })
@@ -109,7 +112,7 @@ test('nothing is asked when the startup workbook has no code', async () => {
 test('opening a file with code asks instead of loading it', async () => {
   window.pywebview!.api.open_dialog = () =>
     Promise.resolve({ ok: false, needs_trust: true, ...trustInfo('/tmp/trust.json') } as const)
-  const { result } = renderHook(() => useWorkbook())
+  const { result } = renderHook(() => useWorkbook(YES))
   await waitFor(() => expect(result.current.ready).toBe(true))
   await act(async () => {
     await result.current.actions.open()
@@ -127,7 +130,7 @@ test('approving completes the open with the policy', async () => {
   }
   window.pywebview!.api.open_dialog = () =>
     Promise.resolve({ ok: false, needs_trust: true, ...trustInfo('/tmp/trust.json') } as const)
-  const { result } = renderHook(() => useWorkbook())
+  const { result } = renderHook(() => useWorkbook(YES))
   await waitFor(() => expect(result.current.ready).toBe(true))
   await act(async () => {
     await result.current.actions.open()
@@ -148,7 +151,7 @@ test('cancelling loads nothing', async () => {
   }
   window.pywebview!.api.open_dialog = () =>
     Promise.resolve({ ok: false, needs_trust: true, ...trustInfo('/tmp/trust.json') } as const)
-  const { result } = renderHook(() => useWorkbook())
+  const { result } = renderHook(() => useWorkbook(YES))
   await waitFor(() => expect(result.current.ready).toBe(true))
   await act(async () => {
     await result.current.actions.open()
@@ -158,4 +161,65 @@ test('cancelling loads nothing', async () => {
   })
   expect(opened).toBe(0)
   expect(result.current.trust).toBeNull()
+})
+
+// --- asking before losing work ----------------------------------------------
+
+test('opening over unsaved changes asks, and a no leaves the workbook alone', async () => {
+  const confirm = vi.fn(async () => false)
+  const openDialog = vi.spyOn(window.pywebview!.api, 'open_dialog')
+  const { result } = renderHook(() => useWorkbook({ confirm }))
+  await waitFor(() => expect(result.current.ready).toBe(true))
+  await window.pywebview!.api.set_cell(0, 0, 'edit') // dirty engine-side
+  await act(async () => {
+    await result.current.actions.open()
+  })
+  expect(confirm).toHaveBeenCalledOnce()
+  expect(openDialog).not.toHaveBeenCalled()
+})
+
+test('opening over a clean workbook does not ask', async () => {
+  const confirm = vi.fn(async () => false)
+  const { result } = renderHook(() => useWorkbook({ confirm }))
+  await waitFor(() => expect(result.current.ready).toBe(true))
+  await act(async () => {
+    await result.current.actions.open()
+  })
+  expect(confirm).not.toHaveBeenCalled()
+  expect(result.current.dims?.filename).toBe('/tmp/opened.json')
+})
+
+test('deleting a sheet asks first', async () => {
+  const confirm = vi.fn(async () => false)
+  const del = vi.spyOn(window.pywebview!.api, 'delete_sheet')
+  const { result } = renderHook(() => useWorkbook({ confirm }))
+  await waitFor(() => expect(result.current.ready).toBe(true))
+  await act(async () => {
+    await result.current.actions.deleteSheet('Data')
+  })
+  expect(confirm).toHaveBeenCalledOnce()
+  expect(del).not.toHaveBeenCalled()
+
+  confirm.mockResolvedValue(true)
+  await act(async () => {
+    await result.current.actions.deleteSheet('Data')
+  })
+  expect(del).toHaveBeenCalledWith('Data')
+})
+
+// Undo changes cells as much as an edit does, so the views derived from
+// `mutations` (status-bar totals, find hits) and the solver overlay must follow.
+test('undo and redo count as mutations', async () => {
+  const onMutate = vi.fn()
+  const { result } = renderHook(() => useWorkbook({ ...YES, onMutate }))
+  await waitFor(() => expect(result.current.ready).toBe(true))
+  const before = result.current.mutations
+  await act(async () => {
+    await result.current.actions.undo()
+  })
+  await act(async () => {
+    await result.current.actions.redo()
+  })
+  expect(result.current.mutations).toBe(before + 2)
+  expect(onMutate).toHaveBeenCalledTimes(2)
 })

@@ -24,6 +24,7 @@ export function GoalDialog({
   const [lo, setLo] = useState('')
   const [hi, setHi] = useState('')
   const [result, setResult] = useState('')
+  const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     if (open) {
@@ -33,27 +34,36 @@ export function GoalDialog({
   }, [open, activeRef])
 
   const run = async () => {
-    if (!cell || target === '' || !varc) {
+    if (!cell || target.trim() === '' || !varc) {
       setResult('fill in set / to / by')
       return
     }
-    const res = await bridge.goal_seek(
-      cell,
-      parseFloat(target),
-      varc,
-      lo === '' ? null : parseFloat(lo),
-      hi === '' ? null : parseFloat(hi),
-    )
-    if (!res.ok) {
-      setResult(res.error ?? 'failed')
+    // `Number`, not `parseFloat`: parseFloat('1,5') is 1, and NaN crosses the
+    // bridge as null.
+    const bad = [target, lo, hi].find((v) => v.trim() !== '' && !Number.isFinite(Number(v)))
+    if (bad !== undefined) {
+      setResult(`not a number: ${bad}`)
       return
     }
-    if (res.applied) onMutated?.()
-    setResult(
-      res.converged
-        ? `${varc} = ${fnum(res.var_value)}   (${cell} = ${fnum(res.formula_value)})`
-        : `did not converge (residual ${fnum(res.residual)})`,
-    )
+    const bound = (v: string) => (v.trim() === '' ? null : Number(v))
+    setBusy(true)
+    try {
+      const res = await bridge.goal_seek(cell, Number(target), varc, bound(lo), bound(hi))
+      if (!res.ok) {
+        setResult(res.error ?? 'failed')
+        return
+      }
+      if (res.applied) onMutated?.()
+      setResult(
+        res.converged
+          ? `${varc} = ${fnum(res.var_value)}   (${cell} = ${fnum(res.formula_value)})`
+          : `did not converge (residual ${fnum(res.residual)})`,
+      )
+    } catch (e) {
+      setResult(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -81,7 +91,7 @@ export function GoalDialog({
           </div>
           <div className="dialog-actions">
             <span className="goal-result">{result}</span>
-            <button className="btn-primary" onClick={() => void run()}>
+            <button className="btn-primary" onClick={() => void run()} disabled={busy}>
               Run
             </button>
             <Dialog.Close className="btn">Close</Dialog.Close>

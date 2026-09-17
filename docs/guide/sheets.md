@@ -13,6 +13,8 @@
 
 A workbook with more than one sheet shows a tab strip on the bottom line (active tab highlighted, with an `i/n` position counter); single-sheet workbooks leave that line clear. The status bar also prefixes the active sheet name (`Inputs!A1`) whenever a workbook has multiple sheets.
 
+`u` undoes `:sheet add`, `del`, `rename` and `move`.
+
 ## Cross-sheet references
 
 Reference cells on other sheets with `Sheet!cell`:

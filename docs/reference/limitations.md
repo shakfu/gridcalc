@@ -10,6 +10,8 @@ Known gaps, each of them deliberate rather than pending:
 
 - **Cross-sheet ranges** (`Sheet1!A1:Sheet2!B5`) are rejected at parse time. Excel does not support them either.
 
+- **Grid size** is 256 columns by 1024 rows per sheet. xlsx import drops cells outside it and warns.
+
 - **xlsx cell styles** (fonts, fills, borders, column widths) are neither read nor written. Number formats are, but only the date ones -- enough to keep dates dates through a round trip; a currency or percent format from Excel still arrives as a bare number.
 
 The [Excel function coverage audit](../function_coverage.md) tracks the function library itself against Microsoft's documented set, including which absences are architectural and which are merely unimplemented.

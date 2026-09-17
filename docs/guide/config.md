@@ -4,8 +4,8 @@ An optional `gridcalc.toml`, looked up in `$PWD` first and then `$XDG_CONFIG_HOM
 
 ```toml
 sandbox = true             # AST validation of formulas + code blocks
-width   = 12               # default column width
-format  = "G"              # default cell format
+width   = 12               # default column width: an integer, 4 to 40
+format  = "G"              # default cell format: L R I G D $ % or *
 
 [keys.grid]
 next_sheet  = ["Tab", "F4"]
@@ -15,6 +15,8 @@ cursor_down = ["Down", "j"]
 cursor_up   = ["Up", "k"]
 cursor_right= ["Right", "l"]
 ```
+
+An invalid `width` or `format` prints a warning and keeps the default. The codes are described in [Formatting](formatting.md).
 
 A fuller annotated example ships in the repository as [`gridcalc.toml.example`](https://github.com/shakfu/gridcalc/blob/main/gridcalc.toml.example).
 

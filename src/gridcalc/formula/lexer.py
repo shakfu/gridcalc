@@ -44,9 +44,17 @@ class Token:
 
 
 _CELLREF_RE = re.compile(r"\$?([A-Za-z]+)\$?(\d+)")
-_NUMBER_RE = re.compile(r"\d+(\.\d*)?([eE][+-]?\d+)?|\.\d+([eE][+-]?\d+)?")
+_NUMBER_RE = re.compile(r"\d+(\.\d*)?([eE][+-]?\d+)?|\.\d+([eE][+-]?\d+)?", re.ASCII)
+_SIGNED_NUMBER_RE = re.compile(r"[+-]?(?:" + _NUMBER_RE.pattern + ")", re.ASCII)
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_SEGMENT_RE = re.compile(r"[A-Za-z0-9_]+")
 _ERROR_LIT_RE = re.compile(r"#(?:DIV/0!|N/A|NAME\?|REF!|VALUE!|NUM!|NULL!)", re.IGNORECASE)
+
+
+def parse_number(text: str) -> float | None:
+    """The number ``text`` spells, or None. Accepts only decimal notation:
+    ``float`` alone also takes ``nan``, ``inf`` and ``1_000``."""
+    return float(text) if _SIGNED_NUMBER_RE.fullmatch(text) else None
 
 
 def _parse_cellref(text: str) -> tuple[int, int, int, bool, bool] | None:
@@ -104,15 +112,18 @@ def tokenize(text: str) -> list[Token]:
                 next_idx = i + end
                 if next_idx < n and (s[next_idx].isalnum() or s[next_idx] == "_"):
                     cr = None  # fall through to IDENT
-                elif next_idx < n and s[next_idx] == "!":
-                    cr = None  # sheet prefix; let IDENT branch consume it
+                elif next_idx < n and s[next_idx] in "!(":
+                    # `Sheet1!A1` is a sheet prefix; `LOG10(` a function name.
+                    cr = None
                 else:
                     tokens.append(Token(CELLREF, (col, row, ac, ar), pos))
                     i += end
                     continue
-        # identifier (function name, named range, bool, py keyword)
-        if ch.isalpha() or ch == "_":
-            m2 = _IDENT_RE.match(s, i)
+        # identifier (function name, named range, bool, py keyword). A segment
+        # straight after `name.` may start with a digit: `T.DIST.2T`.
+        dotted = s[i - 1 : i] == "." and bool(tokens) and tokens[-1].kind == DOT
+        if ch.isalpha() or ch == "_" or (dotted and ch.isdigit()):
+            m2 = (_SEGMENT_RE if dotted else _IDENT_RE).match(s, i)
             if m2 is None:
                 raise FormulaError(f"unexpected character {ch!r} at {pos}")
             ident = m2.group(0)
@@ -126,7 +137,8 @@ def tokenize(text: str) -> list[Token]:
             i = m2.end()
             continue
         # number
-        if ch.isdigit() or (ch == "." and i + 1 < n and s[i + 1].isdigit()):
+        after_ident = bool(tokens) and tokens[-1].kind == IDENT and s[i - 1 : i].isalnum()
+        if ch.isdigit() or (ch == "." and i + 1 < n and s[i + 1].isdigit() and not after_ident):
             m3 = _NUMBER_RE.match(s, i)
             if m3 is None:
                 raise FormulaError(f"invalid number at {pos}")

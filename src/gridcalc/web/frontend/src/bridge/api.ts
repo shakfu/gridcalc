@@ -60,50 +60,67 @@ function api(): PywebviewApi {
   return a
 }
 
+// Mutating calls go through one promise chain. pywebview runs each call on its
+// own Python thread, so without this a held Ctrl+Z sent overlapping undos.
+let tail: Promise<unknown> = Promise.resolve()
+function queued<A extends unknown[], R>(fn: (...args: A) => Promise<R>) {
+  return (...args: A): Promise<R> => {
+    const next = tail.then(
+      () => fn(...args),
+      () => fn(...args),
+    )
+    tail = next.catch(() => {})
+    return next
+  }
+}
+
 // The typed client the React app calls. Each method is a thin, awaitable
 // forward to the Python `Api`; call sites never touch `window.pywebview`.
+// Reads are not queued; the lock in the Python `Api` alone serialises them.
 export const bridge: PywebviewApi = {
   dims: () => api().dims(),
   sheets: () => api().sheets(),
-  set_active: (idx) => api().set_active(idx),
+  set_active: queued((idx) => api().set_active(idx)),
   search: (pattern) => api().search(pattern),
   list_commands: () => api().list_commands(),
-  run_command: (name, args, selection) => api().run_command(name, args, selection),
+  run_command: queued((name, args, selection) => api().run_command(name, args, selection)),
   col_widths: () => api().col_widths(),
-  set_col_width: (col, px) => api().set_col_width(col, px),
-  add_sheet: (name) => api().add_sheet(name),
-  delete_sheet: (name) => api().delete_sheet(name),
-  rename_sheet: (old, name) => api().rename_sheet(old, name),
-  move_sheet: (name, index) => api().move_sheet(name, index),
-  undo: () => api().undo(),
-  redo: () => api().redo(),
-  save: (path) => api().save(path),
-  save_dialog: () => api().save_dialog(),
-  open_dialog: () => api().open_dialog(),
-  open_file: (path, policy) => api().open_file(path, policy),
+  set_col_width: queued((col, px) => api().set_col_width(col, px)),
+  add_sheet: queued((name) => api().add_sheet(name)),
+  delete_sheet: queued((name) => api().delete_sheet(name)),
+  rename_sheet: queued((old, name) => api().rename_sheet(old, name)),
+  move_sheet: queued((name, index) => api().move_sheet(name, index)),
+  undo: queued(() => api().undo()),
+  redo: queued(() => api().redo()),
+  save: queued((path) => api().save(path)),
+  save_dialog: queued(() => api().save_dialog()),
+  open_dialog: queued(() => api().open_dialog()),
+  open_file: queued((path, policy) => api().open_file(path, policy)),
   inspect: (path) => api().inspect(path),
   pending_trust: () => api().pending_trust(),
   viewport: (r0, c0, rows, cols) => api().viewport(r0, c0, rows, cols),
   stats: (r0, c0, r1, c1) => api().stats(r0, c0, r1, c1),
   cell_source: (r, c) => api().cell_source(r, c),
-  set_cell: (r, c, text) => api().set_cell(r, c, text),
-  clear_range: (r0, c0, r1, c1) => api().clear_range(r0, c0, r1, c1),
-  set_format: (r0, c0, r1, c1, spec) => api().set_format(r0, c0, r1, c1, spec),
-  set_global_format: (fmt) => api().set_global_format(fmt),
-  copy: (r0, c0, r1, c1, cut) => api().copy(r0, c0, r1, c1, cut),
-  paste: (r, c) => api().paste(r, c),
-  paste_text: (r, c, text) => api().paste_text(r, c, text),
-  fill: (r0, c0, r1, c1, direction) => api().fill(r0, c0, r1, c1, direction),
-  solve_selection: (r0, c0, r1, c1, sense, apply) =>
+  set_cell: queued((r, c, text) => api().set_cell(r, c, text)),
+  clear_range: queued((r0, c0, r1, c1) => api().clear_range(r0, c0, r1, c1)),
+  set_format: queued((r0, c0, r1, c1, spec) => api().set_format(r0, c0, r1, c1, spec)),
+  set_global_format: queued((fmt) => api().set_global_format(fmt)),
+  copy: queued((r0, c0, r1, c1, cut) => api().copy(r0, c0, r1, c1, cut)),
+  paste: queued((r, c) => api().paste(r, c)),
+  paste_text: queued((r, c, text) => api().paste_text(r, c, text)),
+  fill: queued((r0, c0, r1, c1, direction, span) => api().fill(r0, c0, r1, c1, direction, span)),
+  solve_selection: queued((r0, c0, r1, c1, sense, apply) =>
     api().solve_selection(r0, c0, r1, c1, sense, apply),
-  solve_model: (spec) => api().solve_model(spec),
-  goal_seek: (formula_ref, target, var_ref, lo, hi) =>
-    api().goal_seek(formula_ref, target, var_ref, lo, hi),
+  ),
+  solve_model: queued((spec) => api().solve_model(spec)),
+  goal_seek: queued((formula_ref, target, var_ref, lo, hi, apply) =>
+    api().goal_seek(formula_ref, target, var_ref, lo, hi, apply),
+  ),
   opt_sweep: (spec) => api().opt_sweep(spec),
   list_models: () => api().list_models(),
-  save_model: (name, spec) => api().save_model(name, spec),
-  delete_model: (name) => api().delete_model(name),
-  run_model: (name, spec) => api().run_model(name, spec),
+  save_model: queued((name, spec) => api().save_model(name, spec)),
+  delete_model: queued((name) => api().delete_model(name)),
+  run_model: queued((name, spec) => api().run_model(name, spec)),
   infer_model_spec: (r0, c0, r1, c1, sense) => api().infer_model_spec(r0, c0, r1, c1, sense),
   chart_data: (spec) => api().chart_data(spec),
 }

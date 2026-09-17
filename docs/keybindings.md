@@ -148,10 +148,10 @@ A warning never aborts startup -- a misconfigured binding is simply dropped from
 
 - Resolution: `resolve_key` in the same module. Calls `curses.tigetstr` / `curses.keyname` for `C-Right`/`C-Left`, so it must run after `curses.initscr()`.
 
-- Grid action registry: `_GRID_ACTIONS` in `src/gridcalc/tui.py`. Adding a grid action means: add it to `keys.KNOWN_ACTIONS["grid"]`, add a callable here, and document it in this file's table.
+- Grid action registry: `_GRID_ACTIONS` in `src/gridcalc/tui/__init__.py`. Adding a grid action means: add it to `keys.KNOWN_ACTIONS["grid"]`, add a callable here, and document it in this file's table.
 
-- Grid dispatcher: `_dispatch_grid_key` in `src/gridcalc/tui.py`. Pure function -- testable without a curses session (see `tests/test_tui.py::TestDispatchGridKey`).
+- Grid dispatcher: `_dispatch_grid_key` in `src/gridcalc/tui/__init__.py`. Pure function -- testable without a curses session (see `tests/test_tui.py::TestDispatchGridKey`).
 
 - The other four contexts (`entry`, `visual`, `cmdline`, `search`) use a different shape: `_action_for(context, ch)` returns the bound action name (or `None`), and each context's existing if/elif chain matches on `action == "<name>" or ch == <hardcoded>`. This lets the actions read closed-over locals (`buf`, `origc`, `picking`, etc.) without lifting them into module scope. The dispatcher's `context in ("entry", "cmdline", "search")` branch is the self-insert override -- printable bytes return `None` so they always fall through to the hardcoded `32 <= ch < 127` branch.
 
-- Module-level state: `_resolved_keymap` in `tui.py` is populated once by `mainloop` after curses init. The `_action_for` helper reads from it. Tests that exercise the helpers in isolation snapshot and restore this global per test.
+- Module-level state: `_resolved_keymap` in `tui/__init__.py` is populated once by `mainloop` after curses init. The `_action_for` helper reads from it. Tests that exercise the helpers in isolation snapshot and restore this global per test.

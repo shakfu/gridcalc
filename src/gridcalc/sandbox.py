@@ -404,7 +404,7 @@ def inspect_file(filename: str) -> FileInfo | None:
     and cell/formula counts, or None if the file cannot be parsed.
     """
     try:
-        with open(filename) as f:
+        with open(filename, encoding="utf-8") as f:
             d = json.load(f)
     except (OSError, json.JSONDecodeError):
         return None

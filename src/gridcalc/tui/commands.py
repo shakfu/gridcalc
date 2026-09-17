@@ -323,7 +323,7 @@ def cmd_edit(stdscr: curses.window, g: Grid) -> bool:
     except ValueError as exc:
         show_error(stdscr, f"Bad editor command {editor!r}: {exc}")
         return False
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".py", delete=False) as f:
         if g.code:
             f.write(g.code)
         tmppath = f.name
@@ -344,7 +344,7 @@ def cmd_edit(stdscr: curses.window, g: Grid) -> bool:
         if rc != 0:
             show_error(stdscr, f"Editor exited with status {rc}; code block unchanged.")
             return False
-        with open(tmppath) as f:
+        with open(tmppath, encoding="utf-8") as f:
             content = f.read()[:MAXCODE]
         if content != g.code:
             g.code = content

@@ -2807,7 +2807,7 @@ class Grid:
     def jsonload(self, filename: str, policy: Any = None) -> int:
         self.io_error = None
         try:
-            with open(filename) as f:
+            with open(filename, encoding="utf-8") as f:
                 d = json.load(f)
         except (OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
             self.io_error = str(exc)
@@ -3130,7 +3130,7 @@ class Grid:
             out["sheets"].append(entry)
 
         def write(path: str) -> None:
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump(out, f, indent=2, allow_nan=False)
                 f.write("\n")
 
@@ -3350,7 +3350,7 @@ class Grid:
             return str(int(v)) if abs(v) < 1e15 and v == int(v) else repr(float(v))
 
         def write(path: str) -> None:
-            with open(path, "w", newline="") as f:
+            with open(path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 for r in range(maxr + 1):
                     writer.writerow([value(self._cells.get((c, r))) for c in range(maxc + 1)])
@@ -3361,7 +3361,7 @@ class Grid:
         """Import cells from a CSV file. Numbers become NUM cells, rest become LABELs."""
         self.io_error = None
         try:
-            with open(filename, newline="") as f:
+            with open(filename, newline="", encoding="utf-8") as f:
                 content = f.read()
         except (OSError, UnicodeDecodeError) as exc:
             self.io_error = str(exc)
@@ -3511,7 +3511,7 @@ class Grid:
         def write(path: str) -> None:
             if ext == ".json":
                 # pandas' to_json rounds floats to at most 15 digits.
-                with open(path, "w") as f:
+                with open(path, "w", encoding="utf-8") as f:
                     records = [dict(zip(columns, row, strict=True)) for row in data]
                     json.dump(records, f, indent=2, allow_nan=False)
             else:

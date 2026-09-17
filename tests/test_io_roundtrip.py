@@ -5,6 +5,9 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -141,6 +144,48 @@ def test_csv_load_of_non_utf8_bytes_fails_cleanly(tmp_path: Path) -> None:
     assert g.csvload(str(f)) == -1
     assert g.io_error
     assert g.cells[0][0].text == "keep"
+
+
+_ENCODING_CHILD = """
+import importlib.util, sys
+from gridcalc.engine import Grid, Mode
+from gridcalc.sandbox import inspect_file
+
+d, text = sys.argv[1], sys.argv[2]
+g = Grid()
+g.mode = Mode.EXCEL
+g._apply_mode_libs()
+g.setcell(0, 0, "h")
+g.setcell(0, 1, text)
+exts = ["json", "csv"] + (["pd.json"] if importlib.util.find_spec("pandas") else [])
+for ext in exts:
+    path = f"{d}/book.{ext}"
+    save, load = {"json": ("jsonsave", "jsonload"), "csv": ("csvsave", "csvload")}.get(
+        ext, ("pdsave", "pdload")
+    )
+    assert getattr(g, save)(path) == 0, (ext, g.io_error)
+    h = Grid()
+    h.mode = Mode.EXCEL
+    h._apply_mode_libs()
+    assert getattr(h, load)(path) == 0, (ext, h.io_error)
+    assert h.cells[0][1].text == text, (ext, h.cells[0][1].text)
+assert inspect_file(f"{d}/book.json") is not None
+"""
+
+
+def test_text_files_are_utf8_whatever_the_locale(tmp_path: Path) -> None:
+    # Windows' locale encoding is cp1252, so an open() without encoding= wrote
+    # workbooks other platforms could not read. The warning finds such calls anywhere.
+    proc = subprocess.run(
+        [sys.executable, "-X", "warn_default_encoding", "-W", "error::EncodingWarning"]
+        + ["-c", _ENCODING_CHILD, str(tmp_path), "caf\u00e9 \u6570\u5b57"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "GRIDCALC_SANDBOX": "1"},
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_pd_load_recalcs_once_in_python_mode(tmp_path: Path, monkeypatch) -> None:

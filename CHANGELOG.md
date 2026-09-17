@@ -23,9 +23,11 @@
 
 - **Every save failed on Windows.** Atomic saves fsynced the temp file through a read-only handle, which Windows rejects with `EBADF`, so JSON, CSV, xlsx and `:pd` saves all returned -1.
 
+- **Windows read and wrote workbooks in cp1252.** JSON, CSV and `:pd` JSON files, the trust-prompt inspection, and the `:e` temp file were opened without `encoding=`, so Windows used its locale encoding. A workbook saved there with an accented letter did not load elsewhere, text outside cp1252 could not be saved, and a non-UTF-8 CSV loaded as mojibake instead of failing. All now use UTF-8.
+
 - **`:e` could not start an editor named by a Windows path.** The command was split with POSIX `shlex` rules, so `EDITOR=C:\tools\vim.exe` ran `C:toolsvim.exe`. Windows now receives the command line unsplit.
 
-- **Wheel builds failed their test step.** On Windows, the integration `conftest.py` imported `fcntl` and `termios` before its `pty` skip, so collection failed and hid the two Windows bugs above. On other platforms, the `pdsave` case in `test_save_atomic.py` ran without pandas, which the wheel test env does not install.
+- **Wheel builds failed their test step.** On Windows, the integration `conftest.py` imported `fcntl` and `termios` before its `pty` skip, so collection failed and hid the Windows bugs above. On other platforms, the `pdsave` case in `test_save_atomic.py` ran without pandas, which the wheel test env does not install.
 
 ## [0.6.1]
 

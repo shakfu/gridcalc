@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.2]
+
 ### Changed
 
 - **`:pd` reads and writes CSV, TSV and JSON only.** Excel and Parquet needed `openpyxl` and `pyarrow`, which `[extras]` does not install, so both failed. `:xlsx` covers Excel. Any other extension returns -1; before, `.foo` got CSV written into it.

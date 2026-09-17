@@ -1489,6 +1489,9 @@
 <p><strong>sheets</strong> (v2): each is <code>{name, cells}</code> with a 2D <code>cells</code> array.</p>
 </li>
 <li>
+<p><strong>cells</strong>: rows of cell entries. An entry is <code>null</code>, a number, a string (label or <code>=</code> formula), or an object with <code>v</code> and optional <code>bold</code>, <code>underline</code>, <code>italic</code>, <code>fmt</code>, <code>fmtstr</code> and <code>label</code> keys. <code>"label": true</code> keeps text that looks like a number or formula, such as <code>"00123"</code>, as a label. Infinity is saved as the string <code>"1e999"</code> or <code>"-1e999"</code>, and NaN as <code>null</code>.</p>
+</li>
+<li>
 <p><strong>active</strong> (v2): the name of the sheet to focus on load.</p>
 </li>
 <li>

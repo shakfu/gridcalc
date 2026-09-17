@@ -1733,6 +1733,17 @@
 <a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>:opt undef &lt;name&gt;                                                          Remove a saved model
 </code></pre></div>
 <p>The <strong>model</strong> is sheet-resident: an objective formula in one cell, decision-variable cells holding values, and constraint cells holding comparison formulas like <code>=A1+A2&lt;=10</code>. The constraint cells keep evaluating during recalculation, so the sheet shows live feasibility (<code>TRUE</code>/<code>FALSE</code>) before and after the solve.</p>
+<p>Other cells the model reads:</p>
+<ul>
+<li>
+<p>A formula cell that reads a decision variable, directly or through other formulas, is inlined. With <code>B1</code> holding <code>=2*A1</code>, the constraint <code>=B1&lt;=10</code> means <code>2*A1&lt;=10</code>. A helper that cannot be inlined is refused, naming the cell.</p>
+</li>
+<li>
+<p>Any other cell is a parameter: its current value is a constant. Text is refused, naming the cell, except inside a <code>SUM</code> range, which skips it.</p>
+</li>
+</ul>
+<p>A strict <code>&lt;</code> or <code>&gt;</code> constraint needs integer variables with integer coefficients, and tightens by one: <code>=A1&lt;5</code> becomes <code>A1&lt;=4</code>. Any other strict constraint is refused.</p>
+<p>A solve stops after 60 seconds and reports <code>TIMEOUT</code>.</p>
 <p>A worked example (also at <code>examples/example_lp.json</code>):</p>
 <table>
 <thead>
@@ -1788,7 +1799,7 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>opt: objective is not convex, so it has no interior minimum -- ...
 </code></pre></div>
 <p>Convexity is checked directly on the Hessian (symmetric elimination, no numpy required), so the message names the real problem rather than reporting a bare solver failure.</p>
-<p>Sensitivity analysis and infeasibility diagnosis are <strong>withheld for quadratic models</strong>: their duals do not carry the shadow-price reading the report describes. Integer variables cannot be combined with a quadratic objective.</p>
+<p>Sensitivity analysis and infeasibility diagnosis are <strong>withheld for quadratic models</strong>: their duals do not carry the shadow-price reading the report describes. Integer and binary variables cannot be combined with a quadratic objective.</p>
 <h2 id="inferring-the-model-from-a-selection">Inferring the model from a selection<a class="headerlink" href="#inferring-the-model-from-a-selection" title="Permanent link">&para;</a></h2>
 <p>The layout above already says what the model is. Select the block with <code>v</code>, then type <code>:opt max</code> (or <code>min</code>) and the components are read off it:</p>
 <table>
@@ -1824,7 +1835,7 @@
 <p>Any order after <code>st</code>:</p>
 <ul>
 <li>
-<p><code>bounds A1=lo:hi, B2=lo:hi</code> -- per-variable bounds. <code>lo</code> and <code>hi</code> accept <code>inf</code>, <code>+inf</code>, <code>-inf</code>. The default is <code>[0, +inf)</code>.</p>
+<p><code>bounds A1=lo:hi, B2=lo:hi</code> -- per-variable bounds. <code>lo</code> accepts <code>-inf</code> and <code>hi</code> accepts <code>inf</code>; <code>A1=inf:10</code> is rejected. The default is <code>[0, +inf)</code>.</p>
 </li>
 <li>
 <p><code>int &lt;cells&gt;</code> -- decision variables are integer-valued (branch and bound).</p>

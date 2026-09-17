@@ -514,6 +514,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#excel-coercion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Excel coercion
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#the-function-library" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1529,6 +1540,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#excel-coercion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Excel coercion
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#the-function-library" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1614,11 +1636,34 @@
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>=py.margin(A1, B1)                    HYBRID: call a code-block function
 </code></pre></div>
 <p>Excel error values (<code>#DIV/0!</code>, <code>#N/A</code>, <code>#NAME?</code>, <code>#REF!</code>, <code>#VALUE!</code>, <code>#NUM!</code>, <code>#NULL!</code>) propagate through arithmetic and are catchable with <code>IFERROR</code>/<code>IFNA</code>.</p>
+<h2 id="excel-coercion">Excel coercion<a class="headerlink" href="#excel-coercion" title="Permanent link">&para;</a></h2>
+<p>In <code>EXCEL</code> and <code>HYBRID</code>, values convert as they do in Excel:</p>
+<ul>
+<li>
+<p>Text comparison and <code>SWITCH</code> ignore case: <code>="a"="A"</code> is <code>TRUE</code>.</p>
+</li>
+<li>
+<p>Arithmetic on text that is not a number gives <code>#VALUE!</code>: <code>=""+1</code>, <code>="1_000"+1</code>.</p>
+</li>
+<li>
+<p>An <code>IF</code> or <code>IFS</code> condition that is text gives <code>#VALUE!</code>.</p>
+</li>
+<li>
+<p>Aggregates count a boolean or numeric text typed as an argument: <code>=SUM("3",TRUE)</code> is 4. They skip text and booleans read from cells.</p>
+</li>
+<li>
+<p>Numbers convert to text with 15 significant digits: <code>=1/3&amp;""</code> is <code>0.333333333333333</code>.</p>
+</li>
+<li>
+<p>An error inside a range stays in its element. <code>=SUM(IFERROR(A1:A3,0))</code> and <code>VLOOKUP</code> over the range work; <code>=SUM(A1:A3)</code> returns the error. The <code>SUMIF</code> family returns it only from a matching row.</p>
+</li>
+</ul>
 <h2 id="the-function-library">The function library<a class="headerlink" href="#the-function-library" title="Permanent link">&para;</a></h2>
-<p><strong>Built-in functions</strong> (always available): <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, <code>MAX</code>, <code>COUNT</code>, <code>ABS</code>, <code>SQRT</code>, <code>INT</code>, plus everything in <code>math</code> (<code>sin</code>, <code>cos</code>, <code>log</code>, <code>pi</code>, <code>e</code>, and the rest).</p>
+<p><strong>Built-in functions</strong> (every mode): <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, <code>MAX</code>, <code>COUNT</code>, <code>ABS</code>, <code>SQRT</code>, <code>INT</code>.</p>
+<p>Some names differ by mode. In <code>EXCEL</code> and <code>HYBRID</code>, <code>LOG(100)</code> is 2, <code>LN</code> is the natural log, pi is <code>PI()</code>, and <code>INT(-2.5)</code> is -3. In <code>PYTHON</code>, <code>log</code> is the natural log, <code>pi</code> is a constant, and <code>INT(-2.5)</code> is -2.</p>
 <p><strong>Excel-compatible library</strong> (auto-loaded in <code>EXCEL</code> and <code>HYBRID</code>): <code>IF</code>, <code>IFERROR</code>, <code>AND</code>, <code>OR</code>, <code>NOT</code>, <code>ROUND</code>, <code>AVERAGE</code>, <code>MEDIAN</code>, <code>SUMIF</code>, <code>COUNTIF</code>, <code>AVERAGEIF</code>, <code>LET</code>, <code>VLOOKUP</code>, <code>HLOOKUP</code>, <code>XLOOKUP</code>, <code>XMATCH</code>, <code>INDEX</code>, <code>MATCH</code>, <code>FILTER</code>, <code>SORT</code>, <code>UNIQUE</code>, <code>SEQUENCE</code>, <code>CONCATENATE</code>, <code>LEFT</code>, <code>RIGHT</code>, <code>MID</code>, <code>LEN</code>, <code>TRIM</code>, <code>UPPER</code>, <code>LOWER</code>, <code>SUBSTITUTE</code>, and 280 others. Dynamic-array functions return whole rows and columns and compose: <code>=INDEX(SORT(A1:B9), 1, 2)</code>.</p>
 <p>The <a href="../../function_coverage/">function coverage audit</a> tracks the library against Microsoft's documented function set, including what is deliberately absent.</p>
-<p><strong>PYTHON-only extras</strong>: the <code>math</code> module, Python builtins (<code>sum</code>, <code>min</code>, <code>max</code>, <code>abs</code>, <code>len</code>), list comprehensions, and -- when the relevant extras are installed -- <code>np.array(...)</code>, <code>np.linalg</code>, matrix multiply (<code>@</code>), and <code>pd.DataFrame(...)</code>.</p>
+<p><strong>PYTHON-only extras</strong>: the <code>math</code> module (<code>sin</code>, <code>log</code>, <code>pi</code>, <code>e</code>, and the rest), Python builtins (<code>sum</code>, <code>min</code>, <code>max</code>, <code>abs</code>, <code>len</code>), list comprehensions, and -- when the relevant extras are installed -- <code>np.array(...)</code>, <code>np.linalg</code>, matrix multiply (<code>@</code>), and <code>pd.DataFrame(...)</code>.</p>
 <p><img alt="A cell holding =np.array([[1,2],[3,4]]); the status line reads ndarray(2, 2) [1, 2, 3, 4]" src="../../media/terminal-large-ndarray.png" /></p>
 <p><em>PYTHON mode: B19 holds a numpy array. The cell shows the shape badge <code>[2x2]</code>; the status line shows the value.</em></p>
 <h2 id="array-cells">Array cells<a class="headerlink" href="#array-cells" title="Permanent link">&para;</a></h2>
@@ -1668,6 +1713,7 @@
 <p>In <code>HYBRID</code>: <code>=py.margin(A1, B1)</code>. In <code>PYTHON</code>: <code>=margin(A1, B1)</code>. <code>EXCEL</code> mode forbids code blocks entirely -- see <a href="../modes/">Formula modes</a>.</p>
 <h2 id="cell-references">Cell references<a class="headerlink" href="#cell-references" title="Permanent link">&para;</a></h2>
 <p><code>$A$1</code> fixes both; <code>$A1</code> fixes the column; <code>A$1</code> fixes the row. References adjust automatically on insert, delete, and replicate.</p>
+<p>Deleting a row or column that a formula references turns that reference into <code>#REF!</code>, <code>$</code> or not. A range shrinks by the lines deleted from it: deleting row 3 turns <code>=SUM(A1:A3)</code> into <code>=SUM(A1:A2)</code>. A range with every line deleted becomes <code>#REF!</code>.</p>
 <p>Cross-sheet references (<code>=Sheet2!A1</code>) are covered in <a href="../sheets/">Multi-sheet workbooks</a>.</p>
 
 

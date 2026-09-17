@@ -1574,15 +1574,19 @@
 <tbody>
 <tr>
 <td><code>:w [file]</code></td>
-<td>save (extension <code>.json</code> or <code>.xlsx</code>)</td>
+<td>save; the extension picks the format (<code>.json</code>, <code>.xlsx</code>, <code>.csv</code>)</td>
 </tr>
 <tr>
 <td><code>:o file</code></td>
-<td>open</td>
+<td>open a JSON workbook</td>
 </tr>
 <tr>
 <td><code>:q</code>, <code>:q!</code></td>
-<td>quit, force-quit</td>
+<td>quit (asks about unsaved changes), force-quit</td>
+</tr>
+<tr>
+<td><code>Ctrl-C</code></td>
+<td>same as <code>:q</code></td>
 </tr>
 <tr>
 <td><code>:e</code></td>

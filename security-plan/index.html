@@ -1421,6 +1421,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#known-gaps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known gaps
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#implementation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1728,6 +1739,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#known-gaps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known gaps
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#implementation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1798,9 +1820,19 @@
 <td>Accidental code exposure</td>
 <td>Low</td>
 </tr>
+<tr>
+<td>User loads a .json with no or unknown <code>mode</code></td>
+<td>Loads as PYTHON mode; formulas <code>eval()</code> with no prompt</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>User starts gridcalc in a directory holding a <code>gridcalc.toml</code></td>
+<td><code>sandbox = false</code> there turns off validation and the trust prompt</td>
+<td>Yes</td>
+</tr>
 </tbody>
 </table>
-<p>The only real threat is <strong>loading a file from an untrusted source</strong>. The user sitting at the keyboard is the trust boundary.</p>
+<p>The only real threat is <strong>loading a file from an untrusted source</strong>. The user sitting at the keyboard is the trust boundary. A config file in the working directory is untrusted content too (see "Known gaps").</p>
 <h2 id="architecture-four-layers">Architecture: Four Layers<a class="headerlink" href="#architecture-four-layers" title="Permanent link">&para;</a></h2>
 <h3 id="layer-1-module-registry">Layer 1: Module Registry<a class="headerlink" href="#layer-1-module-registry" title="Permanent link">&para;</a></h3>
 <p>Users declare which third-party libraries are available, either per-spreadsheet (via a <code>"requires"</code> field in the JSON file) or globally. gridcalc imports approved modules and injects them into the formula eval namespace.</p>
@@ -1854,7 +1886,7 @@
 <p>Subscript and slice access (<code>vals[0]</code>, <code>arr[1:3]</code>)</p>
 </li>
 </ul>
-<p>This is not airtight -- new escape vectors get discovered. But it blocks all <em>known</em> Python sandbox escapes while preserving full library access. It is defense-in-depth, not the primary security boundary.</p>
+<p>This is not airtight -- new escape vectors get discovered. ~~But it blocks all <em>known</em> Python sandbox escapes while preserving full library access.~~ It does not: the check is syntactic, and string-borne attribute access passes it (see "Known gaps"). It is defense-in-depth, not the primary security boundary.</p>
 <h3 id="layer-3-trust-gate-on-file-load">Layer 3: Trust Gate on File Load<a class="headerlink" href="#layer-3-trust-gate-on-file-load" title="Permanent link">&para;</a></h3>
 <p>When loading a <code>.json</code> spreadsheet that contains code blocks or module requirements, the user is prompted before anything executes:</p>
 <p><strong>Terminal prompt (startup):</strong></p>
@@ -1872,7 +1904,7 @@
 <p><strong>Approve</strong> -- load everything (code block, modules, formulas)</p>
 </li>
 <li>
-<p><strong>Formulas only</strong> -- load cell data and formulas, skip code block and modules</p>
+<p><strong>Formulas only</strong> -- load cell data and formulas, skip code block and modules. This is not a code-free load: a PYTHON-mode file's formulas are still <code>eval()</code>ed at load.</p>
 </li>
 <li>
 <p><strong>View code</strong> -- display the code block for review</p>
@@ -1881,7 +1913,7 @@
 <p><strong>Cancel</strong> -- abort the load</p>
 </li>
 </ul>
-<p>Files with no code block and no <code>requires</code> field load silently (backward compatible). AST validation still applies to all formulas.</p>
+<p>Files with no code block and no <code>requires</code> field load silently (backward compatible). AST validation still applies to all formulas. The trust gate covers the code block and modules, not formulas.</p>
 <p>This is the same trust model browsers use for Office macros: the file format can carry executable content, but loading it requires explicit consent.</p>
 <h3 id="layer-4-restricted-builtins-existing">Layer 4: Restricted Builtins (Existing)<a class="headerlink" href="#layer-4-restricted-builtins-existing" title="Permanent link">&para;</a></h3>
 <p>The eval globals dict restricts <code>__builtins__</code> to a curated set: <code>abs</code>, <code>min</code>, <code>max</code>, <code>sum</code>, <code>len</code>, <code>int</code>, <code>float</code>, <code>round</code>, <code>range</code>, <code>enumerate</code>, <code>zip</code>, <code>map</code>, <code>filter</code>, <code>list</code>, <code>tuple</code>, <code>True</code>, <code>False</code>, <code>None</code>, <code>isinstance</code>. This blocks <code>__import__</code>, <code>open</code>, <code>exec</code>, <code>eval</code>, <code>getattr</code>, and other dangerous builtins at the Python level. Combined with AST validation, this provides two independent barriers.</p>
@@ -1907,8 +1939,8 @@
 </tr>
 <tr>
 <td>Trust gate on load</td>
-<td>User approves before code/formulas execute</td>
-<td>Malicious .json files</td>
+<td>User approves before code/modules execute</td>
+<td>Malicious code blocks in .json files</td>
 </tr>
 <tr>
 <td>Restricted builtins</td>
@@ -1947,6 +1979,31 @@
 <p>The <code>exec()</code> of the code block runs on every recalc pass. Functions defined in code blocks are redefined each time. This is harmless but wasteful.</p>
 </li>
 </ul>
+<h2 id="known-gaps">Known gaps<a class="headerlink" href="#known-gaps" title="Permanent link">&para;</a></h2>
+<p>Open findings from <code>REVIEW.md</code> section 5.1, verified against the code. None is fixed.</p>
+<ul>
+<li>
+<p><strong>Formula validation misses string-borne attribute access (S1).</strong> <code>validate_formula</code> walks <code>ast.Attribute</code> and <code>ast.Name</code> nodes only. A format string can name dunder attributes and globals of a callable in the namespace. <code>str.format</code>, <code>%</code>, f-string format specs and <code>format_map</code> all work. The demonstrated effect is read-only disclosure, such as environment variables. No call primitive has been shown.</p>
+</li>
+<li>
+<p><strong>Formulas-only still evaluates formulas (S2).</strong> <code>LoadPolicy.formulas_only()</code> gates the code block and modules. <code>recalc()</code> still <code>eval()</code>s every PYTHON-mode formula at load. <code>needs_trust</code> asks only about code and <code>requires</code>, so S1 runs on the default load path with no prompt.</p>
+</li>
+<li>
+<p><strong>A missing or unknown <code>mode</code> loads as PYTHON (S3).</strong> <code>jsonload</code> defaults to <code>Mode.PYTHON</code> when <code>mode</code> is absent or unparseable. A file that omits <code>mode</code> gets <code>eval()</code> semantics. v1 files predate modes, so changing the default needs a migration decision.</p>
+</li>
+<li>
+<p><strong>A working-directory <code>gridcalc.toml</code> can disable the sandbox (S4).</strong> Config lookup checks the CWD before <code>$XDG_CONFIG_HOME</code>. The TUI and the headless CLI apply its <code>sandbox</code> key. With <code>sandbox = false</code>, validation and the startup trust prompt are both off. <code>GRIDCALC_SANDBOX</code> overrides config when set.</p>
+</li>
+<li>
+<p><strong>The startup trust prompt prints the code preview unescaped (S5).</strong> Terminal escape sequences in a code comment can hide lines on screen.</p>
+</li>
+<li>
+<p><strong>Module classification uses the top-level name (S6).</strong> <code>classify_module("numpy.ctypeslib")</code> returns <code>safe</code>.</p>
+</li>
+<li>
+<p><strong>No limit on formula depth or run time (S7).</strong> Neither needs approval. A deeply nested formula raises <code>RecursionError</code>, which the web and CLI load paths now catch. A formula that builds a 10^8-element array hangs the session.</p>
+</li>
+</ul>
 <h2 id="implementation">Implementation<a class="headerlink" href="#implementation" title="Permanent link">&para;</a></h2>
 <ul>
 <li>
@@ -1959,8 +2016,7 @@
 <p><code>gridcalc/tui/commands.py</code> -- trust gate prompt (curses)</p>
 </li>
 <li>
-<p><code>gridcalc/web/frontend/src/components/TrustDialog.tsx</code> -- the same gate in the desktop app;
-  <code>gridcalc/loader.py:needs_trust</code> decides when either frontend must ask</p>
+<p><code>gridcalc/web/frontend/src/components/TrustDialog.tsx</code> -- the same gate in the desktop app; <code>gridcalc/loader.py:needs_trust</code> decides when either frontend must ask</p>
 </li>
 <li>
 <p><code>tests/test_sandbox.py</code> -- comprehensive tests</p>

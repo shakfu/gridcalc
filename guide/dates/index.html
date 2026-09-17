@@ -1642,25 +1642,15 @@
 
 
 <h1 id="dates">Dates<a class="headerlink" href="#dates" title="Permanent link">&para;</a></h1>
-<p>A date is a number wearing a number format. <code>2024-01-01</code> is stored as
-<code>45292</code>, and what makes it a date rather than forty-five thousand is the
-format attached to the cell. gridcalc uses the same model Excel does, which is
-what lets date arithmetic work without a separate date type:</p>
+<p>A date is a number wearing a number format. <code>2024-01-01</code> is stored as <code>45292</code>, and what makes it a date rather than forty-five thousand is the format attached to the cell. gridcalc uses the same model Excel does, which is what lets date arithmetic work without a separate date type:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>        A            B
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>1  2024-01-01   =A2-A1        -&gt; 74.5   (days, not a date)
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>2  2024-03-15
 </code></pre></div>
-<p>Subtracting two dates gives a plain number because that is what the answer is.
-Only cells you actually format as dates display as dates.</p>
+<p>Subtracting two dates gives a plain number because that is what the answer is. Only cells you actually format as dates display as dates.</p>
 <h2 id="reading-dates-from-excel">Reading dates from Excel<a class="headerlink" href="#reading-dates-from-excel" title="Permanent link">&para;</a></h2>
-<p><code>gridcalc book.xlsx</code> reads each cell's number format and keeps it, so a column
-that looked like dates in Excel looks like dates here. A workbook that spells
-its dates <code>d-mmm-yy</code> keeps that spelling; nothing is normalised on the way in.</p>
-<p>Cells with no date format arrive as ordinary numbers, which is deliberate. The
-classification is conservative — a format has to contain a real date token to
-count — because misreading a price format as a date would turn <code>1974.00</code> into
-a day in 1975, and a date shown as a serial is a much smaller problem than a
-number shown as a date.</p>
+<p><code>gridcalc book.xlsx</code> reads each cell's number format and keeps it, so a column that looked like dates in Excel looks like dates here. A workbook that spells its dates <code>d-mmm-yy</code> keeps that spelling; nothing is normalised on the way in.</p>
+<p>Cells with no date format arrive as ordinary numbers, which is deliberate. The classification is conservative — a format has to contain a real date token to count — because misreading a price format as a date would turn <code>1974.00</code> into a day in 1975, and a date shown as a serial is a much smaller problem than a number shown as a date.</p>
 <h2 id="formatting-a-cell-as-a-date">Formatting a cell as a date<a class="headerlink" href="#formatting-a-cell-as-a-date" title="Permanent link">&para;</a></h2>
 <p><code>:f</code> takes an Excel date format alongside the formats it already accepted:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>:f yyyy-mm-dd            2024-01-01
@@ -1670,54 +1660,31 @@ number shown as a date.</p>
 <a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>:f yyyy-mm-dd h:mm       2024-03-15 12:00
 <a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>:f h:mm AM/PM            12:00 PM
 </code></pre></div>
-<p>The supported tokens are <code>yyyy</code>/<code>yy</code>, <code>mmmm</code>/<code>mmm</code>/<code>mm</code>/<code>m</code>,
-<code>dddd</code>/<code>ddd</code>/<code>dd</code>/<code>d</code>, <code>hh</code>/<code>h</code>, <code>ss</code>/<code>s</code>, <code>AM/PM</code>, and text in double quotes.
-Anything else in the code is printed as written, so <code>yyyy" (Q1)"</code> works.</p>
-<p>As everywhere <code>m</code> appears, it means months before an hour token and minutes
-after one — <code>mm</code> is January, <code>h:mm</code> is half past.</p>
-<p>The same command works in the desktop app; both frontends format through one
-implementation, so a sheet renders identically in either.</p>
+<p>The supported tokens are <code>yyyy</code>/<code>yy</code>, <code>mmmm</code>/<code>mmm</code>/<code>mm</code>/<code>m</code>, <code>dddd</code>/<code>ddd</code>/<code>dd</code>/<code>d</code>, <code>hh</code>/<code>h</code>, <code>ss</code>/<code>s</code>, <code>AM/PM</code>, and text in double quotes. Anything else in the code is printed as written, so <code>yyyy" (Q1)"</code> works.</p>
+<p>As everywhere <code>m</code> appears, it means months before an hour token and minutes after one — <code>mm</code> is January, <code>h:mm</code> is half past.</p>
+<p>The same command works in the desktop app; both frontends format through one implementation, so a sheet renders identically in either.</p>
 <h2 id="writing-dates-back">Writing dates back<a class="headerlink" href="#writing-dates-back" title="Permanent link">&para;</a></h2>
-<p><code>:xlsx save</code> writes the format along with the serial, so a workbook edited
-here and reopened in Excel still shows dates. Distinct formats stay distinct —
-a column of days and a column of timestamps do not collapse into each other.</p>
-<p>Only date formats round-trip. Fonts, fills, borders and non-date number
-formats are not read or written; see <a href="../../reference/limitations/">Limitations</a>.</p>
+<p><code>:xlsx save</code> writes the format along with the serial, so a workbook edited here and reopened in Excel still shows dates. Distinct formats stay distinct — a column of days and a column of timestamps do not collapse into each other.</p>
+<p>Only date formats round-trip. Fonts, fills, borders and non-date number formats are not read or written; see <a href="../../reference/limitations/">Limitations</a>.</p>
 <h2 id="dates-in-criteria">Dates in criteria<a class="headerlink" href="#dates-in-criteria" title="Permanent link">&para;</a></h2>
-<p><code>COUNTIF</code> and its relatives understand a date on the right-hand side, so the
-obvious thing works:</p>
+<p><code>COUNTIF</code> and its relatives understand a date on the right-hand side, so the obvious thing works:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>=COUNTIF(A1:A100, &quot;&gt;1/1/2020&quot;)
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>=COUNTIF(A1:A100, &quot;&lt;2020-01-01&quot;)
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>=SUMIF(A1:A100, &quot;&gt;=2024-01-01&quot;, B1:B100)
 </code></pre></div>
-<p>The operand is converted to a serial before comparing. Without that it would
-be a string comparison, where <code>"9/1/2020"</code> sorts <em>after</em> <code>"10/1/2020"</code> and the
-count comes back quietly wrong rather than as an error.</p>
-<p>Accepted spellings are <code>2020-01-01</code>, <code>2020/01/01</code>, <code>1/1/2020</code> (month first,
-as Excel reads it), <code>15-Jun-2020</code>, <code>Jun 15, 2020</code>, and <code>15 June 2020</code>. ISO is
-worth preferring
-in a file other people will read: <code>03/04/2026</code> is the third of April to half
-the world and the fourth of March to the other half.</p>
+<p>The operand is converted to a serial before comparing. Without that it would be a string comparison, where <code>"9/1/2020"</code> sorts <em>after</em> <code>"10/1/2020"</code> and the count comes back quietly wrong rather than as an error.</p>
+<p>Accepted spellings are <code>2020-01-01</code>, <code>2020/01/01</code>, <code>1/1/2020</code> (month first, as Excel reads it), <code>15-Jun-2020</code>, <code>Jun 15, 2020</code>, and <code>15 June 2020</code>. ISO is worth preferring in a file other people will read: <code>03/04/2026</code> is the third of April to half the world and the fourth of March to the other half.</p>
 <h2 id="date-functions">Date functions<a class="headerlink" href="#date-functions" title="Permanent link">&para;</a></h2>
-<p>The usual set is available and works on serials: <code>TODAY</code>, <code>NOW</code>, <code>DATE</code>,
-<code>TIME</code>, <code>DATEVALUE</code>, <code>TIMEVALUE</code>, <code>YEAR</code>, <code>MONTH</code>, <code>DAY</code>, <code>HOUR</code>, <code>MINUTE</code>,
-<code>SECOND</code>, <code>WEEKDAY</code>, <code>EDATE</code>, <code>EOMONTH</code>, <code>DATEDIF</code>, <code>DAYS</code>, <code>NETWORKDAYS</code>,
-<code>WORKDAY</code>, <code>YEARFRAC</code>. See the
-<a href="../../function_coverage/">function coverage audit</a> for the full list.</p>
+<p>The usual set is available and works on serials: <code>TODAY</code>, <code>NOW</code>, <code>DATE</code>, <code>TIME</code>, <code>DATEVALUE</code>, <code>TIMEVALUE</code>, <code>YEAR</code>, <code>MONTH</code>, <code>DAY</code>, <code>HOUR</code>, <code>MINUTE</code>, <code>SECOND</code>, <code>WEEKDAY</code>, <code>EDATE</code>, <code>EOMONTH</code>, <code>DATEDIF</code>, <code>DAYS</code>, <code>NETWORKDAYS</code>, <code>WORKDAY</code>, <code>YEARFRAC</code>. See the <a href="../../function_coverage/">function coverage audit</a> for the full list.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>=DATE(2026, 5, 5)          the serial for 2026-05-05
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>=YEAR(A1)                  2026
 <a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>=EOMONTH(A1, 0)            the last day of that month
 </code></pre></div>
-<p>A formula that returns a date returns a serial, so give the cell a date format
-to see it as one:</p>
+<p>A formula that returns a date returns a serial, so give the cell a date format to see it as one:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>:f yyyy-mm-dd
 </code></pre></div>
 <h2 id="the-1900-leap-year-bug">The 1900 leap-year bug<a class="headerlink" href="#the-1900-leap-year-bug" title="Permanent link">&para;</a></h2>
-<p>Excel believes 1900 was a leap year and reserves serial 60 for a
-29 February 1900 that never happened. gridcalc uses an epoch of
-1899-12-30, which makes every serial above 60 agree with Excel exactly — the
-range every real workbook lives in. Below that the two differ by a day, since
-matching the bug would mean producing a date that does not exist.</p>
+<p>Excel believes 1900 was a leap year and reserves serial 60 for a 29 February 1900 that never happened. gridcalc uses an epoch of 1899-12-30, which makes every serial above 60 agree with Excel exactly — the range every real workbook lives in. Below that the two differ by a day, since matching the bug would mean producing a date that does not exist.</p>
 
 
 

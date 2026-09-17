@@ -1991,6 +1991,9 @@
 <p><strong>P3 is untouched.</strong> No frozen builds, no per-platform QA, no signing. The IME/CJK and accessibility claims from Section 5e remain unvalidated in a real webview; the grid still has no ARIA grid semantics.</p>
 </li>
 <li>
+<p><strong>The bridge is serialised.</strong> pywebview runs each JS call on its own thread. Every public <code>Api</code> method now holds one <code>threading.RLock</code>, and the client queues mutating calls in order. Solves hold the lock, so viewport reads wait until a solve finishes; the alternative, solving off-lock, would solve a copy of the workbook. See <code>CHANGELOG.md</code> (Unreleased, Fixed).</p>
+</li>
+<li>
 <p><strong>Security now has the trust flow</strong> Section 5a called for. Formulas-only is still what an unanswered open loads; a workbook carrying code raises a dialog reporting what it would run, and its answer becomes the <code>LoadPolicy</code> the load uses. <code>inspect_file</code> disclosure, the blocked/I-O/unknown split, and the separate answer for unclassified modules all match the curses prompt.</p>
 </li>
 </ul>
@@ -2012,7 +2015,7 @@
 <p><strong>The <code>Api</code> boundary.</strong> All engine&lt;-&gt;view logic is a plain-Python class with no <code>webview</code> import (<code>web/__init__.py</code>), unit-tested without a display (<code>tests/test_web.py</code>). This is the right architecture and scales.</p>
 </li>
 <li>
-<p><strong>Headless regression testing of the JS/DOM.</strong> The same page is driven in Chromium with the bridge mocked from real <code>Api</code> output (<code>tests/integration/test_web_playwright.py</code>). Rare and valuable for a webview app.</p>
+<p><strong>Headless regression testing of the JS/DOM.</strong> The built bundle is driven in Chromium with a mocked bridge (<code>tests/integration/test_web_bundle.py</code>; originally <code>test_web_playwright.py</code> against <code>_HTML</code>). Rare and valuable for a webview app.</p>
 </li>
 <li>
 <p><strong>Shared formatting.</strong> Cells format identically to the TUI via <code>display.cell_text</code> / <code>cell_right_aligned</code>. No divergence risk.</p>
@@ -2030,10 +2033,10 @@
 <p>~~<strong>Security punted.</strong> <code>open_file</code> hardcodes <code>LoadPolicy.formulas_only()</code> (<code>loader.py</code>); code blocks are never run, no trust UI, no <code>inspect_file</code> disclosure. Fine for a spike, a product-defining hole otherwise (Section 5a).~~ Closed: <code>open_file</code> takes a policy, <code>inspect</code>/<code>pending_trust</code> report the decision, and <code>TrustDialog</code> asks it.</p>
 </li>
 <li>
-<p><strong>No error surface.</strong> <code>Api</code> methods return <code>{ok: false}</code> shapes the client largely ignores; a failed save/open/recalc has no user-visible channel beyond an ad-hoc <code>flashSave</code>.</p>
+<p>~~<strong>No error surface.</strong> <code>Api</code> methods return <code>{ok: false}</code> shapes the client largely ignores; a failed save/open/recalc has no user-visible channel beyond an ad-hoc <code>flashSave</code>.~~ Closed in P0: see "What has since landed".</p>
 </li>
 <li>
-<p><strong>One hard-coded demo, no chrome.</strong> No menu bar, no About, no keyboard-help, no recent-files, no window-title lifecycle beyond a best-effort retitle.</p>
+<p><strong>One hard-coded demo, no chrome.</strong> No menu bar, no About, no keyboard-help, no recent-files, no window-title lifecycle beyond a best-effort retitle. Partly closed: a menu bar with shortcuts, an About dialog and a Ctrl-K palette exist. Recent files do not.</p>
 </li>
 </ul>
 <h2 id="3-feature-gap-tui-vs-web-api">3. Feature gap: TUI vs web <code>Api</code><a class="headerlink" href="#3-feature-gap-tui-vs-web-api" title="Permanent link">&para;</a></h2>
@@ -2156,6 +2159,7 @@
 </li>
 </ol>
 <p><strong>Recommendation:</strong> ship P0/P1 as formulas-only (option 1), then add option 2's consent flow as an explicit, well-labelled feature -- not silently. Never wire <code>load_code=True</code> without a trust dialog. This is the one area where "polish" means <em>restraint</em>, not features.</p>
+<p><strong>Correction.</strong> Formulas-only is not a code-free load: PYTHON-mode formulas are still <code>eval()</code>ed at load, with no prompt. Option 1 is not "honestly safe". See "Known gaps" in <code>docs/security-plan.md</code>.</p>
 <h3 id="5b-distribution-packaging">5b. Distribution / packaging<a class="headerlink" href="#5b-distribution-packaging" title="Permanent link">&para;</a></h3>
 <p>A pywebview app is not <code>pip install</code> for end users. Product means a double-clickable artifact:</p>
 <ul>
@@ -2180,7 +2184,7 @@
 <p><strong>Decide on a build step deliberately.</strong> Framework-free hand-rolled DOM is fine and dependency-light today. It gets painful at "object editor, dialogs, chart library, i18n." A small bundler (esbuild) or a minimal reactive layer (Preact/lit) is a reversible bet; a full SPA framework is probably over-scoped for a single-window desktop tool.</p>
 </li>
 <li>
-<p><strong>A real charting library</strong> (Plotly/ECharts) replaces the inline SVG. <code>Api.chart_data</code> already returns a renderer-agnostic <code>{title, labels, series}</code> shape, so this is a client-only swap -- the deliberate seam pays off here.</p>
+<p><strong>A real charting library</strong> (Plotly/ECharts) replaces the inline SVG. <code>Api.chart_data</code> already returns a renderer-agnostic <code>{title, labels, series}</code> shape, so this is a client-only swap -- the deliberate layer pays off here.</p>
 </li>
 <li>
 <p><strong>A real data-grid</strong> only if the hand-rolled virtualized grid gets painful (frozen panes beyond row/col headers, cell merging, rich in-cell widgets). Do not adopt one preemptively.</p>
@@ -2276,6 +2280,7 @@
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">undo_stack</span><span class="p">:</span>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">undo_stack</span><span class="o">.</span><span class="n">pop</span><span class="p">()</span>
 </code></pre></div>
+<p>As built, <code>discard_last</code> also restores the redo stack that the matching <code>save_*</code> cleared. <code>UndoManager</code> later gained <code>clear()</code> and <code>rollback()</code>, and <code>undo()</code>/<code>redo()</code> now return whether an entry applied (<code>gridcalc/undo.py</code>).</p>
 <h3 id="endpoints">Endpoints<a class="headerlink" href="#endpoints" title="Permanent link">&para;</a></h3>
 <p>Coordinate/serialization helpers: <code>_key(a1) -&gt; (c, r)</code> (rejecting trailing garbage), <code>_a1((c, r)) -&gt; "B4"</code>, <code>_num(x)</code> (non-finite -&gt; None).</p>
 <ul>
@@ -2292,7 +2297,7 @@
 <p><code>opt_sweep(spec)</code> -- parametric RHS sweep (<code>opt.sweep</code>); never mutates the sheet, so no undo snapshot.</p>
 </li>
 </ul>
-<p>All applied paths route through a shared <code>_run_solve</code> that snapshots, calls <code>opt.solve</code>, and on <code>OptError</code> or a non-applied result (INFEASIBLE/UNBOUNDED) calls <code>discard_last</code>. Results serialize through <code>_solve_json</code> (CellKeys -&gt; A1 strings, ranging floats through <code>_num</code>).</p>
+<p>Applied solves route through a shared <code>_run_solve</code> that snapshots, calls <code>opt.solve</code>, and on <code>OptError</code> or a non-applied result (INFEASIBLE/UNBOUNDED) calls <code>discard_last</code>. <code>goal_seek</code> does the same inline. Results serialize through <code>_solve_json</code> (CellKeys -&gt; A1 strings, ranging floats through <code>_num</code>).</p>
 <h3 id="client-facing-return-contract">Client-facing return contract<a class="headerlink" href="#client-facing-return-contract" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>SolveResponse =
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>  { ok: true, status: &quot;OPTIMAL&quot;|&quot;INFEASIBLE&quot;|&quot;UNBOUNDED&quot;|&quot;SUBOPTIMAL&quot;,
@@ -2309,7 +2314,7 @@
 <p><code>apply=True</code> mutates the sheet -- the UI must make a solve feel like an action, not a preview (<code>apply:false</code> gives a dry run for <code>solve_model</code>).</p>
 </li>
 <li>
-<p>Snapshot/redo caveat: <code>save_grid</code> clears the redo stack, so a <em>failed</em> applied solve still wipes redo after <code>discard_last</code>. Acceptable; tighten by saving/restoring the redo stack in <code>discard_last</code> if it matters.</p>
+<p>~~Snapshot/redo caveat: <code>save_grid</code> clears the redo stack, so a <em>failed</em> applied solve still wipes redo after <code>discard_last</code>. Acceptable; tighten by saving/restoring the redo stack in <code>discard_last</code> if it matters.~~ Tightened: <code>discard_last</code> restores the redo stack, so a failed solve keeps redo.</p>
 </li>
 <li>
 <p>Sensitivity is <code>None</code> for MIPs by design (integer duals mislead) -- the client renders "no sensitivity for integer models," not an empty table.</p>

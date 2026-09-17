@@ -1655,7 +1655,7 @@
 
 <h1 id="excel-function-coverage">Excel function coverage<a class="headerlink" href="#excel-function-coverage" title="Permanent link">&para;</a></h1>
 <p>Status of EXCEL/HYBRID-mode function library against Microsoft's documented Excel function set. Implemented functions live in <code>src/gridcalc/libs/xlsx.py</code> (registered via <code>BUILTINS</code>) plus a handful of bare aggregates and trig in <code>src/gridcalc/engine.py</code> (<code>_make_eval_globals</code>).</p>
-<p><strong>As of last audit: 405 names in <code>xlsx.BUILTINS</code> (plus <code>LET</code>/<code>LAMBDA</code>, handled in the evaluator) plus 8 aggregates (<code>SUM</code>/<code>AVG</code>/<code>MIN</code>/<code>MAX</code>/<code>COUNT</code>/<code>ABS</code>/<code>SQRT</code>/<code>INT</code>) and ~23 math constants/funcs in the engine globals — call it ~415 unique Excel-callable names</strong> out of ~480–500. Practical coverage is the overwhelming majority of formulas seen in real workbooks, and all four architectural lifts have landed. The 2D-aware return types (<code>TRANSPOSE</code>, <code>LINEST</code>/<code>LOGEST</code>, <code>HSTACK</code>/<code>VSTACK</code>, <code>CHOOSEROWS</code>/<code>CHOOSECOLS</code>, multi-regressor <code>TREND</code>/<code>GROWTH</code>, reshape functions, <code>FREQUENCY</code>) run on the <code>Vec</code> <code>cols</code> machinery and spill into neighbour cells. The full statistical-distribution suite, the complex-number (<code>IM*</code>) family, numeral conversion (<code>ROMAN</code>/<code>ARABIC</code>/<code>BASE</code>/<code>DECIMAL</code>), the entire bond/Treasury finance family (coupon <code>PRICE</code>/<code>YIELD</code>/<code>DURATION</code>, the <code>COUP*</code> schedule functions, discounted and at-maturity securities, T-bills), unit conversion (<code>CONVERT</code>), the fringe stats (<code>SKEW.P</code>/<code>F.TEST</code>), the lexical-scope family (<code>LET</code>/<code>LAMBDA</code>/<code>MAP</code>/<code>REDUCE</code>/<code>SCAN</code>/<code>BYROW</code>/<code>BYCOL</code>/<code>MAKEARRAY</code>), and the reference value type (<code>OFFSET</code>/<code>FORMULATEXT</code>/<code>AREAS</code>/<code>LOOKUP</code>) are all covered. What remains is out of scope by design (external I/O, cube/OLAP, <code>INDIRECT</code>).</p>
+<p><strong>As of last audit: 410 names in <code>xlsx.BUILTINS</code> (plus <code>LET</code>/<code>LAMBDA</code>, handled in the evaluator) plus 14 Excel names that resolve only through the engine globals (<code>SUM</code>/<code>MIN</code>/<code>MAX</code>/<code>COUNT</code>/<code>ABS</code>/<code>SQRT</code>, <code>EXP</code>/<code>LOG10</code>, six trig) — call it ~426 unique Excel-callable names</strong> out of ~480–500. Practical coverage is the overwhelming majority of formulas seen in real workbooks, and all four architectural lifts have landed. The 2D-aware return types (<code>TRANSPOSE</code>, <code>LINEST</code>/<code>LOGEST</code>, <code>HSTACK</code>/<code>VSTACK</code>, <code>CHOOSEROWS</code>/<code>CHOOSECOLS</code>, multi-regressor <code>TREND</code>/<code>GROWTH</code>, reshape functions, <code>FREQUENCY</code>) run on the <code>Vec</code> <code>cols</code> machinery and spill into neighbour cells. The full statistical-distribution suite, the complex-number (<code>IM*</code>) family, numeral conversion (<code>ROMAN</code>/<code>ARABIC</code>/<code>BASE</code>/<code>DECIMAL</code>), the entire bond/Treasury finance family (coupon <code>PRICE</code>/<code>YIELD</code>/<code>DURATION</code>, the <code>COUP*</code> schedule functions, discounted and at-maturity securities, T-bills), unit conversion (<code>CONVERT</code>), the fringe stats (<code>SKEW.P</code>/<code>F.TEST</code>), the lexical-scope family (<code>LET</code>/<code>LAMBDA</code>/<code>MAP</code>/<code>REDUCE</code>/<code>SCAN</code>/<code>BYROW</code>/<code>BYCOL</code>/<code>MAKEARRAY</code>), and the reference value type (<code>OFFSET</code>/<code>FORMULATEXT</code>/<code>AREAS</code>/<code>LOOKUP</code>) are all covered. What remains is out of scope by design (external I/O, cube/OLAP, <code>INDIRECT</code>).</p>
 <h2 id="currently-implemented">Currently implemented<a class="headerlink" href="#currently-implemented" title="Permanent link">&para;</a></h2>
 <p>Broad-enough categories. (Full registered list is the source of truth — read <code>xlsx.BUILTINS</code> if in doubt.)</p>
 <table>
@@ -1684,7 +1684,7 @@
 </tr>
 <tr>
 <td>Trig (engine globals)</td>
-<td><code>pi</code>, <code>e</code>, <code>sin</code>, <code>cos</code>, <code>tan</code>, <code>asin</code>, <code>acos</code>, <code>atan</code>, <code>atan2</code>, <code>exp</code>, <code>log</code>, <code>log2</code>, <code>log10</code>, <code>floor</code>, <code>ceil</code>, <code>fabs</code>, <code>degrees</code>, <code>radians</code>, <code>fsum</code>, <code>isnan</code>, <code>isinf</code></td>
+<td><code>sin</code>, <code>cos</code>, <code>tan</code>, <code>asin</code>, <code>acos</code>, <code>atan</code>, <code>exp</code>, <code>log10</code>, plus non-Excel <code>avg</code>, <code>log2</code>, <code>ceil</code>, <code>fabs</code>, <code>fsum</code>, <code>isnan</code>, <code>isinf</code>. Names resolve case-insensitively and <code>BUILTINS</code> wins: <code>LOG</code>, <code>LN</code>, <code>PI</code>, <code>ATAN2</code>, <code>INT</code>, <code>FLOOR</code>, <code>DEGREES</code> and <code>RADIANS</code> have Excel semantics, so <code>log(100)</code> is 2. The bare constants <code>pi</code> and <code>e</code> resolve only in PYTHON mode; use <code>PI()</code> and <code>EXP(1)</code>.</td>
 </tr>
 <tr>
 <td>Hyperbolic</td>
@@ -1836,12 +1836,12 @@
 <tr>
 <td>Closures / let-binding — DONE</td>
 <td><code>LET</code>, <code>LAMBDA</code>, <code>MAP</code>, <code>REDUCE</code>, <code>SCAN</code>, <code>BYROW</code>, <code>BYCOL</code>, <code>MAKEARRAY</code> all shipped. <code>LambdaValue</code> closes over the <code>LET</code> scope stack; a new <code>Apply</code> node + parser postfix layer gives direct <code>LAMBDA(...)(...)</code> application.</td>
-<td>Recursion is not supported (would need Name-Manager lambdas and a lazy <code>IF</code>; <code>IF</code> here is an eager builtin). Lambda results do not spill — consumed via <code>INDEX</code>/<code>SUM</code>.</td>
+<td>Recursion is not supported (would need Name-Manager lambdas; ~~and a lazy <code>IF</code>; <code>IF</code> here is an eager builtin~~ <code>IF</code> is now lazy). Lambda results do not spill — consumed via <code>INDEX</code>/<code>SUM</code>.</td>
 </tr>
 <tr>
 <td>Multi-sheet model</td>
 <td><code>SHEET</code>, <code>SHEETS</code>, cross-sheet refs in <code>INDIRECT</code></td>
-<td>Single-sheet today.</td>
+<td>~~Single-sheet today.~~ Workbooks have multiple sheets and sheet-qualified references (<code>Data!A1:A2</code>). <code>SHEET</code> and <code>SHEETS</code> are not implemented; <code>INDIRECT</code> stays out of scope.</td>
 </tr>
 <tr>
 <td>Cube / OLAP</td>
@@ -1853,7 +1853,7 @@
 <h3 id="tricky-but-tractable">Tricky-but-tractable<a class="headerlink" href="#tricky-but-tractable" title="Permanent link">&para;</a></h3>
 <ul>
 <li>
-<p><strong><code>TEXTSPLIT</code> with <code>pad_with</code></strong> — current implementation flattens 2D splits and ignores <code>pad_with</code>. Once 2D Vecs are real this becomes meaningful.</p>
+<p>~~<strong><code>TEXTSPLIT</code> with <code>pad_with</code></strong> — current implementation flattens 2D splits and ignores <code>pad_with</code>. Once 2D Vecs are real this becomes meaningful.~~ Done: a split with a row delimiter returns a 2D result, and short rows are padded with <code>pad_with</code>.</p>
 </li>
 <li>
 <p><strong><code>VDB</code> fractional periods</strong> — current implementation returns <code>#NUM!</code> for non-integer <code>start</code>/<code>end</code>. Excel's actual algorithm prorates partial periods; documented well in MS reference but tedious.</p>
@@ -1880,7 +1880,7 @@
 <p><strong><code>CONVERT</code> unit table</strong> — covers all thirteen Excel categories (mass, distance, time, pressure, force, energy, power, magnetism, temperature, volume, area, speed, information) with SI decimal prefixes and binary prefixes for <code>bit</code>/<code>byte</code>. Prefixes on temperature units and the most exotic cubic/area variants (<code>ly3</code>, <code>Nmi3</code>, <code>Pica2</code>, ...) are omitted; add entries to <code>_CONVERT_UNITS</code> if a workbook needs them.</p>
 </li>
 <li>
-<p><strong><code>LAMBDA</code> recursion</strong> — a self-referential lambda cannot terminate: <code>IF</code> is an eager builtin that evaluates both branches, and gridcalc's named ranges model only cell references, so there is no global lambda name to recurse through. The evaluator already resolves a syntactic named <code>LAMBDA</code> dynamically per call, so recursion would work once a lazy <code>IF</code> and Name-Manager lambdas exist.</p>
+<p><strong><code>LAMBDA</code> recursion</strong> — ~~a self-referential lambda cannot terminate: <code>IF</code> is an eager builtin that evaluates both branches, and~~ gridcalc's named ranges model only cell references, so there is no global lambda name to recurse through. <code>IF</code> is now lazy (<code>LAZY_FUNCS</code> in <code>formula/evaluator.py</code>). The evaluator already resolves a syntactic named <code>LAMBDA</code> dynamically per call, so recursion would work once Name-Manager lambdas exist.</p>
 </li>
 <li>
 <p><strong>Spill</strong> — the anchor keeps the whole array in <code>arr</code> and its own displayed value is the top-left scalar; the extra elements materialise as <code>SPILL</code> cells (a new cell type) owned by the anchor. Reads follow Excel: <code>A1</code> is the scalar, <code>A1#</code> is the array. <code>#SPILL!</code> on a blocked or off-sheet rectangle; a blocked anchor is re-attempted on any edit, since it has no dependency on what blocks it. Recalc is a bounded fixpoint because spill shape is only known post-evaluation — a spill can create/destroy cells whose consumers were not in the current pass. Not persisted (rebuilt from the anchor on load). The TUI paints the spill block in a subtle cyan tint, shows the anchor's scalar instead of the <code>[n]</code> array badge, and names a spilled cell's origin in the status bar. Spilling is EXCEL/HYBRID only; PYTHON mode keeps arrays in one cell (and keeps the badge).</p>
@@ -1899,7 +1899,7 @@
 <tbody>
 <tr>
 <td>Implemented</td>
-<td>~415</td>
+<td>~426</td>
 <td>done</td>
 <td>—</td>
 </tr>

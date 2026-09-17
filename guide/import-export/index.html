@@ -1489,13 +1489,32 @@
 </tr>
 <tr>
 <td><code>:pd save/load</code></td>
-<td>CSV/TSV/Excel/JSON/Parquet</td>
+<td>CSV/TSV/JSON</td>
 <td>same</td>
-<td>Uses pandas; row 1 as headers</td>
+<td>Needs <code>gridcalc[extras]</code>; row 1 as headers; JSON keeps value types</td>
 </tr>
 </tbody>
 </table>
-<p><code>:xlsx load</code> translates Excel formulas into gridcalc's <code>EXCEL</code> grammar and reads every sheet.</p>
+<p><code>:xlsx load</code> translates Excel formulas into gridcalc's <code>EXCEL</code> grammar and reads every worksheet, empty ones included. It replaces the whole workbook, including the code block and saved models. On import:</p>
+<ul>
+<li>
+<p>Values keep their xlsx type. Text such as <code>00123</code> stays a label, booleans become <code>=TRUE</code>/<code>=FALSE</code>, and known error codes become formulas such as <code>=#N/A</code>.</p>
+</li>
+<li>
+<p>Shared and array formulas import as their cached values.</p>
+</li>
+<li>
+<p>Cells beyond 256 columns or 1024 rows are dropped.</p>
+</li>
+<li>
+<p>Chartsheets are skipped.</p>
+</li>
+<li>
+<p>Dates in a workbook using the 1904 date system are converted to gridcalc's 1900-based serials.</p>
+</li>
+</ul>
+<p>The load warns with a count of fallback formulas and dropped cells. The <a href="../../reference/cli/">headless CLI</a> prints these warnings to stderr; the terminal and desktop apps do not show them.</p>
+<p><code>:xlsx save</code> refuses an empty workbook and any sheet name Excel rejects: empty, longer than 31 characters, containing <code>: \ / ? * [ ]</code>, starting or ending with <code>'</code>, named <code>History</code>, or equal to another name ignoring case.</p>
 <p><code>INDIRECT</code> and 3D ranges (<code>Sheet1:Sheet3!A1:B2</code>) are deliberately unsupported, because they would defeat the static dependency graph. Functions outside the auto-loaded library produce <code>#NAME?</code>. The full list of what does not cross the boundary is in <a href="../../reference/limitations/">Limitations</a>.</p>
 <p>The xlsx path goes through a C++ extension wrapping <a href="https://github.com/troldal/OpenXLSX">OpenXLSX</a> rather than a pure-Python reader, which is why the core install needs no third-party runtime dependency to read a spreadsheet.</p>
 

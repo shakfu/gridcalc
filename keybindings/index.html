@@ -2151,16 +2151,16 @@
 <p>Resolution: <code>resolve_key</code> in the same module. Calls <code>curses.tigetstr</code> / <code>curses.keyname</code> for <code>C-Right</code>/<code>C-Left</code>, so it must run after <code>curses.initscr()</code>.</p>
 </li>
 <li>
-<p>Grid action registry: <code>_GRID_ACTIONS</code> in <code>src/gridcalc/tui.py</code>. Adding a grid action means: add it to <code>keys.KNOWN_ACTIONS["grid"]</code>, add a callable here, and document it in this file's table.</p>
+<p>Grid action registry: <code>_GRID_ACTIONS</code> in <code>src/gridcalc/tui/__init__.py</code>. Adding a grid action means: add it to <code>keys.KNOWN_ACTIONS["grid"]</code>, add a callable here, and document it in this file's table.</p>
 </li>
 <li>
-<p>Grid dispatcher: <code>_dispatch_grid_key</code> in <code>src/gridcalc/tui.py</code>. Pure function -- testable without a curses session (see <code>tests/test_tui.py::TestDispatchGridKey</code>).</p>
+<p>Grid dispatcher: <code>_dispatch_grid_key</code> in <code>src/gridcalc/tui/__init__.py</code>. Pure function -- testable without a curses session (see <code>tests/test_tui.py::TestDispatchGridKey</code>).</p>
 </li>
 <li>
 <p>The other four contexts (<code>entry</code>, <code>visual</code>, <code>cmdline</code>, <code>search</code>) use a different shape: <code>_action_for(context, ch)</code> returns the bound action name (or <code>None</code>), and each context's existing if/elif chain matches on <code>action == "&lt;name&gt;" or ch == &lt;hardcoded&gt;</code>. This lets the actions read closed-over locals (<code>buf</code>, <code>origc</code>, <code>picking</code>, etc.) without lifting them into module scope. The dispatcher's <code>context in ("entry", "cmdline", "search")</code> branch is the self-insert override -- printable bytes return <code>None</code> so they always fall through to the hardcoded <code>32 &lt;= ch &lt; 127</code> branch.</p>
 </li>
 <li>
-<p>Module-level state: <code>_resolved_keymap</code> in <code>tui.py</code> is populated once by <code>mainloop</code> after curses init. The <code>_action_for</code> helper reads from it. Tests that exercise the helpers in isolation snapshot and restore this global per test.</p>
+<p>Module-level state: <code>_resolved_keymap</code> in <code>tui/__init__.py</code> is populated once by <code>mainloop</code> after curses init. The <code>_action_for</code> helper reads from it. Tests that exercise the helpers in isolation snapshot and restore this global per test.</p>
 </li>
 </ul>
 

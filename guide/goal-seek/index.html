@@ -1471,7 +1471,7 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>:goal B10 = 100 by A1                 auto-bracket from A1&#39;s current value
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>:goal B10 = 0 by A1 in -50:50         explicit search bracket
 </code></pre></div>
-<p>Uses bisection over <code>Grid.recalc()</code>, which converges in milliseconds at spreadsheet scale. The variable cell must hold a value, not a formula. On success the variable cell is overwritten; <code>u</code> rolls back.</p>
+<p>Uses bisection over <code>Grid.recalc()</code>, which converges in milliseconds at spreadsheet scale. The variable cell must be empty or hold a number. The target and any bracket must be finite. The tolerance is relative to the size of the target and the variable. If the variable already hits the target, the search converges in zero steps. On success the variable cell is overwritten; <code>u</code> rolls back.</p>
 <p>Unlike <a href="../optimization/"><code>:opt</code></a>, goal seek is not persisted in the workbook -- the three arguments fit on one line, so retyping is faster than naming.</p>
 <p>Bisection is slow asymptotically, but correctness, simplicity, and graceful failure on non-monotonic or noisy formulas are worth more here than the iteration count. The reasoning is in the module docstring: see the <a href="../../reference/api/goalseek/"><code>goalseek</code> API reference</a>.</p>
 

@@ -1480,6 +1480,9 @@
 <p><strong>Cross-sheet ranges</strong> (<code>Sheet1!A1:Sheet2!B5</code>) are rejected at parse time. Excel does not support them either.</p>
 </li>
 <li>
+<p><strong>Grid size</strong> is 256 columns by 1024 rows per sheet. xlsx import drops cells outside it and warns.</p>
+</li>
+<li>
 <p><strong>xlsx cell styles</strong> (fonts, fills, borders, column widths) are neither read nor written. Number formats are, but only the date ones -- enough to keep dates dates through a round trip; a currency or percent format from Excel still arrives as a bare number.</p>
 </li>
 </ul>

@@ -746,6 +746,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Command reference
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -762,6 +780,47 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#saving-and-opening" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Saving and opening
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#undo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Undo
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -1441,6 +1500,36 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#saving-and-opening" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Saving and opening
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#undo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Undo
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -1512,6 +1601,21 @@
 <p><a href="../../guide/config/">Configuration</a> -- rebinding any of the keys above</p>
 </li>
 </ul>
+<h2 id="saving-and-opening">Saving and opening<a class="headerlink" href="#saving-and-opening" title="Permanent link">&para;</a></h2>
+<p><code>:w</code> picks the format from the extension: <code>.xlsx</code>, <code>.csv</code>, or JSON for anything else. It asks before:</p>
+<ul>
+<li>
+<p>a format that drops formulas, other sheets, names, models or the code block;</p>
+</li>
+<li>
+<p>overwriting an existing file other than the one open.</p>
+</li>
+</ul>
+<p>A failed save, in any format, leaves the existing file unchanged.</p>
+<p><code>:o</code>, <code>:xlsx load</code>, <code>:csv load</code> and <code>:pd load</code> ask before discarding unsaved changes. <code>:o</code> and <code>:xlsx load</code> replace the workbook and clear undo history. <code>:csv load</code> and <code>:pd load</code> replace the active sheet and can be undone.</p>
+<h2 id="undo">Undo<a class="headerlink" href="#undo" title="Permanent link">&para;</a></h2>
+<p><code>u</code> undoes cell edits, formatting, structural commands (<code>:dr</code>, <code>:ic</code>, <code>:sort</code>, <code>:clear</code>), <code>:opt</code> and <code>:goal</code> results, sheet add/delete/rename/move, <code>:name</code>, <code>:unname</code> and <code>:mode</code>. Undoing a command that rewrote formulas on several sheets restores all of them.</p>
+<p>Not undoable: <code>:e</code>, <code>:width</code>, <code>:opt def</code> and <code>:opt undef</code>.</p>
 
 
 

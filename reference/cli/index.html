@@ -1720,10 +1720,7 @@
 
 
 <h1 id="headless-cli">Headless CLI<a class="headerlink" href="#headless-cli" title="Permanent link">&para;</a></h1>
-<p><code>gridcalc book.json</code> opens the editor. Add any operation flag and the same
-command line becomes a batch run that never opens a window, prints its result
-to stdout, and exits — so a solve can be driven by cron, a Makefile, a CI job,
-or another program.</p>
+<p><code>gridcalc book.json</code> opens the editor. If <code>book.json</code> does not exist, the editor starts an empty workbook and <code>:w</code> creates the file. Add any operation flag and the same command line becomes a batch run that never opens a window, prints its result to stdout, and exits — so a solve can be driven by cron, a Makefile, a CI job, or another program.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>gridcalc<span class="w"> </span>plan.json<span class="w"> </span>--solve<span class="w">                       </span><span class="c1"># run the saved &#39;default&#39; model</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>gridcalc<span class="w"> </span>plan.json<span class="w"> </span>--solve<span class="w"> </span><span class="s1">&#39;max B4 vars A4:A5 st D4:D6&#39;</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>gridcalc<span class="w"> </span>plan.json<span class="w"> </span>--solve<span class="w"> </span>with_caps<span class="w"> </span>--sens<span class="w">      </span><span class="c1"># a named model, with duals</span>
@@ -1732,12 +1729,7 @@ or another program.</p>
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>gridcalc<span class="w"> </span>book.json<span class="w"> </span>--eval<span class="w"> </span><span class="s1">&#39;=SUM(A1:A10)&#39;</span><span class="w">         </span><span class="c1"># evaluate a formula</span>
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>gridcalc<span class="w"> </span>book.xlsx<span class="w"> </span>--convert<span class="w"> </span>book.json<span class="w">           </span><span class="c1"># format conversion</span>
 </code></pre></div>
-<p>The spec strings are the ones the terminal uses. <code>--solve 'max B4 vars A4:A5 st
-D4:D6'</code> is the argument of <code>:opt</code>, and <code>--goal 'B10 = 100 by A1'</code> the argument
-of <code>:goal</code>; both are parsed by the same module the interactive commands use, so
-a spec that works in one works in the other. See
-<a href="../../guide/optimization/">Optimization</a> and <a href="../../guide/goal-seek/">Goal seek</a>
-for what the grammar means.</p>
+<p>The spec strings are the ones the terminal uses. <code>--solve 'max B4 vars A4:A5 st D4:D6'</code> is the argument of <code>:opt</code>, and <code>--goal 'B10 = 100 by A1'</code> the argument of <code>:goal</code>; both are parsed by the same module the interactive commands use, so a spec that works in one works in the other. See <a href="../../guide/optimization/">Optimization</a> and <a href="../../guide/goal-seek/">Goal seek</a> for what the grammar means.</p>
 <h2 id="operations">Operations<a class="headerlink" href="#operations" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -1789,27 +1781,16 @@ for what the grammar means.</p>
 </tr>
 </tbody>
 </table>
-<p>Operations run in a fixed order — eval, solve, goal, sweep, convert —
-regardless of the order the flags appear in, so <code>--convert</code> always sees the
-state the others left and a command line means the same thing however it is
-written. One run can answer several questions; each lands under its own key.</p>
+<p>Operations run in a fixed order — eval, solve, goal, sweep, convert — regardless of the order the flags appear in, so <code>--convert</code> always sees the state the others left and a command line means the same thing however it is written. One run can answer several questions; each lands under its own key.</p>
 <h2 id="nothing-is-written-unless-you-ask">Nothing is written unless you ask<a class="headerlink" href="#nothing-is-written-unless-you-ask" title="Permanent link">&para;</a></h2>
-<p><code>--solve</code> and <code>--goal</code> report what they found and leave the workbook alone.
-<code>--apply</code> lets them write into the in-memory grid, and that only reaches disk
-if <code>--convert</code> is also given:</p>
+<p><code>--solve</code> and <code>--goal</code> report what they found and leave the workbook alone. <code>--apply</code> lets them write into the in-memory grid, and that only reaches disk if <code>--convert</code> is also given:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>gridcalc<span class="w"> </span>plan.json<span class="w"> </span>--solve<span class="w">                                  </span><span class="c1"># answer only</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>gridcalc<span class="w"> </span>plan.json<span class="w"> </span>--solve<span class="w"> </span>--apply<span class="w"> </span>--convert<span class="w"> </span>solved.json<span class="w">    </span><span class="c1"># answer + a new file</span>
 </code></pre></div>
-<p>There is deliberately no flag that overwrites the input file in place. A batch
-tool that rewrites the workbook you asked it a question about is one you cannot
-safely run twice.</p>
-<p><code>--eval</code> borrows a real cell out at the far corner of the sheet to evaluate in
-— which is what makes a relative reference mean what it would if typed into the
-grid — and restores it afterwards, so the workbook <code>--convert</code> writes is the
-one that was loaded.</p>
+<p>There is deliberately no flag that overwrites the input file in place. A batch tool that rewrites the workbook you asked it a question about is one you cannot safely run twice.</p>
+<p><code>--eval</code> borrows a real cell out at the far corner of the sheet to evaluate in — which is what makes a relative reference mean what it would if typed into the grid — and restores it afterwards, so the workbook <code>--convert</code> writes is the one that was loaded.</p>
 <h2 id="exit-codes">Exit codes<a class="headerlink" href="#exit-codes" title="Permanent link">&para;</a></h2>
-<p>The result is in the exit code as well as the output, so a shell can branch on
-it without parsing anything:</p>
+<p>The result is in the exit code as well as the output, so a shell can branch on it without parsing anything:</p>
 <table>
 <thead>
 <tr>
@@ -1824,7 +1805,7 @@ it without parsing anything:</p>
 </tr>
 <tr>
 <td><code>2</code></td>
-<td>It ran and the answer was negative: <code>INFEASIBLE</code>, <code>UNBOUNDED</code>, or a goal seek that iterated without converging. There is output to read.</td>
+<td>It ran and the answer was negative: <code>INFEASIBLE</code>, <code>UNBOUNDED</code>, <code>TIMEOUT</code>, or a goal seek that iterated without converging. There is output to read.</td>
 </tr>
 <tr>
 <td><code>1</code></td>
@@ -1842,8 +1823,7 @@ it without parsing anything:</p>
 <a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="k">fi</span>
 </code></pre></div>
 <h2 id="output-schema">Output schema<a class="headerlink" href="#output-schema" title="Permanent link">&para;</a></h2>
-<p><code>--format json</code> is the contract; treat it as stable. <code>--format text</code> is for
-reading with your eyes and nothing should parse it.</p>
+<p><code>--format json</code> is the contract; treat it as stable. <code>--format text</code> is for reading with your eyes and nothing should parse it.</p>
 <p>The top-level object carries one key per operation that ran:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span>
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">&quot;solve&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">},</span>
@@ -1853,11 +1833,7 @@ reading with your eyes and nothing should parse it.</p>
 <a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span><span class="nt">&quot;convert&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">}</span>
 <a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="p">}</span>
 </code></pre></div>
-<p>Two conventions hold everywhere. <strong>Cells are A1 strings</strong>, because a JSON
-object cannot key on a coordinate pair. <strong>Every non-finite number is <code>null</code></strong> —
-JSON has no <code>Infinity</code> or <code>NaN</code>, so an unbounded objective and a missing
-ranging limit both come out as <code>null</code> rather than a token no conforming parser
-accepts.</p>
+<p>Two conventions hold everywhere. <strong>Cells are A1 strings</strong>, because a JSON object cannot key on a coordinate pair. <strong>Every non-finite number is <code>null</code></strong> — JSON has no <code>Infinity</code> or <code>NaN</code>, so an unbounded objective and a missing ranging limit both come out as <code>null</code> rather than a token no conforming parser accepts.</p>
 <h3 id="solve"><code>solve</code><a class="headerlink" href="#solve" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;OPTIMAL&quot;</span><span class="p">,</span>
@@ -1869,9 +1845,7 @@ accepts.</p>
 <a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">  </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;sense&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;max&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;objective&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;B4&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;vars&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;A4:A5&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;constraints&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;D4:D6&quot;</span><span class="p">}</span>
 <a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="p">}</span>
 </code></pre></div>
-<p><code>sensitivity</code> is present only with <code>--sens</code>, and <code>conflict</code> / <code>unbounded</code> only
-when <code>--diagnose</code> had something to report — a key's presence means it was
-computed, not merely requested.</p>
+<p><code>sensitivity</code> is present only with <code>--sens</code>, and <code>conflict</code> / <code>unbounded</code> only when <code>--diagnose</code> had something to report — a key's presence means it was computed, not merely requested.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">{</span>
 <a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">&quot;sensitivity&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
 <a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="nt">&quot;variables&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
@@ -1888,9 +1862,7 @@ computed, not merely requested.</p>
 <a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="p">}</span>
 </code></pre></div>
 <h3 id="sweep"><code>sweep</code><a class="headerlink" href="#sweep" title="Permanent link">&para;</a></h3>
-<p><code>breakpoint</code> marks a point whose shadow price differs from the previous one —
-where the marginal value of the resource changed, which is the reason to sweep
-rather than read a single shadow price.</p>
+<p><code>breakpoint</code> marks a point whose shadow price differs from the previous one — where the marginal value of the resource changed, which is the reason to sweep rather than read a single shadow price.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="p">{</span>
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="nt">&quot;constraint&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;D5&quot;</span><span class="p">,</span>
 <a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span><span class="nt">&quot;points&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
@@ -1909,8 +1881,7 @@ rather than read a single shadow price.</p>
 <a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="p">}</span>
 </code></pre></div>
 <h3 id="eval-and-convert"><code>eval</code> and <code>convert</code><a class="headerlink" href="#eval-and-convert" title="Permanent link">&para;</a></h3>
-<p><code>eval</code> is a list in the order the flags were given. A cell that evaluated to an
-error reports it in <code>error</code> with <code>value</code> set to <code>null</code>.</p>
+<p><code>eval</code> is a list in the order the flags were given. A cell that evaluated to an error reports it in <code>error</code> with <code>value</code> set to <code>null</code>.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="p">{</span>
 <a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="nt">&quot;eval&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;formula&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;=SUM(A1:A10)&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;70600&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">70600.0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;error&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">},</span>
@@ -1921,15 +1892,15 @@ error reports it in <code>error</code> with <code>value</code> set to <code>null
 </code></pre></div>
 <h2 id="notes">Notes<a class="headerlink" href="#notes" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Configuration still loads, so sandbox policy and enabled libraries are the
-  same as they would be interactively — a batch answer has to match the one you
-  would get on screen. Config warnings go to stderr, where they cannot corrupt
-  the JSON a caller is parsing.</li>
-<li>A workbook carrying a <code>code</code> block loads formulas-only, exactly as an
-  unanswered interactive open does. There is no prompt to answer in a batch
-  run, and the safe default is the only one that can be taken without asking.</li>
-<li>Formula export to xlsx is EXCEL-mode only; see
-  <a href="../limitations/">Limitations</a>.</li>
+<li>
+<p>Configuration still loads, so sandbox policy and enabled libraries are the same as they would be interactively — a batch answer has to match the one you would get on screen. Config warnings and load warnings, such as xlsx cells dropped past the grid, go to stderr, where they cannot corrupt the JSON a caller is parsing.</p>
+</li>
+<li>
+<p>A workbook carrying a <code>code</code> block loads formulas-only, exactly as an unanswered interactive open does. There is no prompt to answer in a batch run, and the safe default is the only one that can be taken without asking.</p>
+</li>
+<li>
+<p>Formula export to xlsx is EXCEL-mode only; see <a href="../limitations/">Limitations</a>.</p>
+</li>
 </ul>
 
 

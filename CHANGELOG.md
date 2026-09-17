@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`:pd load` without pandas emptied the active sheet.** pandas is an optional extra. `:pd load` cleared the sheet, then `pdload` raised `ImportError` before the rollback ran. `:pd save` raised too. `pdload` and `pdsave` now return -1 without pandas. `:pd` also checks for pandas before touching the sheet, so it can show the install hint. Relying on -1 alone would restore the sheet but report only "Failed to load".
+
+- **Wheel builds failed their test step.** On Windows, the integration `conftest.py` imported `fcntl` and `termios` before its `pty` skip, so collection failed. On other platforms, the `pdsave` case in `test_save_atomic.py` ran without pandas, which the wheel test env does not install.
+
 ## [0.6.1]
 
 ### Changed

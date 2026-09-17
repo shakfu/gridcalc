@@ -7,6 +7,7 @@ child process, so the writer really does hit EFBIG after partial output.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -19,6 +20,8 @@ import pytest
 from gridcalc.engine import Grid, Mode
 
 resource = pytest.importorskip("resource")
+
+_HAS_PANDAS = importlib.util.find_spec("pandas") is not None
 
 _CHILD = textwrap.dedent(
     """
@@ -63,7 +66,11 @@ def _big_save_fails(path: Path, method: str) -> str:
         ("book.json", "jsonsave"),
         ("book.csv", "csvsave"),
         ("book.xlsx", "xlsxsave"),
-        ("book.csv", "pdsave"),
+        pytest.param(
+            "book.csv",
+            "pdsave",
+            marks=pytest.mark.skipif(not _HAS_PANDAS, reason="pandas not installed"),
+        ),
         ("book.json", "loader"),
         ("book.xlsx", "loader"),
     ],

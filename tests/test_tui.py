@@ -1626,6 +1626,24 @@ class TestSearchIndicator:
         assert search_indicator(self.g, []) == ""
 
 
+@pytest.mark.parametrize("sub", ["save", "load"])
+def test_pd_without_pandas_reports_and_keeps_the_sheet(tmp_path, monkeypatch, sub):
+    from gridcalc.tui import cmdexec
+
+    monkeypatch.setitem(sys.modules, "pandas", None)
+    _setup_curses_constants()
+    stdscr, g, undo = MockStdscr(), Grid(), UndoManager()
+    g.setcell(0, 0, "unsaved")
+    g.dirty = 1
+    path = tmp_path / "data.csv"
+    path.write_text("replaced\n")
+    stdscr.queue_getch(ord("y"))  # discard prompt, if reached
+    cmdexec(stdscr, g, undo, f"pd {sub} {path}")
+    assert "gridcalc[extras]" in stdscr._last_addnstr
+    assert g.cells[0][0].text == "unsaved"
+    assert path.read_text() == "replaced\n"
+
+
 @pytest.mark.skipif(not _HAS_PANDAS, reason="pandas not installed")
 class TestPdCommands:
     """Test pandas load/save via cmdexec."""

@@ -3381,8 +3381,12 @@ class Grid:
 
         Supports CSV, TSV, Excel (.xlsx/.xls), JSON, and Parquet.
         Column headers become labels in row 0 when header=True.
+        Returns -1 if pandas is not installed.
         """
-        import pandas as pd  # noqa: I001
+        try:
+            import pandas as pd  # noqa: I001
+        except ImportError:
+            return -1
 
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
         pd_header: int | None = 0 if header else None
@@ -3438,8 +3442,12 @@ class Grid:
 
         Supports CSV, TSV, Excel (.xlsx), JSON, and Parquet.
         Row 0 is used as column headers.
+        Returns -1 if pandas is not installed.
         """
-        import pandas as pd  # noqa: I001
+        try:
+            import pandas as pd  # noqa: I001
+        except ImportError:
+            return -1
 
         maxr = -1
         maxc = -1

@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import math
+import sys
 
 import pytest
 
@@ -2989,6 +2990,18 @@ class TestDataFrameFormula:
         # Should not be marked as circular
         assert (0, 0) not in g._circular
         assert g.cells[0][0].matrix is not None
+
+
+def test_pd_io_without_pandas_returns_minus_one(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "pandas", None)
+    path = tmp_path / "data.csv"
+    path.write_text("a\n1\n")
+    g = Grid()
+    g.setcell(0, 0, "x")
+    assert g.pdload(str(path)) == -1
+    assert g.pdsave(str(path)) == -1
+    assert g.cells[0][0].text == "x"
+    assert path.read_text() == "a\n1\n"
 
 
 @pytest.mark.skipif(not _HAS_PANDAS, reason="pandas not installed")

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import curses
+import importlib.util
 import os
 import shlex
 import subprocess
@@ -942,6 +943,11 @@ def _io_command(
 
 def cmd_pd(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bool:
     """Pandas import/export. Usage: :pd load [file] | :pd save [file]"""
+    # pandas is an optional extra. Check before `_io_command`, whose load path
+    # clears the sheet before calling `pdload`.
+    if importlib.util.find_spec("pandas") is None:
+        show_error(stdscr, "pd requires pandas: pip install 'gridcalc[extras]'")
+        return False
     return _io_command(
         stdscr,
         g,

@@ -15,7 +15,6 @@ Invoke them with ``make test-tty`` or ``pytest -m tty``.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import os
 import re
 import select
@@ -23,7 +22,6 @@ import signal
 import struct
 import subprocess
 import sys
-import termios
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -34,6 +32,8 @@ import pytest
 # Skip the whole module on Windows: pty.openpty() doesn't exist there, and
 # curses doesn't ship on stock Python for Windows either.
 pty = pytest.importorskip("pty")
+fcntl = pytest.importorskip("fcntl")
+termios = pytest.importorskip("termios")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GRIDCALC_BIN = REPO_ROOT / ".venv" / "bin" / "gridcalc"

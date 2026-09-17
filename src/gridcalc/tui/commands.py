@@ -305,11 +305,21 @@ def cmd_savequit(stdscr: curses.window, g: Grid, args: str) -> bool:
     return _do_save(stdscr, g, args)
 
 
+def _editor_command(editor: str, path: str, windows: bool = os.name == "nt") -> str | list[str]:
+    """Build the command that opens ``path`` in ``editor``, which may carry arguments.
+
+    Raises ValueError when ``editor`` is badly quoted.
+    """
+    if windows:
+        # Windows parses its own command line; POSIX shlex drops the backslashes in C:\x.
+        return f"{editor} {subprocess.list2cmdline([path])}"
+    return [*(shlex.split(editor) or ["vi"]), path]
+
+
 def cmd_edit(stdscr: curses.window, g: Grid) -> bool:
     editor = os.environ.get("EDITOR") or _state._cfg.editor or "vi"
     try:
-        # $EDITOR may carry arguments, e.g. "code --wait".
-        argv = shlex.split(editor) or ["vi"]
+        _editor_command(editor, "")
     except ValueError as exc:
         show_error(stdscr, f"Bad editor command {editor!r}: {exc}")
         return False
@@ -322,9 +332,9 @@ def cmd_edit(stdscr: curses.window, g: Grid) -> bool:
         curses.endwin()
         err = ""
         try:
-            rc = subprocess.run([*argv, tmppath], check=False).returncode
+            rc = subprocess.run(_editor_command(editor, tmppath), check=False).returncode
         except OSError as exc:
-            rc, err = -1, f"Cannot run editor {argv[0]!r}: {exc.strerror or exc}"
+            rc, err = -1, f"Cannot run editor {editor!r}: {exc.strerror or exc}"
         finally:
             curses.reset_prog_mode()
             stdscr.refresh()

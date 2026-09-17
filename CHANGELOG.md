@@ -2,11 +2,30 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`:pd` reads and writes CSV, TSV and JSON only.** Excel and Parquet needed `openpyxl` and `pyarrow`, which `[extras]` does not install, so both failed. `:xlsx` covers Excel. Any other extension returns -1; before, `.foo` got CSV written into it.
+
 ### Fixed
+
+- **`:pd load` dropped, shifted and rewrote data.**
+  - pandas' NA markers dropped cells reading `NA`, `N/A`, `None` or `null`.
+  - Its float parser rounded `0.30000000000000004` to `0.3`.
+  - A row longer than the header became the index, so its first field vanished and the rest moved one column left.
+  - Repeated or blank headers loaded as `a.1` and `Unnamed: 1`.
+  - JSON strings such as `"007"` became numbers, and date-like strings in columns such as `date` or `modified` became timestamps.
+
+  CSV and TSV now load exactly as `:csv load` does. JSON values keep their type: strings stay labels and booleans become `=TRUE`/`=FALSE`.
+
+- **`:pd save` wrote label quotes and float artefacts.** A label entered as `"007` exported with its quote. Integers in a column with a blank exported as `120.0`. JSON floats were rounded to 10 digits. JSON is now written with the stdlib `json` module, because pandas' `to_json` caps precision at 15 digits.
 
 - **`:pd load` without pandas emptied the active sheet.** pandas is an optional extra. `:pd load` cleared the sheet, then `pdload` raised `ImportError` before the rollback ran. `:pd save` raised too. `pdload` and `pdsave` now return -1 without pandas. `:pd` also checks for pandas before touching the sheet, so it can show the install hint. Relying on -1 alone would restore the sheet but report only "Failed to load".
 
-- **Wheel builds failed their test step.** On Windows, the integration `conftest.py` imported `fcntl` and `termios` before its `pty` skip, so collection failed. On other platforms, the `pdsave` case in `test_save_atomic.py` ran without pandas, which the wheel test env does not install.
+- **Every save failed on Windows.** Atomic saves fsynced the temp file through a read-only handle, which Windows rejects with `EBADF`, so JSON, CSV, xlsx and `:pd` saves all returned -1.
+
+- **`:e` could not start an editor named by a Windows path.** The command was split with POSIX `shlex` rules, so `EDITOR=C:\tools\vim.exe` ran `C:toolsvim.exe`. Windows now receives the command line unsplit.
+
+- **Wheel builds failed their test step.** On Windows, the integration `conftest.py` imported `fcntl` and `termios` before its `pty` skip, so collection failed and hid the two Windows bugs above. On other platforms, the `pdsave` case in `test_save_atomic.py` ran without pandas, which the wheel test env does not install.
 
 ## [0.6.1]
 

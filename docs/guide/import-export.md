@@ -4,7 +4,7 @@
 |---|---|---|---|
 | `:csv save/load` | CSV | CSV | Plain text, fast |
 | `:xlsx save/load` | `.xlsx` formulas + values | EXCEL mode: formulas + cached values; other modes: values only | `:xlsx load` switches to `EXCEL` |
-| `:pd save/load` | CSV/TSV/Excel/JSON/Parquet | same | Uses pandas; row 1 as headers |
+| `:pd save/load` | CSV/TSV/JSON | same | Needs `gridcalc[extras]`; row 1 as headers; JSON keeps value types |
 
 `:xlsx load` translates Excel formulas into gridcalc's `EXCEL` grammar and reads every worksheet, empty ones included. It replaces the whole workbook, including the code block and saved models. On import:
 

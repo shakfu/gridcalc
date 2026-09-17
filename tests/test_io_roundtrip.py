@@ -178,6 +178,111 @@ def test_pd_save_writes_text_results(tmp_path: Path) -> None:
     assert f.read_text().splitlines() == ["head", "big"]
 
 
+def _cells(g: Grid) -> list[tuple[int, int, int, str]]:
+    return sorted((c, r, cl.type, cl.text) for (c, r), cl in g._cells.items() if cl.type)
+
+
+@pytest.mark.parametrize("ext", [".csv", ".tsv"])
+def test_pd_load_reads_delimited_text_as_csv_load_does(tmp_path: Path, ext: str) -> None:
+    pytest.importorskip("pandas")
+    sep = "\t" if ext == ".tsv" else ","
+    rows = [
+        ["country", "code", "val", "big"],
+        ["Namibia", "NA", "0.30000000000000004", "9007199254740993"],
+        ["None", "N/A", "TRUE", ""],
+        ["null", "", "1e400", "-0", "extra"],
+        ["short"],
+    ]
+    f = tmp_path / ("d" + ext)
+    f.write_text("\n".join(sep.join(r) for r in rows) + "\n")
+    csv_f = tmp_path / "d.csv"
+    csv_f.write_text("\n".join(",".join(r) for r in rows) + "\n")
+    g, h = _excel(), _excel()
+    assert g.pdload(str(f)) == 0
+    assert h.csvload(str(csv_f)) == 0
+    assert _cells(g) == _cells(h)
+
+
+def test_pd_load_keeps_json_value_types(tmp_path: Path) -> None:
+    pytest.importorskip("pandas")
+    f = tmp_path / "d.json"
+    records = [
+        {"date": "2024-01-02", "s": "007", "f": 0.30000000000000004, "b": True, "n": None, "i": 1},
+        {"date": "=x", "s": "abc", "f": 2.5, "b": False, "n": 2, "i": 9007199254740993},
+    ]
+    f.write_text(json.dumps(records))
+    g = _excel()
+    assert g.pdload(str(f)) == 0
+    got = {(c, r): (t, text) for c, r, t, text in _cells(g)}
+    assert got[(0, 1)] == (LABEL, "2024-01-02")
+    assert got[(1, 1)] == (LABEL, '"007')
+    assert got[(2, 1)] == (NUM, "0.30000000000000004")
+    assert got[(3, 1)] == (FORMULA, "=TRUE")
+    assert (4, 1) not in got
+    assert got[(0, 2)] == (LABEL, '"=x')
+    assert got[(5, 2)] == (NUM, "9007199254740993")
+    assert got[(4, 2)] == (NUM, "2")
+    assert got[(0, 0)] == (LABEL, "date")
+
+
+def test_pd_save_writes_plain_values(tmp_path: Path) -> None:
+    pytest.importorskip("pandas")
+    g = _excel()
+    for c, t in enumerate(['"code', "qty", "ok", "f", "err"]):
+        g.setcell(c, 0, t)
+    for c, t in enumerate(['"007', "120", "=1<2", "0.30000000000000004", "=1/0"]):
+        g.setcell(c, 1, t)
+    f = tmp_path / "v.csv"
+    assert g.pdsave(str(f)) == 0
+    assert list(csv.reader(f.open())) == [
+        ["code", "qty", "ok", "f", "err"],
+        ["007", "120", "TRUE", "0.30000000000000004", ""],
+    ]
+    j = tmp_path / "v.json"
+    assert g.pdsave(str(j)) == 0
+    assert json.loads(j.read_text()) == [
+        {"code": "007", "qty": 120, "ok": True, "f": 0.30000000000000004, "err": None}
+    ]
+
+
+def test_pd_json_round_trip_keeps_types(tmp_path: Path) -> None:
+    pytest.importorskip("pandas")
+    g = _excel()
+    g.setcells_bulk(
+        [(0, 0, "name"), (1, 0, "code"), (2, 0, "ok"), (3, 0, "x")]
+        + [(0, 1, "a"), (1, 1, '"00123'), (2, 1, "=TRUE"), (3, 1, PRECISE[1])]
+    )
+    f = tmp_path / "rt.json"
+    assert g.pdsave(str(f)) == 0
+    h = _excel()
+    assert h.pdload(str(f)) == 0
+    assert _cells(h) == _cells(g)
+
+
+@pytest.mark.parametrize("name", ["book.xlsx", "book.parquet", "book.xls"])
+def test_pd_refuses_file_types_it_does_not_handle(tmp_path: Path, name: str) -> None:
+    pytest.importorskip("pandas")
+    g = _excel()
+    g.setcell(0, 0, "keep")
+    f = tmp_path / name
+    assert g.pdsave(str(f)) == -1
+    assert g.io_error
+    assert not f.exists()
+    f.write_bytes(b"PK")
+    assert g.pdload(str(f)) == -1
+    assert g.cells[0][0].text == "keep"
+
+
+def test_pd_json_save_refuses_repeated_headers(tmp_path: Path) -> None:
+    pytest.importorskip("pandas")
+    g = _excel()
+    g.setcells_bulk([(0, 0, "x"), (1, 0, "x"), (0, 1, "1"), (1, 1, "2")])
+    f = tmp_path / "dup.json"
+    assert g.pdsave(str(f)) == -1
+    assert g.io_error
+    assert not f.exists()
+
+
 # --- xlsx save ------------------------------------------------------------------
 
 

@@ -3975,6 +3975,8 @@ class TestEditorLaunch:
         self.g.dirty = 0
 
     def _editor(self, tmp_path, body, rc=0):
+        if sys.platform == "win32":
+            pytest.skip("editor stub is a /bin/sh script")
         script = tmp_path / "ed.sh"
         script.write_text(f"#!/bin/sh\n{body}\nexit {rc}\n")
         script.chmod(0o755)
@@ -4013,6 +4015,24 @@ class TestEditorLaunch:
         monkeypatch.setenv("EDITOR", self._editor(tmp_path, "true"))
         cmdexec(self.stdscr, self.g, UndoManager(), "e")
         assert self.g.dirty == 0
+
+
+def test_editor_command_keeps_windows_paths_and_splits_posix_arguments():
+    from gridcalc.tui.commands import _editor_command
+
+    assert _editor_command(r"C:\tools\vim.exe", r"C:\t\x.py", windows=True) == (
+        r"C:\tools\vim.exe C:\t\x.py"
+    )
+    assert _editor_command('"C:\\Program Files\\ed.exe" -w', "C:\\a b\\x.py", windows=True) == (
+        '"C:\\Program Files\\ed.exe" -w "C:\\a b\\x.py"'
+    )
+    assert _editor_command("code --wait", "/tmp/x.py", windows=False) == [
+        "code",
+        "--wait",
+        "/tmp/x.py",
+    ]
+    with pytest.raises(ValueError):
+        _editor_command('vim "unclosed', "/tmp/x.py", windows=False)
 
 
 class TestMainloopSessionSafety:

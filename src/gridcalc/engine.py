@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import tempfile
+import warnings
 from collections.abc import Callable, Iterable, Iterator
 from enum import IntEnum
 from io import StringIO
@@ -874,6 +875,10 @@ def _expand_ranges(expr: str) -> str:
     return "".join(result)
 
 
+# File types `pdload` and `pdsave` accept; no extension means CSV.
+_PD_EXTS = frozenset({"", ".csv", ".txt", ".tsv", ".tab", ".json"})
+
+
 def _number_text(v: float) -> str:
     """Source text that ``setcell`` parses back to exactly ``v``."""
     return str(int(v)) if v.is_integer() and abs(v) < 1e15 else repr(v)
@@ -895,7 +900,8 @@ def _write_atomic(filename: str, write: Callable[[str], object]) -> None:
         write(tmp)
         with contextlib.suppress(FileNotFoundError):
             os.chmod(tmp, stat.S_IMODE(os.stat(target).st_mode))
-        with open(tmp, "rb") as f:
+        # Windows fsync needs a writable handle; "rb" fails with EBADF there.
+        with open(tmp, "r+b") as f:
             os.fsync(f.fileno())
         os.replace(tmp, target)
     finally:
@@ -3377,76 +3383,89 @@ class Grid:
         return 0
 
     def pdload(self, filename: str, header: bool = True) -> int:
-        """Load a file into grid cells using pandas for type inference.
+        """Load a CSV, TSV or JSON file into grid cells using pandas.
 
-        Supports CSV, TSV, Excel (.xlsx/.xls), JSON, and Parquet.
-        Column headers become labels in row 0 when header=True.
-        Returns -1 if pandas is not installed.
+        CSV and TSV fields are parsed as typed input, as ``csvload`` does. JSON
+        values keep their type: a string stays a label, a boolean becomes
+        ``=TRUE``/``=FALSE``. ``header`` writes JSON column names into row 0.
+        Returns -1 if pandas is not installed or the file type is unsupported.
         """
         try:
             import pandas as pd  # noqa: I001
         except ImportError:
             return -1
 
-        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-        pd_header: int | None = 0 if header else None
+        self.io_error = None
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in _PD_EXTS:
+            self.io_error = f"unsupported file type: {ext}"
+            return -1
         try:
-            if ext in ("xlsx", "xls"):
-                df = pd.read_excel(filename, header=pd_header)
-            elif ext == "parquet":
-                df = pd.read_parquet(filename)
-            elif ext == "json":
-                df = pd.read_json(filename)
-            elif ext in ("tsv", "tab"):
-                df = pd.read_csv(filename, sep="\t", header=pd_header)
+            if ext == ".json":
+                df = pd.read_json(filename, dtype=False, convert_dates=False, precise_float=True)
             else:
-                df = pd.read_csv(filename, header=pd_header)
-        except Exception:
+                # All fields as text: pandas' NA markers and float parser would
+                # drop "NA" labels and round 0.30000000000000004. Fixed `names`
+                # pad short rows and cut long ones at NCOL, as `csvload` does.
+                sep = "\t" if ext in (".tsv", ".tab") else ","
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", pd.errors.ParserWarning)
+                    df = pd.read_csv(
+                        filename,
+                        sep=sep,
+                        header=None,
+                        names=range(NCOL),
+                        index_col=False,
+                        dtype=str,
+                        keep_default_na=False,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            self.io_error = str(exc) or type(exc).__name__
             return -1
 
-        if df.shape[0] >= NROW or df.shape[1] >= NCOL:
-            # Truncate to grid limits
-            df = df.iloc[: NROW - (1 if header else 0), :NCOL]
+        def label(v: object) -> str:
+            t = str(v)
+            return '"' + t if t.startswith("=") or parse_number(t.rstrip()) is not None else t
 
+        def json_text(v: object) -> str:
+            if isinstance(v, bool):
+                t = "TRUE" if v else "FALSE"
+                return "=" + (t.title() if self.mode == Mode.PYTHON else t)
+            if isinstance(v, int):
+                return str(v)
+            if isinstance(v, float):
+                return _number_text(v) if math.isfinite(v) else ""
+            return label(v)
+
+        rows: list[tuple[Any, ...]] = list(df.itertuples(index=False, name=None))
+        if ext == ".json" and header:
+            rows.insert(0, tuple(df.columns))
         cells: list[tuple[int, int, str]] = []
-        r_offset = 0
-        if header:
-            for c_idx, col_name_str in enumerate(df.columns):
-                if c_idx >= NCOL:
-                    break
-                cells.append((c_idx, 0, str(col_name_str)))
-            r_offset = 1
-
-        for r_idx in range(len(df)):
-            if r_idx + r_offset >= NROW:
-                break
-            for c_idx in range(len(df.columns)):
-                if c_idx >= NCOL:
-                    break
-                val = df.iloc[r_idx, c_idx]
-                if pd.isna(val):
+        for r, row in enumerate(rows[:NROW]):
+            for c, v in enumerate(row[:NCOL]):
+                if v is None or (isinstance(v, float) and math.isnan(v)):
                     continue
-                if isinstance(val, (int, float)):
-                    if isinstance(val, int) or (abs(val) < 1e15 and val == int(val)):
-                        text = str(int(val))
-                    else:
-                        text = repr(float(val))
-                else:
-                    text = str(val)
-                cells.append((c_idx, r_idx + r_offset, text))
+                text = json_text(v) if ext == ".json" else str(v).strip()
+                if text:
+                    cells.append((c, r, text))
         self.setcells_bulk(cells)
         return 0
 
     def pdsave(self, filename: str) -> int:
-        """Export grid cells to a file using pandas.
+        """Export grid values to a CSV, TSV or JSON file, with row 0 as headers.
 
-        Supports CSV, TSV, Excel (.xlsx), JSON, and Parquet.
-        Row 0 is used as column headers.
-        Returns -1 if pandas is not installed.
+        Returns -1 if pandas is not installed, the file type is unsupported, or
+        JSON headers repeat.
         """
         try:
             import pandas as pd  # noqa: I001
         except ImportError:
+            return -1
+
+        self.io_error = None
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in _PD_EXTS:
+            self.io_error = f"unsupported file type: {ext}"
             return -1
 
         maxr = -1
@@ -3461,49 +3480,43 @@ class Grid:
         if maxr < 0:
             return -1
 
-        # Build column headers from row 0
-        columns: list[str] = []
-        for c in range(maxc + 1):
-            cl = self._cells.get((c, 0))
-            if cl and cl.type != EMPTY:
-                columns.append(cl.text if cl.type == LABEL else str(cl.val))
-            else:
-                columns.append(col_name(c))
+        def value(cl: Cell | None) -> Any:
+            if not cl or cl.type == EMPTY:
+                return None
+            if cl.type == LABEL:
+                return cl.text[1:] if cl.text.startswith('"') else cl.text
+            if cl.err is not None:
+                return None
+            if isinstance(cl.val, bool):
+                return cl.val if ext == ".json" else ("TRUE" if cl.val else "FALSE")
+            if cl.sval is not None:
+                return cl.sval  # a text result; val is a 0 placeholder
+            v = float(cl.val)
+            if not math.isfinite(v):
+                return None
+            return int(v) if v.is_integer() and abs(v) < 1e15 else v
 
-        # Build data from row 1 onward
-        data: list[list[Any]] = []
-        for r in range(1, maxr + 1):
-            row: list[Any] = []
-            for c in range(maxc + 1):
-                cl = self._cells.get((c, r))
-                if not cl or cl.type == EMPTY:
-                    row.append(None)
-                elif cl.type == LABEL:
-                    row.append(cl.text)
-                elif cl.type in (NUM, FORMULA):
-                    if cl.sval is not None and not isinstance(cl.val, bool):
-                        row.append(cl.sval)  # a text result; val is a 0 placeholder
-                    elif isinstance(cl.val, float) and math.isnan(cl.val):
-                        row.append(None)
-                    else:
-                        row.append(cl.val)
-                else:
-                    row.append(None)
-            data.append(row)
+        columns = [
+            str(h) if (h := value(self._cells.get((c, 0)))) is not None else col_name(c)
+            for c in range(maxc + 1)
+        ]
+        data = [
+            [value(self._cells.get((c, r))) for c in range(maxc + 1)] for r in range(1, maxr + 1)
+        ]
 
-        df = pd.DataFrame(data, columns=columns)
-        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        if ext == ".json" and len(set(columns)) < len(columns):
+            self.io_error = "JSON export needs unique headers in row 1"
+            return -1
 
         def write(path: str) -> None:
-            if ext in ("xlsx", "xls"):
-                df.to_excel(path, index=False)
-            elif ext == "parquet":
-                df.to_parquet(path, index=False)
-            elif ext == "json":
-                df.to_json(path, orient="records", indent=2)
-            elif ext in ("tsv", "tab"):
-                df.to_csv(path, sep="\t", index=False)
+            if ext == ".json":
+                # pandas' to_json rounds floats to at most 15 digits.
+                with open(path, "w") as f:
+                    records = [dict(zip(columns, row, strict=True)) for row in data]
+                    json.dump(records, f, indent=2, allow_nan=False)
             else:
-                df.to_csv(path, index=False)
+                sep = "\t" if ext in (".tsv", ".tab") else ","
+                df = pd.DataFrame(data, columns=columns, dtype=object)
+                df.to_csv(path, sep=sep, index=False)
 
         return self._save_via(filename, write)

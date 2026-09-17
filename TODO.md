@@ -133,6 +133,19 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ### Features
 
+- [ ] **Reconsider polars for DataFrame cells.** pandas backs `pd.DataFrame` formulas and `:pd`. Polars has no index, which matches how gridcalc reads a frame (shape, column names, cell access, row iteration). Measured 2026-09-17 on macOS arm64, polars 1.44.2 against pandas 3.0.5:
+  - Warm import: about 75 ms against 200-230 ms.
+  - Installed: 164 MB against 73 MB for pandas plus numpy. numpy stays for ndarray cells, so `[extras]` would grow to about 188 MB.
+  - Python: one abi3 wheel for 3.10+; pandas 3 needs 3.11+.
+
+  Costs of switching:
+  - Strict column dtypes. `pl.DataFrame({"a": [1, 3.5]})` raises, so `objedit` literals break, and range-to-frame conversion needs a coercion rule for mixed columns.
+  - `null` exists alongside NaN, so `cmd_view`'s `pd.isna` check changes.
+  - polars needs a `SIDE_EFFECT_MODULES` entry: `read_csv` takes URLs and `pl.plugins.register_plugin_function` loads a native library.
+  - `pd.` workbooks break: `examples/example.json`, 11 tests, `docs/guide/formulas.md`.
+
+  Decide first whether DataFrame growth means a richer formula API or grid integration (range to frame, spilling a frame), and whether frames get their own extra.
+
 - [ ] **3D range references (`Sheet1:Sheet3!A1:B2`).** Currently unsupported: `_expand_ranges` only recognises the `<ref>:<ref>` shape, so a sheet-span prefix passes through unexpanded and the formula evaluates to `nan`. Workaround in user files is to expand manually, e.g. `=SUM(Jan!B2:B3)+SUM(Feb!B2:B3)` instead of `=SUM(Jan:Feb!B2:B3)` (see `examples/example_multisheet.xlsx`). To implement: (1) extend `ref`/`refabs` to recognise the `<sheet>:<sheet>!<cell>[:<cell>]` shape; (2) add a pre-pass (or branch in `_expand_ranges`) that enumerates sheets between the two named endpoints in workbook order and emits a `Vec([...])` over every (sheet, cell) pair; (3) decide rebind semantics on `move_sheet`/`rename_sheet` -- Excel binds 3D refs to sheet *position* between the endpoints, so reordering changes which sheets are summed, while renaming an endpoint should rewrite the formula text the same way `_rewrite_sheet_prefix` handles single-sheet refs; (4) extend dependency tracking so cells in the spanned sheets register as subscribers, and a `move_sheet`/`add_sheet` between the endpoints invalidates the cached recalc.
 
 - [ ] **TUI keybindings system -- v2 generalisations.** All five contexts are wired (`grid`, `entry`, `visual`, `cmdline`, `search`) with curated action vocabularies; see `docs/keybindings.md`. Outstanding gaps for a future iteration: (a) **Removing hardcoded defaults.** `[keys.<ctx>] cancel = []` currently does *not* unbind Esc, because the hardcoded fallback chain still matches `ch == 27`. To make unbind work, the hardcoded chain has to migrate fully into `DEFAULT_KEYMAP` and the contexts must dispatch only via the action lookup. Mechanical but tedious. (b) **Bind-to-`:command`.** The action vocabulary is fixed at module load time. If users want `[keys.grid] save = [...]` where "save" runs `:w`, the schema has to grow a way to carry the command text alongside the key spec, and an `exec_command`-style action that takes parameters. Out of scope until someone asks. (c) **Pick-mode actions in entry.** The `KEY_UP`/`KEY_DOWN` cursor-pick sub-mode in `entry` is too tangled with local state to expose as actions today. Refactor it to a small state machine before binding it. (d) **Keymap warnings are erased.** They print inside the alternate screen, and the first draw clears them.

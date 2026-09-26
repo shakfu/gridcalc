@@ -4310,7 +4310,9 @@ class TestTrustPromptControlChars:
         from gridcalc.sandbox import inspect_file
         from gridcalc.tui import startup_trust_prompt
 
-        p = tmp_path / "evil\x1b]0;t\x07.json"
+        # Windows rejects control characters in filenames, and the prompt only
+        # prints the name, so the file on disk gets a plain one.
+        p = tmp_path / "evil.json"
         p.write_text(
             json.dumps(
                 {
@@ -4322,7 +4324,7 @@ class TestTrustPromptControlChars:
         )
         info = inspect_file(str(p))
         monkeypatch.setattr(builtins, "input", lambda prompt="": "q")
-        startup_trust_prompt(str(p), info)
+        startup_trust_prompt(str(tmp_path / "evil\x1b]0;t\x07.json"), info)
         out = capsys.readouterr().out
         for raw in ("\x1b[8m", "\x1b]0;", "\x07", "\x1b[2J\n"):
             assert raw not in out

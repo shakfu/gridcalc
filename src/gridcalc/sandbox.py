@@ -416,7 +416,7 @@ def inspect_file(filename: str) -> FileInfo | None:
     try:
         with open(filename, encoding="utf-8") as f:
             d = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError):
         return None
 
     # This runs on a file chosen precisely because it is not yet trusted, so

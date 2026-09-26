@@ -3,6 +3,9 @@
 Lookup order (first found wins, CWD overrides user config):
   1. ./gridcalc.toml
   2. $XDG_CONFIG_HOME/gridcalc/gridcalc.toml  (default: ~/.config/gridcalc/gridcalc.toml)
+
+A CWD config is ignored for the keys in ``USER_ONLY_KEYS``. Starting gridcalc
+in a directory is not consent to that directory's security policy or commands.
 """
 
 from __future__ import annotations
@@ -29,6 +32,9 @@ CONFIG_FILENAME = "gridcalc.toml"
 
 # Number formats a workbook default can take; the same set `:gf` accepts.
 FORMATS = "LRIGD$%*"
+
+# `sandbox = false` disables the trust prompt; `editor` is a command `:e` runs.
+USER_ONLY_KEYS = ("sandbox", "editor")
 
 _KNOWN_KEYS = frozenset({"editor", "sandbox", "width", "format", "libs", "allowed_modules", "keys"})
 
@@ -70,6 +76,13 @@ def find_config() -> Path | None:
         return user_config
 
     return None
+
+
+def _is_cwd_config(path: Path) -> bool:
+    """Whether ``path`` is the CWD config, and not also the user config."""
+    p = path.resolve()
+    user = (user_config_dir() / CONFIG_FILENAME).resolve()
+    return p == (Path.cwd() / CONFIG_FILENAME).resolve() and p != user
 
 
 def _parse_config(data: dict[str, Any]) -> Config:
@@ -226,8 +239,15 @@ def load_config(path: Path | str | None = None) -> Config:
         cfg.warnings.append(f"TOML parse error in {resolved}: {exc}")
         return cfg
 
+    dropped: list[str] = []
+    if _is_cwd_config(resolved):
+        dropped = [k for k in USER_ONLY_KEYS if k in data]
+        for k in dropped:
+            del data[k]
     cfg = _parse_config(data)
     cfg.config_path = str(resolved)
+    for k in dropped:
+        cfg.warnings.append(f"{k}: ignored in {resolved}; set it in the user config")
     return cfg
 
 

@@ -64,6 +64,12 @@ export function TrustDialog({
                 <span>{info.code_lines} lines</span>
               </div>
             )}
+            {info.python_formulas && (
+              <div className="trust-row">
+                <span className="trust-key">Formulas</span>
+                <span className="trust-warn">run as Python; not evaluated unless approved</span>
+              </div>
+            )}
             {known.length > 0 && (
               <div className="trust-row">
                 <span className="trust-key">Imports</span>

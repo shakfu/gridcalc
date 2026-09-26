@@ -259,6 +259,16 @@ def test_dynamic_array_spills_into_neighbours(tui_session) -> None:
     assert "1[9]" not in render
 
 
+def test_tab_completes_help_and_help_lists_commands(tui_session) -> None:
+    """Tab on the `:` line completes `:he` to `:help`, and `:help` pages the
+    command list. Tab is a single byte, so this pty delivers it intact."""
+    tui_session.wait_for("[HYBRID]", timeout=5.0)
+    # curses repaints only the changed cells, so `:help ` never reaches the
+    # pty as one string. The help page appears only if `:he` completed.
+    tui_session.send(":he\t\n")
+    tui_session.wait_for("Format cells", timeout=4.0)
+
+
 # -- session safety: resize, Ctrl-C, terminals without capabilities --
 
 

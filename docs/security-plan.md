@@ -16,10 +16,10 @@ This plan takes a layered approach: no single layer is sufficient, but together 
 | User types code in `:e` editor  | None -- intentional                 | No    |
 | User loads untrusted .json file | Malicious formulas + code blocks    | Yes   |
 | User shares a spreadsheet       | Accidental code exposure            | Low   |
-| User loads a .json with no or unknown `mode` | Loads as PYTHON mode; formulas `eval()` with no prompt | Yes |
-| User starts gridcalc in a directory holding a `gridcalc.toml` | `sandbox = false` there turns off validation and the trust prompt | Yes |
+| User loads a .json with no or unknown `mode` | Loads as PYTHON mode; formulas are `eval()`ed | Yes; gated by the trust prompt |
+| User starts gridcalc in a directory holding a `gridcalc.toml` | `sandbox = false` or `editor` there | No; both keys are ignored in a CWD config |
 
-The only real threat is **loading a file from an untrusted source**. The user sitting at the keyboard is the trust boundary. A config file in the working directory is untrusted content too (see "Known gaps").
+The only real threat is **loading a file from an untrusted source**. The user sitting at the keyboard is the trust boundary. A config file in the working directory is untrusted content too, so it cannot set `sandbox` or `editor`.
 
 ## Architecture: Four Layers
 
@@ -67,7 +67,7 @@ This is not airtight -- new escape vectors get discovered. ~~But it blocks all *
 
 ### Layer 3: Trust Gate on File Load
 
-When loading a `.json` spreadsheet that contains code blocks or module requirements, the user is prompted before anything executes:
+When loading a `.json` spreadsheet that contains code blocks, module requirements, or PYTHON-mode formulas, the user is prompted before anything executes:
 
 **Terminal prompt (startup):**
 
@@ -86,13 +86,13 @@ Options:
 
 - **Approve** -- load everything (code block, modules, formulas)
 
-- **Formulas only** -- load cell data and formulas, skip code block and modules. This is not a code-free load: a PYTHON-mode file's formulas are still `eval()`ed at load.
+- **Formulas only** -- load cell data and formulas, skip code block and modules. PYTHON-mode formulas are Python, so they load unevaluated and show `#N/A`.
 
 - **View code** -- display the code block for review
 
 - **Cancel** -- abort the load
 
-Files with no code block and no `requires` field load silently (backward compatible). AST validation still applies to all formulas. The trust gate covers the code block and modules, not formulas.
+Files with no code block, no `requires` field and no PYTHON-mode formulas load silently. Formulas in EXCEL and HYBRID mode go through gridcalc's own evaluator, not `eval()`. The prompt prints workbook text with control characters escaped, so a terminal sequence in the code cannot hide lines of it.
 
 This is the same trust model browsers use for Office macros: the file format can carry executable content, but loading it requires explicit consent.
 
@@ -140,13 +140,11 @@ Files without `requires` are fully backward compatible.
 
 ## Known gaps
 
-Open findings from `REVIEW.md` section 5.1, verified against the code. None is fixed.
+- **Formula validation misses string-borne attribute access (S1). Open.** `validate_formula` walks `ast.Attribute` and `ast.Name` nodes only. `str.format` and `str.format_map` traverse attributes and indexes named in the string, so `"{0.__globals__[os].environ[HOME]}".format(SUM)` reads the environment. `%` and f-string format specs do not traverse. The demonstrated effect is read-only disclosure. No call primitive has been shown. Since S2 closed, this needs the user to approve the file.
 
-- **Formula validation misses string-borne attribute access (S1).** `validate_formula` walks `ast.Attribute` and `ast.Name` nodes only. A format string can name dunder attributes and globals of a callable in the namespace. `str.format`, `%`, f-string format specs and `format_map` all work. The demonstrated effect is read-only disclosure, such as environment variables. No call primitive has been shown.
+- **Formulas-only still evaluated formulas (S2). Closed.** `formulas_only()` now leaves PYTHON-mode formulas unevaluated, and `FileInfo.python_formulas` makes such a file raise the prompt.
 
-- **Formulas-only still evaluates formulas (S2).** `LoadPolicy.formulas_only()` gates the code block and modules. `recalc()` still `eval()`s every PYTHON-mode formula at load. `needs_trust` asks only about code and `requires`, so S1 runs on the default load path with no prompt.
-
-- **A missing or unknown `mode` loads as PYTHON (S3).** `jsonload` defaults to `Mode.PYTHON` when `mode` is absent or unparseable. A file that omits `mode` gets `eval()` semantics. v1 files predate modes, so changing the default needs a migration decision.
+- **A missing or unknown `mode` loads as PYTHON (S3). Mitigated.** The default is unchanged, so v1 files keep their meaning. Such a file now raises the prompt when it has formulas.
 
 - **A working-directory `gridcalc.toml` can disable the sandbox (S4).** Config lookup checks the CWD before `$XDG_CONFIG_HOME`. The TUI and the headless CLI apply its `sandbox` key. With `sandbox = false`, validation and the startup trust prompt are both off. `GRIDCALC_SANDBOX` overrides config when set.
 

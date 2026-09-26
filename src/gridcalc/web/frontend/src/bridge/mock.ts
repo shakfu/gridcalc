@@ -97,6 +97,7 @@ function trustInfo(path: string): TrustInfo {
     has_code: true,
     code: 'def rate(x):\n    return x * 0.07\n',
     code_lines: 2,
+    python_formulas: false,
     requires: ['numpy', 'requests', 'socket', 'mystery'],
     blocked: ['socket'],
     side_effect: ['requests'],

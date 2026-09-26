@@ -887,3 +887,72 @@ class TestGridLoadRequires:
         g.setcell(0, 0, "=decimal.Decimal('3.14')")
         # decimal.Decimal returns a Decimal, float() conversion
         assert abs(g.cells[0][0].val - 3.14) < 1e-10
+
+
+class TestPythonFormulaTrust:
+    """PYTHON-mode formulas are `eval()`ed, so opening one is a trust decision."""
+
+    def _write(self, tmp_path, d, name="w.json"):
+        f = tmp_path / name
+        f.write_text(json.dumps(d))
+        return str(f)
+
+    def test_mode_decides_python_formulas(self, tmp_path):
+        # A missing or unparseable mode loads as PYTHON, so it is flagged too.
+        cases = [
+            ({}, True),
+            ({"mode": "PYTHON"}, True),
+            ({"mode": "bogus"}, True),
+            ({"mode": "EXCEL"}, False),
+            ({"mode": "HYBRID"}, False),
+        ]
+        for extra, expected in cases:
+            info = inspect_file(self._write(tmp_path, {"cells": [["=1+1"]], **extra}))
+            assert info.python_formulas is expected, extra
+            assert info.trust_needed is expected, extra
+
+    def test_no_formulas_needs_no_trust(self, tmp_path):
+        info = inspect_file(self._write(tmp_path, {"cells": [[1, "x"]]}))
+        assert not info.python_formulas
+        assert not info.trust_needed
+
+    def test_formulas_only_does_not_eval(self, tmp_path):
+        from gridcalc.engine import UNTRUSTED_MSG
+        from gridcalc.formula.errors import ExcelError
+
+        # Passes validate_formula, and reads $HOME when evaluated.
+        leak = '="{0.__globals__[os].environ[HOME]}".format(SUM)'
+        path = self._write(tmp_path, {"cells": [[leak]]})
+        g = Grid()
+        assert g.jsonload(path, policy=LoadPolicy.formulas_only()) == 0
+        cl = g.cell(0, 0)
+        assert cl.err == ExcelError.NA
+        assert cl.err_msg == UNTRUSTED_MSG
+
+    def test_formulas_only_does_not_hang(self, tmp_path):
+        path = self._write(tmp_path, {"cells": [["=sum(1 for _ in range(10**100))"]]})
+        assert Grid().jsonload(path, policy=LoadPolicy.formulas_only()) == 0
+
+    def test_approved_formulas_evaluate(self, tmp_path):
+        path = self._write(tmp_path, {"cells": [[2, "=A1*3"]]})
+        for policy in (LoadPolicy.trust_all(), None):
+            g = Grid()
+            assert g.jsonload(path, policy=policy) == 0
+            assert g.cell(1, 0).val == 6
+
+    def test_edits_stay_unevaluated_until_approved_reload(self, tmp_path):
+        path = self._write(tmp_path, {"cells": [[2, "=A1*3"]]})
+        g = Grid()
+        g.jsonload(path, policy=LoadPolicy.formulas_only())
+        g.setcell(2, 0, "=1+1")
+        assert math.isnan(g.cell(2, 0).val)
+        g.jsonload(path, policy=LoadPolicy.trust_all())
+        assert g.cell(1, 0).val == 6
+
+    def test_withheld_python_does_not_leak_into_next_load(self, tmp_path):
+        untrusted = self._write(tmp_path, {"cells": [["=1"]]}, "a.json")
+        other = self._write(tmp_path, {"cells": [["=2"]]}, "b.json")
+        g = Grid()
+        g.jsonload(untrusted, policy=LoadPolicy.formulas_only())
+        g.jsonload(other, policy=None)
+        assert g.cell(0, 0).val == 2

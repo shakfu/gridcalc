@@ -30,4 +30,6 @@ See [Keybindings](../keybindings.md) for the keyspec grammar (`Tab`, `S-Tab`, `C
 
 `sandbox = true` (the default) enables AST validation of formulas and code blocks: dunder access, dangerous attributes and builtins, and blocked imports are rejected before anything executes. Setting `sandbox = false`, or the environment variable `GRIDCALC_SANDBOX=0`, turns it off.
 
-The threat model -- what the sandbox is and is not meant to stop -- is in [Security plan](../security-plan.md). The short version: a workbook can carry a Python code block, so opening an untrusted file in PYTHON or HYBRID mode is the main risk, and that is what the load-time trust prompt exists for.
+`sandbox` and `editor` are read only from the user config. A `$PWD/gridcalc.toml` that sets them is ignored for those keys, with a warning: launching in a directory is not consent to its security policy or commands.
+
+The threat model -- what the sandbox is and is not meant to stop -- is in [Security plan](../security-plan.md). The short version: a workbook can carry a Python code block, and PYTHON-mode formulas are Python. Opening an untrusted file in PYTHON or HYBRID mode is the main risk, and that is what the load-time trust prompt exists for.

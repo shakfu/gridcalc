@@ -55,6 +55,7 @@ The repository ships workbooks covering each mode and feature:
 
 ```sh
 gridcalc example_excel.json          # sales report, named ranges, IF/MATCH
+gridcalc example_excel.xlsx          # the same workbook saved as xlsx
 gridcalc example_hybrid.json         # progressive tax via py.* + aggregations
 gridcalc example.json                # PYTHON: numpy/pandas, list comprehensions
 gridcalc example_multisheet.json     # 3-sheet budget, cross-sheet formulas

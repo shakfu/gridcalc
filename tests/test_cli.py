@@ -182,7 +182,7 @@ def test_a_run_that_never_started_exits_1_with_stderr_and_no_stdout(argv, fragme
 
 
 def test_goal_reaches_the_value_the_example_advertises() -> None:
-    code, out, _ = _run(GOAL, "--goal", "B1 = 11 by A1")
+    code, out, _ = _run(GOAL, "--trust", "--goal", "B1 = 11 by A1")
     d = out["goal"]
     assert d["converged"] is True
     assert d["var_value"] == pytest.approx(4.0)  # the file says "A1 becomes 4"
@@ -193,7 +193,7 @@ def test_goal_reaches_the_value_the_example_advertises() -> None:
 
 
 def test_goal_accepts_an_explicit_bracket() -> None:
-    _, out, _ = _run(GOAL, "--goal", "B1 = 100 by A1 in 0:1000")
+    _, out, _ = _run(GOAL, "--trust", "--goal", "B1 = 100 by A1 in 0:1000")
     assert out["goal"]["var_value"] == pytest.approx(48.5)
 
 
@@ -395,3 +395,15 @@ def test_load_warnings_go_to_stderr(tmp_path) -> None:
     code, payload, err = _run(str(src), "--eval", "=A1")
     assert code == 0 and payload["eval"][0]["value"] == 1
     assert "warning: 1 cells beyond 256 columns x 1024 rows were not imported" in err
+
+
+def test_python_workbook_does_not_run_without_trust() -> None:
+    _, out, err = _run(GOAL, "--eval", "=B1")
+    assert "--trust" in err
+    assert out["eval"][0]["value"] is None
+
+
+def test_trust_runs_a_python_workbook() -> None:
+    _, out, err = _run(GOAL, "--trust", "--eval", "=B1")
+    assert "--trust" not in err
+    assert out["eval"][0]["value"] == pytest.approx(3.0)

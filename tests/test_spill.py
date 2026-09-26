@@ -323,3 +323,62 @@ class TestSpillDependencyOrdering:
         g.setcell(3, 0, "=C1 * 2")  # depends on C1
         assert g.cells[2][0].val == 102.0
         assert g.cells[3][0].val == 204.0
+
+
+class TestSpillStyle:
+    """A spill cell's style is its anchor's: spill cells are rebuilt on every
+    recalc and are not saved, so a style set on one directly was lost."""
+
+    def _spilled(self) -> Grid:
+        g = _grid()
+        for r, v in enumerate((1000, 2500, 12345)):
+            g.setcell(0, r, str(v))
+        g.setcell(1, 0, "=A1:A3*2")  # B1 anchor, B2:B3 spill
+        assert g.cells[1][1].type == SPILL
+        return g
+
+    def _shown(self, g: Grid) -> list[str]:
+        from gridcalc.display import fmtcell
+
+        return [fmtcell(g.cell(1, r), 10, g.fmt).strip() for r in range(3)]
+
+    def _format(self, g: Grid, c1: int, r1: int, c2: int, r2: int, spec: str):
+        from gridcalc.commands import apply_format
+        from gridcalc.undo import UndoManager
+
+        undo = UndoManager()
+        apply_format(g, undo, c1, r1, c2, r2, spec)
+        return undo
+
+    def test_formatting_spill_cells_formats_the_anchor(self) -> None:
+        g = self._spilled()
+        self._format(g, 1, 1, 1, 2, ",")  # only the spill cells selected
+        assert g.cell(1, 0).fmtstr == ","
+        assert self._shown(g) == ["2,000", "5,000", "24,690"]
+
+    def test_style_survives_a_recalc_of_the_anchor(self) -> None:
+        g = self._spilled()
+        self._format(g, 1, 0, 1, 2, ",")
+        g.setcell(0, 1, "3000")  # re-evaluates B1 and rebuilds B2:B3
+        assert self._shown(g) == ["2,000", "6,000", "24,690"]
+
+    def test_style_survives_json(self, tmp_path) -> None:
+        g = self._spilled()
+        self._format(g, 1, 1, 1, 2, ",")
+        f = tmp_path / "s.json"
+        assert g.jsonsave(str(f)) == 0
+        g2 = Grid()
+        assert g2.jsonload(str(f)) == 0
+        assert self._shown(g2) == ["2,000", "5,000", "24,690"]
+
+    def test_toggle_applies_once_per_anchor(self) -> None:
+        g = self._spilled()
+        self._format(g, 1, 0, 1, 2, "b")  # anchor and both spill cells
+        assert [g.cell(1, r).bold for r in range(3)] == [1, 1, 1]
+
+    def test_undo_restores_the_spill_style(self) -> None:
+        g = self._spilled()
+        undo = self._format(g, 1, 2, 1, 2, ",")  # anchor is outside the selection
+        assert undo.undo(g)
+        assert self._shown(g) == ["2000", "5000", "24690"]
+        assert g.cell(1, 0).fmtstr == ""

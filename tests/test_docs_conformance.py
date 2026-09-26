@@ -36,7 +36,6 @@ README = REPO_ROOT / "README.md"
 DOCS = REPO_ROOT / "docs"
 TOUR = DOCS / "tour.md"
 COMMAND_REFERENCE = DOCS / "reference" / "commands.md"
-COMMANDS_PY = REPO_ROOT / "src" / "gridcalc" / "tui" / "commands.py"
 TUI_INIT_PY = REPO_ROOT / "src" / "gridcalc" / "tui" / "__init__.py"
 
 
@@ -117,10 +116,10 @@ def _documented_commands(text: str) -> set[str]:
 def _dispatched_commands() -> set[str]:
     """Every command name the TUI can reach.
 
-    Dispatch is two-part since the shared registry landed: `cmdexec` still
-    name-matches the view-owned commands (those whose body is interaction --
+    Dispatch is two-part since the shared registry landed: `cmdexec` looks up
+    the view-owned commands in `VIEW_COMMANDS` (those whose body is interaction --
     `:e`, `:view`, `:sheets`, ...), while the frontend-neutral ones come from
-    `gridcalc.commands` and never appear as a literal here. Both halves count,
+    `gridcalc.commands`. Both halves count,
     or the manual check would demand that shared commands be re-listed in the
     dispatcher just to be seen.
     """
@@ -128,25 +127,14 @@ def _dispatched_commands() -> set[str]:
     from gridcalc.tui.commands import _ARG_ALIASES
 
     names = set(shared.BY_NAME) | set(_ARG_ALIASES)
-    return names | _name_matched_commands()
+    return names | _view_owned_commands()
 
 
-def _name_matched_commands() -> set[str]:
-    """Command names `cmdexec` compares `cmd` against directly."""
-    tree = ast.parse(COMMANDS_PY.read_text(encoding="utf-8"))
-    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "cmdexec")
-    names: set[str] = set()
-    for node in ast.walk(fn):
-        if not (isinstance(node, ast.Compare) and isinstance(node.left, ast.Name)):
-            continue
-        if node.left.id != "cmd":
-            continue
-        for op, comparator in zip(node.ops, node.comparators, strict=True):
-            if isinstance(op, ast.Eq) and isinstance(comparator, ast.Constant):
-                names.add(comparator.value)
-            elif isinstance(op, ast.In) and isinstance(comparator, ast.Tuple | ast.List):
-                names.update(e.value for e in comparator.elts if isinstance(e, ast.Constant))
-    return names
+def _view_owned_commands() -> set[str]:
+    """Names and aliases in the TUI's view-owned command table."""
+    from gridcalc.tui.commands import VIEW_BY_NAME
+
+    return set(VIEW_BY_NAME)
 
 
 def test_documented_commands_are_dispatched() -> None:
@@ -179,9 +167,9 @@ def test_no_view_owned_command_shadows_a_shared_one() -> None:
     """
     from gridcalc import commands as shared
 
-    clash = sorted(_name_matched_commands() & set(shared.BY_NAME))
+    clash = sorted(_view_owned_commands() & set(shared.BY_NAME))
     assert not clash, (
-        f"cmdexec name-matches commands the shared registry already owns: {clash}. "
+        f"VIEW_COMMANDS names commands the shared registry already owns: {clash}. "
         "The registry runs first, so these branches are unreachable -- delete "
         "them, or rename the shared command if they were meant to differ."
     )

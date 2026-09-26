@@ -4,6 +4,7 @@ import curses
 import importlib.util
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -4295,6 +4296,41 @@ class TestStartupTrustPrompt:
         assert policy is not None and not policy.load_code
 
 
+class TestTrustPromptControlChars:
+    """Workbook text reaches a raw terminal; its control characters must not."""
+
+    def test_printable_escapes_controls(self):
+        from gridcalc.tui import _printable
+
+        assert _printable("a\x1b[8mb\x07\x9b\tc\n") == "a\\x1b[8mb\\x07\\x9b\tc\n"
+
+    def test_prompt_shows_no_raw_escape_from_the_file(self, tmp_path, monkeypatch, capsys):
+        import builtins
+
+        from gridcalc.sandbox import inspect_file
+        from gridcalc.tui import startup_trust_prompt
+
+        p = tmp_path / "evil\x1b]0;t\x07.json"
+        p.write_text(
+            json.dumps(
+                {
+                    "requires": ["numpy\x1b[2J"],
+                    "code": "x = 1\n# \x1b[8m\nimport os\n",
+                    "cells": [["=1"]],
+                }
+            )
+        )
+        info = inspect_file(str(p))
+        monkeypatch.setattr(builtins, "input", lambda prompt="": "q")
+        startup_trust_prompt(str(p), info)
+        out = capsys.readouterr().out
+        for raw in ("\x1b[8m", "\x1b]0;", "\x07", "\x1b[2J\n"):
+            assert raw not in out
+        assert "\\x1b[8m" in out
+        # The line after the conceal code is shown; strip Pygments' colours first.
+        assert "import os" in re.sub(r"\x1b\[[0-9;]*m", "", out)
+
+
 class TestMainStartup:
     @pytest.fixture
     def launched(self, monkeypatch, tmp_path):
@@ -4351,3 +4387,102 @@ class TestResizeSafeScreen:
         scr.addnstr(30, 0, "x", 5)
         scr.move(30, 0)
         scr.clrtoeol()  # delegated
+
+
+class TestColonLineCompletion:
+    """Tab on the `:` line, and `:help`, through the real input loop."""
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = _RecordingStdscr()
+        self.g = Grid()
+        self.g.add_sheet("Data")
+
+    def _input(self, keys):
+        from gridcalc.tui.completion import complete
+        from gridcalc.tui.widgets import _line_input
+
+        self.stdscr.queue_getch(*keys)
+        return _line_input(
+            self.stdscr, curses.LINES - 1, prefix=":", complete=lambda b: complete(b, self.g)
+        )
+
+    def test_tab_completes_a_command(self):
+        assert self._input([*_keys("he"), 9, 10]) == "help "
+
+    def test_second_tab_lists_the_candidates_above_the_line(self):
+        assert self._input([*_keys("she"), 9, 9, 10]) == "sheet"
+        listed = [s for y, _, s, _ in self.stdscr.calls if y == curses.LINES - 2]
+        assert listed == ["sheet  sheets"]
+
+    def test_tab_without_a_completer_is_ignored(self):
+        from gridcalc.tui.widgets import _line_input
+
+        self.stdscr.queue_getch(*_keys("ab"), 9, 10)
+        assert _line_input(self.stdscr, curses.LINES - 1) == "ab"
+
+    def test_help_command_shows_the_format_specs(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, UndoManager(), "help f")
+        text = "\n".join(s for _, _, s, _ in self.stdscr.calls)
+        assert "1,234.50" in text
+
+    def test_unknown_command_points_at_help(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, UndoManager(), "nosuch")
+        assert any(":help" in s for _, _, s, _ in self.stdscr.calls)
+
+
+class TestXlsxOverwriteWarning:
+    """Saving over an xlsx rewrites it; features gridcalc cannot write are asked about."""
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = _RecordingStdscr()
+
+    def _open_rich(self, tmp_path):
+        from tests.test_xlsx_io import _rich_xlsx
+
+        f = tmp_path / "rich.xlsx"
+        _rich_xlsx(f)
+        g = Grid()
+        assert g.xlsxload(str(f)) == 0
+        g.filename = str(f)
+        return g, f
+
+    def _asked(self):
+        return [s for _, _, s, _ in self.stdscr.calls if "Save? (y/N)" in s]
+
+    @pytest.mark.parametrize("command", ["wq", "xlsx save {f}"])
+    def test_declining_keeps_the_file(self, tmp_path, command):
+        from gridcalc.tui import cmdexec
+
+        g, f = self._open_rich(tmp_path)
+        before = f.read_bytes()
+        self.stdscr.queue_getch(ord("n"))
+        assert cmdexec(self.stdscr, g, UndoManager(), command.format(f=f)) is False
+        assert f.read_bytes() == before
+        [question] = self._asked()
+        assert "merged cells" in question
+        assert len(question) <= curses.COLS - 1
+
+    def test_accepting_saves(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        g, f = self._open_rich(tmp_path)
+        self.stdscr.queue_getch(ord("y"))
+        assert cmdexec(self.stdscr, g, UndoManager(), "wq") is True
+        assert f.read_bytes()[:2] == b"PK"
+
+    def test_own_file_saves_without_asking(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        g = Grid()
+        g.setcell(0, 0, "1")
+        f = tmp_path / "own.xlsx"
+        assert g.xlsxsave(str(f)) == 0
+        g.filename = str(f)
+        assert cmdexec(self.stdscr, g, UndoManager(), "wq") is True
+        assert self._asked() == []

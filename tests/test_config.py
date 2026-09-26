@@ -166,11 +166,11 @@ class TestFindConfig:
     def test_cwd_takes_precedence(self, tmp_path, monkeypatch):
         user_dir = tmp_path / "user" / "gridcalc"
         user_dir.mkdir(parents=True)
-        (user_dir / "gridcalc.toml").write_text('editor = "user"')
+        (user_dir / "gridcalc.toml").write_text("width = 10")
 
         cwd = tmp_path / "project"
         cwd.mkdir()
-        (cwd / "gridcalc.toml").write_text('editor = "project"')
+        (cwd / "gridcalc.toml").write_text("width = 12")
 
         monkeypatch.chdir(cwd)
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user"))
@@ -178,7 +178,7 @@ class TestFindConfig:
         path = find_config()
         assert path is not None
         cfg = load_config(path)
-        assert cfg.editor == "project"
+        assert cfg.width == 12
 
     def test_falls_back_to_user_dir(self, tmp_path, monkeypatch):
         user_dir = tmp_path / "config" / "gridcalc"
@@ -287,3 +287,39 @@ class TestParseConfigKeys:
     def test_keys_does_not_appear_as_unknown_top_level(self):
         cfg = _parse_config({"keys": {"grid": {"next_sheet": ["Tab"]}}})
         assert not any(w.startswith("unknown key") for w in cfg.warnings)
+
+
+class TestCwdConfigSecurityKeys:
+    """A CWD config cannot turn off the sandbox or choose the `:e` command."""
+
+    def _setup(self, tmp_path, monkeypatch, cwd_text, user_text=None):
+        user_dir = tmp_path / "user" / "gridcalc"
+        user_dir.mkdir(parents=True)
+        if user_text is not None:
+            (user_dir / "gridcalc.toml").write_text(user_text)
+        cwd = tmp_path / "project"
+        cwd.mkdir()
+        if cwd_text is not None:
+            (cwd / "gridcalc.toml").write_text(cwd_text)
+        monkeypatch.chdir(cwd)
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user"))
+
+    def test_cwd_config_ignores_sandbox_and_editor(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch, 'sandbox = false\neditor = "sh -c evil"\nwidth = 12\n')
+        cfg = load_config()
+        assert cfg.sandbox is True
+        assert cfg.editor == ""
+        assert cfg.width == 12
+        assert any(w.startswith("sandbox: ignored") for w in cfg.warnings)
+        assert any(w.startswith("editor: ignored") for w in cfg.warnings)
+
+    def test_explicit_cwd_path_is_still_the_cwd_config(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch, "sandbox = false\n")
+        assert load_config(find_config()).sandbox is True
+
+    def test_user_config_keeps_them(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch, None, 'sandbox = false\neditor = "nano"\n')
+        cfg = load_config()
+        assert cfg.sandbox is False
+        assert cfg.editor == "nano"
+        assert cfg.warnings == []

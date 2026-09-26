@@ -21,6 +21,7 @@ import argparse
 import contextlib
 import curses
 import os
+import re
 import sys
 from collections.abc import Callable
 from typing import Any, cast
@@ -77,6 +78,7 @@ from .commands import (
     selectrange,
     trust_prompt,
 )
+from .completion import complete
 from .objedit import _build_formula, _fmt_val, obj_editor
 from .osclip import SystemClipboard
 from .render import GW, _paint_label_overflow, draw, init_colors, vcols, vrows
@@ -123,6 +125,7 @@ def cmdline(
         dispatch=lambda ch: _action_for("cmdline", ch),
         maxlen=255,
         allow_empty=False,
+        complete=lambda buf: complete(buf, g),
     )
     if buf is None:
         return False
@@ -518,11 +521,8 @@ def mainloop(stdscr: curses.window, g: Grid) -> None:
         elif ch in (0x1F & ord("b"), 0x1F & ord("u")):
             cl = g.cell(g.cc, g.cr)
             if cl and cl.type != EMPTY:
-                undo.save_cell(g, g.cc, g.cr)
-                if ch == 0x1F & ord("b"):
-                    cl.bold = 1 - cl.bold
-                else:
-                    cl.underline = 1 - cl.underline
+                spec = "b" if ch == 0x1F & ord("b") else "u"
+                shared.apply_format(g, undo, g.cc, g.cr, g.cc, g.cr, spec)
                 g.dirty = 1
         elif ch == curses.KEY_UP and g.cr > lr:
             g.cr -= 1
@@ -598,19 +598,31 @@ def _highlight_code(code: str) -> str:
     return highlight(code, PythonLexer(), TerminalFormatter())
 
 
+# C0 and C1 controls except tab and newline. Written to a terminal they are
+# commands: `ESC [8m` conceals every following line of a code preview.
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _printable(text: str) -> str:
+    """Render control characters in ``text`` as visible escapes such as ``\\x1b``."""
+    return _CONTROL_RE.sub(lambda m: repr(m.group())[1:-1], text)
+
+
 def startup_trust_prompt(filename: str, info: FileInfo) -> LoadPolicy | None:
     """Plain-terminal trust prompt for file loading at startup (before curses)."""
     print("\033[2J\033[H", end="")  # clear screen, cursor to top
-    print(f"Loading: {filename}")
+    print(f"Loading: {_printable(filename)}")
     print(f"  Cells: {info.cell_count} ({info.formula_count} formulas)")
+    if info.python_formulas:
+        print("  Formulas run as Python (PYTHON mode); [s]kip leaves them unevaluated")
     if info.requires:
         for mod in info.requires:
             cls = classify_module(_parse_requirement(mod)[0])
             tag = f" [{cls}]" if cls != "safe" else ""
-            print(f"  Requires: {mod}{tag}")
+            print(f"  Requires: {_printable(mod)}{tag}")
     if info.has_code:
         print(f"\n--- Code ({info.code_lines} lines) ---\n")
-        print(_highlight_code(info.code_preview))
+        print(_highlight_code(_printable(info.code_preview)))
         print("--- End ---")
     print()
 
@@ -714,7 +726,7 @@ def main() -> None:
                 sys.exit(1)
 
             policy = None
-            if info.has_code or info.requires:
+            if info.trust_needed:
                 if sandbox.SANDBOX_ENABLED:
                     policy = startup_trust_prompt(fn, info)
                     if policy is None:

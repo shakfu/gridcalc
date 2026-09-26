@@ -1,6 +1,9 @@
 {
-  "version": 1,
+  "version": 2,
   "mode": "EXCEL",
+  "libs": [
+    "xlsx"
+  ],
   "names": {
     "sales": "B2:B5",
     "targets": "C2:C5"
@@ -8,107 +11,316 @@
   "format": {
     "width": 12
   },
-  "cells": [
-    [
-      {"v": "Quarter", "bold": true},
-      {"v": "Sales", "bold": true},
-      {"v": "Target", "bold": true},
-      {"v": "Met (1/0)", "bold": true},
-      {"v": "Commission", "bold": true},
-      {"v": "% of target", "bold": true}
-    ],
-    [
-      "Q1", 12500, 10000,
-      "=IF(B2>=C2, 1, 0)",
-      "=IF(B2>=C2, B2*0.05, 0)",
-      "=B2/C2"
-    ],
-    [
-      "Q2", 8300, 11000,
-      "=IF(B3>=C3, 1, 0)",
-      "=IF(B3>=C3, B3*0.05, 0)",
-      "=B3/C3"
-    ],
-    [
-      "Q3", 15700, 12000,
-      "=IF(B4>=C4, 1, 0)",
-      "=IF(B4>=C4, B4*0.05, 0)",
-      "=B4/C4"
-    ],
-    [
-      "Q4", 9200, 13000,
-      "=IF(B5>=C5, 1, 0)",
-      "=IF(B5>=C5, B5*0.05, 0)",
-      "=B5/C5"
-    ],
-    [],
-    [
-      {"v": "Totals", "bold": true},
-      "=SUM(sales)",
-      "=SUM(targets)",
-      null,
-      "=SUM(E2:E5)",
-      "=SUM(sales)/SUM(targets)"
-    ],
-    [
-      {"v": "Average", "bold": true},
-      "=AVERAGE(sales)",
-      "=AVERAGE(targets)",
-      null,
-      "=AVERAGE(E2:E5)"
-    ],
-    [
-      {"v": "Best", "bold": true},
-      "=MAX(sales)",
-      null,
-      {"v": "row #", "bold": true},
-      "=MATCH(MAX(sales), sales, 0)"
-    ],
-    [
-      {"v": "Worst", "bold": true},
-      "=MIN(sales)",
-      null,
-      {"v": "row #", "bold": true},
-      "=MATCH(MIN(sales), sales, 0)"
-    ],
-    [
-      {"v": "Met count", "bold": true},
-      "=SUM(D2:D5)"
-    ],
-    [],
-    [
-      {"v": "Error handling", "bold": true}
-    ],
-    [
-      "1/0 (raw):",
-      "=IFERROR(1/0, -1)",
-      null,
-      "Math safe:",
-      "=IFERROR(SQRT(-1), 0)"
-    ],
-    [],
-    [
-      {"v": "Range arithmetic", "bold": true}
-    ],
-    [
-      null,
-      {"v": "Sales - Targets", "bold": true},
-      null,
-      {"v": "Discounted (95%)", "bold": true}
-    ],
-    [
-      null,
-      "=sales - targets",
-      null,
-      "=sales * 0.95"
-    ],
-    [],
-    [],
-    [],
-    [],
-    [
-      "Total uplift:",
-      "=SUM(sales * 1.1) - SUM(sales)"
-    ]
+  "active": "Sheet1",
+  "sheets": [
+    {
+      "name": "Sheet1",
+      "cells": [
+        [
+          {
+            "v": "Quarter",
+            "bold": true
+          },
+          {
+            "v": "Sales",
+            "bold": true
+          },
+          {
+            "v": "Target",
+            "bold": true
+          },
+          {
+            "v": "Met (1/0)",
+            "bold": true
+          },
+          {
+            "v": "Commission",
+            "bold": true
+          },
+          {
+            "v": "% of target",
+            "bold": true
+          }
+        ],
+        [
+          "Q1",
+          {
+            "v": 12500,
+            "fmtstr": ","
+          },
+          {
+            "v": 10000,
+            "fmtstr": ","
+          },
+          "=IF(B2>=C2, 1, 0)",
+          "=IF(B2>=C2, B2*0.05, 0)",
+          {
+            "v": "=B2/C2",
+            "fmtstr": ".2f"
+          }
+        ],
+        [
+          "Q2",
+          {
+            "v": 8300,
+            "fmtstr": ","
+          },
+          {
+            "v": 11000,
+            "fmtstr": ","
+          },
+          "=IF(B3>=C3, 1, 0)",
+          "=IF(B3>=C3, B3*0.05, 0)",
+          {
+            "v": "=B3/C3",
+            "fmtstr": ".2f"
+          }
+        ],
+        [
+          "Q3",
+          {
+            "v": 15700,
+            "fmtstr": ","
+          },
+          {
+            "v": 12000,
+            "fmtstr": ","
+          },
+          "=IF(B4>=C4, 1, 0)",
+          "=IF(B4>=C4, B4*0.05, 0)",
+          {
+            "v": "=B4/C4",
+            "fmtstr": ".2f"
+          }
+        ],
+        [
+          "Q4",
+          {
+            "v": 9200,
+            "fmtstr": ","
+          },
+          {
+            "v": 13000,
+            "fmtstr": ","
+          },
+          "=IF(B5>=C5, 1, 0)",
+          "=IF(B5>=C5, B5*0.05, 0)",
+          {
+            "v": "=B5/C5",
+            "fmtstr": ".2f"
+          }
+        ],
+        [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          {
+            "v": "Totals",
+            "bold": true
+          },
+          {
+            "v": "=SUM(sales)",
+            "fmtstr": ","
+          },
+          {
+            "v": "=SUM(targets)",
+            "fmtstr": ","
+          },
+          null,
+          {
+            "v": "=SUM(E2:E5)",
+            "fmtstr": ","
+          },
+          {
+            "v": "=SUM(sales)/SUM(targets)",
+            "fmtstr": ".2f"
+          }
+        ],
+        [
+          {
+            "v": "Average",
+            "bold": true
+          },
+          {
+            "v": "=AVERAGE(sales)",
+            "fmtstr": ","
+          },
+          {
+            "v": "=AVERAGE(targets)",
+            "fmtstr": ","
+          },
+          null,
+          "=AVERAGE(E2:E5)",
+          null
+        ],
+        [
+          {
+            "v": "Best",
+            "bold": true
+          },
+          {
+            "v": "=MAX(sales)",
+            "fmtstr": ","
+          },
+          null,
+          {
+            "v": "row #",
+            "bold": true
+          },
+          "=MATCH(MAX(sales), sales, 0)",
+          null
+        ],
+        [
+          {
+            "v": "Worst",
+            "bold": true
+          },
+          {
+            "v": "=MIN(sales)",
+            "fmtstr": ","
+          },
+          null,
+          {
+            "v": "row #",
+            "bold": true
+          },
+          "=MATCH(MIN(sales), sales, 0)",
+          null
+        ],
+        [
+          {
+            "v": "Met count",
+            "bold": true
+          },
+          "=SUM(D2:D5)",
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          {
+            "v": "Error handling",
+            "bold": true
+          },
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          "1/0 (raw):",
+          "=IFERROR(1/0, -1)",
+          null,
+          "Math safe:",
+          "=IFERROR(SQRT(-1), 0)",
+          null
+        ],
+        [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          {
+            "v": "Range arithmetic",
+            "bold": true
+          },
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          null,
+          {
+            "v": "Sales - Targets",
+            "bold": true
+          },
+          null,
+          {
+            "v": "Discounted (95%)",
+            "bold": true
+          },
+          null,
+          null
+        ],
+        [
+          null,
+          {
+            "v": "=sales - targets",
+            "fmtstr": ","
+          },
+          null,
+          {
+            "v": "=sales * 0.95",
+            "fmtstr": ","
+          },
+          null,
+          null
+        ],
+        [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          "Total uplift:",
+          {
+            "v": "=SUM(sales * 1.1) - SUM(sales)",
+            "fmtstr": ","
+          },
+          null,
+          null,
+          null,
+          null
+        ]
+      ]
+    }
   ]
 }

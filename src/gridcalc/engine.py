@@ -412,6 +412,9 @@ def INT(x: Any) -> Any:
     return _scalar_or_error(x, lambda v: float(int(v)))
 
 
+UNTRUSTED_MSG = "not run: workbook Python not approved; reopen the file to approve"
+
+
 def _make_eval_globals() -> dict[str, Any]:
     builtins = {
         "abs": abs,
@@ -913,7 +916,7 @@ def _xlsx_read_cells(filename: str) -> tuple[list[str], list[tuple[Any, ...]], i
 
     Returns ``(worksheet_names, cells, fallbacks)``: every worksheet in
     workbook order, ``(sheet_name, col0, row0, kind, value, numfmt_code,
-    numfmt_id)`` tuples, and the count of shared or array formulas read as
+    numfmt_id, style)`` tuples, and the count of shared or array formulas read as
     their cached value. Raises if the file cannot be read.
 
     The number format rides along because xlsx has no date type: a date is a
@@ -982,22 +985,186 @@ def _xlsx_date1904(root: Any) -> bool:
     return pr is not None and pr.get("date1904", "").lower() in ("1", "true")
 
 
-def _xlsx_read_defined_names(root: Any) -> list[tuple[str, str, int, int, int, int]]:
+def _xlsx_read_defined_names(
+    root: Any, sheet_order: list[str]
+) -> list[tuple[str, str | None, int, int, int, int]]:
     """Read simple cell/range defined names from a parsed ``xl/workbook.xml``.
     Returns ``(name, sheet, c1, r1, c2, r2)`` tuples. Built-in names
-    (``_xlnm.*``) and non-reference names are skipped. Never raises -- a
-    malformed or name-less workbook yields an empty list."""
-    out: list[tuple[str, str, int, int, int, int]] = []
+    (``_xlnm.*``) and non-reference names are skipped. A name defined locally
+    on every sheet with the same rectangle on that sheet -- what
+    ``_xlsx_defined_names_xml`` writes for a sheet-less name -- comes back
+    with ``sheet`` None. Never raises -- a malformed or name-less workbook
+    yields an empty list."""
+    out: list[tuple[str, str | None, int, int, int, int]] = []
     container = None if root is None else root.find(f"{_XLSX_NS}definedNames")
     if container is None:
         return out
+    local: dict[str, dict[int, tuple[str, int, int, int, int]]] = {}
     for el in container.findall(f"{_XLSX_NS}definedName"):
         name = el.get("name", "")
         if not name or name.startswith("_xlnm."):
             continue
         parsed = _parse_defined_ref((el.text or "").strip())
-        if parsed is not None:
+        if parsed is None:
+            continue
+        lid = el.get("localSheetId")
+        if lid is not None and lid.isdigit():
+            local.setdefault(name, {})[int(lid)] = parsed
+        else:
             out.append((name, *parsed))
+    global_names = {row[0] for row in out}
+    for name, by_id in local.items():
+        rects = {p[1:] for p in by_id.values()}
+        if (
+            name not in global_names
+            and sheet_order
+            and set(by_id) == set(range(len(sheet_order)))
+            and len(rects) == 1
+            and all(by_id[i][0] == sh for i, sh in enumerate(sheet_order))
+        ):
+            out.append((name, None, *rects.pop()))
+        else:
+            out.extend((name, *p) for p in by_id.values())
+    return out
+
+
+def _xlsx_defined_names_xml(names: list[NamedRange], sheet_names: list[str]) -> str:
+    """The ``<definedNames>`` element for ``names``, or "" when there are none.
+
+    A sheet-less name resolves on the formula's own sheet. xlsx expresses that
+    as one sheet-local name per sheet, each pointing at its own sheet.
+    """
+    from xml.sax.saxutils import escape, quoteattr
+
+    els: list[str] = []
+    for nr in names:
+        rng = f"${col_name(nr.c1)}${nr.r1 + 1}"
+        if (nr.c1, nr.r1) != (nr.c2, nr.r2):
+            rng += f":${col_name(nr.c2)}${nr.r2 + 1}"
+        if nr.sheet is None:
+            targets: list[tuple[int | None, str]] = list(enumerate(sheet_names))
+        elif nr.sheet in sheet_names:
+            targets = [(None, nr.sheet)]
+        else:
+            continue  # its sheet is gone; the name already resolves to nothing
+        for lid, sheet in targets:
+            scope = "" if lid is None else f' localSheetId="{lid}"'
+            ref_text = "'" + sheet.replace("'", "''") + "'!" + rng
+            els.append(
+                f"<definedName name={quoteattr(nr.name)}{scope}>{escape(ref_text)}</definedName>"
+            )
+    return f"<definedNames>{''.join(els)}</definedNames>" if els else ""
+
+
+# xlsx column widths are in characters of the default font's widest digit, plus
+# 5 pixels of padding. 7 pixels is that digit in Calibri 11 at 96 dpi; the true
+# size depends on the reader's font, so pixel widths convert approximately.
+_XLSX_DIGIT_PX = 7
+_XLSX_PAD_PX = 5
+_XLSX_REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+_XLSX_PKG_REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+
+
+def _xlsx_sheet_parts(z: Any, root: Any) -> dict[str, str]:
+    """Map each sheet name to its worksheet part path in the open zip ``z``."""
+    import xml.etree.ElementTree as ET
+
+    rels = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))  # noqa: S314
+    targets = {
+        rel.get("Id"): rel.get("Target", "")
+        for rel in rels.findall(f"{_XLSX_PKG_REL_NS}Relationship")
+    }
+    parts: dict[str, str] = {}
+    sheets = root.find(f"{_XLSX_NS}sheets")
+    for el in [] if sheets is None else sheets.findall(f"{_XLSX_NS}sheet"):
+        target = targets.get(el.get(f"{_XLSX_REL_NS}id"), "")
+        if target:
+            parts[el.get("name", "")] = target[1:] if target.startswith("/") else "xl/" + target
+    return parts
+
+
+def _xlsx_widths_patch(data: bytes, cw: int, widths: dict[int, int]) -> bytes:
+    """Add ``defaultColWidth`` and a ``<cols>`` element to one worksheet part."""
+    marker = b"<sheetFormatPr "
+    if data.count(marker) != 1 or data.count(b"<sheetData") != 1 or b"<cols" in data:
+        raise ValueError("unexpected worksheet layout; column widths not written")
+    data = data.replace(marker, marker + f'defaultColWidth="{cw}" '.encode())
+    if widths:
+        cols = "".join(
+            f'<col min="{c + 1}" max="{c + 1}" '
+            f'width="{round((w - _XLSX_PAD_PX) / _XLSX_DIGIT_PX, 2)}" customWidth="1"/>'
+            for c, w in sorted(widths.items())
+        )
+        data = data.replace(b"<sheetData", f"<cols>{cols}</cols>".encode() + b"<sheetData")
+    return data
+
+
+def _xlsx_postprocess(
+    path: str, names_xml: str, cw: int, widths: dict[str, dict[int, int]]
+) -> None:
+    """Add defined names and column widths to the xlsx OpenXLSX wrote at ``path``.
+
+    OpenXLSX has no API for either a defined name or a sheet's default column
+    width. The schema places ``definedNames`` directly after ``sheets``, and
+    ``cols`` directly before ``sheetData``. Raises when a part does not have
+    the layout OpenXLSX writes, rather than guess.
+    """
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    with zipfile.ZipFile(path) as z:
+        members = [(info, z.read(info)) for info in z.infolist()]
+        root = ET.fromstring(z.read("xl/workbook.xml"))  # noqa: S314
+        parts = {part: name for name, part in _xlsx_sheet_parts(z, root).items()}
+    marker = b"</sheets>"
+    with zipfile.ZipFile(path, "w") as z:
+        for info, data in members:
+            if info.filename == "xl/workbook.xml" and names_xml:
+                if data.count(marker) != 1 or b"<definedNames" in data:
+                    raise ValueError("unexpected xl/workbook.xml layout; names not written")
+                data = data.replace(marker, marker + names_xml.encode("utf-8"))
+            elif info.filename in parts:
+                data = _xlsx_widths_patch(data, cw, widths.get(parts[info.filename], {}))
+            z.writestr(info, data)
+
+
+def _xlsx_read_widths(filename: str, root: Any) -> dict[str, tuple[float | None, dict[int, int]]]:
+    """Each sheet's ``(defaultColWidth, {col: pixels})``. Never raises.
+
+    Reads each worksheet only up to ``sheetData``, which follows the widths.
+    """
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    out: dict[str, tuple[float | None, dict[int, int]]] = {}
+    if root is None:
+        return out
+    try:
+        with zipfile.ZipFile(filename) as z:
+            for name, part in _xlsx_sheet_parts(z, root).items():
+                default: float | None = None
+                cols: dict[int, int] = {}
+                with z.open(part) as f:
+                    for _, el in ET.iterparse(f, events=("start",)):  # noqa: S314
+                        if el.tag == f"{_XLSX_NS}sheetData":
+                            break
+                        if el.tag == f"{_XLSX_NS}sheetFormatPr":
+                            with contextlib.suppress(ValueError):
+                                default = float(el.get("defaultColWidth", ""))
+                        elif el.tag == f"{_XLSX_NS}col":
+                            try:
+                                lo, hi = int(el.get("min", "")), int(el.get("max", ""))
+                                px = round(
+                                    float(el.get("width", "")) * _XLSX_DIGIT_PX + _XLSX_PAD_PX
+                                )
+                            except ValueError:
+                                continue
+                            if COL_PX_MIN <= px <= COL_PX_MAX:
+                                for c in range(max(lo, 1) - 1, min(hi, NCOL)):
+                                    cols[c] = px
+                out[name] = (default, cols)
+    except (KeyError, zipfile.BadZipFile, OSError, ET.ParseError):
+        return {}
     return out
 
 
@@ -1017,14 +1184,73 @@ def _xlsx_sheet_name_error(names: list[str]) -> str | None:
     return None
 
 
+# `fmt` letters with an xlsx number format. `I` truncates and xlsx `0` rounds,
+# so a fractional value displays one higher in Excel.
+_XLSX_LETTER_CODES = {"$": "0.00", "%": "0.00%", "I": "0"}
+# Built-in numeric numFmtIds, which carry no code in the file.
+_XLSX_BUILTIN_NUMBER_CODES = {
+    1: "0",
+    2: "0.00",
+    3: "#,##0",
+    4: "#,##0.00",
+    9: "0%",
+    10: "0.00%",
+    11: "0.00E+00",
+}
+_XLSX_NUMBER_CODE_RE = re.compile(r"(#,##0|0)(?:\.(0+))?(%|E\+0+)?")
+
+
+def _xlsx_code_for_spec(spec: str) -> str:
+    """The xlsx number-format code for a ``fmt_float`` spec, or "" for none."""
+    m = re.fullmatch(r"(,?)(?:\.(\d+))?([fe%]?)", spec)
+    if not spec or m is None:
+        return ""
+    commas, prec, kind = m.group(1), m.group(2), m.group(3) or "f"
+    n = int(prec) if prec is not None else (0 if commas else 6)
+    code = ("#,##0" if commas and kind != "e" else "0") + ("." + "0" * n if n else "")
+    return code + {"e": "E+00", "%": "%"}.get(kind, "")
+
+
+def _spec_for_xlsx_code(code: str, fmt_id: int) -> str:
+    """The ``fmt_float`` spec for a plain xlsx number format, or "" for none."""
+    code = code or _XLSX_BUILTIN_NUMBER_CODES.get(fmt_id, "")
+    m = _XLSX_NUMBER_CODE_RE.fullmatch(code.split(";")[0].strip())
+    if m is None:
+        return ""
+    kind = "f" if not m.group(3) else "%" if m.group(3) == "%" else "e"
+    commas = "," if m.group(1) == "#,##0" and kind != "e" else ""
+    return f"{commas}.{len(m.group(2) or '')}{kind}"
+
+
+def _xlsx_cell_style(cl: Cell, global_fmt: str) -> tuple[str, int]:
+    """A cell's xlsx number-format code and style bits, matching `fmtcell`.
+
+    Bits: 1 bold, 2 italic, 4 underline, 8 left-aligned, 16 right-aligned.
+    """
+    bits = (1 if cl.bold else 0) | (2 if cl.italic else 0) | (4 if cl.underline else 0)
+    if cl.type == LABEL:
+        return "", bits  # labels are always left-aligned
+    fc = cl.fmt if cl.fmt not in ("", "D") else global_fmt
+    if cl.sval is not None:
+        # A text result is right-aligned unless `L`; xlsx left-aligns text.
+        return "", bits | (8 if fc == "L" else 16)
+    if cl.fmtstr:
+        # `fmtcell` right-aligns a `fmtstr` number whatever the letter says.
+        code = cl.fmtstr if is_date_format(cl.fmtstr) else _xlsx_code_for_spec(cl.fmtstr)
+        return code, bits
+    return _XLSX_LETTER_CODES.get(fc, ""), bits | {"L": 8, "R": 16}.get(fc, 0)
+
+
 def _xlsx_write_cells(
     filename: str, cells: list[tuple[Any, ...]], sheet_names: list[str] | None = None
 ) -> None:
-    """Write ``(sheet_name, col0, row0, kind, value[, cached])`` tuples.
+    """Write ``(sheet_name, col0, row0, kind, value[, cached][, numfmt][, style])`` tuples.
 
     ``kind`` is in ``{'s','n','b','f'}``. For ``'f'``, ``value`` is the
     formula text (with or without leading ``=``) and the optional 6th
     element is a cached number or bool (``None`` writes no cached value).
+    ``numfmt`` is a number-format code and ``style`` the bits from
+    ``_xlsx_cell_style``.
     ``sheet_names`` lists every sheet in workbook order and fixes both the
     sheet order and the fate of sheets holding no cells; without it, sheets
     are created in the order they first appear in ``cells``. Raises on
@@ -1199,6 +1425,12 @@ def _decode_widths(payload: Any) -> dict[int, int]:
     return out
 
 
+def _copy_style(src: Cell, dst: Cell) -> None:
+    """Copy the display style (number format and text style) of ``src`` to ``dst``."""
+    dst.fmt, dst.fmtstr = src.fmt, src.fmtstr
+    dst.bold, dst.italic, dst.underline = src.bold, src.italic, src.underline
+
+
 class Sheet:
     """A single named sheet's cell store, cycle set, and cursor.
 
@@ -1252,6 +1484,9 @@ class Grid:
         # A file's code block that the load policy refused. Never executed;
         # jsonsave writes it back so saving does not delete it.
         self.withheld_code: str = ""
+        # False when the load policy refused the file's Python: PYTHON-mode
+        # formulas are `eval()`ed, so they are withheld along with the code.
+        self.python_trusted: bool = True
         # Why the last load or save returned -1, and what the last load dropped.
         self.io_error: str | None = None
         self.load_warnings: list[str] = []
@@ -1736,6 +1971,19 @@ class Grid:
         g = dict(self._eval_globals)
         self._circular = set()
 
+        if not self.python_trusted:
+            from .formula.errors import ExcelError as _XE
+
+            for cl in self._cells.values():
+                if cl.type == FORMULA:
+                    cl.arr = None
+                    cl.arr_cols = None
+                    cl.matrix = None
+                    cl.val = float("nan")
+                    cl.err = _XE.NA
+                    cl.err_msg = UNTRUSTED_MSG
+            return
+
         if self.code:
             valid, msg = validate_code(self.code)
             if not valid:
@@ -2158,6 +2406,24 @@ class Grid:
                 cl.spill_shape = None
         self._spill_blocked.clear()
 
+    def style_owner(self, c: int, r: int) -> tuple[int, int]:
+        """The active-sheet cell holding (c, r)'s style: a spill cell's anchor, else (c, r).
+
+        Spill cells are rebuilt on every recalc of their anchor and are not
+        saved, so a style set on one directly would not last.
+        """
+        return self._spill_anchor_at(c, r) or (c, r)
+
+    def sync_spill_style(self, c: int, r: int) -> None:
+        """Copy the style of the anchor at (c, r) onto its current spill cells."""
+        anchor = self._cells.get((c, r))
+        if anchor is None or anchor.spill_shape is None:
+            return
+        for sc_pos in self._spill_positions(c, r, anchor.spill_shape):
+            sc = self._cells.get(sc_pos)
+            if sc is not None and sc.type == SPILL and sc.spill_parent == (c, r):
+                _copy_style(anchor, sc)
+
     def _spill_anchor_at(self, c: int, r: int, sheet: str | None = None) -> tuple[int, int] | None:
         """If (c, r) is a spill cell, return its anchor (c, r); else None."""
         cl = self._sheet_cells(sheet).get((c, r))
@@ -2291,6 +2557,7 @@ class Grid:
                 sc.clear()
                 sc.type = SPILL
                 sc.spill_parent = (ac, ar)
+                _copy_style(anchor_cl, sc)
                 self._store_scalar_into(sc, arr[dr * cols + dc])
                 new_positions.add((c, r))
                 self._clear_deps((sheet, c, r))
@@ -2864,6 +3131,7 @@ class Grid:
         self.code = ""
         self.withheld_code = ""
         self.code_error = None
+        self.python_trusted = True
         self._module_errors = []
         self.load_warnings = []
         # Rebuild the eval namespace from the bare base: a previous workbook's
@@ -2879,6 +3147,8 @@ class Grid:
             self.mode = parsed if parsed is not None else Mode.PYTHON
         else:
             self.mode = Mode.PYTHON
+
+        self.python_trusted = policy is None or policy.load_code
 
         # Only adopt the file's code when the policy allows it. The reset above
         # already cleared any inherited code, so a refusal now means "no code",
@@ -2972,6 +3242,10 @@ class Grid:
             self.cw = int(w)
         elif not self.cw:
             self.cw = CW_DEFAULT
+        # The `:gf` default. Absent, the current default (from config) stays.
+        f = fmt_dict.get("fmt")
+        if isinstance(f, str) and len(f) == 1 and f in "LRIGD$%*":
+            self.fmt = f
 
         # Sheet population. v2 has a `sheets` array of {name, cells};
         # v1 has top-level `cells` (single sheet).
@@ -3115,6 +3389,8 @@ class Grid:
             out["models"] = {name: m.to_json() for name, m in self.models.items()}
 
         out["format"] = {"width": self.cw}
+        if self.fmt:
+            out["format"]["fmt"] = self.fmt
 
         # v2: per-sheet payload. Active sheet recorded by name so the
         # round-trip restores the user's view even when sheet order
@@ -3187,8 +3463,15 @@ class Grid:
         root = _xlsx_workbook_xml(filename)
         self.names = [
             NamedRange(name=nm, c1=c1, r1=r1, c2=c2, r2=r2, sheet=sh)
-            for (nm, sh, c1, r1, c2, r2) in _xlsx_read_defined_names(root)
+            for (nm, sh, c1, r1, c2, r2) in _xlsx_read_defined_names(root, sheet_order)
         ]
+        # `cw` is workbook-wide in gridcalc, so the first sheet's default sets it.
+        sheet_widths = _xlsx_read_widths(filename, root)
+        for sh in self.sheets:
+            sh.widths = sheet_widths.get(sh.name, (None, {}))[1]
+        default = sheet_widths.get(sheet_order[0], (None, {}))[0] if sheet_order else None
+        if default is not None and 4 <= round(default) <= 40:
+            self.cw = round(default)
         # 1462 days separate the 1904 and 1900 epochs. A value under 1 is a
         # time of day, which has no epoch.
         date_shift = 1462.0 if _xlsx_date1904(root) else 0.0
@@ -3198,7 +3481,7 @@ class Grid:
         from .formula.errors import parse_error_literal
 
         dropped = 0
-        for sname, c, r, kind, value, numfmt_code, numfmt_id in cells:
+        for sname, c, r, kind, value, numfmt_code, numfmt_id, style in cells:
             if not (0 <= c < NCOL and 0 <= r < NROW):
                 dropped += 1
                 continue
@@ -3222,8 +3505,12 @@ class Grid:
             else:
                 self._setcell_no_recalc(c, r, value)
             cl = self._cells.get((c, r))
-            if datefmt and cl is not None and cl.type in (NUM, FORMULA):
-                cl.fmtstr = datefmt
+            if cl is None:
+                continue
+            cl.bold, cl.italic, cl.underline = style & 1, (style >> 1) & 1, (style >> 2) & 1
+            if cl.type in (NUM, FORMULA):
+                cl.fmtstr = datefmt or _spec_for_xlsx_code(numfmt_code, numfmt_id)
+                cl.fmt = "L" if style & 8 else "R" if style & 16 else ""
         self.active = 0
         if dropped:
             self.load_warnings.append(
@@ -3294,12 +3581,12 @@ class Grid:
                 # the file that comes back out is a column of five-digit
                 # numbers, which is what "dates are neither read nor written"
                 # used to mean in practice.
-                datefmt = cl.fmtstr if cl.fmtstr and is_date_format(cl.fmtstr) else ""
+                numfmt, style = _xlsx_cell_style(cl, self.fmt)
                 if cl.type == LABEL:
                     text = cl.text[1:] if cl.text.startswith('"') else cl.text
-                    payload.append((s.name, c, r, "s", text))
+                    payload.append((s.name, c, r, "s", text, "", style))
                 elif cl.type == NUM:
-                    payload.append((s.name, c, r, "n", float(cl.val), datefmt))
+                    payload.append((s.name, c, r, "n", float(cl.val), numfmt, style))
                 elif cl.type == FORMULA or (cl.type == SPILL and not preserve_formulas):
                     # The cached result: a bool or a finite float. A text or
                     # error result is written with no cached value.
@@ -3312,17 +3599,23 @@ class Grid:
                         elif math.isfinite(val):
                             cached = float(val)
                     if preserve_formulas and cl.type == FORMULA and cl.text:
-                        payload.append((s.name, c, r, "f", cl.text, cached, datefmt))
+                        payload.append((s.name, c, r, "f", cl.text, cached, numfmt, style))
                     elif result is not None:
-                        payload.append((s.name, c, r, "s", result))
+                        payload.append((s.name, c, r, "s", result, "", style))
                     elif isinstance(cached, bool):
-                        payload.append((s.name, c, r, "b", cached))
+                        payload.append((s.name, c, r, "b", cached, "", style))
                     elif cached is not None:
-                        payload.append((s.name, c, r, "n", cached, datefmt))
-        return self._save_via(
-            filename,
-            lambda path: _xlsx_write_cells(path, payload, [s.name for s in self.sheets]),
-        )
+                        payload.append((s.name, c, r, "n", cached, numfmt, style))
+        sheet_names = [s.name for s in self.sheets]
+        names_xml = _xlsx_defined_names_xml(self.names, sheet_names)
+
+        widths = {sh.name: sh.widths for sh in self.sheets}
+
+        def write(path: str) -> None:
+            _xlsx_write_cells(path, payload, sheet_names)
+            _xlsx_postprocess(path, names_xml, self.cw, widths)
+
+        return self._save_via(filename, write)
 
     def csvsave(self, filename: str) -> int:
         """Export evaluated cell values to CSV."""

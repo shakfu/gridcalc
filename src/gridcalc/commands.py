@@ -178,28 +178,39 @@ def apply_format(g: Grid, undo: UndoManager, c1: int, r1: int, c2: int, r2: int,
     """
     if not spec:
         return False
-    undo.save_region(g, c1, r1, c2, r2)
-    style = all(ch in "bui" for ch in spec)
-    single = len(spec) == 1 and spec.upper() in "LRIGD$%*"
+    # A spill cell's style is its anchor's (see `Grid.style_owner`), so the
+    # anchors are the cells changed, and the undo snapshot must cover them.
+    # A dict keeps each owner once, so a toggle is not applied twice.
+    owners: dict[tuple[int, int], None] = {}
     for r in range(r1, r2 + 1):
         for c in range(c1, c2 + 1):
             cl = g.cell(c, r)
-            if not cl or cl.type == EMPTY:
-                continue
-            if style:
-                for ch in spec:
-                    if ch == "b":
-                        cl.bold = 1 - cl.bold
-                    elif ch == "u":
-                        cl.underline = 1 - cl.underline
-                    elif ch == "i":
-                        cl.italic = 1 - cl.italic
-            elif single:
-                cl.fmt = spec.upper()
-                cl.fmtstr = ""
-            else:
-                cl.fmtstr = spec[:31]
-                cl.fmt = ""
+            if cl and cl.type != EMPTY:
+                owners[g.style_owner(c, r)] = None
+    cols = [c for c, _ in owners] + [c1, c2]
+    rows = [r for _, r in owners] + [r1, r2]
+    undo.save_region(g, min(cols), min(rows), max(cols), max(rows))
+    style = all(ch in "bui" for ch in spec)
+    single = len(spec) == 1 and spec.upper() in "LRIGD$%*"
+    for c, r in owners:
+        cl = g.cell(c, r)
+        if cl is None:
+            continue
+        if style:
+            for ch in spec:
+                if ch == "b":
+                    cl.bold = 1 - cl.bold
+                elif ch == "u":
+                    cl.underline = 1 - cl.underline
+                elif ch == "i":
+                    cl.italic = 1 - cl.italic
+        elif single:
+            cl.fmt = spec.upper()
+            cl.fmtstr = ""
+        else:
+            cl.fmtstr = spec[:31]
+            cl.fmt = ""
+        g.sync_spill_style(c, r)
     return True
 
 

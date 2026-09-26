@@ -536,3 +536,18 @@ def test_json_keeps_a_label_that_looks_like_a_number_or_formula(tmp_path: Path) 
 def test_save_losses_counts_withheld_code() -> None:
     g = loader.load_workbook(HYBRID, LoadPolicy.formulas_only())
     assert "code" in loader.save_losses(g, "out.xlsx")
+
+
+def test_workbook_default_format_survives_json(tmp_path) -> None:
+    """`:gf` sets `Grid.fmt`; jsonsave wrote only the width, so it was lost."""
+    from gridcalc.display import fmtcell
+
+    g = Grid()
+    g.setcell(0, 0, "1234.5")
+    g.fmt = "$"
+    f = tmp_path / "gf.json"
+    assert g.jsonsave(str(f)) == 0
+    g2 = Grid()
+    assert g2.jsonload(str(f)) == 0
+    assert g2.fmt == "$"
+    assert fmtcell(g2.cell(0, 0), 12, g2.fmt) == fmtcell(g.cell(0, 0), 12, g.fmt)

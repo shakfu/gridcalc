@@ -12,7 +12,7 @@ Status: **not implemented**. This note records the design and the reasons it has
 
 These are separate goals. Isolation addresses both, but by different mechanisms and with different portability.
 
-A third gap needs no approval: PYTHON-mode formulas are `eval()`ed at load, and the formula validator can be bypassed for read-only disclosure. See "Known gaps" in `docs/security-plan.md`.
+PYTHON-mode formulas are `eval()`ed, and the formula validator can be bypassed for read-only disclosure. A file with such formulas now raises the trust prompt, so this needs approval too. See "Known gaps" in `docs/security-plan.md`.
 
 ## Unit of isolation
 

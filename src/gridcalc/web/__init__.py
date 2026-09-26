@@ -67,12 +67,15 @@ from __future__ import annotations
 import argparse
 import contextlib
 import functools
+import importlib.util
 import inspect
 import math
+import os
+import sys
 import threading
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from .. import __version__, goalseek, opt
 from .. import commands as shared
@@ -678,6 +681,7 @@ class Api:
             "has_code": info.has_code,
             "code": info.code_preview,
             "code_lines": info.code_lines,
+            "python_formulas": info.python_formulas,
             "requires": list(info.requires),
             "blocked": list(info.blocked_modules),
             "side_effect": list(info.side_effect_modules),
@@ -1290,9 +1294,27 @@ def _load_html(bundle: Path | None = None) -> str:
     return html
 
 
+def _gui_backend() -> Literal["qt"] | None:
+    """``"qt"`` on Linux when GTK's bindings are absent and Qt's are present.
+
+    pywebview tries GTK first there and logs the failed import as a traceback
+    before falling back. An explicit ``PYWEBVIEW_GUI`` is left to pywebview.
+    """
+    if not sys.platform.startswith("linux") or "PYWEBVIEW_GUI" in os.environ:
+        return None
+    if importlib.util.find_spec("gi") is None and importlib.util.find_spec("qtpy") is not None:
+        return "qt"
+    return None
+
+
 def run(path: str | None = None) -> None:
     """Open the editable grid in a desktop webview window."""
-    import webview  # lazy: only needed to open a window
+    try:
+        import webview  # lazy: only needed to open a window
+    except ModuleNotFoundError as exc:
+        if exc.name != "webview":
+            raise  # a broken dependency of pywebview; its own message is the useful one
+        raise SystemExit("gridcalc-web needs pywebview: pip install 'gridcalc[web]'") from None
 
     g = load_workbook(path) if path else demo_grid()
     api = Api(g)
@@ -1321,7 +1343,7 @@ def run(path: str | None = None) -> None:
     if window is None:
         raise OSError("could not create the webview window")
     api._window = window
-    webview.start()
+    webview.start(gui=_gui_backend())
 
 
 def cli_parser() -> argparse.ArgumentParser:

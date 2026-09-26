@@ -48,7 +48,7 @@ from typing import Any, TextIO, cast
 from . import goalseek, opt
 from .display import cell_text
 from .engine import EMPTY, NCOL, NROW, SPILL, Grid
-from .loader import load_workbook, save_workbook
+from .loader import load_workbook, needs_trust, save_workbook
 from .optspec import (
     GoalSpec,
     SweepSpec,
@@ -58,6 +58,7 @@ from .optspec import (
     resolve_model,
 )
 from .report import goal_json, num, solve_json, sweep_json
+from .sandbox import LoadPolicy, inspect_file
 
 # Exit codes. `OK`/`FAILED` are the two outcomes of an operation that ran;
 # `ERROR` means it never got that far.
@@ -143,6 +144,12 @@ def add_headless_arguments(p: argparse.ArgumentParser) -> None:
         "schema is the documented, stable one.",
     )
     g.add_argument(
+        "--trust",
+        action="store_true",
+        help="run the workbook's Python: its code block, required modules and "
+        "PYTHON-mode formulas (default: none of it runs)",
+    )
+    g.add_argument(
         "--sheet",
         metavar="NAME",
         help="operate on this sheet instead of the workbook's active one",
@@ -157,11 +164,17 @@ def is_headless(args: argparse.Namespace) -> bool:
 # --- operations -------------------------------------------------------------
 
 
-def _load(path: str | None) -> Grid:
+def _load(path: str | None, trust: bool = False, err: TextIO | None = None) -> Grid:
     if not path:
         raise CliError("headless mode needs a workbook: gridcalc FILE --solve ...")
+    policy = None
+    if trust:
+        info = inspect_file(path)
+        policy = LoadPolicy.trust_all(info.requires if info else None)
+    elif needs_trust(path) is not None:
+        print(f"gridcalc: warning: {path} carries Python; pass --trust to run it", file=err)
     try:
-        return load_workbook(path)
+        return load_workbook(path, policy)
     except Exception as exc:  # noqa: BLE001 -- e.g. RecursionError from a pathological file
         raise CliError(str(exc) or f"could not load workbook: {path}") from exc
 
@@ -446,7 +459,7 @@ def run(args: argparse.Namespace, out: TextIO | None = None, err: TextIO | None 
     result: dict[str, Any] = {}
     failed = False
     try:
-        g = _load(args.file)
+        g = _load(args.file, getattr(args, "trust", False), err)
         for warning in g.load_warnings:
             print(f"gridcalc: warning: {warning}", file=err)
         _select_sheet(g, getattr(args, "sheet", None))

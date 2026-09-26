@@ -33,6 +33,8 @@ JSON, version 2. Version 1 files (single sheet, top-level `cells`) still load.
 
 - **code**: the per-workbook Python module string, editable with `:e`.
 
+- **format**: `width`, the terminal column width in characters, and optional `fmt`, the workbook default number format set by `:gf` (one of `L R I G D $ % *`).
+
 A sheet entry may also carry **widths**, a `{"<column index>": pixels}` map recording columns resized in the [desktop app](../desktop.md). It is written only when a sheet has at least one resized column, and the curses renderer ignores it -- the terminal lays columns out from a single uniform width.
 
 `.xlsx` is a separate path, read and written through a C++ extension rather than being a second native format -- see [Import and export](../guide/import-export.md).

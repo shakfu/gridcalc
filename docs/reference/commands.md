@@ -16,7 +16,20 @@ Optimization  :opt   :opt def   :opt run   :opt sens   :opt sweep
               :opt list   :opt undef
               :goal <cell> = <target> by <cell> [in <lo>:<hi>]
 View          :view   E   :title <v|h|b|n>  (aliases :tv/:th/:tb/:tn)
+Help          :help [command]   Tab completes on the : line
 ```
+
+`:help` lists every command with a one-line summary. `:help f` shows one command's usage; for `:f` that includes every format letter and example specs such as `,.2f`.
+
+Tab on the `:` line completes the word under the cursor:
+
+- a command name;
+- `save`/`load` after `:csv`, `:xlsx` and `:pd`, then a file path;
+- a file path after `:w`, `:wq` and `:o`;
+- a subcommand or sheet name after `:sheet`, a subcommand or model name after `:opt`;
+- a format letter after `:f`, a named range after `:unname`, and the choices of `:gf`, `:mode`, `:sort` and `:title`.
+
+A unique match is filled in. Several matches fill in their common prefix; if that adds nothing, they are listed above the `:` line. Names containing spaces cannot be completed, because arguments are split on spaces.
 
 Most of these are defined once in a [frontend-neutral registry](https://github.com/shakfu/gridcalc/blob/main/src/gridcalc/commands.py) and dispatched by both frontends, so the terminal's `:` line and the desktop app's Ctrl-K palette run the same implementation. A conformance test fails if either frontend loses a shared command.
 
@@ -45,6 +58,8 @@ Details by area:
 `:w` picks the format from the extension: `.xlsx`, `.csv`, or JSON for anything else. It asks before:
 
 - a format that drops formulas, other sheets, names, models or the code block;
+
+- overwriting an xlsx that has features gridcalc cannot write back, such as merged cells, comments, charts, fills, borders or currency formats. The save rewrites the file, so they would be lost. `:xlsx save` asks the same question;
 
 - overwriting an existing file other than the one open.
 

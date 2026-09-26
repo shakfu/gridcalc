@@ -1541,6 +1541,16 @@ def test_inspect_reports_what_the_file_would_run() -> None:
     assert info["blocked"] == [] and info["unknown"] == []
 
 
+def test_inspect_flags_python_formulas(tmp_path) -> None:
+    """A PYTHON-mode file with no code still runs Python through its formulas."""
+    p = tmp_path / "py.json"
+    p.write_text('{"cells": [["=1+1"]]}')
+    info = Api(_grid()).inspect(str(p))
+    assert info["needs_trust"] is True
+    assert info["python_formulas"] is True
+    assert info["has_code"] is False
+
+
 def test_inspect_runs_nothing() -> None:
     """The metadata comes from parsing the file. Inspecting it must not load
     it, let alone execute the code it is asking about."""
@@ -2007,3 +2017,37 @@ def test_formulas_only_open_then_save_keeps_the_code_block(tmp_path) -> None:
     out = tmp_path / "saved.json"
     assert api.save(str(out))["ok"] is True
     assert json.loads(out.read_text())["code"] == json.loads(HYBRID.read_text())["code"]
+
+
+def test_run_without_pywebview_explains_the_install(monkeypatch) -> None:
+    """A missing optional dependency is a usage problem, not a traceback."""
+    import gridcalc.web as web
+
+    monkeypatch.setitem(sys.modules, "webview", None)  # import now fails
+    with pytest.raises(SystemExit, match=r"gridcalc\[web\]"):
+        web.run(None)
+
+
+@pytest.mark.parametrize(
+    "platform, env, found, expected",
+    [
+        ("linux", {}, {"qtpy"}, "qt"),  # no GTK bindings: ask for Qt directly
+        ("linux", {}, {"gi", "qtpy"}, None),  # GTK present: pywebview's default
+        ("linux", {}, set(), None),  # neither: let pywebview report it
+        ("linux", {"PYWEBVIEW_GUI": "gtk"}, {"qtpy"}, None),  # the user chose
+        ("darwin", {}, {"qtpy"}, None),
+    ],
+)
+def test_gui_backend_skips_a_missing_gtk(monkeypatch, platform, env, found, expected) -> None:
+    import importlib.util
+
+    import gridcalc.web as web
+
+    monkeypatch.setattr(web.sys, "platform", platform)
+    monkeypatch.delenv("PYWEBVIEW_GUI", raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name, *a: object() if name in found else None
+    )
+    assert web._gui_backend() == expected

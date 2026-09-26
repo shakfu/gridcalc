@@ -62,9 +62,39 @@ std::pair<std::string, uint32_t> cell_number_format(XLDocument& doc, XLCell& cel
     }
 }
 
+// Style bits for a cell: 1 bold, 2 italic, 4 underline, 8 left-aligned,
+// 16 right-aligned. A malformed style table degrades to 0, as in
+// cell_number_format.
+int cell_style_bits(XLDocument& doc, XLCell& cell) {
+    try {
+        XLStyleIndex styleIndex = cell.cellFormat();
+        auto formats = doc.styles().cellFormats();
+        if (styleIndex >= formats.count()) return 0;
+        int flags = 0;
+        try {
+            XLAlignmentStyle h = formats[styleIndex].alignment().horizontal();
+            if (h == XLAlignLeft) flags |= 8;
+            if (h == XLAlignRight) flags |= 16;
+        } catch (...) {
+            // No alignment node: the default alignment.
+        }
+        XLStyleIndex fontIndex = formats[styleIndex].fontIndex();
+        auto fonts = doc.styles().fonts();
+        if (fontIndex >= fonts.count()) return flags;
+        XLFont font = fonts[fontIndex];
+        if (font.bold()) flags |= 1;
+        if (font.italic()) flags |= 2;
+        XLUnderlineStyle u = font.underline();
+        if (u != XLUnderlineNone && u != XLUnderlineInvalid) flags |= 4;
+        return flags;
+    } catch (...) {
+        return 0;
+    }
+}
+
 nb::tuple xlsx_read(const std::string& path) {
     // Returns (worksheet_names, cells, fallbacks). cells is
-    // list[(sheet, col, row, kind, value, numfmt_code, numfmt_id)] in workbook
+    // list[(sheet, col, row, kind, value, numfmt_code, numfmt_id, style)] in workbook
     // order; kind is "f" (value = formula text) or a cell_value kind.
     // fallbacks counts shared and array formulas read as their cached value,
     // which OpenXLSX cannot return as text.
@@ -102,7 +132,8 @@ nb::tuple xlsx_read(const std::string& path) {
                                           nb::str(kv.first.c_str()),
                                           kv.second,
                                           nb::str(fmt.first.c_str()),
-                                          static_cast<int>(fmt.second)));
+                                          static_cast<int>(fmt.second),
+                                          cell_style_bits(doc, cell)));
             }
         }
     }
@@ -161,6 +192,8 @@ void xlsx_write(const std::string& path, nb::list cells, nb::list sheet_names) {
     // identical styles -- valid, but the file balloons and Excel's style
     // dialog fills with duplicates.
     std::unordered_map<std::string, XLStyleIndex> format_cache;
+    // One font per distinct style-bit set, copied from the default font.
+    std::unordered_map<int, XLStyleIndex> font_cache;
     // Custom number formats must use ids at or above 164; 0-163 are reserved
     // for the built-ins, and reusing one silently redefines it.
     uint32_t next_fmt_id = 164;
@@ -172,17 +205,41 @@ void xlsx_write(const std::string& path, nb::list cells, nb::list sheet_names) {
     // cell silently wearing another cell's format.
     XLStyles& styles = doc.styles();
 
-    auto style_for_format = [&](const std::string& code) -> XLStyleIndex {
-        auto it = format_cache.find(code);
+    auto font_for_flags = [&](int flags) -> XLStyleIndex {
+        auto it = font_cache.find(flags);
+        if (it != font_cache.end()) return it->second;
+        XLStyleIndex fontIndex = styles.fonts().create(styles.fonts()[0]);
+        styles.fonts()[fontIndex].setBold((flags & 1) != 0);
+        styles.fonts()[fontIndex].setItalic((flags & 2) != 0);
+        styles.fonts()[fontIndex].setUnderline((flags & 4) ? XLUnderlineSingle : XLUnderlineNone);
+        font_cache[flags] = fontIndex;
+        return fontIndex;
+    };
+
+    // One cell format per distinct (number-format code, style bits) pair.
+    auto style_for = [&](const std::string& code, int flags) -> XLStyleIndex {
+        std::string key = code + '\x01' + std::to_string(flags);
+        auto it = format_cache.find(key);
         if (it != format_cache.end()) return it->second;
-        XLStyleIndex numberFormatIndex = styles.numberFormats().create();
-        uint32_t fmtId = next_fmt_id++;
-        styles.numberFormats()[numberFormatIndex].setNumberFormatId(fmtId);
-        styles.numberFormats()[numberFormatIndex].setFormatCode(code);
+        uint32_t fmtId = 0;
+        if (!code.empty()) {
+            XLStyleIndex numberFormatIndex = styles.numberFormats().create();
+            fmtId = next_fmt_id++;
+            styles.numberFormats()[numberFormatIndex].setNumberFormatId(fmtId);
+            styles.numberFormats()[numberFormatIndex].setFormatCode(code);
+        }
         XLStyleIndex cellFormatIndex = styles.cellFormats().create();
         styles.cellFormats()[cellFormatIndex].setNumberFormatId(fmtId);
-        styles.cellFormats()[cellFormatIndex].setApplyNumberFormat(true);
-        format_cache[code] = cellFormatIndex;
+        styles.cellFormats()[cellFormatIndex].setApplyNumberFormat(!code.empty());
+        int font_bits = flags & 7;
+        styles.cellFormats()[cellFormatIndex].setFontIndex(font_bits ? font_for_flags(font_bits) : 0);
+        styles.cellFormats()[cellFormatIndex].setApplyFont(font_bits != 0);
+        if (flags & 24) {
+            styles.cellFormats()[cellFormatIndex].alignment(XLCreateIfMissing).setHorizontal(
+                (flags & 8) ? XLAlignLeft : XLAlignRight);
+            styles.cellFormats()[cellFormatIndex].setApplyAlignment(true);
+        }
+        format_cache[key] = cellFormatIndex;
         return cellFormatIndex;
     };
 
@@ -225,18 +282,23 @@ void xlsx_write(const std::string& path, nb::list cells, nb::list sheet_names) {
             // no cached value rather than a wrong one.
             if (!cached) cell.value().clear();
         }
-        // Trailing number-format code, when the caller supplied one. It is
-        // last so the existing 5- and 6-element payloads stay valid.
+        // Trailing number-format code and style bits, when the caller
+        // supplied them. They are last so shorter payloads stay valid.
         size_t fmt_slot = (kind == "f") ? 6 : 5;
+        std::string code;
+        int flags = 0;
         if (t.size() > fmt_slot && !t[fmt_slot].is_none()) {
-            std::string code = nb::cast<std::string>(t[fmt_slot]);
-            if (!code.empty()) {
-                try {
-                    cell.setCellFormat(style_for_format(code));
-                } catch (...) {
-                    // A style table that will not take the format is not a
-                    // reason to lose the value that was already written.
-                }
+            code = nb::cast<std::string>(t[fmt_slot]);
+        }
+        if (t.size() > fmt_slot + 1 && !t[fmt_slot + 1].is_none()) {
+            flags = nb::cast<int>(t[fmt_slot + 1]) & 31;
+        }
+        if (!code.empty() || flags) {
+            try {
+                cell.setCellFormat(style_for(code, flags));
+            } catch (...) {
+                // A style table that will not take the format is not a
+                // reason to lose the value that was already written.
             }
         }
     }
@@ -251,8 +313,8 @@ void xlsx_write(const std::string& path, nb::list cells, nb::list sheet_names) {
 NB_MODULE(_core, m) {
     m.doc() = "gridcalc native extensions";
     m.def("xlsx_read", &xlsx_read, nb::arg("path"),
-          "Read an .xlsx file. Returns (worksheet_names, cells, fallbacks). cells is list[(sheet, col, row, kind, value, numfmt_code, numfmt_id)] (zero-indexed); kind is 'f' (formula text), 'n' (float), 's' (str), 'b' (bool) or 'e' (error text). numfmt_code is the cell's number-format string ('' for a built-in or unstyled cell) and numfmt_id its numFmtId (0 when unstyled). fallbacks counts shared or array formulas returned as their cached value.");
+          "Read an .xlsx file. Returns (worksheet_names, cells, fallbacks). cells is list[(sheet, col, row, kind, value, numfmt_code, numfmt_id, style)] (zero-indexed); style has bits 1 bold, 2 italic, 4 underline, 8 left-aligned, 16 right-aligned; kind is 'f' (formula text), 'n' (float), 's' (str), 'b' (bool) or 'e' (error text). numfmt_code is the cell's number-format string ('' for a built-in or unstyled cell) and numfmt_id its numFmtId (0 when unstyled). fallbacks counts shared or array formulas returned as their cached value.");
     m.def("xlsx_write", &xlsx_write, nb::arg("path"), nb::arg("cells"),
           nb::arg("sheet_names") = nb::list(),
-          "Write cells to an .xlsx file. Each cell is (sheet, col, row, kind, value[, cached][, numfmt]); kind in {'s','n','b','f'} where 'f' uses value as formula text and an optional cached float or bool (None writes no cached value). A trailing numfmt string applies that number format to the cell (slot 5, or 6 for 'f'). sheet_names lists every sheet in workbook order, so empty sheets are written too.");
+          "Write cells to an .xlsx file. Each cell is (sheet, col, row, kind, value[, cached][, numfmt][, style]); kind in {'s','n','b','f'} where 'f' uses value as formula text and an optional cached float or bool (None writes no cached value). A trailing numfmt string applies that number format to the cell (slot 5, or 6 for 'f'); style follows it, with bits 1 bold, 2 italic, 4 underline, 8 left-aligned, 16 right-aligned. sheet_names lists every sheet in workbook order, so empty sheets are written too.");
 }

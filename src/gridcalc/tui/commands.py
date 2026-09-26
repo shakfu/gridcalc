@@ -15,6 +15,7 @@ import shlex
 import subprocess
 import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from .. import commands as shared
@@ -254,6 +255,19 @@ def _confirm(stdscr: curses.window, question: str) -> bool:
     return stdscr.getch() in (ord("y"), ord("Y"))
 
 
+def _drops_question(fn: str, lost: list[str]) -> str:
+    """ "<file> drops a, b and N more. Save?", fitted to the status line."""
+    head, tail = f"{os.path.basename(fn)} drops ", ". Save?"
+    room = curses.COLS - 1 - len(" (y/N)") - len(head) - len(tail)
+    shown: list[str] = []
+    for i, item in enumerate(lost):
+        more = f" and {len(lost) - i} more"
+        if shown and len(", ".join([*shown, item])) + len(more) > room:
+            return head + ", ".join(shown) + more + tail
+        shown.append(item)
+    return head + ", ".join(shown) + tail
+
+
 def cmd_quit(stdscr: curses.window, g: Grid) -> bool:
     return not g.dirty or _confirm(stdscr, "Unsaved changes. Quit anyway?")
 
@@ -284,7 +298,7 @@ def _do_save(stdscr: curses.window, g: Grid, args: str) -> bool:
     ):
         return False
     lost = save_losses(g, fn)
-    if lost and not _confirm(stdscr, f"{os.path.basename(fn)} drops {', '.join(lost)}. Save?"):
+    if lost and not _confirm(stdscr, _drops_question(fn, lost)):
         return False
     try:
         save_workbook(g, fn)
@@ -408,6 +422,11 @@ def trust_prompt(stdscr: curses.window, filename: str, info: FileInfo) -> LoadPo
             stdscr.addnstr(y, 0, f"  Code:     {info.code_lines} lines", curses.COLS - 1)
             y += 1
 
+        if info.python_formulas:
+            msg = "  Formulas run as Python (PYTHON mode); [f] leaves them unevaluated"
+            stdscr.addnstr(y, 0, msg, curses.COLS - 1)
+            y += 1
+
         y += 1
         prompt = "[a]pprove  [f]ormulas only"
         if info.unknown_modules:
@@ -456,7 +475,7 @@ def cmd_open(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bo
         return False
 
     policy = None
-    if info.has_code or info.requires:
+    if info.trust_needed:
         if SANDBOX_ENABLED:
             policy = trust_prompt(stdscr, fn, info)
             if policy is None:
@@ -914,6 +933,11 @@ def _io_command(
             fn = prompt_filename(stdscr, f"{label} save as: ", dflt)
             if not fn:
                 return False
+        # The same question `:w` asks; xlsx only, since `:csv save` and
+        # `:pd save` are exports that drop by design.
+        lost = save_losses(g, fn) if save_ext == ".xlsx" else []
+        if lost and not _confirm(stdscr, _drops_question(fn, lost)):
+            return False
         if save_fn(fn) == 0:
             show_error(stdscr, f"Exported to {fn}")
         else:
@@ -1112,6 +1136,187 @@ def _run_shared(
     return False
 
 
+# Selection passed through to commands that act on it; most ignore it.
+_Sel = tuple[int, int, int, int] | None
+
+
+@dataclass(frozen=True)
+class ViewCommand:
+    """A command whose body is terminal interaction, so it is not in the
+    shared registry. Dispatch, `:help` and Tab completion all read this table.
+    """
+
+    name: str
+    group: str
+    summary: str
+    usage: str
+    run: Callable[[curses.window, Grid, UndoManager, str, _Sel], bool]
+    aliases: tuple[str, ...] = ()
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return (self.name, *self.aliases)
+
+
+def _run_move(stdscr: curses.window, g: Grid, undo: UndoManager) -> bool:
+    movecmd(stdscr, g, undo)
+    return False
+
+
+def _run_replicate(stdscr: curses.window, g: Grid, undo: UndoManager) -> bool:
+    replcmd(stdscr, g, undo)
+    return False
+
+
+VIEW_COMMANDS: tuple[ViewCommand, ...] = (
+    ViewCommand(
+        "w",
+        "File",
+        "Save; the extension picks the format",
+        ":w [file]",
+        lambda s, g, u, a, sel: cmd_save(s, g, a),
+        aliases=("save",),
+    ),
+    ViewCommand(
+        "wq", "File", "Save and quit", ":wq [file]", lambda s, g, u, a, sel: cmd_savequit(s, g, a)
+    ),
+    ViewCommand(
+        "q",
+        "File",
+        "Quit; asks about unsaved changes",
+        ":q",
+        lambda s, g, u, a, sel: cmd_quit(s, g),
+        aliases=("quit",),
+    ),
+    ViewCommand("q!", "File", "Quit without saving", ":q!", lambda s, g, u, a, sel: True),
+    ViewCommand(
+        "o",
+        "File",
+        "Open a workbook",
+        ":o file",
+        lambda s, g, u, a, sel: cmd_open(s, g, u, a),
+        aliases=("open",),
+    ),
+    ViewCommand(
+        "e",
+        "File",
+        "Edit the code block in $EDITOR",
+        ":e",
+        lambda s, g, u, a, sel: cmd_edit(s, g),
+        aliases=("edit",),
+    ),
+    ViewCommand(
+        "clear",
+        "Edit",
+        "Clear the active sheet",
+        ":clear",
+        lambda s, g, u, a, sel: cmd_clear(s, g, u),
+    ),
+    ViewCommand(
+        "m",
+        "Edit",
+        "Move a range",
+        ":m",
+        lambda s, g, u, a, sel: _run_move(s, g, u),
+        aliases=("move",),
+    ),
+    ViewCommand(
+        "r",
+        "Edit",
+        "Replicate a range",
+        ":r",
+        lambda s, g, u, a, sel: _run_replicate(s, g, u),
+        aliases=("replicate",),
+    ),
+    ViewCommand(
+        "width",
+        "Format",
+        "Column width in the terminal, 4 to 40",
+        ":width <n>",
+        lambda s, g, u, a, sel: cmd_width(s, g, a),
+    ),
+    ViewCommand(
+        "sheet",
+        "Sheets",
+        "Switch to, add, delete, rename or move a sheet",
+        ":sheet [name|N|list|add NAME|del NAME|rename OLD NEW|move NAME N]",
+        lambda s, g, u, a, sel: cmd_sheet(s, g, u, a),
+        aliases=("s",),
+    ),
+    ViewCommand(
+        "sheets",
+        "Sheets",
+        "Pick a sheet from a list",
+        ":sheets",
+        lambda s, g, u, a, sel: cmd_sheets(s, g),
+    ),
+    ViewCommand(
+        "csv",
+        "Import/export",
+        "CSV import or export of the active sheet",
+        ":csv save|load [file]",
+        lambda s, g, u, a, sel: cmd_csv(s, g, u, a),
+    ),
+    ViewCommand(
+        "xlsx",
+        "Import/export",
+        "xlsx import or export of the workbook",
+        ":xlsx save|load [file]",
+        lambda s, g, u, a, sel: cmd_xlsx(s, g, u, a),
+    ),
+    ViewCommand(
+        "pd",
+        "Import/export",
+        "pandas CSV, TSV or JSON import or export",
+        ":pd save|load [file]",
+        lambda s, g, u, a, sel: cmd_pd(s, g, u, a),
+    ),
+    ViewCommand(
+        "opt",
+        "Optimization",
+        "Define, run and analyse LP/MIP models",
+        ":opt [def|run|sens|sweep|list|undef] ...",
+        lambda s, g, u, a, sel: cmd_opt(s, g, u, a, sel=sel),
+    ),
+    ViewCommand(
+        "goal",
+        "Optimization",
+        "Goal seek",
+        ":goal <cell> = <target> by <cell> [in <lo>:<hi>]",
+        lambda s, g, u, a, sel: cmd_goal(s, g, u, a),
+    ),
+    ViewCommand(
+        "view",
+        "View",
+        "The sheet as a scrollable table",
+        ":view",
+        lambda s, g, u, a, sel: cmd_view(s, g),
+        aliases=("v",),
+    ),
+    ViewCommand(
+        "help",
+        "Help",
+        "List commands, or show one command's usage",
+        ":help [command]",
+        lambda s, g, u, a, sel: cmd_help(s, a),
+    ),
+)
+
+VIEW_BY_NAME: dict[str, ViewCommand] = {n: c for c in VIEW_COMMANDS for n in c.names}
+
+
+def cmd_help(stdscr: curses.window, args: str) -> bool:
+    from .completion import help_lines
+
+    topic = args.strip()
+    lines = help_lines(topic)
+    if lines is None:
+        show_error(stdscr, f"no such command: {topic} (press any key)")
+    else:
+        pager(stdscr, f"Help: :{topic}" if topic else "Commands", lines)
+    return False
+
+
 def cmdexec(
     stdscr: curses.window,
     g: Grid,
@@ -1137,46 +1342,16 @@ def cmdexec(
             return False  # the user cancelled at a prompt
         return _run_shared(stdscr, g, undo, cmd, resolved, sel)
 
-    if cmd in ("q", "quit"):
-        return cmd_quit(stdscr, g)
-    if cmd == "q!":
-        return True
-    if cmd in ("w", "save"):
-        return cmd_save(stdscr, g, args)
-    if cmd == "wq":
-        return cmd_savequit(stdscr, g, args)
-    if cmd in ("e", "edit"):
-        return cmd_edit(stdscr, g)
-    if cmd in ("o", "open"):
-        return cmd_open(stdscr, g, undo, args)
-    if cmd == "clear":
-        return cmd_clear(stdscr, g, undo)
-    if cmd == "width":
-        return cmd_width(stdscr, g, args)
-    if cmd in ("view", "v"):
-        return cmd_view(stdscr, g)
-    if cmd == "csv":
-        return cmd_csv(stdscr, g, undo, args)
-    if cmd == "xlsx":
-        return cmd_xlsx(stdscr, g, undo, args)
-    if cmd == "pd":
-        return cmd_pd(stdscr, g, undo, args)
-    if cmd == "opt":
-        return cmd_opt(stdscr, g, undo, args, sel=sel)
-    if cmd == "goal":
-        return cmd_goal(stdscr, g, undo, args)
-    if cmd in ("m", "move"):
-        movecmd(stdscr, g, undo)
-        return False
-    if cmd in ("r", "replicate"):
-        replcmd(stdscr, g, undo)
-        return False
-    if cmd in ("sheet", "s"):
-        return cmd_sheet(stdscr, g, undo, args)
-    if cmd == "sheets":
-        return cmd_sheets(stdscr, g)
+    view_cmd = VIEW_BY_NAME.get(cmd)
+    if view_cmd is not None:
+        return view_cmd.run(stdscr, g, undo, args, sel)
 
-    stdscr.addnstr(curses.LINES - 1, 0, f"Unknown command: {cmd} (press any key)", curses.COLS - 1)
+    stdscr.addnstr(
+        curses.LINES - 1,
+        0,
+        f"Unknown command: {cmd}; :help lists commands (press any key)",
+        curses.COLS - 1,
+    )
     stdscr.clrtoeol()
     stdscr.refresh()
     stdscr.getch()

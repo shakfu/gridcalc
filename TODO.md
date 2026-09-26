@@ -22,11 +22,7 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ### Security
 
-- [ ] **A PYTHON-mode formula can read process state without approval.** `validate_formula` inspects only `ast.Attribute` and `ast.Name` nodes. Attribute and item access written inside a string literal and performed by `str.format`, `%`, an f-string format spec or `format_map` is not seen. A formula can read module globals and `os.environ` this way. The file needs no code block, so no trust prompt appears. No call primitive has been shown. Options: reject `format`/`format_map` calls and dunder text in string constants, or treat every PYTHON-mode formula as code needing approval (see the next item).
-
-- [ ] **A missing or unknown `mode` loads as PYTHON.** `{"cells":[["=(lambda:7)()"]]}` evaluates with `eval()` and no prompt; so does `"mode": "excel2"`. `LoadPolicy.formulas_only()` withholds only the code block, not PYTHON-mode formula evaluation. Default to EXCEL, or refuse an unrecognised mode. v1 files predate modes, so this needs a migration decision.
-
-- [ ] **A `gridcalc.toml` in the working directory can disable the sandbox.** `find_config` reads the CWD before the user config, and `sandbox = false` there turns off validation and the trust prompt. A workbook shipped beside such a file runs its code block on open. Honour `sandbox` only from `$XDG_CONFIG_HOME/gridcalc/` or `GRIDCALC_SANDBOX`.
+- [ ] **The formula validator misses string-borne attribute access.** `validate_formula` inspects only `ast.Attribute` and `ast.Name` nodes, so `"{0.__globals__[os].environ[HOME]}".format(SUM)` reads the environment. `str.format` and `format_map` traverse; `%` and f-string format specs do not. Since 0.7.0 a PYTHON-mode file with formulas raises the trust prompt, including one with a missing or unknown `mode`, so this needs the user's approval. That prompt also appears for plain-arithmetic files; `docs/dev/python-allowlist.md` proposes prompting only for formulas outside an allowlist.
 
 - [ ] **Curated module facade.** Approved workbook code is handed whole module objects, so `np.savetxt('/anywhere', ...)` writes any path with the sandbox on. Expose a facade (`np.array`, `np.mean`, `np.linalg.solve`) rather than the module. Portable, needs no IPC, and removes the severe outcome -- arbitrary file read and write -- at a fraction of the cost of isolation. Ongoing cost is curation: each newly approved module needs a facade, and an omission is silent.
 
@@ -74,15 +70,13 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 - [ ] **Editing an imported label re-parses it.** xlsx text such as `00123` or `=SUM(1,2)` imports as a label and saves with `"label": true`. Committing an edit to it in either frontend turns it back into a number or a formula. Neither frontend has label-entry syntax that maps to the `label` key.
 
-- [ ] **Non-date number formats in xlsx I/O.** Dates are done (see CHANGELOG): `_core.xlsx_read` reports each cell's number format, `Cell.fmtstr` carries it, both frontends render it, and `xlsxsave` writes it back. What is still dropped on import is every *other* number format -- currency, percent, thousands -- which arrives as a bare number, and cell styles (fonts, fills, borders) which are neither read nor written. The reading half is nearly free now that the format code crosses the boundary; the open question is how much of Excel's format language to implement against gridcalc's own `LRIGD$%*` / Python-spec vocabulary.
+- [ ] **xlsx styles gridcalc has no model for.** Number formats in the `[,][.N][f|e|%]` grammar, bold, italic, underline and left/right alignment cross both ways (see CHANGELOG). Font sizes, colours and faces, fills, borders, other alignments, merged cells, and number formats outside that grammar (currency symbols, colours, sections) are neither read nor written. Saving over a file that has them asks first. Adding any of them needs a place in `Cell` and in the JSON format.
 
 ### Security
 
-- [ ] **Terminal escapes in the startup trust prompt.** `startup_trust_prompt` prints the code preview raw. A comment holding `\x1b[2K\r` erases the preceding statement on screen, and the line still runs on approval. Strip control characters before printing.
-
 - [ ] **`classify_module` classifies a submodule by its top-level package.** `numpy.ctypeslib` classifies as safe and loads under a plain approve, which exposes `ctypes`. Classify by full dotted name.
 
-- [ ] **No limit on formula size or run time.** `=SUM(SEQUENCE(100000000))` (EXCEL) and `=sum(range(10**12))` (PYTHON) hang the load with no approval needed. Cap formula length and nesting depth, and bound evaluation.
+- [ ] **No limit on formula size or run time.** `=SUM(SEQUENCE(100000000))` (EXCEL) hangs the load with no approval needed. `=sum(range(10**12))` (PYTHON) does too once the file is approved. Cap formula length and nesting depth, and bound evaluation.
 
 ### Documentation & infrastructure
 
@@ -176,4 +170,4 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 - [ ] **Pin GitHub Actions to commit SHAs.** `checkout@v7`, `cibuildwheel`, `setup-bun@v2`, `codecov@v5` and `pypi-publish@release/v1` are movable tags, used in jobs with `id-token: write`.
 
-- [ ] **`make build` removes optional dependencies from `.venv`.** It runs `uv sync --reinstall-package gridcalc`, which uninstalls the `web` extra and the `docs` group. `make web-drive` then lacks pywebview. `uv sync --extra web --group docs` restores them. The Makefile `.PHONY` list and `help` also omit `test-tty`, `test-web`, `test-stdlib`, the `web-*` targets and `bench`.
+- [ ] **The Makefile `.PHONY` list and `help` omit targets.** Missing: `test-tty`, `test-web`, `test-stdlib`, the `web-*` targets and `bench`.

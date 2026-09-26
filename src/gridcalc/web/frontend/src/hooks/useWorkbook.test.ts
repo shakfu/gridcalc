@@ -11,6 +11,7 @@ const trustInfo = (path: string): TrustInfo => ({
   has_code: true,
   code: 'def f():\n    return 1\n',
   code_lines: 2,
+  python_formulas: false,
   requires: [],
   blocked: [],
   side_effect: [],

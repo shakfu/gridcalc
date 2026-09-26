@@ -223,6 +223,14 @@ def tui_session(request: pytest.FixtureRequest) -> Iterator[TuiSession]:
     proc, master = _spawn(args)
     session = TuiSession(proc=proc, master_fd=master, _buffer=bytearray())
     try:
+        # The fixtures are trusted examples; approve the startup prompt.
+        if marker is not None:
+            from gridcalc.sandbox import inspect_file
+
+            info = inspect_file(str(REPO_ROOT / marker.args[0]))
+            if info is not None and info.trust_needed:
+                session.wait_for("[q]uit: ", timeout=5.0)
+                session.send("l\n")
         yield session
     finally:
         _shutdown(proc, master)

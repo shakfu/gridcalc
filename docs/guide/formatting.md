@@ -20,3 +20,5 @@
 `:gf <fmt>` sets the workbook-wide default format. `:width <n>` sets the column width (4 to 40) in the terminal; in the [desktop app](../desktop.md) columns are resized by dragging their edge and the width is measured in pixels.
 
 Labels longer than the column width spill into adjacent empty cells, Excel-style.
+
+A range spilled by a dynamic-array formula is formatted as one block. Formatting any of its cells formats the anchor, the cell holding the formula, and every spilled cell follows it. Unlike Excel, the spilled cells cannot be formatted differently from each other.

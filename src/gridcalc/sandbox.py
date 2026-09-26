@@ -373,6 +373,13 @@ class FileInfo:
     blocked_modules: list[str] = field(default_factory=list)
     side_effect_modules: list[str] = field(default_factory=list)
     unknown_modules: list[str] = field(default_factory=list)
+    # PYTHON mode (declared, missing or unparseable) with at least one formula.
+    python_formulas: bool = False
+
+    @property
+    def trust_needed(self) -> bool:
+        """Whether loading the file runs Python: code, modules, or PYTHON-mode formulas."""
+        return self.has_code or bool(self.requires) or self.python_formulas
 
 
 @dataclass
@@ -393,7 +400,10 @@ class LoadPolicy:
 
     @staticmethod
     def formulas_only() -> LoadPolicy:
-        """Load cell data and formulas only, skip code and modules."""
+        """Load cell data and formulas only, skip code and modules.
+
+        PYTHON-mode formulas are Python, so they are loaded but not evaluated.
+        """
         return LoadPolicy(load_code=False, approved_modules=[])
 
 
@@ -453,6 +463,12 @@ def inspect_file(filename: str) -> FileInfo | None:
                 _count_cells(entry.get("cells", []), info)
     else:
         _count_cells(d.get("cells", []), info)
+
+    from .engine import Mode  # lazy: engine imports this module
+
+    # The same rule `jsonload` applies, so the two cannot disagree.
+    mode = Mode.parse(d["mode"]) if "mode" in d else None
+    info.python_formulas = (mode or Mode.PYTHON) == Mode.PYTHON and info.formula_count > 0
 
     return info
 

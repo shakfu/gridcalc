@@ -27,6 +27,7 @@ The spec strings are the ones the terminal uses. `--solve 'max B4 vars A4:A5 st 
 | `--convert PATH` | Write the workbook out. The format follows the extension — `.xlsx`, `.csv`, otherwise JSON. |
 | `--apply` | Let `--solve` and `--goal` write their result into the grid. |
 | `--sheet NAME` | Operate on a named sheet instead of the workbook's active one. |
+| `--trust` | Run the workbook's Python: its code block, required modules and PYTHON-mode formulas. Without it none of these run, and stderr says so. |
 | `--format json\|text` | Output shape. Defaults to `json`. |
 
 Operations run in a fixed order — eval, solve, goal, sweep, convert — regardless of the order the flags appear in, so `--convert` always sees the state the others left and a command line means the same thing however it is written. One run can answer several questions; each lands under its own key.

@@ -2,6 +2,50 @@
 
 ## [Unreleased]
 
+## [0.7.0]
+
+### Security
+
+- **Opening a PYTHON-mode workbook asks first.** Its formulas are `eval()`ed, so a file with only formulas ran Python with no prompt. A missing or unknown `mode` loads as PYTHON, so this covered most v1 files. The AST check does not bound this: `"{0.__globals__[os].environ[HOME]}".format(SUM)` passes it and reads the environment, and `sum(1 for _ in range(10**100))` hangs the load. Such files now raise the trust prompt. Declining loads the formulas unevaluated, showing `#N/A`, until the file is reopened and approved. Headless runs need the new `--trust` flag to evaluate them.
+
+- **`./gridcalc.toml` can no longer set `sandbox` or `editor`.** A config in the launch directory could disable the trust prompt, which ran a workbook's code block unasked, or name the command `:e` runs. Both keys are now ignored there with a warning. They still work in the user config.
+
+- **The startup trust prompt shows control characters as escapes.** The code preview went to the terminal raw. `ESC [8m` in a comment concealed every later line, so the user approved code they could not see.
+
+### Added
+
+- **Saving over an xlsx asks first when the file has features gridcalc cannot write.** The save rewrites the file from the workbook, so merged cells, comments, charts, images, fills, borders, font sizes and colours, frozen panes, row heights, other alignments and number formats such as currency were lost without notice. `:w`, `:wq` and `:xlsx save` now list them and ask. Detection reads the file's markup, so a style defined but unused also counts. Files gridcalc wrote never trigger it.
+
+- **`:help` and Tab completion on the `:` line.** `:help` lists every command; `:help f` shows one command's usage, and for `:f` the format specs such as `,.2f`. Tab completes command names, subcommands, sheet, model and range names, choices and file paths. Both read the shared registry and a new `VIEW_COMMANDS` table, which replaces the `if` chain in `cmdexec`, so a new command is dispatched, completed and listed from one entry.
+
+- **`examples/example_excel.xlsx`**, `example_excel.json` saved as xlsx.
+
+### Fixed
+
+- **Formatting a spilled range did not last.** `:f` on the cells a dynamic-array formula spills into styled those cells, but spill cells are rebuilt on every recalc of their anchor and saved as `null`. The format vanished on the next edit that recalculated the anchor, and on save and reload. A spill cell's style is now its anchor's: formatting any cell of a spill formats the anchor, and rebuilt spill cells copy it. This differs from Excel, where each spilled cell keeps its own format, because gridcalc stores formatting only on cells with content. Ctrl-B and Ctrl-U now go through the same path.
+
+- **The workbook default format (`:gf`) was not saved to JSON.** `jsonsave` wrote only the column width under `format`, so `:gf $` was lost on reload. It is now saved as `format.fmt`.
+
+- **xlsx export dropped named ranges.** Formulas using a name reloaded as `#NAME?`. OpenXLSX has no API for defined names, so they are inserted into `xl/workbook.xml` after the write. A sheet-less name is written as a sheet-local name on every sheet, because it resolves on the formula's own sheet; a single global name would bind it to one sheet.
+
+- **xlsx export dropped column widths.** The uniform width (`format.width`, in characters) is written as each sheet's `defaultColWidth`. The web view's per-column pixel widths are written as `<col>` widths, assuming a 7-pixel digit (Calibri 11 at 96 dpi), so they convert approximately. `:xlsx load` reads both back.
+
+- **xlsx export and import dropped bold, italic and underline.** They are now written as xlsx fonts and read back. Each distinct combination of number format and font bits shares one cell format, so 17 bold labels add one font and one cell format rather than 17.
+
+- **xlsx export and import dropped number formats and alignment.** Only date formats crossed. The rest now map both ways:
+
+  | gridcalc | xlsx |
+  |---|---|
+  | `$`, `%`, `I` | `0.00`, `0.00%`, `0` |
+  | `,.2f`, `.1%`, `.2e` (any `[,][.N][f\|e\|%]` spec) | `#,##0.00`, `0.0%`, `0.00E+00` |
+  | `L`, `R` | left, right alignment |
+
+  The workbook default format applies to cells without their own letter. Import turns each plain xlsx number format into a spec, so `$` comes back as `.2f`, which displays the same. `I` truncates and xlsx `0` rounds, so `2.7` shows `2` in gridcalc and `3` in Excel. `*` (bar chart) and number formats outside this grammar, such as currency symbols, do not cross.
+
+- **`gridcalc-web` printed tracebacks at startup.** Without pywebview it now exits with `gridcalc-web needs pywebview: pip install 'gridcalc[web]'`. On Linux with Qt but no GTK bindings, pywebview logged its failed GTK import before falling back to Qt; gridcalc now requests Qt directly in that case. `PYWEBVIEW_GUI` still overrides.
+
+- **`make build` uninstalled optional dependencies.** Its `uv sync` removed the `web` extra, the `docs` group and a hand-installed Qt backend, so `gridcalc-web` stopped working after a rebuild. `build`, `build-abi3` and `upgrade` now sync with `--inexact`. `make sync` stays exact, as the one target that resets the environment to the lockfile.
+
 ## [0.6.2]
 
 ### Changed

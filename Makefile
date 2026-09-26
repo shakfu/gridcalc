@@ -31,13 +31,15 @@ $(BUNDLE):
 		'<p>Placeholder, not the compiled client. Run <code>make web-build</code>.' \
 		> $(BUNDLE)
 
-# Sync environment (initial setup, installs dependencies + package)
+# Sync environment (initial setup, installs dependencies + package). Exact:
+# removes anything the lockfile does not list, including the `web` extra and
+# a hand-installed Qt backend. The targets below use `--inexact` to keep them.
 sync: $(BUNDLE)
 	@uv sync
 
 # Build/rebuild the extension after code changes
 build: $(BUNDLE)
-	@uv sync --reinstall-package gridcalc
+	@uv sync --inexact --reinstall-package gridcalc
 
 # Alias for build
 rebuild: build
@@ -189,7 +191,7 @@ wheel-abi3: web-build
 # Rebuild the in-place extension with STABLE_ABI on (for local
 # dev/testing of abi3 behaviour without producing a wheel).
 build-abi3:
-	@uv sync --reinstall-package gridcalc \
+	@uv sync --inexact --reinstall-package gridcalc \
 	    --config-setting=cmake.define.GRIDCALC_STABLE_ABI=ON \
 	    --config-setting=wheel.py-api=cp312
 
@@ -220,7 +222,7 @@ publish: check
 # Upgrade all dependencies
 upgrade:
 	@uv lock --upgrade
-	@uv sync
+	@uv sync --inexact
 
 # Run tests with coverage
 coverage:

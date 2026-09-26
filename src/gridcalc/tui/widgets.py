@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import curses
 from collections.abc import Callable
 
@@ -22,6 +23,7 @@ def _line_input(
     commit_keys: tuple[int, ...] = (10, 13, curses.KEY_ENTER),
     transform: Callable[[str], str] | None = None,
     maxlen: int | None = None,
+    complete: Callable[[str], tuple[str, list[str]]] | None = None,
 ) -> str | None:
     """Single-line text input drawn at row ``y`` as ``{prefix}{buf}_``.
 
@@ -40,6 +42,9 @@ def _line_input(
       hardcoded Esc / Enter / Backspace fallbacks.
     * ``commit_keys`` -- extra keycodes that commit (e.g. Tab in ``nav``).
     * ``maxlen`` -- cap the buffer length.
+    * ``complete(buf)`` -- Tab completion: returns the new buffer and the
+      candidates. When the buffer cannot grow and several candidates remain,
+      they are listed on row ``y - 1``.
     """
     buf = initial
     while True:
@@ -54,6 +59,19 @@ def _line_input(
             return buf if (buf or allow_empty) else None
         if action == "delete_back" or ch in (curses.KEY_BACKSPACE, 127, 8):
             buf = buf[:-1]
+        elif ch == 9 and complete is not None:
+            new, cands = complete(buf)
+            if new != buf and (maxlen is None or len(new) <= maxlen):
+                buf = new
+            elif len(cands) > 1 and y > 0:
+                listing = "  ".join(cands)
+                if len(listing) > curses.COLS - 1:
+                    listing = listing[: max(0, curses.COLS - 5)] + " ..."
+                stdscr.addnstr(y - 1, 0, listing, curses.COLS - 1)
+                stdscr.clrtoeol()
+            elif not cands:
+                with contextlib.suppress(curses.error):
+                    curses.beep()
         elif 32 <= ch < 127:
             cand = transform(chr(ch)) if transform else chr(ch)
             if (maxlen is None or len(buf) < maxlen) and accept(cand, buf):

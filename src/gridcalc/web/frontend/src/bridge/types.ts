@@ -74,6 +74,8 @@ export interface TrustInfo {
   has_code: boolean
   code: string
   code_lines: number
+  // PYTHON-mode formulas, which `eval()` runs; declining leaves them unevaluated.
+  python_formulas: boolean
   requires: string[]
   // Refused outright; never approved, and never offered by the dialog.
   blocked: string[]

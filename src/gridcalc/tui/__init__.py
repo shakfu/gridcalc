@@ -331,6 +331,7 @@ def visual_mode(stdscr: curses.window, g: Grid, undo: UndoManager, clipboard: Cl
                 # One entry for the region: per-cell entries overflow UNDO_MAX.
                 undo.save_region(g, c1, r1, c2, r2)
                 for key in doomed:
+                    g._spill_predirty(*key)
                     g._cells.pop(key, None)
                 g.dirty = 1
             g.recalc()
@@ -544,6 +545,7 @@ def mainloop(stdscr: curses.window, g: Grid) -> None:
             cl = g.cell(g.cc, g.cr)
             if cl and cl.type != EMPTY:
                 undo.save_cell(g, g.cc, g.cr)
+                g._spill_predirty(g.cc, g.cr)
                 g._cells.pop((g.cc, g.cr), None)
                 g.dirty = 1
             g.recalc()

@@ -33,6 +33,8 @@ Quote a name that is not a plain identifier -- one containing spaces or punctuat
 ='It''s'!B2
 ```
 
+A sheet name matches in any case, as in Excel: `=data!A1` reads the sheet `Data`. So two sheets cannot differ only by case. A reference to a sheet that does not exist gives `#REF!`.
+
 The dependency graph is keyed on `(sheet, col, row)`, so cross-sheet recalculation works transparently.
 
 Inserting, deleting or swapping rows and columns moves only the references that resolve against the edited sheet. A formula on another sheet that names this one follows the edit; one on this sheet that names another is left alone, because that sheet's lines did not move.

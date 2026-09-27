@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from .ast_nodes import (
     Apply,
+    ArrayLit,
     BinOp,
     Bool,
     Call,
     CellRef,
     ErrorLit,
+    Missing,
     Name,
     Node,
     Number,
@@ -34,6 +36,7 @@ from .lexer import (
     GT,
     HASH,
     IDENT,
+    LBRACE,
     LE,
     LPAREN,
     LT,
@@ -42,7 +45,9 @@ from .lexer import (
     NUMBER,
     PERCENT,
     PLUS,
+    RBRACE,
     RPAREN,
+    SEMI,
     SLASH,
     STAR,
     STRING,
@@ -173,6 +178,8 @@ class _Parser:
             return ErrorLit(t.value)
         if t.kind == CELLREF:
             return self._cellref_or_range()
+        if t.kind == LBRACE:
+            return self._array()
         if t.kind == LPAREN:
             self._advance()
             node = self._expr()
@@ -249,16 +256,44 @@ class _Parser:
             return Call(name.lower(), tuple(args))
         return Name(name)
 
+    def _array(self) -> Node:
+        """``{1,2;3,4}``: constants only, ``,`` between columns, ``;`` between rows."""
+        self._expect(LBRACE)
+        rows: list[tuple[object, ...]] = []
+        row: list[object] = [self._array_item()]
+        while self._peek().kind in (COMMA, SEMI):
+            if self._advance().kind == SEMI:
+                rows.append(tuple(row))
+                row = []
+            row.append(self._array_item())
+        rows.append(tuple(row))
+        self._expect(RBRACE)
+        if len({len(r) for r in rows}) != 1:
+            raise ParseError("array constant rows differ in length")
+        return ArrayLit(tuple(rows))
+
+    def _array_item(self) -> object:
+        t = self._advance()
+        if t.kind in (PLUS, MINUS) and self._peek().kind == NUMBER:
+            n = self._advance().value
+            return -n if t.kind == MINUS else n
+        if t.kind in (NUMBER, STRING, BOOL, ERROR_LIT):
+            return t.value
+        raise ParseError(f"array constants hold only constants, got {t.kind} at {t.pos}")
+
     def _call_args(self) -> list[Node]:
+        """Arguments of a call; an empty one (``IF(1,,2)``) is ``Missing``."""
         self._expect(LPAREN)
         args: list[Node] = []
         if self._peek().kind == RPAREN:
             self._advance()
             return args
-        args.append(self._expr())
-        while self._peek().kind == COMMA:
+        while True:
+            empty = self._peek().kind in (COMMA, RPAREN)
+            args.append(Missing() if empty else self._expr())
+            if self._peek().kind != COMMA:
+                break
             self._advance()
-            args.append(self._expr())
         self._expect(RPAREN)
         return args
 

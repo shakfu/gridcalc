@@ -11,6 +11,8 @@
 =SUM(A1:A10)                          range -> 1D array
 =SUM(A1:A3, B1:B3, 100)               several ranges, values or both
 =SUM(A1:A3 * B1:B3)                   element-wise array arithmetic
+={1,2;3,4}                            array constant: `,` columns, `;` rows
+=IF(A1 > 0, , 1)                      omitted argument -> blank
 =LET(x, SUM(A1:A9), x/COUNT(A1:A9))   local bindings -- compute once, reuse
 =FILTER(A1:A9, B1:B9 > 0)             dynamic arrays: FILTER/SORT/UNIQUE
 =SUM(revenue)                         named range
@@ -32,6 +34,12 @@ In `EXCEL` and `HYBRID`, values convert as they do in Excel:
 - Aggregates count a boolean or numeric text typed as an argument: `=SUM("3",TRUE)` is 4. They skip text and booleans read from cells.
 
 - Numbers convert to text with 15 significant digits: `=1/3&""` is `0.333333333333333`.
+
+- Numbers compare at 15 significant digits: `=0.1+0.2=0.3` is `TRUE`.
+
+- There is no infinity: an overflow such as `=1e308*10`, and `=0^0`, give `#NUM!`.
+
+- A blank cell inside a range is blank, not 0: `AVERAGE`, `MIN` and `COUNT` skip it. Arithmetic reads it as 0: `=SUM(A1:A3*2)`.
 
 - An error inside a range stays in its element. `=SUM(IFERROR(A1:A3,0))` and `VLOOKUP` over the range work; `=SUM(A1:A3)` returns the error. The `SUMIF` family returns it only from a matching row.
 

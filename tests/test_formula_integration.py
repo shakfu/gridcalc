@@ -796,6 +796,17 @@ class TestVolatileSubscribers:
         assert g.cells[3][0].val == 2 * g.cells[2][0].val
 
 
+class TestClockFunctionsAreVolatile:
+    @pytest.mark.parametrize("fn", ["NOW", "TODAY"])
+    def test_recomputes_on_an_unrelated_edit(self, fn):
+        g = _xg()
+        g.setcell(0, 0, f"={fn}()")
+        cl = g.cells[0][0]
+        cl.val = -1.0  # a stale value no clock returns
+        g.setcell(5, 5, "1")
+        assert cl.val > 0
+
+
 class TestErrorsInsideRangesAreElementwise:
     """An error cell stays in its slot; only functions that aggregate it fail."""
 
@@ -953,3 +964,154 @@ class TestSingleElementArrayDisplay:
         g.setcell(3, 0, formula)
         assert cell_text(g.cells[3][0]) == expected
         assert cell_clip_value(g.cells[3][0]) == expected
+
+
+class TestBlankCellsInRanges:
+    """A blank cell inside a range is blank, not 0. With A1=5, A2 blank, A3=7."""
+
+    @staticmethod
+    def _grid(formula):
+        g = _xg()
+        g.setcell(0, 0, "5")
+        g.setcell(0, 2, "7")
+        g.setcell(2, 0, formula)
+        return g.cells[2][0]
+
+    @pytest.mark.parametrize(
+        "formula,expected",
+        [
+            ("=AVERAGE(A1:A3)", 6.0),
+            ("=MIN(A1:A3)", 5.0),
+            ("=PRODUCT(A1:A3)", 35.0),
+            ("=STDEV(A1:A3)", math.sqrt(2)),
+            ("=COUNTBLANK(A1:A3)", 1.0),
+            ("=COUNT(A1:A3)", 2.0),
+            ("=COUNTA(A1:A3)", 2.0),
+            ('=COUNTIF(A1:A3,"")', 1.0),
+            ('=COUNTIF(A1:A3,"*")', 2.0),
+            ("=MEDIAN(A1:A3)", 6.0),
+            ("=AVERAGE(OFFSET(A1,0,0,3,1))", 6.0),
+            ("=SUM(A1:A3)", 12.0),
+            ("=SUM(A1:A3*2)", 24.0),
+            ("=SUM(ABS(A1:A3))", 12.0),
+            ("=SUM((A1:A3=0)*1)", 1.0),
+        ],
+    )
+    def test_value(self, formula, expected):
+        cl = self._grid(formula)
+        assert cl.err is None
+        assert cl.val == pytest.approx(expected)
+
+    def test_concatenation_reads_blank_as_empty_text(self):
+        assert cell_text(self._grid('=TEXTJOIN("-",FALSE,A1:A3)')) == "5--7"
+
+    def test_spilled_blank_shows_zero(self):
+        g = _xg()
+        g.setcell(0, 0, "5")
+        g.setcell(2, 0, "=A1:A2")
+        assert g.cells[2][1].val == 0.0
+
+
+class TestFormulasReadALabelsValue:
+    """The leading `"` marks a label; it is not part of the value."""
+
+    @pytest.mark.parametrize(
+        "formula,expected",
+        [('=A1&"x"', "00123x"), ('=A1="00123"', "TRUE"), ("=LEN(A1)", "5"), ("=A1#", "00123")],
+    )
+    def test_value(self, formula, expected):
+        g = _xg()
+        g.setcell(0, 0, '"00123')
+        g.setcell(1, 0, formula)
+        assert cell_text(g.cells[1][0]) == expected
+
+
+class TestNoInfinity:
+    @pytest.mark.parametrize(
+        "formula",
+        ["=1e308*10", "=-1e308*10", "=SUM(1e308,1e308)", "=1/(1e308*10)", "=0^0", "=POWER(0,0)"],
+    )
+    def test_num_error(self, formula):
+        g = _xg()
+        g.setcell(0, 0, formula)
+        assert g.cells[0][0].err == ExcelError.NUM
+
+    def test_spilled_overflow(self):
+        g = _xg()
+        g.setcell(0, 0, "=SEQUENCE(2)*1e308*10")
+        assert g.cells[0][1].err == ExcelError.NUM
+
+
+class TestComparisonAt15SignificantDigits:
+    @pytest.mark.parametrize(
+        "formula,expected",
+        [
+            ("=0.1+0.2=0.3", "TRUE"),
+            ("=1-0.9=0.1", "TRUE"),
+            ("=0.1+0.2<0.3", "FALSE"),
+            ("=1e-20=0", "FALSE"),  # relative, not absolute
+            ("=1+1e-14=1", "FALSE"),
+            ("=COUNTIF(B1:B2,0.3)", "1"),
+        ],
+    )
+    def test_compare(self, formula, expected):
+        g = _xg()
+        g.setcell(1, 0, "=0.1+0.2")
+        g.setcell(0, 0, formula)
+        assert cell_text(g.cells[0][0]) == expected
+
+
+class TestEmptyArgumentsAndArrayConstants:
+    @pytest.mark.parametrize(
+        "formula,expected",
+        [
+            ("=IF(1,,2)", "0"),
+            ("=SUM(1,)", "1"),
+            ('=CONCAT("a",,"b")', "ab"),
+            ("=SUM({1,2;3,4})", "10"),
+            ("=INDEX({1,2;3,4},2,1)", "3"),
+        ],
+    )
+    def test_value(self, formula, expected):
+        g = _xg()
+        g.setcell(0, 0, formula)
+        assert cell_text(g.cells[0][0]) == expected
+
+    def test_array_constant_spills(self):
+        g = _xg()
+        g.setcell(0, 0, "={1,2;3,4}")
+        assert [[g.cells[c][r].val for c in range(2)] for r in range(2)] == [[1, 2], [3, 4]]
+
+
+class TestCriteriaFunctionsTakeAOneCellRange:
+    """A one-cell range reaches the function as a scalar. B2=5, C2=7, B3=#DIV/0!, B4=#N/A."""
+
+    @pytest.mark.parametrize(
+        "formula,expected",
+        [
+            ("=COUNTIF(B2,5)", "1"),
+            ("=COUNTIF(B2,6)", "0"),
+            ("=SUMIF(B2,5)", "5"),
+            ("=SUMIF(B2,5,C2)", "7"),
+            ("=AVERAGEIF(B2,5,C2)", "7"),
+            ("=COUNTIFS(B2,5)", "1"),
+            ("=SUMIFS(C2,B2,5)", "7"),
+            ("=AVERAGEIFS(C2,B2,5)", "7"),
+            ("=MAXIFS(C2,B2,5)", "7"),
+            ("=MINIFS(C2,B2,5)", "7"),
+            ('=COUNTIF(B9,"")', "1"),
+            # An error cell is a value to test, as inside a larger range.
+            ("=COUNTIF(B3,5)", "0"),
+            ("=SUMIF(B3,5)", "0"),
+            ("=SUMIF(B2,5,B3)", "#DIV/0!"),  # the matching row's error propagates
+            ("=COUNTIF(B2:B4,NA())", "1"),  # an error criterion counts that error
+        ],
+    )
+    def test_value(self, formula, expected):
+        g = _xg()
+        g.setcell(1, 1, "5")
+        g.setcell(2, 1, "7")
+        g.setcell(1, 2, "=1/0")
+        g.setcell(1, 3, "=NA()")
+        g.setcell(5, 0, formula)
+        assert cell_text(g.cells[5][0]) == expected

@@ -22,6 +22,7 @@ from ..engine import (
     Grid,
     _is_dataframe,
     col_name,
+    label_value,
 )
 from ..formula.errors import ExcelError
 
@@ -370,9 +371,7 @@ def _paint_label_overflow(
         if cl is None or cl.type != LABEL:
             continue
 
-        text = cl.text
-        if text.startswith('"'):
-            text = text[1:]
+        text = label_value(cl.text)
         if len(text) <= g.cw:
             continue
 

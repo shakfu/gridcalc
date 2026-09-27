@@ -776,6 +776,44 @@ class TestJsonV2MultiSheet:
         assert isinstance(d["sheets"], list) and len(d["sheets"]) == 1
         assert d["sheets"][0]["name"] == "Sheet1"
 
+    def test_python_formulas_on_every_sheet_evaluate_at_load(self, tmp_path):
+        import json
+
+        d = {
+            "version": 2,
+            "mode": "PYTHON",
+            "active": "Sheet1",
+            "sheets": [
+                {"name": "Sheet1", "cells": [[1]]},
+                {"name": "S2", "cells": [[10, "=A1*2"]]},
+            ],
+        }
+        f = tmp_path / "two.json"
+        f.write_text(json.dumps(d))
+        g = make_grid()
+        assert g.jsonload(str(f)) == 0
+        assert g.active == 0
+        assert g.sheets[1]._cells[(1, 0)].val == 20.0
+
+    def test_untrusted_python_formulas_on_every_sheet_are_na(self, tmp_path):
+        import json
+
+        from gridcalc.sandbox import LoadPolicy
+
+        d = {
+            "version": 2,
+            "mode": "PYTHON",
+            "sheets": [
+                {"name": "Sheet1", "cells": [[1]]},
+                {"name": "S2", "cells": [[10, "=A1*2"]]},
+            ],
+        }
+        f = tmp_path / "two.json"
+        f.write_text(json.dumps(d))
+        g = make_grid()
+        assert g.jsonload(str(f), policy=LoadPolicy.formulas_only()) == 0
+        assert g.sheets[1]._cells[(1, 0)].err == ExcelError.NA
+
     def test_v1_file_still_loads(self, tmp_path):
         import json
 
@@ -1568,6 +1606,31 @@ class TestFmtcell:
         assert "0" in result
 
 
+class TestFmtcellOverflow:
+    """A number wider than its column is never cut off. At width 8:"""
+
+    @pytest.mark.parametrize(
+        "val,fmt,fmtstr,expected",
+        [
+            (123456789.0, "", "", "1.23e+08"),
+            (-12345678.0, "", "", "-1.2e+07"),
+            (1234567.891, "", "", "1.23e+06"),
+            (12345678.0, "", "", "12345678"),
+            (1234567.0, "$", "", "########"),
+            (123456789.0, "I", "", "########"),
+            (1234567.891, "", ",.2f", "########"),
+            (46147.0, "", "yyyy-mm-dd", "########"),
+        ],
+    )
+    def test_overflow(self, val, fmt, fmtstr, expected):
+        cl = Cell()
+        cl.type = NUM
+        cl.val = val
+        cl.fmt = fmt
+        cl.fmtstr = fmtstr
+        assert fmtcell(cl, 8).strip() == expected
+
+
 class TestFmtrange:
     def test_single_cell(self):
         g = make_grid()
@@ -1956,6 +2019,56 @@ class TestCrossSheet:
         g._apply_mode_libs()
         g.add_sheet("Sheet2")
         return g
+
+    def test_missing_sheet_is_ref_error(self):
+        g = self._make()
+        g.setcell(0, 0, "=Nope!A1")
+        g.setcell(0, 1, "=SUM(Nope!A1:A3)")
+        assert g.cells[0][0].err == ExcelError.REF
+        assert g.cells[0][1].err == ExcelError.REF
+
+    def test_sheet_name_matches_in_any_case(self):
+        g = self._make()
+        g.set_active("Sheet2")
+        g.setcell(0, 0, "9")
+        g.set_active("Sheet1")
+        g.setcell(0, 0, "=sheet2!A1")
+        g.set_active("Sheet2")
+        g.setcell(0, 0, "10")  # the lower-case reference still subscribes
+        g.set_active("Sheet1")
+        assert g.cells[0][0].val == 10.0
+
+    def test_sheet_names_unique_ignoring_case(self):
+        g = self._make()
+        with pytest.raises(ValueError):
+            g.add_sheet("SHEET2")
+        with pytest.raises(ValueError):
+            g.rename_sheet("Sheet1", "sheet2")
+        g.rename_sheet("Sheet2", "SHEET2")  # a case-only rename of itself
+        assert g.sheet_names() == ["Sheet1", "SHEET2"]
+
+    def test_rename_rewrites_a_reference_in_another_case(self):
+        g = self._make()
+        g.setcell(0, 0, "=sheet2!A1")
+        g.rename_sheet("Sheet2", "Data")
+        assert g.cells[0][0].text == "=Data!A1"
+
+    def test_adding_a_named_sheet_resolves_the_reference(self):
+        g = self._make()
+        g.setcell(0, 0, "=later!A1*2")
+        assert g.cells[0][0].err == ExcelError.REF
+        g.add_sheet("Later")
+        g.set_active("Later")
+        g.setcell(0, 0, "4")
+        g.set_active("Sheet1")
+        assert g.cells[0][0].val == 8.0
+
+    def test_removing_a_sheet_makes_its_references_ref_errors(self):
+        g = self._make()
+        g.setcell(0, 0, "=Sheet2!A1+1")
+        g.remove_sheet("Sheet2")
+        g.recalc()
+        assert g.cells[0][0].err == ExcelError.REF
 
     def test_read_cross_sheet_value(self):
         g = self._make()
@@ -3529,6 +3642,20 @@ class TestRewriteNeedsIdentifierBoundary:
         text = "=Sheet1!A1+LOG10(B1)+ATAN2(1,1)"
         assert adjust_refs(text, 0, 1) == "=Sheet1!A2+LOG10(B2)+ATAN2(1,1)"
 
+    @pytest.mark.parametrize(
+        "text,dc,dr,expected",
+        [
+            ("=A1+B2", -1, -1, "=#REF!+A1"),
+            ("=SUM(A1:A3)", 0, -2, "=SUM(#REF!)"),
+            ("=Sheet1!A1+1", 0, -1, "=#REF!+1"),
+            ("=IV1", 1, 0, "=#REF!"),
+            ("=A1024", 0, 1, "=#REF!"),
+            ("=$A$1+A1", 0, -1, "=$A$1+#REF!"),
+        ],
+    )
+    def test_adjust_refs_off_the_grid_is_ref_error(self, text, dc, dr, expected):
+        assert adjust_refs(text, dc, dr) == expected
+
     def test_insertcol_leaves_function_names(self):
         g = _excel_grid()
         g.setcell(1, 0, "=LOG10(100)")
@@ -3652,6 +3779,17 @@ class TestRenameSheetQuoting:
 
         assert _rewrite_sheet_prefix("=S!A1", "S", "Bob's") == "='Bob''s'!A1"
         assert _rewrite_sheet_prefix("='Bob''s'!A1", "Bob's", "T") == "=T!A1"
+
+
+def test_insertrow_moves_the_circular_set_with_its_cells():
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    g.setcell(0, 0, "=A2")
+    g.setcell(0, 1, "=A1")
+    g.insertrow(0)
+    g.recalc()
+    assert g._circular == {(0, 1), (0, 2)}
 
 
 class TestPythonModeLongChain:

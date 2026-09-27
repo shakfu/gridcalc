@@ -426,3 +426,31 @@ def test_the_web_view_renders_dates_identically_to_the_tui() -> None:
     cells = api.viewport(0, 0, 2, 2)["cells"]
     shown = [c for c in cells if c["r"] == 0 and c["c"] == 0]
     assert shown and shown[0]["text"] == cell_text(g.cell(0, 0)) == "2026-05-05"
+
+
+@pytest.mark.parametrize(
+    "formula,expected",
+    [
+        ('=DATEVALUE("1900-01-01")', 1.0),
+        ("=DATE(1900,2,28)", 59.0),
+        ("=DATE(1900,3,1)", 61.0),
+        ("=DAY(0)", 0.0),
+        ("=MONTH(0)", 1.0),
+        ("=DAY(60)", 29.0),  # Excel's phantom 1900-02-29
+        ("=MONTH(60)", 2.0),
+        ("=WEEKDAY(1)", 1.0),  # Excel counts 1900-01-01 as a Sunday
+        ("=WEEKDAY(61)", 5.0),  # 1900-03-01, a Thursday
+        ("=EDATE(1,1)", 32.0),
+    ],
+)
+def test_serials_before_march_1900_match_excel(formula: str, expected: float) -> None:
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    g.setcell(0, 0, formula)
+    assert g.cells[0][0].val == expected
+
+
+def test_serial_60_has_no_date_to_show() -> None:
+    assert format_date(60.0, "yyyy-mm-dd") is None
+    assert format_date(1.0, "yyyy-mm-dd") == "1900-01-01"

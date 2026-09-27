@@ -2,6 +2,58 @@
 
 ## [Unreleased]
 
+## [0.8.0]
+
+### Security
+
+- **CSV fields are data, never formulas.** A field starting with `=` loaded as a formula. The trust prompt skips CSV, and `load_workbook` opened it in PYTHON mode, so the field was `eval()`ed unasked from the CLI, the web view, `:csv load` and `:pd load`. It now loads as a label in every mode, so a CSV cannot run code or inject Excel formulas. Formulas were the alternative, as Excel reads them; gridcalc never writes them to CSV, so that only serves foreign files. A field starting with `"` keeps its quote, and a label such as `=total` now survives a CSV round trip. A CSV opened as a workbook starts in EXCEL mode, as xlsx does.
+
+### Added
+
+- **Empty arguments and array constants now parse.** `=IF(1,,2)` gives 0 and `=SUM(1,)` gives 1: an omitted argument is blank. `={1,2;3,4}` spills a 2x2 array; `,` separates columns and `;` rows. Only constants may appear inside the braces, as in Excel.
+
+### Fixed
+
+- **A blank cell inside a range read as 0.** With A1=5, A2 blank, A3=7, `AVERAGE(A1:A3)` gave 4, `MIN` 0, `PRODUCT` 0 and `COUNTBLANK` 0. Range materialisation wrote `0.0` for an empty cell, so no function could tell it from a zero. It now writes `None`, which the Excel functions already skip. Arithmetic over a range still reads a blank as 0.
+
+- **Removing a spill anchor outside `setcell` left its spill cells behind.** Undo, redo, replicate, TUI backspace and visual delete, and the `:opt sens into!` report removed or replaced the anchor directly. The orphaned cells kept their values and fed other formulas. Each route now tears the spill down first.
+
+- **Formulas saw a label's leading `"`.** The quote marks text as a label and is not part of its value, but references returned it: with A1 holding `"00123`, `=A1&"x"` gave `"00123x` and `=A1="00123"` gave FALSE. xlsx import stored text as-is, so a cell holding `"q` lost its quote on display and on export. `:sort` ordered `"b` before `a`. Every reader now takes the value the display shows.
+
+- **A reference to a missing sheet read as 0, and sheet names matched case-sensitively.** `=Nope!A1` gave 0, and `=data!A1` gave 0 when the sheet is `Data`. Both now match Excel: a missing sheet gives `#REF!`, and a qualifier matches its sheet in any case. Sheet names must now differ by more than case, which xlsx already required. Renaming a sheet rewrites qualifiers in any case.
+
+- **PYTHON-mode formulas were evaluated on the active sheet only.** Another sheet's formulas kept their saved values after load, and went stale after edits, until that sheet was active during a recalc. Every sheet is now evaluated.
+
+- **A formula on another sheet kept reading a spill cell that had gone.** Overwriting a spill anchor recomputed consumers of the removed cells on the anchor's sheet only.
+
+- **Copying a formula so a reference left the grid wrote an invalid reference.** `=A1` pasted one row up became `=A0`, and `=ZZ5` shifted right became `=[A5`. It now becomes `#REF!`, as in Excel and as row deletion already did. A range becomes a single `#REF!`, since `A1:#REF!` does not parse.
+
+- **A number wider than its column was cut off.** At width 8, 123456789 showed as `12345678`, a tenth of its value. An unformatted number now drops precision to fit (`1.23e+08`). A formatted number that does not fit shows `########`, as in Excel.
+
+- **Control characters in text made an unreadable xlsx.** The save succeeded but Excel refuses the file. The save now fails and names the cell, name or sheet. Stripping the characters was the alternative; it would change data without asking.
+
+- **Loading JSON with an integer over 4300 digits raised `ValueError`.** CPython's integer-string limit. `jsonload` now returns -1 and `inspect_file` returns `None`.
+
+- **Floating-point comparisons disagreed with Excel.** `=0.1+0.2=0.3` gave FALSE. Comparisons, in formulas and in criteria such as `COUNTIF`, now round both sides to 15 significant digits, the precision Excel keeps. The rounding is relative, so `=1e-20=0` stays FALSE.
+
+- **Overflow showed `inf`, and `0^0` gave 1.** Excel has no infinity: `=1e308*10` and a `SUM` that overflows now give `#NUM!`, as does `0^0`. Typing `1e400` into a cell now stores it as text, as Excel does, where it was the number infinity.
+
+- **Date serials before 1900-03-01 were a day off.** `=DATE(1900,1,1)` gave 2 and `=DAY(0)` gave 30. Conversions now follow Excel's phantom 1900-02-29 (serial 60), so serial 1 is 1900-01-01, `=DAY(60)` is 29, and `WEEKDAY` counts from the serial as Excel does. A date format shows serials 0 and 60 as plain numbers.
+
+- **`NOW()` and `TODAY()` were not volatile.** They kept their first value until their own cell was edited.
+
+- **Search missed spilled values, error codes and text results.** Searching `42` did not find a spilled 42, and `DIV` did not find `#DIV/0!`.
+
+- **Swapping rows or columns reversed a range.** `=SUM(A1:A2)` became `=SUM(A2:A1)`. A range keeps the orientation it was written in.
+
+- **Circular-reference markers stayed on cells a row insert had moved.**
+
+- **A number format past 30 decimals was accepted.** `:f .400f` printed 400 decimals. Such a spec is now not a number format, as Excel allows 30.
+
+- **Criteria functions rejected a one-cell range.** `=COUNTIF(B2,5)` gave `#VALUE!`, as did `SUMIF`, `AVERAGEIF` and the `*IFS` functions: a one-cell range reaches a function as a single value, not a range. They now accept it. An error in that cell, or in the criterion, is now a value to test, as it already was inside a larger range: `=COUNTIF(B3,5)` over `#DIV/0!` is 0, and `=COUNTIF(A1:A9,NA())` counts the `#N/A` cells.
+
+- **`limitations.md` said xlsx fonts and column widths were neither read nor written.** 0.7.0 made them round-trip. The page now lists what crosses and what does not.
+
 ## [0.7.0]
 
 ### Security

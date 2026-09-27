@@ -81,3 +81,21 @@ def test_swaprow_unaffected_rows_unchanged():
     # A6 was untouched; formula stays correct.
     assert g.cells[1][5].val == 198.0
     assert g.cells[0][5].val == 99.0
+
+
+def test_swaprow_keeps_a_range_top_left_first():
+    g = Grid()
+    g.setcell(0, 0, "1")
+    g.setcell(0, 1, "2")
+    g.setcell(2, 5, "=SUM(A1:A2)")
+    g.setcell(3, 5, "=SUM(A$1:B2)")
+    g.swaprow(0, 1)
+    assert g.cells[2][5].text == "=SUM(A1:A2)"
+    assert g.cells[3][5].text == "=SUM(A1:B$2)"
+
+
+def test_swapcol_keeps_a_range_top_left_first():
+    g = Grid()
+    g.setcell(5, 0, "=SUM(A1:B1)")
+    g.swapcol(0, 1)
+    assert g.cells[5][0].text == "=SUM(A1:B1)"

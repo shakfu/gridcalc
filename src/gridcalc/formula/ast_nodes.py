@@ -94,8 +94,22 @@ class Percent:
     operand: Node
 
 
+@dataclass(frozen=True)
+class Missing:
+    """An omitted argument, as in ``IF(1,,2)``. Evaluates to blank."""
+
+
+@dataclass(frozen=True)
+class ArrayLit:
+    """An array constant such as ``{1,2;3,4}``: rows of literal values."""
+
+    rows: tuple[tuple[object, ...], ...]
+
+
 Node = (
     Number
+    | Missing
+    | ArrayLit
     | String
     | Bool
     | ErrorLit

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 
-from .engine import EMPTY, FORMULA, NUM, Grid
+from .engine import EMPTY, LABEL, Cell, Grid
 
 
 def display_number(value: float) -> str:
@@ -30,13 +30,27 @@ def display_number(value: float) -> str:
     return f"{value:g}"
 
 
+def _value_text(cl: Cell) -> str:
+    """A cell's value as search sees it: error code, text result, or number."""
+    if cl.type == LABEL:
+        return ""  # its text is its value
+    if cl.err is not None:
+        return str(cl.err)
+    if cl.sval is not None:
+        return cl.sval
+    if isinstance(cl.val, float) and not math.isnan(cl.val):
+        return display_number(cl.val)
+    return ""
+
+
 def find_matches(g: Grid, pattern: str) -> list[tuple[int, int]]:
-    """Cells whose source text or numeric value contains `pattern`.
+    """Cells whose source text or value contains `pattern`.
 
     Case-insensitive, substring, and over *both* the text the user typed and
     the value a formula produced -- so `=SUM(A1:A9)` is found by searching
-    either `SUM` or its result. An empty pattern matches nothing rather than
-    everything, since "find nothing" is the useful answer for an empty box.
+    either `SUM` or its result. Spilled values and error codes count. An
+    empty pattern matches nothing rather than everything, since "find nothing"
+    is the useful answer for an empty box.
     """
     pat = pattern.lower()
     if not pat:
@@ -45,10 +59,7 @@ def find_matches(g: Grid, pattern: str) -> list[tuple[int, int]]:
     for (c, r), cl in sorted(g._cells.items(), key=lambda x: (x[0][1], x[0][0])):
         if cl.type == EMPTY:
             continue
-        if pat in cl.text.lower():
-            matches.append((c, r))
-            continue
-        if cl.type in (NUM, FORMULA) and not math.isnan(cl.val) and pat in display_number(cl.val):
+        if pat in cl.text.lower() or pat in _value_text(cl).lower():
             matches.append((c, r))
     return matches
 

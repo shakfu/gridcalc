@@ -112,6 +112,7 @@ def _restore(g: Grid, e: UndoEntry) -> None:
         g.active = g.sheets.index(e.active)
         g._dep_graph_built = False
     for c, r, snap in e.cells:
+        g._spill_predirty(c, r)
         if snap.type == EMPTY:
             g._cells.pop((c, r), None)
         else:

@@ -87,6 +87,7 @@ def _write_sensitivity(
         row = block[dr]
         for dc in range(width):
             c, r = ac + dc, ar + dr
+            g._spill_predirty(c, r)
             if dc >= len(row):
                 g._cells.pop((c, r), None)  # gap inside the report: clear it
                 continue

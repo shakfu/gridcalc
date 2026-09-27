@@ -17,11 +17,10 @@ halves:
   -- deciding whether a format code from an xlsx file means "this is a date",
   which is what turns a column of floats back into dates on import.
 
-The epoch is 1899-12-30 rather than 1900-01-01 because Excel believes 1900 was
-a leap year. Serial 60 is Excel's non-existent 1900-02-29; this offset makes
-every serial above it agree with Excel, which is the range every real workbook
-lives in. Below 60 the two disagree by a day, and matching the bug exactly
-would mean reproducing a phantom date no Python `date` can hold.
+Excel believes 1900 was a leap year: serial 1 is 1900-01-01 and serial 60 is
+the non-existent 1900-02-29. The conversions below match Excel on both sides
+of it. Serial 60 itself has no Python `date`; `from_serial` returns 1900-02-28
+for it, and `YEAR`/`MONTH`/`DAY` special-case it.
 """
 
 from __future__ import annotations
@@ -30,6 +29,9 @@ import datetime as _dt
 import re
 
 EXCEL_EPOCH = _dt.date(1899, 12, 30)
+# The first date after Excel's phantom 1900-02-29, serial 61.
+_AFTER_LEAP_BUG = _dt.date(1900, 3, 1)
+LEAP_BUG_SERIAL = 60
 
 # The built-in numFmtIds that mean "date" or "time". xlsx files omit the format
 # code for these entirely -- the ids are defined by the spec, so a file that
@@ -71,18 +73,19 @@ _FORMAT_NOISE = re.compile(r'"[^"]*"|\\.|\[[^\]]*\]|_.|\*.', re.DOTALL)
 
 def to_serial(d: _dt.date | _dt.datetime) -> float:
     """Python date/datetime -> Excel serial."""
+    day = d.date() if isinstance(d, _dt.datetime) else d
+    days = (day - EXCEL_EPOCH).days - (day < _AFTER_LEAP_BUG)
     if isinstance(d, _dt.datetime):
-        days = (d.date() - EXCEL_EPOCH).days
         secs = d.hour * 3600 + d.minute * 60 + d.second + d.microsecond / 1e6
         return days + secs / 86400.0
-    return float((d - EXCEL_EPOCH).days)
+    return float(days)
 
 
 def from_serial(s: float) -> _dt.datetime:
-    """Excel serial -> Python datetime."""
+    """Excel serial -> Python datetime. Serial 60 gives 1900-02-28."""
     days = int(s)
     frac = s - days
-    base = EXCEL_EPOCH + _dt.timedelta(days=days)
+    base = EXCEL_EPOCH + _dt.timedelta(days=days + (days < LEAP_BUG_SERIAL))
     return _dt.datetime(base.year, base.month, base.day) + _dt.timedelta(seconds=frac * 86400)
 
 
@@ -149,6 +152,9 @@ def format_serial(value: float, code: str) -> str | None:
     """
     if not code or value < 0 or value > 2_958_465:  # 9999-12-31
         return None
+    if int(value) in (0, LEAP_BUG_SERIAL):
+        return None  # Excel's 1900-01-00 and 1900-02-29 have no date
+
     try:
         dt = from_serial(value)
     except (OverflowError, ValueError):

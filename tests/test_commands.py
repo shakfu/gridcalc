@@ -483,3 +483,14 @@ def test_recalc_recomputes_without_reporting_a_change() -> None:
     r = _run(g, "recalc")
     assert r.ok is True and r.changed is False
     assert g.cell(1, 0).val == 6.0
+
+
+def test_sort_orders_labels_by_value_not_marker() -> None:
+    from gridcalc.commands import sort_rows
+    from gridcalc.undo import UndoManager
+
+    g = Grid()
+    g.setcell(0, 0, '"b')
+    g.setcell(0, 1, "a")
+    sort_rows(g, UndoManager(), 0, 0, 0, 1, 0, False)
+    assert [g.cells[0][r].text for r in range(2)] == ["a", '"b']

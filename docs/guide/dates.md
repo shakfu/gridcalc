@@ -73,4 +73,4 @@ A formula that returns a date returns a serial, so give the cell a date format t
 
 ## The 1900 leap-year bug
 
-Excel believes 1900 was a leap year and reserves serial 60 for a 29 February 1900 that never happened. gridcalc uses an epoch of 1899-12-30, which makes every serial above 60 agree with Excel exactly — the range every real workbook lives in. Below that the two differ by a day, since matching the bug would mean producing a date that does not exist.
+Excel believes 1900 was a leap year and reserves serial 60 for a 29 February 1900 that never happened. gridcalc matches it: serial 1 is 1900-01-01, `=DAY(60)` is 29, and `WEEKDAY` counts the phantom day as Excel does. A date format shows serials 0 and 60 as plain numbers, since neither is a real date.

@@ -26,10 +26,17 @@ from decimal import (
 from typing import Any
 
 from ..dates import EXCEL_EPOCH as _EPOCH
-from ..dates import format_serial, from_serial, is_date_format, parse_date, to_serial
+from ..dates import (
+    LEAP_BUG_SERIAL,
+    format_serial,
+    from_serial,
+    is_date_format,
+    parse_date,
+    to_serial,
+)
 from ..engine import Vec, _is_ndarray, _scalar_or_error, _vec_per_elem
 from ..formula.errors import ExcelError
-from ..formula.evaluator import _to_string
+from ..formula.evaluator import _to_string, sig15
 
 # -- Criteria parsing --
 
@@ -139,7 +146,7 @@ def _crit_eq_number(x: Any, v: float) -> bool:
     if isinstance(x, bool):
         return False
     if isinstance(x, (int, float)):
-        return float(x) == v
+        return sig15(float(x)) == sig15(v)
     return False
 
 
@@ -149,7 +156,7 @@ def _crit_compare(op: Any, x: Any, v: Any, numeric: bool) -> bool:
         if isinstance(x, bool) or not isinstance(x, (int, float)):
             return False
         try:
-            return bool(op(float(x), float(v)))
+            return bool(op(sig15(float(x)), sig15(float(v))))
         except (TypeError, ValueError):
             return False
     if not isinstance(x, str):
@@ -258,8 +265,10 @@ def MOD(x: float, y: float) -> float:
     return x % y
 
 
-def POWER(x: float, y: float) -> float:
-    """=POWER(2, 10) -> 1024"""
+def POWER(x: float, y: float) -> float | ExcelError:
+    """=POWER(2, 10) -> 1024. ``0^0`` is ``#NUM!``, as the ``^`` operator."""
+    if x == 0 and y == 0:
+        return ExcelError.NUM
     return float(x**y)
 
 
@@ -337,8 +346,10 @@ def _matched_numbers(values: list[Any], hits: Iterable[bool]) -> list[float] | E
 
 def SUMIF(rng: Vec, criteria: str, sum_rng: Vec | None = None) -> float | ExcelError:
     """=SUMIF(A1:A10, ">5") or =SUMIF(A1:A10, ">5", B1:B10)"""
+    # A one-cell range arrives as a scalar.
+    rng = _as_vec(rng)
     pred = _parse_criteria(criteria)
-    values = sum_rng.data if sum_rng is not None else rng.data
+    values = _as_vec(sum_rng).data if sum_rng is not None else rng.data
     matches = _matched_numbers(values, map(pred, rng.data))
     return matches if isinstance(matches, ExcelError) else sum(matches)
 
@@ -346,7 +357,7 @@ def SUMIF(rng: Vec, criteria: str, sum_rng: Vec | None = None) -> float | ExcelE
 def COUNTIF(rng: Vec, criteria: str) -> int:
     """=COUNTIF(A1:A10, ">5")"""
     pred = _parse_criteria(criteria)
-    return sum(1 for x in rng.data if pred(x))
+    return sum(1 for x in _as_vec(rng).data if pred(x))
 
 
 def AVERAGEIF(rng: Vec, criteria: str, avg_rng: Vec | None = None) -> float | ExcelError:
@@ -355,8 +366,9 @@ def AVERAGEIF(rng: Vec, criteria: str, avg_rng: Vec | None = None) -> float | Ex
     With no matching numeric values Excel returns #DIV/0! (division by a
     zero count), matching AVERAGEIFS.
     """
+    rng = _as_vec(rng)
     pred = _parse_criteria(criteria)
-    values = avg_rng.data if avg_rng is not None else rng.data
+    values = _as_vec(avg_rng).data if avg_rng is not None else rng.data
     matches = _matched_numbers(values, map(pred, rng.data))
     if isinstance(matches, ExcelError):
         return matches
@@ -800,17 +812,28 @@ def TIMEVALUE(text: str) -> float | ExcelError:
     return ExcelError.VALUE
 
 
+def _ymd(serial: float) -> tuple[int, int, int]:
+    """Year, month, day of ``serial``, including Excel's 1900-01-00 and 1900-02-29."""
+    days = int(serial)
+    if days == 0:
+        return 1900, 1, 0
+    if days == LEAP_BUG_SERIAL:
+        return 1900, 2, 29
+    d = _from_serial(float(serial))
+    return d.year, d.month, d.day
+
+
 def YEAR(serial: float) -> int:
     """=YEAR(DATE(2026,5,5)) -> 2026"""
-    return _from_serial(float(serial)).year
+    return _ymd(serial)[0]
 
 
 def MONTH(serial: float) -> int:
-    return _from_serial(float(serial)).month
+    return _ymd(serial)[1]
 
 
 def DAY(serial: float) -> int:
-    return _from_serial(float(serial)).day
+    return _ymd(serial)[2]
 
 
 def HOUR(serial: float) -> int:
@@ -831,7 +854,8 @@ _WEEK_START = {1: 6, 2: 0, **{t: (t - 11) % 7 for t in range(11, 18)}}
 
 def WEEKDAY(serial: float, return_type: int = 1) -> int | ExcelError:
     """=WEEKDAY(serial[, type]). Default: Sun=1..Sat=7."""
-    py_dow = _from_serial(float(serial)).weekday()  # Mon=0..Sun=6
+    # From the serial, not a date: below 60 Excel counts its phantom leap day.
+    py_dow = (int(serial) + 5) % 7  # Mon=0..Sun=6; serial 1 is a Sunday
     rt = int(return_type)
     if rt == 3:
         return py_dow  # Mon=0..Sun=6
@@ -987,7 +1011,7 @@ def _multi_criteria(
     if len(args) % 2 != 0:
         raise ValueError("criteria args must come in (range, criteria) pairs")
     pairs: list[tuple[Vec, Any]] = [
-        (args[i], _parse_criteria(str(args[i + 1]))) for i in range(0, len(args), 2)
+        (_as_vec(args[i]), _parse_criteria(str(args[i + 1]))) for i in range(0, len(args), 2)
     ]
     ranges = [p[0].data for p in pairs]
     if count_only:
@@ -998,7 +1022,7 @@ def _multi_criteria(
         return matched, len(matched)
     if sum_rng is None:
         return [], 0
-    target = sum_rng.data
+    target = _as_vec(sum_rng).data
     n = min(len(target), *[len(r) for r in ranges])
     hits = (all(p[1](r[i]) for p, r in zip(pairs, ranges, strict=False)) for i in range(n))
     nums = _matched_numbers(target, hits)

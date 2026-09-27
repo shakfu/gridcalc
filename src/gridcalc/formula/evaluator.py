@@ -7,11 +7,13 @@ from typing import Any
 
 from .ast_nodes import (
     Apply,
+    ArrayLit,
     BinOp,
     Bool,
     Call,
     CellRef,
     ErrorLit,
+    Missing,
     Name,
     Node,
     Number,
@@ -209,7 +211,7 @@ def _materialize_ref(ref: Reference, env: Env) -> Any:
     for r in range(ref.r1, ref.r2 + 1):
         for c in range(ref.c1, ref.c2 + 1):
             v = env.get_cell(c, r, ref.sheet)
-            data.append(0.0 if v is None else v)
+            data.append(v)
     return Vec(data, cols=ref.c2 - ref.c1 + 1)
 
 
@@ -339,6 +341,11 @@ def _vec_apply1(op: Callable[[Any], Any], a: Any) -> Any:
     return op(a)
 
 
+def _finite(r: float) -> Any:
+    """``r``, or ``#NUM!`` for an overflow: Excel has no infinity."""
+    return ExcelError.NUM if math.isinf(r) else r
+
+
 def _add(a: Any, b: Any) -> Any:
     err = first_error(a, b)
     if err:
@@ -349,7 +356,7 @@ def _add(a: Any, b: Any) -> Any:
     nb = _to_number(b)
     if isinstance(nb, ExcelError):
         return nb
-    return na + nb
+    return _finite(na + nb)
 
 
 def _sub(a: Any, b: Any) -> Any:
@@ -362,7 +369,7 @@ def _sub(a: Any, b: Any) -> Any:
     nb = _to_number(b)
     if isinstance(nb, ExcelError):
         return nb
-    return na - nb
+    return _finite(na - nb)
 
 
 def _mul(a: Any, b: Any) -> Any:
@@ -375,7 +382,7 @@ def _mul(a: Any, b: Any) -> Any:
     nb = _to_number(b)
     if isinstance(nb, ExcelError):
         return nb
-    return na * nb
+    return _finite(na * nb)
 
 
 def _div(a: Any, b: Any) -> Any:
@@ -390,7 +397,7 @@ def _div(a: Any, b: Any) -> Any:
         return nb
     if nb == 0:
         return ExcelError.DIV0
-    return na / nb
+    return _finite(na / nb)
 
 
 def _pow(a: Any, b: Any) -> Any:
@@ -403,13 +410,15 @@ def _pow(a: Any, b: Any) -> Any:
     nb = _to_number(b)
     if isinstance(nb, ExcelError):
         return nb
+    if na == 0 and nb == 0:
+        return ExcelError.NUM  # Excel: 0^0 is undefined
     try:
         r = na**nb
     except (ValueError, OverflowError, ZeroDivisionError):
         return ExcelError.NUM
     if isinstance(r, complex):
         return ExcelError.NUM
-    return r
+    return _finite(r)
 
 
 def _concat(a: Any, b: Any) -> Any:
@@ -441,6 +450,11 @@ def _empty_as(other: Any) -> Any:
     return None
 
 
+def sig15(v: float) -> float:
+    """``v`` at Excel's 15 significant digits, so ``0.1+0.2`` compares equal to ``0.3``."""
+    return float(f"{v:.15g}") if math.isfinite(v) else v
+
+
 def _compare(op: str, a: Any, b: Any) -> Any:
     err = first_error(a, b)
     if err:
@@ -459,8 +473,8 @@ def _compare(op: str, a: Any, b: Any) -> Any:
     a_is_num = isinstance(a, (int, float)) and not isinstance(a, bool)
     b_is_num = isinstance(b, (int, float)) and not isinstance(b, bool)
     if a_is_num and b_is_num:
-        x: Any = a
-        y: Any = b
+        x: Any = sig15(a)
+        y: Any = sig15(b)
     elif isinstance(a, str) and isinstance(b, str):
         x, y = a.lower(), b.lower()  # Excel compares text case-insensitively
     elif isinstance(a, bool) and isinstance(b, bool):
@@ -527,6 +541,12 @@ def _eval(node: Node, env: Env) -> Value:
         return node.value
     if isinstance(node, ErrorLit):
         return node.error
+    if isinstance(node, Missing):
+        return None  # blank, as an empty cell reads
+    if isinstance(node, ArrayLit):
+        from ..engine import Vec  # lazy import to break cycle
+
+        return Vec([v for row in node.rows for v in row], cols=len(node.rows[0]))
     if isinstance(node, CellRef):
         return env.get_cell(node.col, node.row, node.sheet)
     if isinstance(node, RangeRef):
@@ -571,9 +591,7 @@ def _eval_range(node: RangeRef, env: Env) -> Any:
     for r in range(r1, r2 + 1):
         for c in range(c1, c2 + 1):
             v = env.get_cell(c, r, sheet)
-            if v is None:
-                data.append(0.0)
-            elif isinstance(v, bool):
+            if v is None or isinstance(v, bool):
                 data.append(v)
             elif isinstance(v, (int, float)):
                 data.append(float(v))
@@ -669,6 +687,12 @@ _ARRAY_ERROR_TOLERANT_FUNCS = frozenset(
         "reduce",
         "scan",
     }
+)
+
+# Criteria functions. A one-cell range reaches them as a scalar, so an error
+# there is a cell value to test, as it is inside a larger range.
+_CRITERIA_FUNCS = frozenset(
+    {"countif", "countifs", "sumif", "sumifs", "averageif", "averageifs", "maxifs", "minifs"}
 )
 
 # Aggregates that coerce a value typed directly as an argument (`SUM("3",TRUE)`
@@ -991,7 +1015,7 @@ def _eval_call(node: Call, env: Env) -> Any:
     else:
         args = [_deref(_eval(a, env), env) for a in node.args]
     if name_lower not in _ERROR_AWARE_FUNCS:
-        err = first_error(*args)
+        err = None if name_lower in _CRITERIA_FUNCS else first_error(*args)
         if err:
             return err
         if name_lower not in _ARRAY_ERROR_TOLERANT_FUNCS:

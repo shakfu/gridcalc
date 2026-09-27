@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from gridcalc.engine import Grid, NamedRange, col_name
+from gridcalc.engine import Grid, Mode, NamedRange, col_name
 from gridcalc.opt import OptModel
 from gridcalc.tui import UndoManager
 
@@ -4074,6 +4074,15 @@ class TestMainloopSessionSafety:
         self._run(127)
         assert self.g.cell(0, 0) is None
         assert self.g.dirty == 1
+
+    @pytest.mark.parametrize("keys", [(127,), (ord("v"), ord("d"))])  # backspace, visual delete
+    def test_deleting_an_anchor_removes_its_spill(self, keys):
+        self.g.mode = Mode.EXCEL
+        self.g._apply_mode_libs()
+        self.g.setcell(0, 0, "=SEQUENCE(3)")
+        self._run(*keys)
+        assert self.g.cell(0, 1) is None
+        assert self.g.cell(0, 2) is None
 
     @pytest.mark.parametrize("key", [2, 21])  # Ctrl-B, Ctrl-U
     def test_style_toggle_sets_dirty(self, key):

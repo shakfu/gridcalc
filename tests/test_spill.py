@@ -209,6 +209,76 @@ class TestSpillTeardown:
         assert g.cells[0][2].val == 3.0
 
 
+class TestSpillTeardownReachesOtherSheets:
+    def test_cross_sheet_consumer_of_a_removed_spill_cell(self) -> None:
+        g = _grid()
+        g.add_sheet("S2")
+        g.setcell(0, 0, "=SEQUENCE(3)")
+        g.set_active("S2")
+        g.setcell(0, 0, "=Sheet1!A3*10")
+        g.set_active("Sheet1")
+        consumer = g.sheets[1]._cells[(0, 0)]
+        assert consumer.val == 30.0
+        g.setcell(0, 0, "5")  # A2:A3 go away
+        assert consumer.val == 0.0
+
+
+class TestSpillTeardownOutsideSetcell:
+    """Every route that replaces or removes an anchor takes its spill with it.
+    A1 spills 1..3 over A1:A3; C1 sums A1:A3."""
+
+    @staticmethod
+    def _grid() -> Grid:
+        g = _grid()
+        g.setcell(2, 0, "=SUM(A1:A3)")
+        return g
+
+    @staticmethod
+    def _assert_no_orphans(g: Grid) -> None:
+        assert g.cells[0][1].type == EMPTY
+        assert g.cells[0][2].type == EMPTY
+
+    def test_undo_of_the_anchor_entry(self) -> None:
+        from gridcalc.undo import UndoManager
+
+        g, undo = self._grid(), UndoManager()
+        undo.save_cell(g, 0, 0)
+        g.setcell(0, 0, "=SEQUENCE(3)")
+        assert undo.undo(g)
+        self._assert_no_orphans(g)
+        assert g.cells[2][0].val == 0.0
+
+    def test_redo_of_an_anchor_overwrite(self) -> None:
+        from gridcalc.undo import UndoManager
+
+        g, undo = self._grid(), UndoManager()
+        g.setcell(0, 0, "=SEQUENCE(3)")
+        undo.save_cell(g, 0, 0)
+        g.setcell(0, 0, "7")
+        assert undo.undo(g)
+        assert g.cells[0][2].val == 3.0
+        assert undo.redo(g)
+        self._assert_no_orphans(g)
+        assert g.cells[2][0].val == 7.0
+
+    def test_replicate_an_empty_cell_over_the_anchor(self) -> None:
+        g = self._grid()
+        g.setcell(0, 0, "=SEQUENCE(3)")
+        g.replicatecell(5, 5, 0, 0)
+        g.recalc()
+        self._assert_no_orphans(g)
+        assert g.cells[2][0].val == 0.0
+
+    def test_replicate_a_value_over_the_anchor(self) -> None:
+        g = self._grid()
+        g.setcell(0, 0, "=SEQUENCE(3)")
+        g.setcell(5, 5, "4")
+        g.replicatecell(5, 5, 0, 0)
+        g.recalc()
+        self._assert_no_orphans(g)
+        assert g.cells[2][0].val == 4.0
+
+
 class TestSpillStringsAndTypes:
     def test_string_array_spills(self) -> None:
         g = _grid()

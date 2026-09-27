@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -33,6 +34,9 @@ LE = "LE"
 GE = "GE"
 BANG = "BANG"
 HASH = "HASH"
+LBRACE = "LBRACE"
+RBRACE = "RBRACE"
+SEMI = "SEMI"
 EOF = "EOF"
 
 
@@ -53,8 +57,12 @@ _ERROR_LIT_RE = re.compile(r"#(?:DIV/0!|N/A|NAME\?|REF!|VALUE!|NUM!|NULL!)", re.
 
 def parse_number(text: str) -> float | None:
     """The number ``text`` spells, or None. Accepts only decimal notation:
-    ``float`` alone also takes ``nan``, ``inf`` and ``1_000``."""
-    return float(text) if _SIGNED_NUMBER_RE.fullmatch(text) else None
+    ``float`` alone also takes ``nan``, ``inf`` and ``1_000``. A value past
+    the float range (``1e400``) is None: Excel keeps such an entry as text."""
+    if not _SIGNED_NUMBER_RE.fullmatch(text):
+        return None
+    v = float(text)
+    return None if math.isinf(v) else v
 
 
 def _parse_cellref(text: str) -> tuple[int, int, int, bool, bool] | None:
@@ -219,6 +227,9 @@ def tokenize(text: str) -> list[Token]:
             ">": GT,
             "!": BANG,
             "#": HASH,  # spill-range operator (A1#); error literals matched above
+            "{": LBRACE,
+            "}": RBRACE,
+            ";": SEMI,
         }
         kind = single.get(ch)
         if kind is not None:

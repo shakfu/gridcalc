@@ -680,6 +680,14 @@ class TestJsonInspect:
         info = inspect_file(str(f))
         assert info is None
 
+    def test_integer_past_the_int_string_limit(self, tmp_path):
+        f = tmp_path / "big.json"
+        f.write_text('{"cells": [[' + "9" * 5000 + "]]}")
+        assert inspect_file(str(f)) is None
+        g = Grid()
+        assert g.jsonload(str(f)) == -1
+        assert g.io_error
+
     def test_empty_code_not_flagged(self, tmp_path):
         f = tmp_path / "empty_code.json"
         f.write_text('{"code": "", "cells": [[1]]}')

@@ -35,6 +35,9 @@ def load_workbook(path: str | Path, policy: LoadPolicy | None = None) -> Grid:
     if low.endswith(".xlsx"):
         rc = g.xlsxload(p)
     elif low.endswith(".csv"):
+        # A CSV names no mode. The PYTHON default would eval its formulas unprompted.
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
         rc = g.csvload(p)
     else:
         rc = g.jsonload(p, policy=policy or _default_policy(p))

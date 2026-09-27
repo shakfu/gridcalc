@@ -17,6 +17,8 @@
 :f .2e              1.23e+04
 ```
 
+A spec may show at most 30 decimals, Excel's limit. A number too wide for its column shows fewer significant digits, or `########` when it carries a format.
+
 `:gf <fmt>` sets the workbook-wide default format. `:width <n>` sets the column width (4 to 40) in the terminal; in the [desktop app](../desktop.md) columns are resized by dragging their edge and the width is measured in pixels.
 
 Labels longer than the column width spill into adjacent empty cells, Excel-style.

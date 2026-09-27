@@ -374,6 +374,8 @@ def _scalar_or_error(x: Any, op: Callable[[float], float]) -> Any:
 
     if isinstance(x, ExcelError):
         return x
+    if x is None:  # a blank cell in a range reads as 0
+        x = 0.0
     if not _is_num(x):
         return ExcelError.VALUE
     try:
@@ -734,21 +736,26 @@ def _strip_literals(text: str) -> str:
 _SHEET_QUAL_RE = re.compile(r"(?:'((?:[^']|'')*)'|([A-Za-z_][A-Za-z0-9_.]*))!")
 
 
-# Maps a reference's corners ``(c1, r1, c2, r2)`` (equal for a single cell) to
-# new corners, or to None when the lines it covered were all deleted.
-_RefMove = Callable[[int, int, int, int], "tuple[int, int, int, int] | None"]
+# Maps a reference's two ends (the same match for a single cell) to new corners
+# ``(c1, r1, c2, r2)``, or to None when the lines it covered were all deleted.
+_RefMove = Callable[[RefMatch, RefMatch], "tuple[int, int, int, int] | None"]
+
+
+def _on_grid(c1: int, r1: int, c2: int, r2: int) -> bool:
+    return all(0 <= c < NCOL for c in (c1, c2)) and all(0 <= r < NROW for r in (r1, r2))
 
 
 def _rewrite_refs_on_sheet(
     text: str,
     home_sheet: str,
-    edited_sheet: str,
+    edited_sheet: str | None,
     move: _RefMove,
 ) -> str | None:
-    """Rewrite the references in ``text`` that resolve against ``edited_sheet``.
+    """Rewrite the references in ``text`` that resolve against ``edited_sheet``,
+    or every reference when it is None.
 
     Returns the new text, or None when nothing moved. A reference ``move``
-    deletes becomes ``#REF!``, qualifier included.
+    deletes or moves off the grid becomes ``#REF!``, qualifier included.
 
     ``home_sheet`` is the sheet the formula lives on, which is what a bare
     reference resolves against; a reference carrying a qualifier resolves
@@ -776,15 +783,22 @@ def _rewrite_refs_on_sheet(
         m2 = _ref_at(text, at + 1) if at < n and text[at] == ":" else None
         end = m2 if m2 is not None else m1
         rect = (m1.col, m1.row, end.col, end.row)
-        new = move(*rect) if sheet == edited_sheet else rect
+        new = move(m1, end) if edited_sheet in (None, sheet) else rect
         if m2 is not None:
             at += 1 + m2.chars_consumed
-        if new is None:
+        if new is None or (new != rect and not _on_grid(*new)):
             out.append("#REF!")
             return at, True
-        out.append(qual + _emitref(new[0], new[1], m1.abs_col, m1.abs_row))
+        c1, r1, c2, r2 = new
+        ac1, ar1, ac2, ar2 = m1.abs_col, m1.abs_row, end.abs_col, end.abs_row
+        # A swap can reverse a range; put back the order it was written in.
+        if (c1 > c2) != (rect[0] > rect[2]):
+            c1, c2, ac1, ac2 = c2, c1, ac2, ac1
+        if (r1 > r2) != (rect[1] > rect[3]):
+            r1, r2, ar1, ar2 = r2, r1, ar2, ar1
+        out.append(qual + _emitref(c1, r1, ac1, ar1))
         if m2 is not None:
-            out.append(":" + _emitref(new[2], new[3], m2.abs_col, m2.abs_row))
+            out.append(":" + _emitref(c2, r2, ac2, ar2))
         return at, new != rect
 
     while i < n:
@@ -816,31 +830,22 @@ def _rewrite_refs_on_sheet(
 def adjust_refs(text: str, dcol: int, drow: int) -> str:
     """Shift every relative cell reference in ``text`` by ``(dcol, drow)``.
 
-    Absolute (``$``-prefixed) columns/rows are left unchanged. Used both by
+    Absolute (``$``-prefixed) columns/rows are left unchanged. A reference
+    shifted off the grid becomes ``#REF!``, as in Excel. Used both by
     replicate (copy a formula across the grid) and by the frontends' paste, so
     the two share one definition of reference adjustment.
     """
-    out = []
-    i = 0
-    while i < len(text):
-        end = _skip_quoted(text, i)
-        if end is not None:
-            out.append(text[i:end])  # a literal is copied through untouched
-            i = end
-            continue
-        result = _ref_at(text, i)
-        if result:
-            n, rc, rr, ac, ar = result
-            if not ac:
-                rc += dcol
-            if not ar:
-                rr += drow
-            out.append(_emitref(rc, rr, ac, ar))
-            i += n
-        else:
-            out.append(text[i])
-            i += 1
-    return "".join(out)
+
+    def move(a: RefMatch, b: RefMatch) -> tuple[int, int, int, int]:
+        return (
+            a.col if a.abs_col else a.col + dcol,
+            a.row if a.abs_row else a.row + drow,
+            b.col if b.abs_col else b.col + dcol,
+            b.row if b.abs_row else b.row + drow,
+        )
+
+    new = _rewrite_refs_on_sheet(text, "", None, move)
+    return text if new is None else new
 
 
 def _expand_ranges(expr: str) -> str:
@@ -880,6 +885,31 @@ def _expand_ranges(expr: str) -> str:
 
 # File types `pdload` and `pdsave` accept; no extension means CSV.
 _PD_EXTS = frozenset({"", ".csv", ".txt", ".tsv", ".tab", ".json"})
+
+
+def label_value(text: str) -> str:
+    """A label's value: its source text less one leading ``"``, the label marker."""
+    return text[1:] if text.startswith('"') else text
+
+
+def _label_source(value: str) -> str:
+    """Source text for ``_put_label`` holding ``value``; only a leading ``"`` needs marking."""
+    return '"' + value if value.startswith('"') else value
+
+
+def _label_text(t: str) -> str:
+    """``setcell`` text that stores ``t`` as a label, verbatim."""
+    number = parse_number(t.rstrip()) is not None
+    return '"' + t if t.startswith(("=", '"')) or number else t
+
+
+def _field_text(t: str) -> str:
+    """``setcell`` text for a delimited-file field: a number, else a label.
+
+    Never a formula. A field is data, and an evaluated one would run whatever
+    the file's author wrote (CSV injection).
+    """
+    return t if parse_number(t.rstrip()) is not None else _label_text(t)
 
 
 def _number_text(v: float) -> str:
@@ -1168,10 +1198,16 @@ def _xlsx_read_widths(filename: str, root: Any) -> dict[str, tuple[float | None,
     return out
 
 
+# Characters outside the XML 1.0 `Char` production. One makes the part unreadable.
+_XML_INVALID = re.compile("[^\t\n\r\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
+
+
 def _xlsx_sheet_name_error(names: list[str]) -> str | None:
     """Why Excel would reject this list of sheet names, or None."""
     seen: set[str] = set()
     for name in names:
+        if _XML_INVALID.search(name):
+            return f"sheet name {name!r} has a control character, which xlsx cannot hold"
         if not name.strip() or len(name) > 31:
             return f"sheet name {name!r} must be 1-31 characters for xlsx"
         if any(ch in name for ch in ":\\/?*[]") or name[0] == "'" or name[-1] == "'":
@@ -1200,6 +1236,10 @@ _XLSX_BUILTIN_NUMBER_CODES = {
 _XLSX_NUMBER_CODE_RE = re.compile(r"(#,##0|0)(?:\.(0+))?(%|E\+0+)?")
 
 
+# The most decimal places Excel's number formats show.
+MAX_DECIMALS = 30
+
+
 def _xlsx_code_for_spec(spec: str) -> str:
     """The xlsx number-format code for a ``fmt_float`` spec, or "" for none."""
     m = re.fullmatch(r"(,?)(?:\.(\d+))?([fe%]?)", spec)
@@ -1207,6 +1247,8 @@ def _xlsx_code_for_spec(spec: str) -> str:
         return ""
     commas, prec, kind = m.group(1), m.group(2), m.group(3) or "f"
     n = int(prec) if prec is not None else (0 if commas else 6)
+    if n > MAX_DECIMALS:
+        return ""
     code = ("#,##0" if commas and kind != "e" else "0") + ("." + "0" * n if n else "")
     return code + {"e": "E+00", "%": "%"}.get(kind, "")
 
@@ -1396,7 +1438,8 @@ def _rewrite_sheet_prefix(text: str, old: str, new: str) -> str:
         if q:
             quoted, bare = q.group(1), q.group(2)
             sheet = bare if quoted is None else quoted.replace("''", "'")
-            out.append(_quote_sheet(new) + "!" if sheet == old else q.group(0))
+            same = sheet.casefold() == old.casefold()
+            out.append(_quote_sheet(new) + "!" if same else q.group(0))
             i = q.end()
             continue
         out.append(ch)
@@ -1583,10 +1626,11 @@ class Grid:
         same ``(c, r)`` collide in the dep graph. Treat multi-sheet
         workbooks as preview-only until then.
         """
-        if any(s.name == name for s in self.sheets):
+        if self._sheet_by_name(name) is not None:
             raise ValueError(f"sheet {name!r} already exists")
         sh = Sheet(name=name)
         self.sheets.append(sh)
+        self._dep_graph_built = False  # formulas that already name it now resolve
         return sh
 
     def remove_sheet(self, name: str) -> None:
@@ -1636,9 +1680,10 @@ class Grid:
         """
         if old == new:
             return
-        if any(s.name == new for s in self.sheets):
-            raise ValueError(f"sheet {new!r} already exists")
+        clash = self._sheet_by_name(new)
         target = next((s for s in self.sheets if s.name == old), None)
+        if clash is not None and clash is not target:
+            raise ValueError(f"sheet {new!r} already exists")
         if target is None:
             raise KeyError(old)
         target.name = new
@@ -1769,6 +1814,8 @@ class Grid:
         volatile: bool,
     ) -> None:
         """Install forward + reverse edges for `key` from `deps`."""
+        # A qualifier matches its sheet in any case; key the edge by the real name.
+        deps = {(self._canon_sheet(s), c, r) for s, c, r in deps}
         if deps:
             self._dep_of[key] = deps
             for d in deps:
@@ -1888,8 +1935,8 @@ class Grid:
         If (c, r) is a spill cell, its anchor must recompute (to notice the
         blockage and go #SPILL!). If (c, r) is a spilling anchor, its spill
         is torn down here -- the write is about to clear ``spill_shape``, so
-        ``_apply_spill`` could not do it later -- and the consumers of the
-        removed cells are returned so recalc recomputes them.
+        ``_apply_spill`` could not do it later -- and the removed positions
+        are returned, so recalc recomputes their consumers on every sheet.
         """
         if self.mode == Mode.PYTHON:
             return set()
@@ -1902,10 +1949,7 @@ class Grid:
         if cl.type == SPILL and cl.spill_parent is not None:
             extra.add(cl.spill_parent)
         if cl.spill_shape is not None:
-            for sc_c, sc_r in self._spill_positions(c, r, cl.spill_shape):
-                for sub_s, sub_c, sub_r in self._subscribers.get((sheet, sc_c, sc_r), ()):
-                    if sub_s == sheet:
-                        extra.add((sub_c, sub_r))
+            extra.update(self._spill_positions(c, r, cl.spill_shape))
             self._clear_spill(sheet, c, r, cl)
         return extra
 
@@ -1969,12 +2013,11 @@ class Grid:
         # `builtins` handed to EXCEL/HYBRID evaluation, so a mode switch carried
         # them along. A copy costs one shallow dict per recalc.
         g = dict(self._eval_globals)
-        self._circular = set()
 
         if not self.python_trusted:
             from .formula.errors import ExcelError as _XE
 
-            for cl in self._cells.values():
+            for cl in (cl for sh in self.sheets for cl in sh._cells.values()):
                 if cl.type == FORMULA:
                     cl.arr = None
                     cl.arr_cols = None
@@ -1997,6 +2040,19 @@ class Grid:
         else:
             self.code_error = None
 
+        # Every sheet, not only the active one: PYTHON formulas read their own
+        # sheet by bare cell name, so each is evaluated with its sheet active.
+        saved = self.active
+        try:
+            for i in range(len(self.sheets)):
+                self.active = i
+                self._recalc_python_sheet(dict(g))
+        finally:
+            self.active = saved
+
+    def _recalc_python_sheet(self, g: dict[str, Any]) -> None:
+        """Evaluate the active sheet's formulas in namespace ``g`` until they settle."""
+        self._circular = set()
         # A value moves at least one link per pass, so an acyclic chain needs up
         # to one pass per formula. Past 100 passes, an unchanged set of changing
         # cells means a cycle: an acyclic graph cannot repeat that set.
@@ -2226,18 +2282,11 @@ class Grid:
     def _sheet_cells(self, sheet: str | None) -> dict[tuple[int, int], Cell]:
         """Return the cell store for the named sheet, or active when None.
 
-        Returns an empty dict for unknown sheet names; the caller treats
-        that as "no such cell" via the same path as a missing key. (A
-        formula referencing ``Bogus!A1`` evaluates to 0 / empty, matching
-        what an unset cell would do; ``#REF!`` semantics for unknown
-        sheets are deferred until phase 3 surfaces sheet management.)
+        Returns an empty dict for unknown sheet names. The value lookups
+        check for that first and answer ``#REF!``.
         """
-        if sheet is None:
-            return self._active._cells
-        for s in self.sheets:
-            if s.name == sheet:
-                return s._cells
-        return {}
+        sh = self._sheet_by_name(sheet)
+        return {} if sh is None else sh._cells
 
     def _cell_is_formula(self, c: int, r: int, sheet: str | None = None) -> bool:
         cl = self._sheet_cells(sheet).get((c, r))
@@ -2252,6 +2301,10 @@ class Grid:
         return cl.text if cl.text.startswith("=") else f"={cl.text}"
 
     def _cell_lookup_value(self, c: int, r: int, sheet: str | None = None) -> object:
+        if sheet is not None and self._sheet_by_name(sheet) is None:
+            from .formula.errors import ExcelError
+
+            return ExcelError.REF
         cl = self._sheet_cells(sheet).get((c, r))
         if cl is None or cl.type == EMPTY:
             return None
@@ -2264,7 +2317,7 @@ class Grid:
         if cl.err is not None:
             return cl.err
         if cl.type == LABEL:
-            return cl.text
+            return label_value(cl.text)
         if cl.matrix is not None:
             return cl.matrix
         # A bare reference to a spilling anchor reads only its top-left
@@ -2279,6 +2332,10 @@ class Grid:
     def _cell_spill_value(self, c: int, r: int, sheet: str | None = None) -> object:
         """Value of the `A1#` operator: the whole array a formula spilled,
         or the plain scalar for a non-array cell."""
+        if sheet is not None and self._sheet_by_name(sheet) is None:
+            from .formula.errors import ExcelError
+
+            return ExcelError.REF
         cl = self._sheet_cells(sheet).get((c, r))
         if cl is None or cl.type == EMPTY:
             return None
@@ -2289,7 +2346,7 @@ class Grid:
         if cl.matrix is not None:
             return cl.matrix
         if cl.type == LABEL:
-            return cl.text
+            return label_value(cl.text)
         if cl.sval is not None:
             return cl.val if isinstance(cl.val, bool) else cl.sval
         return cl.val
@@ -2297,6 +2354,8 @@ class Grid:
     def _store_formula_result(self, cl: Cell, result: Any) -> None:
         from .formula.errors import ExcelError
 
+        if isinstance(result, float) and math.isinf(result):
+            result = ExcelError.NUM  # e.g. a SUM that overflows; Excel has no infinity
         cl.sval = None
         if isinstance(result, ExcelError):
             cl.arr = None
@@ -2469,6 +2528,8 @@ class Grid:
         sc.sval = None
         sc.err = None
         sc.err_msg = None
+        if isinstance(val, float) and math.isinf(val):
+            val = ExcelError.NUM
         if isinstance(val, ExcelError):
             sc.val = float("nan")
             sc.err = val
@@ -2612,6 +2673,8 @@ class Grid:
         # write cells directly and rely on a full recalc to catch up.
         if dirty3 is None:
             self._rebuild_dep_graph()
+            for s in self.sheets:
+                s._circular = set()  # rebuilt below; a moved cell's old entry must go
             closure: set[tuple[str | None, int, int]] = set()
             for s in self.sheets:
                 for (c, r), cl in s._cells.items():
@@ -2734,11 +2797,17 @@ class Grid:
         sheet, c, r = key
         return self._sheet_cells(sheet).get((c, r))
 
+    def _canon_sheet(self, name: str | None) -> str | None:
+        sh = None if name is None else self._sheet_by_name(name)
+        return name if sh is None else sh.name
+
     def _sheet_by_name(self, name: str | None) -> Sheet | None:
+        """The sheet called ``name`` ignoring case, as Excel matches; active for None."""
         if name is None:
             return self._active
+        key = name.casefold()
         for s in self.sheets:
-            if s.name == name:
+            if s.name.casefold() == key:
                 return s
         return None
 
@@ -2766,7 +2835,8 @@ class Grid:
         def swap(v: int) -> int:
             return b if v == a else a if v == b else v
 
-        def move(c1: int, r1: int, c2: int, r2: int) -> tuple[int, int, int, int]:
+        def move(a: RefMatch, b: RefMatch) -> tuple[int, int, int, int]:
+            c1, r1, c2, r2 = a.col, a.row, b.col, b.row
             if axis == "R":
                 return c1, swap(r1), c2, swap(r2)
             return swap(c1), r1, swap(c2), r2
@@ -2774,7 +2844,8 @@ class Grid:
         self._rewrite_all_sheets(move)
 
     def _shiftrefs(self, axis: str, pos: int, direction: int) -> None:
-        def move(c1: int, r1: int, c2: int, r2: int) -> tuple[int, int, int, int] | None:
+        def move(a: RefMatch, b: RefMatch) -> tuple[int, int, int, int] | None:
+            c1, r1, c2, r2 = a.col, a.row, b.col, b.row
             a1, a2 = (r1, r2) if axis == "R" else (c1, c2)
             if direction > 0:
                 n1 = a1 + 1 if a1 >= pos else a1
@@ -2983,6 +3054,7 @@ class Grid:
     def replicatecell(self, sc: int, sr: int, dc: int, dr: int) -> None:
         if not (0 <= dc < NCOL and 0 <= dr < NROW):
             return
+        self._spill_predirty(dc, dr)
         src = self.cell(sc, sr)
         if not src:
             # Source is empty -- clear destination, including its deps.
@@ -3076,7 +3148,7 @@ class Grid:
         try:
             with open(filename, encoding="utf-8") as f:
                 d = json.load(f)
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
+        except (OSError, ValueError, RecursionError) as exc:
             self.io_error = str(exc)
             return -1
 
@@ -3263,7 +3335,7 @@ class Grid:
                 # them, tolerate by appending a numeric suffix.
                 final_name = name
                 suffix = 1
-                while any(s.name == final_name for s in self.sheets):
+                while self._sheet_by_name(final_name) is not None:
                     final_name = f"{name}_{suffix}"
                     suffix += 1
                 sh = Sheet(name=final_name)
@@ -3325,7 +3397,8 @@ class Grid:
                     continue
                 elif sc.type == NUM:
                     if math.isinf(sc.val):
-                        # JSON has no infinity; this text reloads as one.
+                        # JSON has no infinity. Only a solver or goal seek writes
+                        # one; the text reloads as a label.
                         val: Any = "1e999" if sc.val > 0 else "-1e999"
                     elif math.isnan(sc.val):
                         val = None  # no text reloads as NaN
@@ -3488,12 +3561,12 @@ class Grid:
             self.active = sheet_index[sname]
             datefmt = normalise_format(numfmt_code, numfmt_id)
             if kind == "s":
-                self._put_label(c, r, value)
+                self._put_label(c, r, _label_source(value))
             elif kind == "e":
                 if parse_error_literal(value) is not None:
                     self._setcell_no_recalc(c, r, "=" + value)
                 else:
-                    self._put_label(c, r, value)
+                    self._put_label(c, r, _label_source(value))
             elif kind == "b":
                 self._setcell_no_recalc(c, r, "=TRUE" if value else "=FALSE")
             elif kind == "n":
@@ -3583,7 +3656,7 @@ class Grid:
                 # used to mean in practice.
                 numfmt, style = _xlsx_cell_style(cl, self.fmt)
                 if cl.type == LABEL:
-                    text = cl.text[1:] if cl.text.startswith('"') else cl.text
+                    text = label_value(cl.text)
                     payload.append((s.name, c, r, "s", text, "", style))
                 elif cl.type == NUM:
                     payload.append((s.name, c, r, "n", float(cl.val), numfmt, style))
@@ -3606,6 +3679,17 @@ class Grid:
                         payload.append((s.name, c, r, "b", cached, "", style))
                     elif cached is not None:
                         payload.append((s.name, c, r, "n", cached, numfmt, style))
+        # Refused rather than stripped, so the save never drops text unasked.
+        for sname, c, r, *fields in payload:
+            if any(isinstance(v, str) and _XML_INVALID.search(v) for v in fields):
+                self.io_error = (
+                    f"{sname}!{cellname(c, r)} has a control character, which xlsx cannot hold"
+                )
+                return -1
+        for nr in self.names:
+            if _XML_INVALID.search(nr.name):
+                self.io_error = f"name {nr.name!r} has a control character, which xlsx cannot hold"
+                return -1
         sheet_names = [s.name for s in self.sheets]
         names_xml = _xlsx_defined_names_xml(self.names, sheet_names)
 
@@ -3632,7 +3716,7 @@ class Grid:
             if not cl or cl.type == EMPTY:
                 return ""
             if cl.type == LABEL:
-                return cl.text[1:] if cl.text.startswith('"') else cl.text
+                return label_value(cl.text)
             if cl.err is not None:
                 return ""
             if cl.sval is not None:
@@ -3651,7 +3735,7 @@ class Grid:
         return self._save_via(filename, write)
 
     def csvload(self, filename: str) -> int:
-        """Import cells from a CSV file. Numbers become NUM cells, rest become LABELs."""
+        """Import cells from a CSV file. Numbers become NUM cells, the rest LABELs."""
         self.io_error = None
         try:
             with open(filename, newline="", encoding="utf-8") as f:
@@ -3670,7 +3754,7 @@ class Grid:
                     break
                 val = val.strip()
                 if val:
-                    cells.append((c_idx, r_idx, val))
+                    cells.append((c_idx, r_idx, _field_text(val)))
         # One recalc: a PYTHON-mode recalc per setcell made this quadratic.
         self.setcells_bulk(cells)
         return 0
@@ -3678,7 +3762,7 @@ class Grid:
     def pdload(self, filename: str, header: bool = True) -> int:
         """Load a CSV, TSV or JSON file into grid cells using pandas.
 
-        CSV and TSV fields are parsed as typed input, as ``csvload`` does. JSON
+        CSV and TSV fields become numbers or labels, as in ``csvload``. JSON
         values keep their type: a string stays a label, a boolean becomes
         ``=TRUE``/``=FALSE``. ``header`` writes JSON column names into row 0.
         Returns -1 if pandas is not installed or the file type is unsupported.
@@ -3716,10 +3800,6 @@ class Grid:
             self.io_error = str(exc) or type(exc).__name__
             return -1
 
-        def label(v: object) -> str:
-            t = str(v)
-            return '"' + t if t.startswith("=") or parse_number(t.rstrip()) is not None else t
-
         def json_text(v: object) -> str:
             if isinstance(v, bool):
                 t = "TRUE" if v else "FALSE"
@@ -3728,7 +3808,7 @@ class Grid:
                 return str(v)
             if isinstance(v, float):
                 return _number_text(v) if math.isfinite(v) else ""
-            return label(v)
+            return _label_text(str(v))
 
         rows: list[tuple[Any, ...]] = list(df.itertuples(index=False, name=None))
         if ext == ".json" and header:
@@ -3738,7 +3818,7 @@ class Grid:
             for c, v in enumerate(row[:NCOL]):
                 if v is None or (isinstance(v, float) and math.isnan(v)):
                     continue
-                text = json_text(v) if ext == ".json" else str(v).strip()
+                text = json_text(v) if ext == ".json" else _field_text(str(v).strip())
                 if text:
                     cells.append((c, r, text))
         self.setcells_bulk(cells)
@@ -3777,7 +3857,7 @@ class Grid:
             if not cl or cl.type == EMPTY:
                 return None
             if cl.type == LABEL:
-                return cl.text[1:] if cl.text.startswith('"') else cl.text
+                return label_value(cl.text)
             if cl.err is not None:
                 return None
             if isinstance(cl.val, bool):

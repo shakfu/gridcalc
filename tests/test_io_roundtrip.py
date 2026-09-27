@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from gridcalc import loader
+from gridcalc.display import cell_clip_value
 from gridcalc.engine import FORMULA, LABEL, NUM, Grid, Mode
 from gridcalc.sandbox import LoadPolicy
 
@@ -42,11 +43,25 @@ def test_json_keeps_every_digit_of_a_double(tmp_path: Path) -> None:
     assert [h.cells[0][r].val for r in range(len(PRECISE))] == [float(t) for t in PRECISE]
 
 
-def test_json_infinity_round_trips_as_a_number_and_stays_valid_json(tmp_path: Path) -> None:
+def test_an_overflowing_entry_is_text_and_round_trips(tmp_path: Path) -> None:
     g = _excel()
     g.setcell(0, 0, "1e400")
     g.setcell(0, 1, "-1e400")
-    assert g.cells[0][0].val == math.inf
+    assert g.cells[0][0].type == LABEL  # Excel keeps it as text too
+    f = tmp_path / "big.json"
+    assert g.jsonsave(str(f)) == 0
+    h = Grid()
+    assert h.jsonload(str(f)) == 0
+    assert [(h.cells[0][r].type, h.cells[0][r].text) for r in range(2)] == [
+        (LABEL, "1e400"),
+        (LABEL, "-1e400"),
+    ]
+
+
+def test_json_infinity_stays_valid_json(tmp_path: Path) -> None:
+    g = _excel()
+    g.setcell(0, 0, "1")
+    g.cells[0][0].val = math.inf  # as a solver or goal seek can write
     f = tmp_path / "inf.json"
     assert g.jsonsave(str(f)) == 0
 
@@ -54,10 +69,6 @@ def test_json_infinity_round_trips_as_a_number_and_stays_valid_json(tmp_path: Pa
         raise AssertionError(f"invalid JSON constant {token}")
 
     json.loads(f.read_text(), parse_constant=reject)
-    h = Grid()
-    assert h.jsonload(str(f)) == 0
-    assert (h.cells[0][0].type, h.cells[0][0].val) == (NUM, math.inf)
-    assert (h.cells[0][1].type, h.cells[0][1].val) == (NUM, -math.inf)
 
 
 def test_boolean_formula_results_round_trip_through_json(tmp_path: Path) -> None:
@@ -551,3 +562,54 @@ def test_workbook_default_format_survives_json(tmp_path) -> None:
     assert g2.jsonload(str(f)) == 0
     assert g2.fmt == "$"
     assert fmtcell(g2.cell(0, 0), 12, g2.fmt) == fmtcell(g.cell(0, 0), 12, g.fmt)
+
+
+def test_csv_opens_in_excel_mode(tmp_path: Path) -> None:
+    f = tmp_path / "t.csv"
+    f.write_text("2,3\n")
+    assert loader.needs_trust(f) is None
+    assert loader.load_workbook(f).mode == Mode.EXCEL
+
+
+@pytest.mark.parametrize("mode", [Mode.PYTHON, Mode.HYBRID, Mode.EXCEL])
+@pytest.mark.parametrize("reader", ["csvload", "pdload"])
+def test_csv_fields_are_data_never_formulas(tmp_path: Path, mode: Mode, reader: str) -> None:
+    if reader == "pdload":
+        pytest.importorskip("pandas")
+    f = tmp_path / "t.csv"
+    f.write_text('7,=A1*2,"=__import__(""os"").getpid()","""q",=\n')
+    g = Grid()
+    g.mode = mode
+    g._apply_mode_libs()
+    assert getattr(g, reader)(str(f)) == 0
+    assert g.cells[0][0].type == NUM
+    shown = ["=A1*2", '=__import__("os").getpid()', '"q', "="]
+    for c, text in enumerate(shown, start=1):
+        cl = g.cells[c][0]
+        assert cl.type == LABEL
+        assert cell_clip_value(cl) == text
+
+
+def test_csv_round_trips_a_label_that_looks_like_a_formula(tmp_path: Path) -> None:
+    g = _excel()
+    g.setcell(0, 0, '"=total')
+    f = tmp_path / "t.csv"
+    assert g.csvsave(str(f)) == 0
+    h = _excel()
+    assert h.csvload(str(f)) == 0
+    assert h.cells[0][0].type == LABEL
+    assert h.cells[0][0].text == '"=total'
+
+
+def test_xlsx_text_starting_with_a_quote_keeps_it(tmp_path: Path) -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+
+    def fill(wb):
+        wb.active["A1"] = '"q'
+
+    g = Grid()
+    assert g.xlsxload(_xlsx(tmp_path, fill)) == 0
+    assert cell_clip_value(g.cells[0][0]) == '"q'
+    out = tmp_path / "out.xlsx"
+    assert g.xlsxsave(str(out)) == 0
+    assert openpyxl.load_workbook(str(out)).active["A1"].value == '"q'

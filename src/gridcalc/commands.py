@@ -45,6 +45,7 @@ from .engine import (
     Mode,
     NamedRange,
     col_name,
+    label_value,
     ref,
 )
 from .undo import UndoManager
@@ -237,7 +238,7 @@ def sort_rows(
             key_val = key_cl.val
         else:
             key_val = float("inf")
-        key_text = key_cl.text if key_cl and key_cl.type != EMPTY else ""
+        key_text = label_value(key_cl.text) if key_cl and key_cl.type != EMPTY else ""
         lifted: list[tuple[int, Cell | None]] = []
         for c in range(c1, c2 + 1):
             cl = g.cell(c, r)

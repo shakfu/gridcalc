@@ -21,7 +21,17 @@ import math
 
 from .dates import format_serial as _format_serial
 from .dates import is_date_format
-from .engine import EMPTY, FORMULA, LABEL, NUM, SPILL, Cell, _is_dataframe
+from .engine import (
+    EMPTY,
+    FORMULA,
+    LABEL,
+    MAX_DECIMALS,
+    NUM,
+    SPILL,
+    Cell,
+    _is_dataframe,
+    label_value,
+)
 
 # Width (in characters) handed to ``fmtcell`` by :func:`cell_text` before the
 # padding is stripped. Wide enough that ordinary values and array badges
@@ -73,7 +83,7 @@ def fmt_float(val: float, spec: str) -> str | None:
     if p < len(spec) and spec[p] in "fe%":
         ftype = spec[p]
         p += 1
-    if p != len(spec):
+    if p != len(spec) or prec > MAX_DECIMALS:
         return None
 
     v = float(val)
@@ -124,8 +134,7 @@ def cell_clip_value(cl: Cell | None) -> str:
     if cl is None or cl.type == EMPTY:
         return ""
     if cl.type == LABEL:
-        t = cl.text
-        return t[1:] if t.startswith('"') else t
+        return label_value(cl.text)
     if cl.err is not None:
         return str(cl.err)
     if cl.arr and _is_number(cl.arr[0]):
@@ -135,6 +144,21 @@ def cell_clip_value(cl: Cell | None) -> str:
     if isinstance(cl.val, float) and math.isnan(cl.val):
         return ""
     return _num_str(cl.val)
+
+
+def _fit(t: str, cw: int, general: float | None = None) -> str:
+    """``t`` if it fits in ``cw``; else a shorter ``%g`` of ``general``; else ``#`` fill.
+
+    A cut-off number misstates its value, so Excel shows ``###`` instead.
+    """
+    if len(t) <= cw:
+        return t
+    if general is not None:
+        for p in range(5, 0, -1):
+            g = f"{general:.{p}g}"
+            if len(g) <= cw:
+                return g
+    return "#" * cw
 
 
 def cell_text(cl: Cell | None, global_fmt: str = "") -> str:
@@ -162,10 +186,7 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
         return " " * cw
 
     if cl.type == LABEL:
-        t = cl.text
-        if t.startswith('"'):
-            t = t[1:]
-        return f"{t:<{cw}}"[:cw]
+        return f"{label_value(cl.text):<{cw}}"[:cw]
 
     if cl.matrix is not None:
         if _is_dataframe(cl.matrix):
@@ -219,7 +240,7 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
         if formatted is None:
             formatted = fmt_float(cl.val, cl.fmtstr)
         if formatted is not None:
-            return f"{formatted:>{cw}}"[:cw]
+            return f"{_fit(formatted, cw):>{cw}}"
 
     fc = cl.fmt
     if not fc or fc == "D":
@@ -237,7 +258,8 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
         t = str(int(cl.val))
     else:
         t = f"{cl.val:g}"
+    t = _fit(t, cw, None if fc in ("$", "%", "I") else cl.val)
 
     if fc == "L":
-        return f"{t:<{cw}}"[:cw]
-    return f"{t:>{cw}}"[:cw]
+        return f"{t:<{cw}}"
+    return f"{t:>{cw}}"

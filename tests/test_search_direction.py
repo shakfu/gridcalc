@@ -72,3 +72,20 @@ def test_search_from_unanchored_cell():
     search_next(g, matches, forward=False)
     # backward from (2,2): first match strictly less than (2,2) row-major is (0,0)
     assert (g.cc, g.cr) == (0, 0)
+
+
+def test_search_matches_spilled_values_errors_and_text_results():
+    from gridcalc.engine import Mode
+    from gridcalc.search import find_matches
+
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    g.setcell(0, 0, "=SEQUENCE(3)*21")  # A2 spills 42
+    g.setcell(1, 0, "=1/0")
+    g.setcell(2, 0, "hello")  # a label's internal 0 is not a value
+    g.setcell(3, 0, '="ab"&"cd"')
+    assert find_matches(g, "42") == [(0, 1)]
+    assert find_matches(g, "div") == [(1, 0)]
+    assert find_matches(g, "bc") == [(3, 0)]
+    assert (2, 0) not in find_matches(g, "0")

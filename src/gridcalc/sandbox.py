@@ -413,10 +413,11 @@ def inspect_file(filename: str) -> FileInfo | None:
     Returns a FileInfo with metadata about code blocks, required modules,
     and cell/formula counts, or None if the file cannot be parsed.
     """
+    # ValueError covers bad JSON, bad UTF-8 and an int over 4300 digits.
     try:
         with open(filename, encoding="utf-8") as f:
             d = json.load(f)
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+    except (OSError, ValueError, RecursionError):
         return None
 
     # This runs on a file chosen precisely because it is not yet trusted, so

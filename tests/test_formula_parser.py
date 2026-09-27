@@ -242,9 +242,10 @@ class TestParseErrors:
         with pytest.raises(ParseError):
             parse("1+2 3")
 
-    def test_trailing_comma(self):
-        with pytest.raises(ParseError):
-            parse("SUM(1,2,)")
+    def test_trailing_comma_is_an_omitted_argument(self):
+        from gridcalc.formula.ast_nodes import Missing
+
+        assert isinstance(parse("SUM(1,2,)").args[2], Missing)  # Excel accepts it
 
     def test_empty(self):
         with pytest.raises(ParseError):
@@ -314,3 +315,27 @@ class TestBooleanCallForm:
         application, which the evaluator refuses with #VALUE! -- Excel's
         answer too."""
         assert not isinstance(parse("TRUE(1)"), Bool)
+
+
+class TestEmptyArguments:
+    def test_empty_argument_is_missing(self):
+        from gridcalc.formula.ast_nodes import Missing
+
+        node = parse("IF(1,,2)")
+        assert isinstance(node, Call) and isinstance(node.args[1], Missing)
+        assert isinstance(parse("SUM(1,)").args[1], Missing)
+
+    def test_no_arguments_is_still_empty(self):
+        assert parse("NOW()").args == ()
+
+
+class TestArrayConstants:
+    def test_rows_and_columns(self):
+        from gridcalc.formula.ast_nodes import ArrayLit
+
+        assert parse('{1,-2;"a",TRUE}') == ArrayLit(((1.0, -2.0), ("a", True)))
+
+    @pytest.mark.parametrize("text", ["{1,2", "{1,A1}", "{1,2;3}", "{}"])
+    def test_malformed(self, text):
+        with pytest.raises(ParseError):
+            parse(text)

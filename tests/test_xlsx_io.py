@@ -724,3 +724,41 @@ def test_save_losses_includes_the_target_files_extras(tmp_path):
     g.setcell(0, 0, "1")
     assert "merged cells" in save_losses(g, f)
     assert save_losses(g, tmp_path / "new.xlsx") == []
+
+
+@pytest.mark.parametrize(
+    "setup,where",
+    [
+        (lambda g: g.setcell(1, 0, "a\x01b"), "Sheet1!B1"),
+        (lambda g: g.setcell(1, 0, '=A1&"\x02"'), "Sheet1!B1"),
+        (lambda g: g.names.append(NamedRange("n\x01", 0, 0, 0, 0)), "'n\\x01'"),
+        (lambda g: setattr(g.sheets[0], "name", "S\x01"), "'S\\x01'"),
+    ],
+)
+def test_control_character_refuses_the_save(tmp_path: Path, setup, where) -> None:
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    g.setcell(0, 0, "1")
+    setup(g)
+    out = tmp_path / "c.xlsx"
+    assert g.xlsxsave(str(out)) == -1
+    assert where in g.io_error
+    assert not out.exists()
+
+
+def test_tab_and_newline_still_save(tmp_path: Path) -> None:
+    g = Grid()
+    g.setcell(0, 0, "a\tb\nc")
+    out = tmp_path / "t.xlsx"
+    assert g.xlsxsave(str(out)) == 0
+    assert openpyxl.load_workbook(str(out)).active["A1"].value == "a\tb\nc"
+
+
+def test_a_spec_past_30_decimals_is_not_a_number_format() -> None:
+    from gridcalc.display import fmt_float
+    from gridcalc.engine import _xlsx_code_for_spec
+
+    assert fmt_float(1.5, ".400f") is None
+    assert _xlsx_code_for_spec(".400f") == ""
+    assert fmt_float(1.5, ".30f") == "1." + "5" + "0" * 29

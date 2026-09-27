@@ -8,11 +8,13 @@ from __future__ import annotations
 
 from .ast_nodes import (
     Apply,
+    ArrayLit,
     BinOp,
     Bool,
     Call,
     CellRef,
     ErrorLit,
+    Missing,
     Name,
     Node,
     Number,
@@ -29,9 +31,9 @@ from .ast_nodes import (
 # statically and must be treated as volatile (always recompute).
 DYNAMIC_REF_FUNCS: frozenset[str] = frozenset({"INDIRECT", "OFFSET", "INDEX"})
 
-# Functions that return a different value on every call (RAND, RANDBETWEEN).
+# Functions whose value changes between calls: random numbers and the clock.
 # Cells calling them must recompute on every recalc -- treat as volatile.
-VOLATILE_FUNCS: frozenset[str] = frozenset({"RAND", "RANDBETWEEN", "RANDARRAY"})
+VOLATILE_FUNCS: frozenset[str] = frozenset({"RAND", "RANDBETWEEN", "RANDARRAY", "NOW", "TODAY"})
 
 # Functions whose CellRef/RangeRef arguments are inspected as references
 # rather than read for value. Their args do not contribute to the cell's
@@ -152,6 +154,6 @@ def _walk(
     if isinstance(node, (UnaryOp, Percent)):
         _walk(node.operand, named, out, formula_sheet)
         return
-    # Number, String, Bool, ErrorLit have no refs
-    if isinstance(node, (Number, String, Bool, ErrorLit)):
+    # Constants have no refs
+    if isinstance(node, (Number, String, Bool, ErrorLit, Missing, ArrayLit)):
         return

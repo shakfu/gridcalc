@@ -8,13 +8,15 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ### Refactoring & code quality
 
-- [ ] **`COUNT` and `COUNTA` count blank cells inside a range.** `=COUNT(A1:C3)` over a range holding one number, one label and seven empties answers 8 and `=COUNTA` answers 9; Excel answers 1 and 2. Blank cells materialise into the range `Vec` as `0.0`, so nothing downstream can tell an empty cell from a zero -- the fix is in range materialisation, not in the counting functions. Found while making the aggregates variadic. `=COUNTIF(A1:C3,"*")` answers 9 for the same reason; Excel counts text cells only.
+- [ ] **Blank cells inside a range count as `0.0`.** `=COUNT(A1:C3)` over a range holding one number, one label and seven empties answers 8 and `=COUNTA` answers 9; Excel answers 1 and 2. Blank cells materialise into the range `Vec` as `0.0`, so nothing downstream can tell an empty cell from a zero -- the fix is in range materialisation, not in the counting functions. Found while making the aggregates variadic. `=COUNTIF(A1:C3,"*")` answers 9 for the same reason; Excel counts text cells only. REVIEW.md H2: the effect reaches common aggregates. With A1=5, A2 blank, A3=7, `AVERAGE` gives 4 (Excel 6), `MIN` 0 (5), `PRODUCT` 0 (35), `STDEV` 3.60555 (1.41421), `COUNTBLANK` 0 (1). This is a correctness defect, not refactoring. An explicit blank value in `Vec` also fixes the out-of-grid entry under Low.
 
-- [ ] **TUI `:o` raises on a non-JSON file.** `cmd_open` calls `sandbox.inspect_file` outside any `try`, and `inspect_file` raises `UnicodeDecodeError` on an `.xlsx` or non-UTF-8 file and `RecursionError` on deeply nested JSON. `cmd_open` also always calls `jsonload`. Route it through `loader.load_workbook`, which already handles `.xlsx`, and make `inspect_file` return `None` for unreadable input.
+- [ ] **Undo leaves orphan spill cells that feed other formulas.** Enter `=SEQUENCE(3)` in A1 with `=SUM(A1:A3)` in C1, then undo: A1 is gone, A2:A3 keep 2 and 3, C1 reads 5. Redo of an overwrite of the anchor and `replicatecell` of an empty cell over the anchor do the same. `setcell` tears spills down; undo, redo and `replicatecell` do not. Put spill teardown in one function every anchor removal calls. (REVIEW.md H3; see the cross-sheet spill entry under Medium.)
+
+- [ ] **TUI `:o` raises on a non-JSON file.** `cmd_open` calls `sandbox.inspect_file` outside any `try`, and `inspect_file` raises `UnicodeDecodeError` on an `.xlsx` or non-UTF-8 file, `RecursionError` on deeply nested JSON, and `ValueError` on an integer literal over 4300 digits (CPython's int-string limit; `jsonload` raises it too, REVIEW.md M7). `cmd_open` also always calls `jsonload`. Route it through `loader.load_workbook`, which already handles `.xlsx`, and make `inspect_file` return `None` for unreadable input.
 
 - [ ] **Load warnings and I/O errors are not shown.** `Grid.load_warnings` counts shared formulas imported as values and cells dropped beyond 256x1024. `Grid.io_error` holds why a load or save failed. The CLI prints warnings and `Api.open_file` returns them, but the TUI shows neither, and the web client ignores `warnings`. TUI `:xlsx save` and friends print only "Failed to export", and `--convert` prints "could not write PATH" without the reason.
 
-- [ ] **Deleting a sheet leaves references to it reading 0.** `=Sheet1!A2*2` on another sheet keeps its text and evaluates to 0 after `Sheet1` is removed. Excel rewrites the reference to `#REF!`.
+- [ ] **Deleting a sheet leaves references to it reading 0.** `=Sheet1!A2*2` on another sheet keeps its text and evaluates to 0 after `Sheet1` is removed. Excel rewrites the reference to `#REF!`. REVIEW.md M1: a reference to a sheet that never existed (`=Nope!A1`) also gives 0, and sheet names match case-sensitively, so `=data!A1` gives 0 when the sheet is `Data`. Excel matches case-insensitively and returns `#REF!` for a missing sheet.
 
 - [ ] **A deleted reference shows `#NAME?` in PYTHON mode.** Deleting a referenced row rewrites `=A2*2` to `=#REF!*2`, which PYTHON-mode `eval()` cannot parse. EXCEL mode shows `#REF!`.
 
@@ -22,7 +24,9 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ### Security
 
-- [ ] **The formula validator misses string-borne attribute access.** `validate_formula` inspects only `ast.Attribute` and `ast.Name` nodes, so `"{0.__globals__[os].environ[HOME]}".format(SUM)` reads the environment. `str.format` and `format_map` traverse; `%` and f-string format specs do not. Since 0.7.0 a PYTHON-mode file with formulas raises the trust prompt, including one with a missing or unknown `mode`, so this needs the user's approval. That prompt also appears for plain-arithmetic files; `docs/dev/python-allowlist.md` proposes prompting only for formulas outside an allowlist.
+- [ ] **A CSV file evaluates PYTHON-mode formulas with no trust prompt.** `loader.needs_trust()` returns `None` for `.csv`, and `load_workbook()` returns `mode=PYTHON`, `python_trusted=True` and evaluates the formulas. `Api.inspect()` reports `needs_trust: False`. The 0.7.0 prompt covers JSON only, so the `str.format` traversal below is reachable through CSV without approval. Load CSV in EXCEL mode, or put one gate in `loader.load_workbook` keyed on the resulting mode, not the file extension. (REVIEW.md H1.)
+
+- [ ] **The formula validator misses string-borne attribute access.** `validate_formula` inspects only `ast.Attribute` and `ast.Name` nodes, so `"{0.__globals__[os].environ[HOME]}".format(SUM)` reads the environment. `str.format` and `format_map` traverse; `%` and f-string format specs do not. Since 0.7.0 a PYTHON-mode JSON file with formulas raises the trust prompt, including one with a missing or unknown `mode`, so this needs the user's approval. CSV bypasses the prompt (entry above). That prompt also appears for plain-arithmetic files; `docs/dev/python-allowlist.md` proposes prompting only for formulas outside an allowlist.
 
 - [ ] **Curated module facade.** Approved workbook code is handed whole module objects, so `np.savetxt('/anywhere', ...)` writes any path with the sandbox on. Expose a facade (`np.array`, `np.mean`, `np.linalg.solve`) rather than the module. Portable, needs no IPC, and removes the severe outcome -- arbitrary file read and write -- at a fraction of the cost of isolation. Ongoing cost is curation: each newly approved module needs a facade, and an omission is silent.
 
@@ -64,6 +68,16 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ### Refactoring & code quality
 
+- [ ] **PYTHON-mode formulas on a non-active sheet evaluate wrongly at load.** Sheet `S2` with `A1=10`, `B1="=A1*2"`: after `jsonload`, `S2!B1` is 0; after editing `S2!A1` it is 22 (expected 20 and 22). The active sheet is correct. Cause not established: evaluation order or name resolution against the active sheet. (REVIEW.md M2.)
+
+- [ ] **A cross-sheet consumer of a spill cell is not recalculated when the spill goes away.** `Sheet1!A1` = `=SEQUENCE(3)`, `S2!A1` = `=Sheet1!A3*10` reads 30. Overwriting `Sheet1!A1` with `5` leaves `S2!A1` at 30 until a full `recalc()`. Same-sheet consumers update. Shares a cause with the undo spill entry under High. (REVIEW.md M3.)
+
+- [ ] **`adjust_refs` emits invalid references when a shift leaves the grid.** `=A1+B2` shifted (-1,-1) gives `=@0+A1`; `=A1` (0,-1) gives `=A0`; `=SUM(A1:A3)` (0,-2) gives `=SUM(A-1:A1)`; `=ZZ5` (1,0) gives `=[A5`. Excel writes `#REF!`, as `_rewrite_refs_on_sheet` already does on row deletion. Which commands reach this is not traced. (REVIEW.md M4.)
+
+- [ ] **Narrow columns show truncated numbers as if complete.** `fmtcell` at width 8 shows 123456789 as `12345678`, `1234567.891` with `,.2f` as `1,234,56`, and serial 46147 with `yyyy-mm-dd` as `2026-05-`. Non-integers fall back to scientific notation; integers and formatted values do not. Excel shows `########`. (REVIEW.md M5.)
+
+- [ ] **Control characters in a label or name produce an invalid xlsx.** A label containing `\x01` exports with return code 0, and `xl/workbook.xml` and `xl/sharedStrings.xml` are not well-formed. gridcalc reloads it silently without named ranges; Excel refuses it. Strip or reject characters outside the XML 1.0 `Char` range at export. (REVIEW.md M6.)
+
 - [ ] **Undo gaps.** `:e` code edits, `:opt def`/`:opt undef` and `:width` (web `set_col_width`) record no undo entry. A workbook-level undo also reverts any width change made after its snapshot.
 
 - [ ] **Sheet names are validated only at xlsx export.** `add_sheet` and `rename_sheet` accept names Excel rejects (`a/b`, `Q?`, 32+ characters, `History`), so the workbook saves as JSON and fails as xlsx. Validate on creation and rename.
@@ -78,7 +92,15 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 - [ ] **No limit on formula size or run time.** `=SUM(SEQUENCE(100000000))` (EXCEL) hangs the load with no approval needed. `=sum(range(10**12))` (PYTHON) does too once the file is approved. Cap formula length and nesting depth, and bound evaluation.
 
+- [ ] **Unverified: the file can change between approval and load.** `inspect_file` and the later load read the file twice. Probe artefact exists; outcome not confirmed. (REVIEW.md unchecked lead.)
+
+- [ ] **Unverified: `pager` or `editor` from `./gridcalc.toml` may reach a subprocess.** 0.7.0 says `editor` is ignored there. Probe artefact exists; outcome not confirmed. (REVIEW.md unchecked lead.)
+
+- [ ] **Unverified: `allowed_modules` from `./gridcalc.toml`.** If still honoured there, a directory can pre-approve `numpy.ctypeslib` (see the `classify_module` entry). Probe artefact exists; outcome not confirmed. (REVIEW.md unchecked lead.)
+
 ### Documentation & infrastructure
+
+- [ ] **`docs/reference/limitations.md` contradicts the 0.7.0 changelog.** It says xlsx fonts and column widths are neither read nor written and only date formats cross. 0.7.0 round-trips bold, italic, underline, number formats, alignment and column widths. `tests/test_docs_conformance.py` checks function names on this page, not these claims. (REVIEW.md D1.)
 
 - [ ] **Build the docs site in CI.** The site itself is done (`mkdocs.yml`, 30+ pages under `docs/`, `make docs` / `docs-serve` / `docs-deploy`), and publishing stays a deliberate manual `make docs-deploy` -- the Makefile says why. The gap is that `ci.yml` never runs `mkdocs build --strict`, so a broken cross-reference between pages lands on `main` and is only found by whoever next deploys. Adding the `docs` group and one `make docs` step to CI is the whole fix; it does not commit or push anything.
 
@@ -112,14 +134,47 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 - [ ] **`Cell.ast` cache invalidates by text equality.** For very large sheets where many formulas share text, hashing the text would cut cache lookups; not a priority but worth measuring.
 
-- [ ] **Remaining `libs/xlsx.py` Excel-fidelity gaps.** The lookup / criteria / conditional-aggregate audit sweep is done (see CHANGELOG). Left open:
-  - Numeric-vs-text criteria coercion (`COUNTIF({1,2,"3"}, 3)`).
-  - `SUMIF`/`COUNTIF` with a `sum_range` shorter than the criteria range. Excel resizes from the top-left, which needs reference rather than materialised-`Vec` semantics -- now unblocked, since `OFFSET` brought the `Reference` type into the value system.
-  - Array criteria: `=SUMIF(A1:A3,{"a","b"},B1:B3)` answers `nan`.
-  - D-functions (`DSUM`, `DCOUNT`, ...) return an error from any row of the database, not only from matched rows. Microsoft does not document the rule.
-  - `=ROWS(FILTER(...))` answers `#VALUE!`.
-  - Number-to-text uses 15 significant digits with `%g` notation, so `=0.00001&""` gives `1e-05`; Excel gives `0.00001`.
-  - `YEARFRAC` bases 0 and 1 across year boundaries, and `POWER(0,0)` (gridcalc 1, Excel `#NUM!`). Confirm against Excel before changing.
+- [ ] **Numeric-vs-text criteria coercion.** `COUNTIF({1,2,"3"}, 3)`. Array constants do not parse yet (entry below).
+
+- [ ] **`SUMIF`/`COUNTIF` with a `sum_range` shorter than the criteria range.** Excel resizes from the top-left, which needs reference rather than materialised-`Vec` semantics -- now unblocked, since `OFFSET` brought the `Reference` type into the value system.
+
+- [ ] **Array criteria.** `=SUMIF(A1:A3,{"a","b"},B1:B3)` answers `nan`.
+
+- [ ] **D-functions return an error from any row.** `DSUM`, `DCOUNT`, ... return an error from any row of the database, not only from matched rows. Microsoft does not document the rule.
+
+- [ ] **`=ROWS(FILTER(...))` answers `#VALUE!`.**
+
+- [ ] **Number-to-text uses `%g` notation.** 15 significant digits with `%g`, so `=0.00001&""` gives `1e-05`; Excel gives `0.00001`.
+
+- [ ] **`YEARFRAC` bases 0 and 1 across year boundaries.** Confirm against Excel before changing.
+
+- [ ] **`POWER(0,0)` answers 1.** Excel gives `#NUM!`. Confirm against Excel before changing.
+
+- [ ] **Empty arguments do not parse.** `=IF(1,,2)` and `=SUM(1,)` give `ERROR`; Excel accepts them. Confirm against Excel. (REVIEW.md L1.)
+
+- [ ] **Array constants do not parse.** `={1,2,3}` and `=SUM({1,2,3})` give `ERROR`; Excel accepts them. (REVIEW.md L2.)
+
+- [ ] **Whole-column references do not parse.** `=SUM(A:A)` gives `ERROR`, and `limitations.md` does not say so. (REVIEW.md L3.)
+
+- [ ] **References past 256 x 1024 read as 0.** `=XFD1` and `=A1048577` give 0; in Excel they are valid cells. Same cause as the blank-cell entry under High. (REVIEW.md L4.)
+
+- [ ] **No Excel-style float comparison.** `=0.1+0.2=0.3` and `=1-0.9=0.1` give `FALSE`; Excel gives `TRUE`. Confirm against Excel. (REVIEW.md L5.)
+
+- [ ] **Overflow shows `inf`.** `=1e308*10` shows `inf`; Excel gives `#NUM!`. `0^0`: see the `POWER(0,0)` entry. (REVIEW.md L6.)
+
+- [ ] **Serials before 1900-03-01 are off by one.** `=DATEVALUE("1900-01-01")` gives 2 and `=DAY(0)` gives 30; Excel gives 1 and 0. Confirm against Excel. (REVIEW.md L7.)
+
+- [ ] **`NOW()` and `TODAY()` are not volatile.** Neither is in `Grid._volatile`; `RAND()` is. (REVIEW.md L8.)
+
+- [ ] **Search matches neither spilled values nor error text.** Searching `42` or `DIV` finds nothing. (REVIEW.md L9.)
+
+- [ ] **`swaprow` reverses range endpoints.** `=SUM(A1:A2)` becomes `=SUM(A2:A1)`. The value is right. (REVIEW.md L10.)
+
+- [ ] **JSON save normalises number text.** `007` becomes `7` and `1.50` becomes `1.5`. `1e400` is accepted as `inf` and saved as `1e999`. (REVIEW.md L11.)
+
+- [ ] **`Grid._circular` keeps stale coordinates after `insertrow`.** They include a cell that no longer exists. (REVIEW.md L12.)
+
+- [ ] **The format spec `.400f` is accepted.** It prints 400 decimals. (REVIEW.md L13.)
 
 - [ ] **Open decision: `^` associativity.** `=2^3^2` answers 512 (right-associative, chosen deliberately); Excel evaluates left to right and answers 64. Decide whether EXCEL mode follows Excel here, since the grammar is described as Excel-compatible.
 
@@ -128,14 +183,20 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 ### Features
 
 - [ ] **Reconsider polars for DataFrame cells.** pandas backs `pd.DataFrame` formulas and `:pd`. Polars has no index, which matches how gridcalc reads a frame (shape, column names, cell access, row iteration). Measured 2026-09-17 on macOS arm64, polars 1.44.2 against pandas 3.0.5:
+
   - Warm import: about 75 ms against 200-230 ms.
+
   - Installed: 164 MB against 73 MB for pandas plus numpy. numpy stays for ndarray cells, so `[extras]` would grow to about 188 MB.
+
   - Python: one abi3 wheel for 3.10+; pandas 3 needs 3.11+.
 
   Costs of switching:
   - Strict column dtypes. `pl.DataFrame({"a": [1, 3.5]})` raises, so `objedit` literals break, and range-to-frame conversion needs a coercion rule for mixed columns.
+
   - `null` exists alongside NaN, so `cmd_view`'s `pd.isna` check changes.
+
   - polars needs a `SIDE_EFFECT_MODULES` entry: `read_csv` takes URLs and `pl.plugins.register_plugin_function` loads a native library.
+
   - `pd.` workbooks break: `examples/example.json`, 11 tests, `docs/guide/formulas.md`.
 
   Decide first whether DataFrame growth means a richer formula API or grid integration (range to frame, spilling a frame), and whether frames get their own extra.
@@ -165,6 +226,8 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 - [ ] **Process isolation for PYTHON-mode recalc.** Only worth building if running untrusted workbook code becomes a supported feature; `LoadPolicy.formulas_only()` is the current answer everywhere but the TUI trust prompt. Buys a resource ceiling on every platform but filesystem confinement mainly on Linux. HYBRID's `py.*` gateway is a separate decision -- it is called mid-expression from the evaluator in the parent.
 
 ### Documentation & infrastructure
+
+- [ ] **Review the areas REVIEW.md did not cover.** `libs/xlsx.py`; solver, goal seek and the C++ extensions; TUI, web `Api` and React client; packaging (sdist and wheel contents).
 
 - [ ] **EXCEL grammar reference page.** Operators, precedence, error values, the function library, mode semantics. Add it to the docs site.
 

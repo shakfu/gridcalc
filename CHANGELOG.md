@@ -55,10 +55,15 @@
 ### Fixed
 
 - **`:pd load` dropped, shifted and rewrote data.**
+
   - pandas' NA markers dropped cells reading `NA`, `N/A`, `None` or `null`.
+
   - Its float parser rounded `0.30000000000000004` to `0.3`.
+
   - A row longer than the header became the index, so its first field vanished and the rest moved one column left.
+
   - Repeated or blank headers loaded as `a.1` and `Unnamed: 1`.
+
   - JSON strings such as `"007"` became numbers, and date-like strings in columns such as `date` or `modified` became timestamps.
 
   CSV and TSV now load exactly as `:csv load` does. JSON values keep their type: strings stay labels and booleans become `=TRUE`/`=FALSE`.
@@ -88,11 +93,17 @@
 - **Undo covers the whole workbook.** Sheet add, delete, rename and move, `:name`, `:unname` and `:mode` are undoable, and undoing a structural operation restores every sheet it rewrote. Entries hold the `Sheet` object rather than its name, so a rename no longer orphans them. A structural entry copies every sheet's cells, about 6.4 MB on a 3-sheet, 25k-cell workbook. JSON snapshots were smaller but drop solver-written values and re-run code, and recalc dominates restore time either way. `UndoManager.undo`/`redo` now return whether an entry was applied; `clear()` and `rollback()` are new.
 
 - **Formula coercion follows Excel.**
+
   - Text comparison and `SWITCH` ignore case.
+
   - `=""+1`, `="nan"+1` and `="1_000"+1` give `#VALUE!`, and typed `1_000` is a label.
+
   - Number-to-text uses 15 significant digits.
+
   - Aggregates count a bool or numeric text typed as a direct argument (`=SUM("3",TRUE)` is 4). Values from cells are still skipped.
+
   - `IF`/`IFS` give `#VALUE!` for a text condition and pick element-wise over an array condition.
+
   - An error cell inside a range stays in its element, so `VLOOKUP`, `INDEX`, `FILTER` and `IFERROR` over the range work. `SUM` still returns the error, and the `SUMIF` family returns one only from a matching row.
 
 - **The solver refuses models it used to solve wrongly.** Strict `<`/`>` tighten by one on integer rows and are refused elsewhere. Integer variables with a quadratic objective, text parameters, and non-finite bounds or goal targets raise an error naming the cell. A solve stops at 60 s with `TIMEOUT`.
@@ -126,10 +137,15 @@
 - **Solver-written cells had empty or stale source text.** Solve and `:opt sens into` wrote `text=""`, and goal seek left the old text, so copy, paste, fill and edit produced blanks or the old number.
 
 - **Web edits landed in the wrong place.**
+
   - Incremental find moved focus to the grid, so the rest of the pattern was typed into a cell.
+
   - A late `cell_source` reply put the previous cell's text in the formula bar, and replaced a key typed right after Enter.
+
   - Fill-handle drag of a multi-row block copied only its first row.
+
   - Cut, then paste at the sheet edge, deleted the cells that did not fit.
+
   - Pasting empty clipboard text blanked the active cell.
 
 - **Smaller web view fixes.** Ctrl+S/O/K/F work while editing a cell. Sheet delete asks first. Solver annotations clear on undo, redo, commands and formatting. Status-bar totals and find hits refresh after undo, redo and open. An overflowing selection sum no longer blanks the totals. Goal seek rejects `1,5` instead of reading 1. Solving a selection that replaces the `default` model marks the workbook modified.
@@ -149,12 +165,19 @@
 - **PYTHON mode marked dependency chains longer than 100 cells as `#CIRC!`**, and a cell name inside a string literal as a self-reference. CSV and pandas loads recalculated once per cell: 8000 cells took 8.2 s, now 12 ms.
 
 - **Excel functions returned wrong values in EXCEL mode.** Their tests called the Python implementations directly or ran in PYTHON mode. `tests/test_excel_functions.py` now evaluates them through formulas.
+
   - `ROUND(x,n)` gave `#VALUE!` and rounded halves to even. `ROUNDDOWN`, `TRUNC`, `FLOOR`, `CEILING` and `MROUND` leaked float error (`ROUNDDOWN(4.35,2)` was 4.34) and broke Excel's sign rules.
+
   - `INT(-2.5)` was -2, `LOG(100)` was ln 100, `ATAN2` swapped its arguments, and `LN` and `PI()` did not resolve.
+
   - Text functions rendered numbers with `str(float)`, so `LEN(12345)` was 7.
+
   - `DATE` did not roll months and days over. `WEEKDAY`/`WEEKNUM` types 11-17, `DATEDIF` MD/YM/YD and holidays in `NETWORKDAYS`/`WORKDAY` were wrong or missing.
+
   - `MEDIAN`, `STDEV`, `VAR`, `MODE` and other statistics took one argument, and `SUMPRODUCT` exactly two.
+
   - `XLOOKUP` failed on a horizontal lookup, and its exact modes applied wildcards. Approximate `VLOOKUP`/`MATCH` compared text case-sensitively.
+
   - `TEXT`, `FIXED`, `DOLLAR`, `TRIM`, `SEARCH`, `VALUE`, `INDEX`, `LARGE`/`SMALL`, `AVERAGE` of no numbers, `PV`/`FV`/`PMT` with a fractional nper, and `NORM.S.DIST` tails had further Excel divergences.
 
 - **The optimiser read a formula cell between the model and a decision variable as a constant.** With `B1 =2*A1` and `=B1<=10`, it returned `A1=100` as `OPTIMAL`. Helper formulas are now inlined through any chain, and one that cannot be expressed raises `NotLinear` naming it. Inlining was chosen over refusing because helper cells are the normal way to structure a model.

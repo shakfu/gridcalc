@@ -129,7 +129,6 @@ class TestCellRefs:
     def test_basic(self):
         env = make_env(cells={(0, 0): 5.0})
         assert ev("A1", env) == 5.0
-        assert env.refs_used == {(None, 0, 0)}
 
     def test_empty_cell_is_zero(self):
         env = make_env()
@@ -145,7 +144,6 @@ class TestCellRefs:
             sheets={"Sheet2": {(0, 0): 99.0}},
         )
         assert ev("Sheet2!A1", env) == 99.0
-        assert env.refs_used == {("Sheet2", 0, 0)}
 
     def test_sheet_qualified_range_resolves(self):
         env = make_env(

@@ -1290,7 +1290,7 @@ class TestArrayFunctions:
         assert out.data == [10.0, 30.0]
         # Empty -> if_empty fallback
         assert FILTER(rng, Vec([0.0, 0.0, 0.0, 0.0]), "none") == "none"
-        assert FILTER(rng, Vec([0.0, 0.0, 0.0, 0.0])) is ExcelError.NA
+        assert FILTER(rng, Vec([0.0, 0.0, 0.0, 0.0])) is ExcelError.CALC
 
     def test_sort(self) -> None:
         from gridcalc.libs.xlsx import SORT

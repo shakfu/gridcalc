@@ -1,14 +1,18 @@
 # Topological recalc
 
-Design note for replacing the fixed-point recalc loop with a dependency-graph driven traversal. Status: **shipped, Phases A-D**. Linked from `TODO.md` under Performance.
+Design note for replacing the fixed-point recalc loop with a dependency-graph driven traversal. Status: **shipped, Phases A-E**.
 
-`Grid._recalc_topo` (`src/gridcalc/engine.py`) is what `Grid.recalc()` calls in EXCEL and HYBRID mode, wrapped in a bounded fixpoint so a spill whose shape changed can re-drive its consumers. Phase A's two indexes are `Grid._dep_of` / `Grid._subscribers`; Phase C's incremental path is the `dirty` argument `setcell` and `setcells_bulk` pass down; Phase D's structural cycle detection is the "left in the closure but not in `order`" step, which marks `#CIRC!` instead of the old "didn't converge in 100 iterations" guess. **Phase E (range aggregation) is the one part still open** -- see `TODO.md` under Performance.
+`Grid._recalc_topo` (`src/gridcalc/engine.py`) is what `Grid.recalc()` calls in EXCEL and HYBRID mode, wrapped in a bounded fixpoint so a spill whose shape changed can re-drive its consumers. Phase A's two indexes are `Grid._dep_of` / `Grid._subscribers`; Phase C's incremental path is the `dirty` argument `setcell` and `setcells_bulk` pass down; Phase D's structural cycle detection is the "left in the closure but not in `order`" step, which marks `#CIRC!` instead of the old "didn't converge in 100 iterations" guess. Phase E takes the aggregation-node form: a multi-cell range is one `RangeKey` node (`formula/deps.py`) that its consumers share.
 
 Graph upkeep as the code stands:
 
 - A full `recalc()` (no `dirty` set) rebuilds the graph every time. Undo, sort and the CLI write cells directly and rely on it (`CHANGELOG.md`, Unreleased).
 
 - `setcell` and `setcells_bulk` update the graph incrementally.
+
+- A `RangeKey` node exists while it has a subscriber. Clearing its last consumer removes it and its edges from the range's cells.
+
+- While the graph is unbuilt, cell writes skip registration; the next recalc rebuilds it whole.
 
 - `clear_all`, a `mode` change, `rename_sheet` and `remove_sheet` mark it stale, so the next recalc is a full one.
 

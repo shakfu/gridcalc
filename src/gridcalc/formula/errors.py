@@ -13,6 +13,7 @@ class ExcelError(Enum):
     NULL = "#NULL!"
     CIRC = "#CIRC!"
     SPILL = "#SPILL!"
+    CALC = "#CALC!"  # an empty array: Excel has none
 
     def __str__(self) -> str:
         return self.value

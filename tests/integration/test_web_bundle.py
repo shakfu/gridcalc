@@ -25,6 +25,18 @@ pytestmark = pytest.mark.browser
 
 BUNDLE = Path(__file__).resolve().parents[2] / "src" / "gridcalc" / "web" / "static" / "index.html"
 
+
+def _bundle_built() -> bool:
+    """False when the bundle is absent or is the placeholder `make build` writes."""
+    from gridcalc.web import _load_html
+
+    try:
+        _load_html(BUNDLE)
+    except OSError:
+        return False
+    return True
+
+
 # The pywebview window injects `window.pywebview.api`; here the test provides a
 # stateful mock (records calls, a seeded cell store, switches sheets) and fires
 # the ready event the app waits on.
@@ -342,7 +354,7 @@ _MOCK_BRIDGE = """
 
 @pytest.fixture
 def page():
-    if not BUNDLE.exists():
+    if not _bundle_built():
         pytest.skip("web bundle not built; run `make web-build`")
     with sync_api.sync_playwright() as p:
         try:
@@ -1121,7 +1133,7 @@ def test_cancelling_loads_nothing(page) -> None:
 def test_a_startup_workbook_with_code_asks_on_boot() -> None:
     """The file named on the command line is already open, formulas-only, and
     the dialog comes up over it once the window exists."""
-    if not BUNDLE.exists():
+    if not _bundle_built():
         pytest.skip("web bundle not built; run `make web-build`")
     with sync_api.sync_playwright() as p:
         try:

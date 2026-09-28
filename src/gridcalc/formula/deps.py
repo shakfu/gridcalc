@@ -6,6 +6,8 @@ topological recalc. Pure-AST analysis: no evaluation.
 
 from __future__ import annotations
 
+from typing import NamedTuple, cast
+
 from .ast_nodes import (
     Apply,
     ArrayLit,
@@ -25,6 +27,29 @@ from .ast_nodes import (
     String,
     UnaryOp,
 )
+
+CellKey = tuple[str | None, int, int]
+
+
+class RangeKey(NamedTuple):
+    """A rectangular range as one dependency-graph node, corners normalised."""
+
+    sheet: str | None
+    c1: int
+    r1: int
+    c2: int
+    r2: int
+
+    def cells(self) -> set[CellKey]:
+        return {
+            (self.sheet, c, r)
+            for r in range(self.r1, self.r2 + 1)
+            for c in range(self.c1, self.c2 + 1)
+        }
+
+
+DepKey = CellKey | RangeKey
+
 
 # Functions whose read set depends on a value, not on static text. Cells
 # containing one of these calls cannot have their dependencies determined
@@ -75,8 +100,23 @@ def extract_refs(
 
     Does not detect dynamic-ref functions; use ``has_dynamic_refs``.
     """
-    out: set[tuple[str | None, int, int]] = set()
-    _walk(node, named_ranges or {}, out, formula_sheet)
+    out: set[DepKey] = set()
+    _walk(node, named_ranges or {}, out, formula_sheet, False)
+    return cast("set[CellKey]", out)  # without collapse, _walk emits only cells
+
+
+def extract_deps(
+    node: Node,
+    named_ranges: dict[str, Node] | None = None,
+    formula_sheet: str | None = None,
+) -> set[DepKey]:
+    """As `extract_refs`, but a multi-cell range is one `RangeKey`, not its cells.
+
+    The graph shares one node per distinct range, so N formulas over one
+    range cost N + size edges rather than N * size.
+    """
+    out: set[DepKey] = set()
+    _walk(node, named_ranges or {}, out, formula_sheet, True)
     return out
 
 
@@ -104,8 +144,9 @@ def has_dynamic_refs(node: Node) -> bool:
 def _walk(
     node: Node,
     named: dict[str, Node],
-    out: set[tuple[str | None, int, int]],
+    out: set[DepKey],
     formula_sheet: str | None,
+    collapse: bool,
 ) -> None:
     if isinstance(node, CellRef):
         sheet = node.sheet if node.sheet is not None else formula_sheet
@@ -115,9 +156,11 @@ def _walk(
         sheet = node.start.sheet if node.start.sheet is not None else formula_sheet
         c1, c2 = sorted([node.start.col, node.end.col])
         r1, r2 = sorted([node.start.row, node.end.row])
-        for r in range(r1, r2 + 1):
-            for c in range(c1, c2 + 1):
-                out.add((sheet, c, r))
+        key = RangeKey(sheet, c1, r1, c2, r2)
+        if collapse and (c1, r1) != (c2, r2):
+            out.add(key)
+        else:
+            out.update(key.cells())
         return
     if isinstance(node, SpillRef):
         # A spill range depends on its anchor: when the anchor's array
@@ -129,30 +172,30 @@ def _walk(
     if isinstance(node, Name):
         target = named.get(node.name.lower())
         if target is not None:
-            _walk(target, named, out, formula_sheet)
+            _walk(target, named, out, formula_sheet, collapse)
         return
     if isinstance(node, Call):
         if node.name.upper() in ADDRESS_ONLY_FUNCS:
             # Args are used as references, not read for value.
             return
         for a in node.args:
-            _walk(a, named, out, formula_sheet)
+            _walk(a, named, out, formula_sheet, collapse)
         return
     if isinstance(node, Apply):
-        _walk(node.func, named, out, formula_sheet)
+        _walk(node.func, named, out, formula_sheet, collapse)
         for a in node.args:
-            _walk(a, named, out, formula_sheet)
+            _walk(a, named, out, formula_sheet, collapse)
         return
     if isinstance(node, PyCall):
         for a in node.args:
-            _walk(a, named, out, formula_sheet)
+            _walk(a, named, out, formula_sheet, collapse)
         return
     if isinstance(node, BinOp):
-        _walk(node.left, named, out, formula_sheet)
-        _walk(node.right, named, out, formula_sheet)
+        _walk(node.left, named, out, formula_sheet, collapse)
+        _walk(node.right, named, out, formula_sheet, collapse)
         return
     if isinstance(node, (UnaryOp, Percent)):
-        _walk(node.operand, named, out, formula_sheet)
+        _walk(node.operand, named, out, formula_sheet, collapse)
         return
     # Constants have no refs
     if isinstance(node, (Number, String, Bool, ErrorLit, Missing, ArrayLit)):

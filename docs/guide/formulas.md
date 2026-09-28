@@ -11,6 +11,7 @@
 =SUM(A1:A10)                          range -> 1D array
 =SUM(A1:A3, B1:B3, 100)               several ranges, values or both
 =SUM(A1:A3 * B1:B3)                   element-wise array arithmetic
+=ROUND(A1:A3, 1)                      a one-value parameter given an array spills per element
 ={1,2;3,4}                            array constant: `,` columns, `;` rows
 =IF(A1 > 0, , 1)                      omitted argument -> blank
 =LET(x, SUM(A1:A9), x/COUNT(A1:A9))   local bindings -- compute once, reuse
@@ -19,7 +20,7 @@
 =py.margin(A1, B1)                    HYBRID: call a code-block function
 ```
 
-Excel error values (`#DIV/0!`, `#N/A`, `#NAME?`, `#REF!`, `#VALUE!`, `#NUM!`, `#NULL!`) propagate through arithmetic and are catchable with `IFERROR`/`IFNA`.
+Excel error values (`#DIV/0!`, `#N/A`, `#NAME?`, `#REF!`, `#VALUE!`, `#NUM!`, `#NULL!`, `#CALC!`) propagate through arithmetic and are catchable with `IFERROR`/`IFNA`.
 
 ## Excel coercion
 

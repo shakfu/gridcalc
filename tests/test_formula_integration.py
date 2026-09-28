@@ -1115,3 +1115,286 @@ class TestCriteriaFunctionsTakeAOneCellRange:
         g.setcell(1, 3, "=NA()")
         g.setcell(5, 0, formula)
         assert cell_text(g.cells[5][0]) == expected
+
+
+class TestElementwiseLifting:
+    """An array where a function takes one value evaluates it per element."""
+
+    def _grid(self):
+        g = make_excel_grid()
+        g._apply_mode_libs()
+        g.setcells_bulk(
+            [(0, r, v) for r, v in enumerate(["3", "1", "4", "1", "5"])]
+            + [(1, r, v) for r, v in enumerate(["apple", "Banana", "cherry"])]
+            + [(4, r, str(r - 2)) for r in range(5)]
+        )
+        return g
+
+    def _spill(self, g, formula, rows, cols=1):
+        g.setcell(10, 0, formula)
+        return [[g._cell_lookup_value(10 + c, r) for c in range(cols)] for r in range(rows)]
+
+    def test_a_scalar_function_spills_over_a_range(self):
+        g = self._grid()
+        assert self._spill(g, "=SIN(A1:A3)", 3) == [[math.sin(3)], [math.sin(1)], [math.sin(4)]]
+
+    def test_a_text_function_over_a_range_does_not_see_the_array(self):
+        g = self._grid()
+        assert self._spill(g, "=UPPER(B1:B3)", 3) == [["APPLE"], ["BANANA"], ["CHERRY"]]
+        assert self._spill(g, "=LEFT(B1:B3, 2)", 3) == [["ap"], ["Ba"], ["ch"]]
+
+    def test_an_error_stays_in_its_element(self):
+        g = self._grid()
+        out = self._spill(g, "=SQRT(E1:E5)", 5)
+        assert [row[0] for row in out[:2]] == [ExcelError.NUM, ExcelError.NUM]
+        assert [row[0] for row in out[2:]] == [0.0, 1.0, math.sqrt(2)]
+
+    def test_scalar_positions_lift_beside_array_positions(self):
+        g = self._grid()
+        assert self._spill(g, "=SUMIF(A1:A5, A1:A3)", 3) == [[3.0], [2.0], [4.0]]
+        assert self._spill(g, "=LARGE(A1:A5, {1;2;3})", 3) == [[5.0], [4.0], [3.0]]
+        assert self._spill(g, "=VLOOKUP(A1:A2, A1:B5, 2, FALSE)", 2) == [["apple"], ["Banana"]]
+
+    def test_shapes_broadcast_and_pad_with_na(self):
+        g = self._grid()
+        assert self._spill(g, "=POWER(A1:A3, {1,2})", 3, 2) == [[3.0, 9.0], [1.0, 1.0], [4.0, 16.0]]
+        assert self._spill(g, "=LEFT(B1:B3, A1:A2)", 3) == [["app"], ["B"], [ExcelError.NA]]
+
+    def test_aggregates_and_type_do_not_lift(self):
+        g = self._grid()
+        g.setcell(10, 0, "=SUM(SIN(A1:A3))")
+        g.setcell(11, 0, "=TYPE(A1:A3)")
+        g.setcell(12, 0, "=NPV(0.1, A1:A3)")
+        assert g.cells[10][0].val == pytest.approx(math.sin(3) + math.sin(1) + math.sin(4))
+        assert g.cells[11][0].val == 64.0
+        assert g.cells[12][0].val == pytest.approx(3 / 1.1 + 1 / 1.21 + 4 / 1.331)
+
+
+@pytest.mark.parametrize(
+    "formula, expected",
+    [
+        ("=HSTACK(A1, A2)", [3.0, 1.0]),
+        ("=VSTACK(A1, 5)", [3.0, 5.0]),
+        ("=UNIQUE(A1)", [3.0]),
+        ("=SORT(A1)", [3.0]),
+        ("=TOCOL(A1)", [3.0]),
+        ("=TOROW(A1)", [3.0]),
+        ("=TRANSPOSE(A1)", [3.0]),
+        ("=TAKE(A1, 1)", [3.0]),
+        ("=CHOOSECOLS(A1, 1)", [3.0]),
+        ("=CHOOSEROWS(A1, 1)", [3.0]),
+        ("=FILTER(A1, TRUE)", [3.0]),
+        ("=EXPAND(A1, 2)", [3.0, ExcelError.NA]),
+        ("=WRAPROWS(A1, 2)", [3.0, ExcelError.NA]),
+    ],
+)
+def test_an_array_function_takes_a_scalar_as_a_one_by_one_array(formula, expected):
+    g = make_excel_grid()
+    g._apply_mode_libs()
+    g.setcells_bulk([(0, 0, "3"), (0, 1, "1")])
+    g.setcell(5, 0, formula)
+    cells = [g._cell_lookup_value(5, 0), g._cell_lookup_value(6, 0), g._cell_lookup_value(5, 1)]
+    got = [v for v in cells if v is not None]
+    assert got == expected
+
+
+@pytest.mark.parametrize(
+    "formula, expected",
+    [
+        ("=CLEAN(A1)", "3"),
+        ("=CLEAN(A2)", "3.5"),
+        ("=HEX2DEC(A1)", 3.0),
+        ("=OCT2DEC(A1)", 3.0),
+        ("=BIN2HEX(A3)", "0"),
+        ('=TEXTBEFORE(A2, ".")', "3"),
+        ("=TEXTAFTER(A2, A1)", ".5"),
+        ("=TEXTSPLIT(A1, A3)", "3"),
+        ("=UNICODE(A1)", 51.0),
+    ],
+)
+def test_a_number_reaches_a_text_parameter_as_excel_shows_it(formula, expected):
+    g = make_excel_grid()
+    g._apply_mode_libs()
+    g.setcells_bulk([(0, 0, "3"), (0, 1, "3.5"), (0, 2, "0")])
+    g.setcell(5, 0, formula)
+    assert g._cell_lookup_value(5, 0) == expected
+
+
+@pytest.mark.parametrize(
+    "formula, expected",
+    [
+        ("=CEILING.MATH(A1)", ExcelError.VALUE),
+        ("=FIXED(A1)", ExcelError.VALUE),
+        ("=NPV(A1, 2)", ExcelError.VALUE),
+        ("=CHOOSE(A1, 2)", ExcelError.VALUE),
+        ("=DAY(A1)", ExcelError.VALUE),
+        ('=CHOOSE("2", 1, 2)', 2.0),
+        ('=ROUND("3.14159", 2)', 3.14),
+        ('=FACT("5")', 120.0),
+        ("=SQRT(-1)", ExcelError.NUM),  # a domain error stays #NUM!
+    ],
+)
+def test_text_at_a_numeric_parameter_converts_or_is_value_error(formula, expected):
+    g = make_excel_grid()
+    g._apply_mode_libs()
+    g.setcell(0, 0, "apple")
+    g.setcell(5, 0, formula)
+    assert g._cell_lookup_value(5, 0) == expected
+
+
+@pytest.mark.parametrize(
+    "formula, expected",
+    [
+        ("=AND(A1:A3)", False),  # a range holding 0 was TRUE: the Vec object is truthy
+        ("=OR(A2:A2)", False),
+        ("=AND(A1, A3)", True),
+        ("=AND(B1)", ExcelError.VALUE),  # text in a cell is skipped; no logical left
+        ("=OR(B1, B2)", ExcelError.VALUE),  # a blank is skipped too
+        ("=AND(TRUE, B1)", True),
+        ('=AND("abc")', ExcelError.VALUE),  # typed text
+        ("=XOR(B1, 2)", True),
+        ("=XOR(B1, 2, 3)", False),
+        ("=OR(1/0, TRUE)", ExcelError.DIV0),
+        ("=NOT(B1)", ExcelError.VALUE),
+        ('=NOT("FALSE")', True),
+    ],
+)
+def test_logical_functions_read_values_as_excel_does(formula, expected):
+    g = make_excel_grid()
+    g._apply_mode_libs()
+    g.setcells_bulk([(0, 0, "1"), (0, 1, "0"), (0, 2, "1"), (1, 0, "apple")])
+    g.setcell(5, 0, formula)
+    assert g._cell_lookup_value(5, 0) == expected
+
+
+@pytest.mark.parametrize(
+    "formula, expected",
+    [
+        ('=MAXA(A1:A2, ">3")', ExcelError.VALUE),
+        ('=MINA(A1:A2, ">3")', ExcelError.VALUE),
+        ('=AVERAGEA(A1:A2, ">3")', ExcelError.VALUE),
+        ('=MULTINOMIAL(A1:A2, ">3")', ExcelError.VALUE),
+        ('=SUMSQ("x")', ExcelError.VALUE),
+        ('=MAXA(A1:A2, "30")', 30.0),
+        ("=MINA(B1, 2)", 0.0),  # text in a cell counts as 0
+        ('=GCD("12", 8)', 4.0),
+    ],
+)
+def test_typed_text_in_an_aggregate_converts_or_is_value_error(formula, expected):
+    g = make_excel_grid()
+    g._apply_mode_libs()
+    g.setcells_bulk([(0, 0, "3"), (0, 1, "9"), (1, 0, "apple")])
+    g.setcell(5, 0, formula)
+    assert g._cell_lookup_value(5, 0) == expected
+
+
+@pytest.mark.parametrize(
+    "formula, expected",
+    [
+        ("=GCD(-4)", ExcelError.NUM),
+        ("=LCM(-4, 2)", ExcelError.NUM),
+        ("=GCD(2^53)", ExcelError.NUM),
+        ("=GCD(12, 8)", 4.0),
+        ("=HOUR(-4)", ExcelError.NUM),
+        ("=MINUTE(-0.5)", ExcelError.NUM),
+        ("=YEAR(-0.5)", ExcelError.NUM),
+        ("=WEEKDAY(-1)", ExcelError.NUM),
+        ("=YEAR(0)", 1900.0),
+        ("=BITAND(3, 0.1)", ExcelError.NUM),
+        ("=BITAND(-1, 1)", ExcelError.NUM),
+        ("=CHAR(0.3)", ExcelError.VALUE),
+        ("=CHAR(256)", ExcelError.VALUE),
+        ("=ADDRESS(1, 16385)", ExcelError.VALUE),
+        ("=ADDRESS(1048576, 16384)", "$XFD$1048576"),
+    ],
+)
+def test_out_of_domain_arguments_are_errors(formula, expected):
+    g = make_excel_grid()
+    g._apply_mode_libs()
+    g.setcell(5, 0, formula)
+    assert g._cell_lookup_value(5, 0) == expected
+
+
+@pytest.mark.parametrize(
+    "formula, expected",
+    [
+        ("=PRODUCT(A1)", 0.0),  # no numbers
+        ("=DOLLARDE(1.5, 10)", 1.5),
+        ("=DOLLARDE(1.02, 16)", 1.125),
+        ("=DOLLARDE(0.1, 1)", 0.1),
+        ("=DOLLARFR(1.5, 10)", 1.5),
+        ("=DOLLARFR(1.125, 16)", 1.02),
+        ("=FISHERINV(45292)", 1.0),
+        ("=T.INV.2T(1, 3)", 0.0),
+    ],
+)
+def test_numeric_edge_cases_match_excel(formula, expected):
+    g = make_excel_grid()
+    g._apply_mode_libs()
+    g.setcell(0, 0, "apple")
+    g.setcell(5, 0, formula)
+    assert g._cell_lookup_value(5, 0) == pytest.approx(expected)
+
+
+def test_an_unparseable_formula_is_an_error_its_dependents_see():
+    g = make_excel_grid()
+    g._apply_mode_libs()
+    g.setcell(0, 0, "=SUM(Sales[Amount])")  # structured references do not parse
+    g.setcell(1, 0, "=A1*2")
+    assert g.cells[0][0].err is ExcelError.NAME
+    assert g.cells[0][0].err_msg.startswith("syntax error:")
+    assert g.cells[1][0].err is ExcelError.NAME
+
+
+@pytest.mark.parametrize(
+    "formula", ["=SEQUENCE(0.3)", "=FILTER(A1:A2, A1:A2 > 5)", "=UNIQUE(A1:A2, FALSE, TRUE)"]
+)
+def test_an_empty_array_is_calc_error(formula):
+    g = make_excel_grid()
+    g._apply_mode_libs()
+    g.setcells_bulk([(0, 0, "1"), (0, 1, "1")])
+    g.setcell(5, 0, formula)
+    assert g.cells[5][0].err is ExcelError.CALC
+
+
+@pytest.mark.parametrize(
+    "formula, expected",
+    [
+        ("=NETWORKDAYS(DATE(2024,1,1), DATE(2024,1,31))", 23.0),
+        ("=NETWORKDAYS(DATE(2024,1,31), DATE(2024,1,1))", -23.0),
+        ("=WORKDAY(DATE(2024,1,5), 1)", 45299.0),  # Friday -> Monday
+        ("=NETWORKDAYS(1, 3)", 2.0),  # Excel's serial 1 is a Sunday
+        ("=NETWORKDAYS(59, 62)", 4.0),  # through the phantom 1900-02-29
+        ("=WORKDAY(-1, 1)", ExcelError.NUM),
+    ],
+)
+def test_workday_functions_use_excels_serial_calendar(formula, expected):
+    g = make_excel_grid()
+    g._apply_mode_libs()
+    g.setcell(5, 0, formula)
+    assert g._cell_lookup_value(5, 0) == expected
+
+
+@pytest.mark.parametrize(
+    "formula, expected",
+    [
+        ("=HEX2DEC(-4)", ExcelError.NUM),  # a sign is not a hex digit
+        ('=HEX2DEC("1_0")', ExcelError.NUM),
+        ('=HEX2DEC("FFFFFFFFFC")', -4.0),  # two's complement
+        ('=FILTER(A1:A3, ">3")', ExcelError.VALUE),  # text in include
+        ("=FILTER(A1, A1:A3)", ExcelError.VALUE),  # lengths differ
+        ("=FILTER(A1:A3, {1;0;1})", 3.0),
+        ("=SORT(A1, 0.1)", ExcelError.VALUE),  # sort_index below 1
+        ("=SORT(A1:A3, 1, 4)", ExcelError.VALUE),  # sort_order not 1 or -1
+        ("=SORT(A1:A3, 1, -1)", 4.0),
+        ("=TOCOL(A1, 45416)", ExcelError.VALUE),  # ignore outside 0-3
+        ('=UNIQUE(A1:A3, "Banana")', ExcelError.VALUE),  # text at a bool parameter
+        ('=UNIQUE(A1:A3, "TRUE")', 3.0),
+    ],
+)
+def test_array_function_arguments_are_validated(formula, expected):
+    g = make_excel_grid()
+    g._apply_mode_libs()
+    g.setcells_bulk([(0, 0, "3"), (0, 1, "1"), (0, 2, "4")])
+    g.setcell(5, 0, formula)
+    assert g._cell_lookup_value(5, 0) == expected

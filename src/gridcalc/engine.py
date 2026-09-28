@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import warnings
 from collections.abc import Callable, Iterable, Iterator
@@ -17,6 +18,7 @@ from types import MappingProxyType
 from typing import Any, NamedTuple
 
 from .dates import is_date_format, normalise_format
+from .formula.deps import DepKey, RangeKey
 from .formula.lexer import parse_number
 from .sandbox import load_modules, validate_code, validate_formula
 
@@ -99,6 +101,15 @@ def _is_num(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def _as_double(v: Any) -> Any:
+    """An int beyond double range becomes #NUM!, as Excel reports overflow."""
+    if type(v) is int and not -sys.float_info.max <= v <= sys.float_info.max:
+        from .formula.errors import ExcelError
+
+        return ExcelError.NUM
+    return v
+
+
 def _unary_or_error(a: Any, op: Callable[[float], float]) -> Any:
     from .formula.errors import ExcelError
 
@@ -133,13 +144,36 @@ def _vec_elem_op(a: Any, b: Any, op: Callable[[float, float], Any]) -> Any:
     return r
 
 
+_UNSET: Any = object()
+
+
 class Vec:
+    # Memos for `numbers` and `first_error`. A range Vec is cached and shared
+    # by every formula reading that range in one recalc, so each is computed
+    # once per range rather than once per consumer. `data` is never mutated.
+    _nums: list[float] | None = None
+    _err: Any = _UNSET
+
     def __init__(self, data: Iterable[Any], cols: int | None = None) -> None:
         self.data: list[Any] = list(data)
         # Number of columns when this Vec materialises a 2D range (row-major).
         # None means shape is unknown / treat as 1D. Set by _eval_range when
         # building from a RangeRef so INDEX(rng, row, col) can re-index.
         self.cols: int | None = cols
+
+    def numbers(self) -> list[float]:
+        """The numeric elements as floats, per `_numeric_only`. Do not mutate."""
+        if self._nums is None:
+            self._nums = _numeric_only(self.data)
+        return self._nums
+
+    def first_error(self) -> Any:
+        """The first ExcelError element, or None."""
+        if self._err is _UNSET:
+            from .formula.errors import first_error
+
+            self._err = first_error(*self.data)
+        return self._err
 
     def __repr__(self) -> str:
         if self.is_2d:
@@ -297,7 +331,7 @@ def _agg_operands(args: tuple[Any, ...]) -> list[float]:
     out: list[float] = []
     for a in args:
         if isinstance(a, Vec):
-            out.extend(_numeric_only(a.data))
+            out.extend(a.numbers())
         elif _is_ndarray(a):
             out.extend(_numeric_only(a.flat))
         elif _is_num(a):
@@ -309,7 +343,7 @@ def SUM(x: Any, *rest: Any) -> float:
     if rest:
         return sum(_agg_operands((x, *rest)))
     if isinstance(x, Vec):
-        return sum(_numeric_only(x.data))
+        return sum(x.numbers())
     if _is_ndarray(x):
         return float(x.sum())
     if not _is_num(x):
@@ -322,7 +356,7 @@ def AVG(x: Any, *rest: Any) -> float:
         nums = _agg_operands((x, *rest))
         return sum(nums) / len(nums) if nums else 0.0
     if isinstance(x, Vec):
-        nums = _numeric_only(x.data)
+        nums = x.numbers()
         return sum(nums) / len(nums) if nums else 0.0
     if _is_ndarray(x):
         return float(x.mean()) if x.size > 0 else 0.0
@@ -336,7 +370,7 @@ def MIN(x: Any, *rest: Any) -> float:
         nums = _agg_operands((x, *rest))
         return min(nums) if nums else 0.0
     if isinstance(x, Vec):
-        nums = _numeric_only(x.data)
+        nums = x.numbers()
         return min(nums) if nums else 0.0
     if _is_ndarray(x):
         return float(x.min())
@@ -350,7 +384,7 @@ def MAX(x: Any, *rest: Any) -> float:
         nums = _agg_operands((x, *rest))
         return max(nums) if nums else 0.0
     if isinstance(x, Vec):
-        nums = _numeric_only(x.data)
+        nums = x.numbers()
         return max(nums) if nums else 0.0
     if _is_ndarray(x):
         return float(x.max())
@@ -363,7 +397,7 @@ def COUNT(x: Any, *rest: Any) -> int | float:
     if rest:
         return len(_agg_operands((x, *rest)))
     if isinstance(x, Vec):
-        return len(_numeric_only(x.data))
+        return len(x.numbers())
     if _is_ndarray(x):
         return int(x.size)
     return 1 if _is_num(x) else 0
@@ -1545,9 +1579,11 @@ class Grid:
         # (sheet, c, r) 3-tuples; `sheet` is the sheet name, never None for
         # entries that _refresh_deps installs (only `extract_refs` may emit
         # None transiently for unsheeted refs, but `_refresh_deps` always
-        # passes a concrete sheet via formula_sheet).
-        self._dep_of: dict[tuple[str | None, int, int], set[tuple[str | None, int, int]]] = {}
-        self._subscribers: dict[tuple[str | None, int, int], set[tuple[str | None, int, int]]] = {}
+        # passes a concrete sheet via formula_sheet). A multi-cell range is
+        # one `RangeKey` node, shared by its consumers and depending on its
+        # cells; it lives while it has a subscriber.
+        self._dep_of: dict[DepKey, set[DepKey]] = {}
+        self._subscribers: dict[DepKey, set[DepKey]] = {}
         self._volatile: set[tuple[str | None, int, int]] = set()
         # Anchors currently rejected with #SPILL!. A blocked anchor has no
         # dependency on the cell blocking it, so any edit re-attempts every
@@ -1795,7 +1831,7 @@ class Grid:
         self._cells.clear()
         self._dep_graph_built = False
 
-    def _clear_deps(self, key: tuple[str | None, int, int]) -> None:
+    def _clear_deps(self, key: DepKey) -> None:
         """Drop `key` from forward + reverse indexes and the volatile set."""
         old = self._dep_of.pop(key, None)
         if old is not None:
@@ -1805,21 +1841,37 @@ class Grid:
                     subs.discard(key)
                     if not subs:
                         del self._subscribers[d]
-        self._volatile.discard(key)
+                        if isinstance(d, RangeKey):
+                            self._clear_deps(d)  # last consumer gone
+        if not isinstance(key, RangeKey):
+            self._volatile.discard(key)
 
     def _register_deps(
         self,
         key: tuple[str | None, int, int],
-        deps: set[tuple[str | None, int, int]],
+        deps: set[DepKey],
         volatile: bool,
     ) -> None:
         """Install forward + reverse edges for `key` from `deps`."""
         # A qualifier matches its sheet in any case; key the edge by the real name.
-        deps = {(self._canon_sheet(s), c, r) for s, c, r in deps}
+        canon = {s: self._canon_sheet(s) for s in {d[0] for d in deps}}
+        if any(canon[s] != s for s in canon):
+            deps = {
+                d._replace(sheet=canon[d.sheet])
+                if isinstance(d, RangeKey)
+                else (canon[d[0]], d[1], d[2])
+                for d in deps
+            }
         if deps:
             self._dep_of[key] = deps
             for d in deps:
-                self._subscribers.setdefault(d, set()).add(key)
+                subs = self._subscribers.setdefault(d, set())
+                if isinstance(d, RangeKey) and not subs:
+                    cells: set[DepKey] = set(d.cells())
+                    self._dep_of[d] = cells
+                    for cell in cells:
+                        self._subscribers.setdefault(cell, set()).add(d)
+                subs.add(key)
         if volatile:
             self._volatile.add(key)
 
@@ -1866,7 +1918,7 @@ class Grid:
         if self.mode == Mode.PYTHON:
             return
         from .formula import parse
-        from .formula.deps import extract_refs, has_dynamic_refs
+        from .formula.deps import extract_deps, has_dynamic_refs
         from .formula.errors import FormulaError
 
         if sheet is None:
@@ -1886,7 +1938,7 @@ class Grid:
             return
         if named is None:
             named = self._dep_named_ranges()
-        deps = extract_refs(cl.ast, named, formula_sheet=sheet)
+        deps = extract_deps(cl.ast, named, formula_sheet=sheet)
         volatile = has_dynamic_refs(cl.ast)
         self._register_deps(key, deps, volatile)
 
@@ -1925,7 +1977,9 @@ class Grid:
         else:
             cl.type = LABEL
             cl.val = 0
-        self._refresh_deps(c, r, cl)
+        # An unbuilt graph is rebuilt whole by the next recalc.
+        if self._dep_graph_built:
+            self._refresh_deps(c, r, cl)
         return True
 
     def _spill_predirty(self, c: int, r: int) -> set[tuple[int, int]]:
@@ -2354,6 +2408,9 @@ class Grid:
     def _store_formula_result(self, cl: Cell, result: Any) -> None:
         from .formula.errors import ExcelError
 
+        result = _as_double(result)
+        if isinstance(result, Vec) and not result.data:
+            result = ExcelError.CALC
         if isinstance(result, float) and math.isinf(result):
             result = ExcelError.NUM  # e.g. a SUM that overflows; Excel has no infinity
         cl.sval = None
@@ -2425,7 +2482,7 @@ class Grid:
             # `val`/`sval`/`err` consistent with a spill cell's so a string-
             # or bool-first array renders correctly (the array itself stays
             # in `arr`, reachable via `A1#`).
-            first = result.data[0] if result.data else float("nan")
+            first = _as_double(result.data[0]) if result.data else float("nan")
             if isinstance(first, ExcelError):
                 cl.val = float("nan")
                 cl.err = first
@@ -2528,6 +2585,7 @@ class Grid:
         sc.sval = None
         sc.err = None
         sc.err_msg = None
+        val = _as_double(val)
         if isinstance(val, float) and math.isinf(val):
             val = ExcelError.NUM
         if isinstance(val, ExcelError):
@@ -2650,7 +2708,7 @@ class Grid:
         follow-up pass over their consumers.
         """
         from .formula import Env, evaluate, parse
-        from .formula.errors import FormulaError
+        from .formula.errors import ExcelError, FormulaError
 
         py_registry = self._build_py_registry()
         named = self._build_named_ranges()
@@ -2675,21 +2733,22 @@ class Grid:
             self._rebuild_dep_graph()
             for s in self.sheets:
                 s._circular = set()  # rebuilt below; a moved cell's old entry must go
-            closure: set[tuple[str | None, int, int]] = set()
+            # Range nodes too: Kahn orders only by in-closure edges.
+            closure: set[DepKey] = {k for k in self._dep_of if isinstance(k, RangeKey)}
             for s in self.sheets:
                 for (c, r), cl in s._cells.items():
                     if cl.type == FORMULA:
                         closure.add((s.name, c, r))
         else:
             closure = set(self._volatile)
-            for k in dirty3:
-                cl_dirty = self._cell_at(k)
+            for dk in dirty3:
+                cl_dirty = self._cell_at(dk)
                 if cl_dirty is not None and cl_dirty.type == FORMULA:
-                    closure.add(k)
-            stack = list(dirty3 | self._volatile)
+                    closure.add(dk)
+            stack: list[DepKey] = list(dirty3 | self._volatile)
             while stack:
-                k = stack.pop()
-                for sub in self._subscribers.get(k, ()):
+                node = stack.pop()
+                for sub in self._subscribers.get(node, ()):
                     if sub not in closure:
                         closure.add(sub)
                         stack.append(sub)
@@ -2697,8 +2756,8 @@ class Grid:
         # Topological order via Kahn's algorithm. In-edges restricted to
         # cells inside the closure -- deps outside the closure are already
         # up to date and don't gate evaluation order.
-        in_count: dict[tuple[str | None, int, int], int] = {}
-        children: dict[tuple[str | None, int, int], list[tuple[str | None, int, int]]] = {}
+        in_count: dict[DepKey, int] = {}
+        children: dict[DepKey, list[DepKey]] = {}
         for k in closure:
             deps = self._dep_of.get(k, set())
             in_closure = deps & closure
@@ -2707,7 +2766,7 @@ class Grid:
                 children.setdefault(d, []).append(k)
 
         ready = [k for k, n in in_count.items() if n == 0]
-        order: list[tuple[str | None, int, int]] = []
+        order: list[DepKey] = []
         while ready:
             k = ready.pop()
             order.append(k)
@@ -2723,6 +2782,8 @@ class Grid:
         saved_active = self.active
         try:
             for key in order:
+                if isinstance(key, RangeKey):
+                    continue
                 sheet_name, c, r = key
                 fcl = self._cell_at(key)
                 if fcl is None or fcl.type != FORMULA:
@@ -2735,9 +2796,13 @@ class Grid:
                     except FormulaError:
                         fcl.ast = None
                 if fcl.ast is None:
-                    fcl.arr = None
-                    fcl.matrix = None
-                    fcl.val = float("nan")
+                    # Unparseable, e.g. a table reference `T[Col]`: an error
+                    # value, so references to it propagate one, not a NaN.
+                    self._store_formula_result(fcl, ExcelError.NAME)
+                    try:
+                        parse(text)
+                    except FormulaError as exc:
+                        fcl.err_msg = f"syntax error: {exc}"
                     continue
                 # Make this formula's home sheet active during eval so
                 # unsheeted refs in the formula resolve to its own
@@ -2761,15 +2826,18 @@ class Grid:
         # Anything left in the closure but not in `order` is in a cycle.
         # Cells that were in the closure get their `_circular` membership
         # rewritten from scratch; cells outside the closure are left alone.
-        unresolved = closure - set(order)
+        closure_cells: set[tuple[str | None, int, int]] = {
+            k for k in closure if not isinstance(k, RangeKey)
+        }
+        unresolved = closure_cells.difference(order)
         # Update each affected sheet's `_circular` set (per-sheet 2-tuples).
-        affected_sheets: set[str | None] = {s for (s, _c, _r) in closure}
+        affected_sheets: set[str | None] = {s for (s, _c, _r) in closure_cells}
         for s_name in affected_sheets:
             sh: Sheet | None = self._sheet_by_name(s_name) if s_name is not None else self._active
             if sh is None:
                 continue
             # Drop closure cells from this sheet's circular set.
-            closure_cr = {(c, r) for (sn, c, r) in closure if sn == s_name}
+            closure_cr = {(c, r) for (sn, c, r) in closure_cells if sn == s_name}
             sh._circular -= closure_cr
             if dirty3 is not None:
                 dirty_cr = {(c, r) for (sn, c, r) in dirty3 if sn == s_name}

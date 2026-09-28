@@ -54,8 +54,6 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ### Performance
 
-- [ ] **Range subscriber explosion (Phase E from `docs/topological.md`).** `SUM(A1:Z1000)` registers 26000 reverse-index entries. Replace with an interval representation (per-column interval tree, or aggregation nodes that fan out at change time). Defer until profiling shows large-range workloads as a hot spot.
-
 - [ ] **Undo memory is bounded by entry count, not size.** A structural entry copies every sheet's cells: 6.4 MB on a 3-sheet workbook with 25k cells, so 64 entries can hold about 400 MB. Cap the stack by bytes if real workbooks reach that.
 
 ### Refactoring & code quality

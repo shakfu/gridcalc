@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import inspect
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from types import ModuleType
 from typing import Any
 
 from .ast_nodes import (
@@ -69,7 +71,11 @@ class Env:
         # `cell_value` so an Env built without spill support degrades to
         # reading the anchor's own value.
         self.cell_spill_value = cell_spill_value or cell_value
-        self._builtins = {k.lower(): v for k, v in builtins.items()}
+        # The globals also serve PYTHON-mode eval; a class (`Vec`) or module
+        # (`math`) there is not a formula function.
+        self._builtins = {
+            k.lower(): v for k, v in builtins.items() if not isinstance(v, (type, ModuleType))
+        }
         self._named = {k.lower(): v for k, v in (named_ranges or {}).items()}
         self.py_registry = py_registry or {}
         self.cell_is_formula = cell_is_formula or (lambda _c, _r, _s=None: False)
@@ -77,9 +83,6 @@ class Env:
         # (leading '=' included) of a formula cell, else None. Backs
         # FORMULATEXT.
         self.cell_formula_text = cell_formula_text or (lambda _c, _r, _s=None: None)
-        # `refs_used` keys are `(sheet, c, r)`; sheet is None for refs
-        # that resolve against the formula's home sheet.
-        self.refs_used: set[tuple[str | None, int, int]] = set()
         # Set by recalc before evaluating each formula. Functions in
         # `RAW_ARG_FUNCS` (e.g. ROW(), COLUMN()) consult this when called
         # with no arguments.
@@ -126,11 +129,9 @@ class Env:
         return self._named.get(name.lower())
 
     def get_cell(self, c: int, r: int, sheet: str | None = None) -> object:
-        self.refs_used.add((sheet, c, r))
         return self.cell_value(c, r, sheet)
 
     def get_spill(self, c: int, r: int, sheet: str | None = None) -> object:
-        self.refs_used.add((sheet, c, r))
         return self.cell_spill_value(c, r, sheet)
 
     def eval_node(self, node: Node) -> Any:
@@ -170,9 +171,8 @@ class LambdaValue:
     shallow snapshot, since scopes are mutated and popped as evaluation
     proceeds). Calling it swaps that captured scope stack in for the
     duration of the body, then restores the caller's -- so lexical
-    scoping and re-entrancy both hold. ``refs_used`` and the range cache
-    stay on the shared ``Env`` so cell reads inside a lambda body are
-    still tracked as dependencies.
+    scoping and re-entrancy both hold. The range cache stays on the
+    shared ``Env``.
     """
 
     __slots__ = ("params", "body", "env", "captured")
@@ -581,11 +581,6 @@ def _eval_range(node: RangeRef, env: Env) -> Any:
     key = (sheet if sheet is not None else env.current_sheet, c1, r1, c2, r2)
     cached = env._range_cache.get(key)
     if cached is not None:
-        # Re-register dependencies even on a cache hit -- consumers
-        # rely on `refs_used` to know which cells they touched.
-        for r in range(r1, r2 + 1):
-            for c in range(c1, c2 + 1):
-                env.refs_used.add((sheet, c, r))
         return cached
     data: list[Any] = []
     for r in range(r1, r2 + 1):
@@ -697,7 +692,8 @@ _CRITERIA_FUNCS = frozenset(
 
 # Aggregates that coerce a value typed directly as an argument (`SUM("3",TRUE)`
 # is 4) but skip the same value read from a cell or range. COUNT skips
-# non-numeric text instead of failing on it.
+# non-numeric text instead of failing on it. AND/OR/XOR are here so typed text
+# is #VALUE! while text in a cell is skipped.
 _DIRECT_ARG_COERCE_FUNCS = frozenset(
     {
         "sum",
@@ -723,6 +719,16 @@ _DIRECT_ARG_COERCE_FUNCS = frozenset(
         "devsq",
         "skew",
         "kurt",
+        "and",
+        "or",
+        "xor",
+        "maxa",
+        "mina",
+        "averagea",
+        "multinomial",
+        "sumsq",
+        "gcd",
+        "lcm",
     }
 )
 
@@ -745,11 +751,111 @@ def _coerce_direct_args(name: str, nodes: tuple[Node, ...], env: Env) -> list[An
     return out
 
 
-# Scalar predicates applied per element when given an array, so
-# `ISNUMBER(A1:A3)` is an array of booleans (TYPE is not: it reports 64).
-_ELEMENTWISE_PREDICATES = frozenset(
-    {"iserror", "iserr", "isna", "isblank", "islogical", "isnumber", "istext", "isnontext"}
+# Element-wise lifting: an array passed where a function takes one value
+# evaluates the function per element, as Excel does, so `SIN(A1:A3)` and
+# `ISNUMBER(A1:A3)` are arrays. A parameter takes one value when its annotation
+# names a scalar type, when it is an unannotated C builtin (`math.sin`), or when it
+# is `Any` under one of these names in a function without varargs. Varargs
+# never lift: they are aggregates.
+_SCALAR_ANY_PARAMS = frozenset(
+    {
+        "a",
+        "b",
+        "a1",
+        "approx",
+        "cumulative",
+        "inumber",
+        "lookup",
+        "lookup_value",
+        "no_switch",
+        "text",
+        "value",
+        "x",
+    }
 )
+# TYPE reports an array as 64; INDEX and TEXTJOIN define their own array
+# arguments; `fsum` takes a sequence.
+_NO_LIFT_FUNCS = frozenset({"type", "index", "textjoin", "fsum"})
+# Parameters annotated with a number or bool type. Text reaching one converts
+# as Excel converts it, and is #VALUE! when it does not: `float("apple")` would
+# raise ValueError, which `_call_value` reports as #NUM!, and any non-empty
+# text is truthy.
+_NUMERIC_ANNOTATIONS = frozenset({"float", "int", "float | None", "int | None"})
+_param_cache: dict[Any, tuple[tuple[bool, ...], tuple[str, ...]]] = {}
+
+
+def _coercion(annotation: str) -> str:
+    """How text reaching a parameter converts: "num", "bool", or "" (as is)."""
+    if annotation in _NUMERIC_ANNOTATIONS:
+        return "num"
+    return "bool" if annotation == "bool" else ""
+
+
+def _param_info(name: str, fn: Any) -> tuple[tuple[bool, ...], tuple[str, ...]]:
+    """Per positional parameter of ``fn``: (takes one value, text coercion)."""
+    key = (name, fn)
+    cached = _param_cache.get(key)
+    if cached is not None:
+        return cached
+    positions: tuple[bool, ...] = ()
+    numeric: tuple[str, ...] = ()
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        sig = None
+    if sig is not None:
+        numeric = tuple(
+            _coercion(str(p.annotation).strip("'"))
+            for p in sig.parameters.values()
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        )
+    if sig is not None and name not in _NO_LIFT_FUNCS and "Vec" not in str(sig.return_annotation):
+        # With varargs, an `Any` parameter is the aggregate's first operand.
+        varargs = any(p.kind is p.VAR_POSITIONAL for p in sig.parameters.values())
+        out = []
+        for p in sig.parameters.values():
+            if p.kind not in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
+                break
+            ann = p.annotation
+            if ann is inspect.Parameter.empty:
+                out.append(inspect.isbuiltin(fn))  # `math.sin`, not an unknown host function
+                continue
+            ann = str(ann).strip("'")
+            if "Vec" in ann:
+                out.append(False)
+            elif ann == "Any":
+                out.append(not varargs and p.name in _SCALAR_ANY_PARAMS)
+            else:
+                out.append(True)
+        positions = tuple(out)
+    _param_cache[key] = (positions, numeric)
+    return positions, numeric
+
+
+def _lift_call(name_lower: str, fn: Any, args: list[Any], lifted: list[int]) -> Any:
+    """Call ``fn`` per element over the array arguments at ``lifted``.
+
+    Shapes broadcast as in Excel: a one-row or one-column array repeats along
+    that dimension, and a position past a smaller array's edge is #N/A.
+    """
+    shapes = {i: _vec_shape(args[i]) for i in lifted}
+    n_rows = max(r for r, _ in shapes.values())
+    n_cols = max(c for _, c in shapes.values())
+    out: list[Any] = []
+    for r in range(n_rows):
+        for c in range(n_cols):
+            call = list(args)
+            for i in lifted:
+                rows, cols = shapes[i]
+                rr = 0 if rows == 1 else r
+                cc = 0 if cols == 1 else c
+                call[i] = (
+                    _vec_data(args[i])[rr * cols + cc] if rr < rows and cc < cols else ExcelError.NA
+                )
+            v = _call_value(name_lower, fn, call)
+            out.append(ExcelError.CALC if _is_vec(v) else v)  # no nested arrays
+    return _make_vec(out, cols=n_cols)
+
 
 # Functions that receive raw AST nodes (CellRef/RangeRef/...) plus the
 # Env, instead of evaluated values. Used for functions whose semantics
@@ -830,7 +936,7 @@ def _eval_lazy(name: str, node: Call, env: Env) -> Any:
     if name == "choose":
         if len(args) < 2:
             return ExcelError.VALUE
-        index = val(0)
+        index = _to_number(val(0))
         if isinstance(index, ExcelError):
             return index
         i = int(index)
@@ -1014,6 +1120,15 @@ def _eval_call(node: Call, env: Env) -> Any:
         args = coerced
     else:
         args = [_deref(_eval(a, env), env) for a in node.args]
+    positions, _ = _param_info(name_lower, fn)
+    lifted = [i for i, a in enumerate(args[: len(positions)]) if positions[i] and _is_vec(a)]
+    if lifted:
+        return _lift_call(name_lower, fn, args, lifted)
+    return _call_value(name_lower, fn, args)
+
+
+def _call_value(name_lower: str, fn: Any, args: list[Any]) -> Any:
+    """Apply a value function: error short-circuits, then the call itself."""
     if name_lower not in _ERROR_AWARE_FUNCS:
         err = None if name_lower in _CRITERIA_FUNCS else first_error(*args)
         if err:
@@ -1022,8 +1137,13 @@ def _eval_call(node: Call, env: Env) -> Any:
             err = _first_array_error(args)
             if err:
                 return err
-    if name_lower in _ELEMENTWISE_PREDICATES and len(args) == 1 and _is_vec(args[0]):
-        return _vec_apply1(fn, args[0])
+    _, coerce = _param_info(name_lower, fn)
+    for i, a in enumerate(args[: len(coerce)]):
+        if coerce[i] and isinstance(a, str):
+            n = _to_number(a) if coerce[i] == "num" else _to_bool(a)
+            if isinstance(n, ExcelError):
+                return n
+            args = [*args[:i], n, *args[i + 1 :]]
     try:
         return fn(*args)
     except ZeroDivisionError:
@@ -1037,7 +1157,7 @@ def _eval_call(node: Call, env: Env) -> Any:
 def _first_array_error(args: list[Any]) -> ExcelError | None:
     for a in args:
         if _is_vec(a):
-            err = first_error(*_vec_data(a))
+            err: ExcelError | None = a.first_error()
             if err:
                 return err
     return None

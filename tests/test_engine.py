@@ -25,6 +25,7 @@ from gridcalc.engine import (
     col_name,
     ref,
 )
+from gridcalc.formula.deps import RangeKey
 from gridcalc.formula.errors import ExcelError
 from gridcalc.tui import fmtcell
 
@@ -2038,6 +2039,15 @@ class TestCrossSheet:
         g.set_active("Sheet1")
         assert g.cells[0][0].val == 10.0
 
+    def test_range_sheet_name_matches_in_any_case(self):
+        g = self._make()
+        g.setcell(0, 0, "=SUM(sheet2!A1:A3)")
+        g.set_active("Sheet2")
+        g.setcell(0, 2, "7")  # the lower-case range still subscribes
+        g.set_active("Sheet1")
+        assert g.cells[0][0].val == 7.0
+        assert RangeKey("Sheet2", 0, 0, 0, 2) in g._dep_of[("Sheet1", 0, 0)]
+
     def test_sheet_names_unique_ignoring_case(self):
         g = self._make()
         with pytest.raises(ValueError):
@@ -2770,6 +2780,134 @@ if _HAS_NUMPY:
 
 
 @pytest.mark.skipif(not _HAS_NUMPY, reason="numpy not installed")
+class TestRangeNodes:
+    """A multi-cell range is one graph node shared by its consumers."""
+
+    def _grid(self):
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcells_bulk([(0, r, str(r + 1)) for r in range(3)])
+        return g
+
+    def test_consumers_share_one_range_node(self):
+        g = self._grid()
+        g.setcell(1, 0, "=SUM(A1:A3)")
+        g.setcell(1, 1, "=MAX(A1:A3)")
+        rk = RangeKey("Sheet1", 0, 0, 0, 2)
+        assert g._subscribers[rk] == {("Sheet1", 1, 0), ("Sheet1", 1, 1)}
+        assert g._subscribers[("Sheet1", 0, 1)] == {rk}
+        g.setcell(0, 1, "10")
+        assert (g.cells[1][0].val, g.cells[1][1].val) == (14.0, 10.0)
+
+    def test_last_consumer_removes_the_node(self):
+        g = self._grid()
+        g.setcell(1, 0, "=SUM(A1:A3)")
+        g.setcell(1, 1, "=SUM(A1:A3)")
+        g.setcell(1, 0, "")
+        assert RangeKey("Sheet1", 0, 0, 0, 2) in g._dep_of
+        g.setcell(1, 1, "5")
+        assert g._dep_of == {}
+        assert g._subscribers == {}
+
+    def test_full_recalc_orders_range_inputs_first(self):
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        # The consumer is written first, so it comes first in cell order.
+        g.setcells_bulk([(1, 0, "=SUM(A1:A3)"), (0, 0, "1"), (0, 1, "=A1*2"), (0, 2, "=A2*2")])
+        assert g.cells[1][0].val == 7.0
+        g.setcell(0, 0, "2")
+        assert g.cells[1][0].val == 14.0
+        g.recalc()
+        assert g.cells[1][0].val == 14.0
+
+    def test_range_containing_its_consumer_is_circular(self):
+        g = self._grid()
+        g.setcell(0, 4, "=SUM(A1:A10)")
+        assert g.cells[0][4].err is ExcelError.CIRC
+        assert g._circular == {(0, 4)}
+        g.setcell(0, 4, "=SUM(A1:A3)")
+        assert g.cells[0][4].val == 6.0
+        assert g._circular == set()
+
+    def test_writing_an_empty_cell_in_the_range_recomputes(self):
+        g = self._grid()
+        g.setcell(1, 0, "=SUM(A1:A9)")
+        g.setcell(0, 8, "100")  # A9 held no cell before
+        assert g.cells[1][0].val == 106.0
+
+    def test_an_error_in_a_shared_range_reaches_every_consumer(self):
+        g = self._grid()
+        g.setcell(1, 0, "=SUM(A1:A3)")
+        g.setcell(1, 1, "=COUNT(A1:A3)")
+        g.setcell(1, 2, "=MAX(A1:A3)")
+        g.setcell(0, 1, "=1/0")
+        assert g.cells[1][0].err is ExcelError.DIV0
+        assert g.cells[1][1].val == 2  # COUNT skips errors, as in Excel
+        assert g.cells[1][2].err is ExcelError.DIV0
+        g.setcell(0, 1, "text")
+        assert [g.cells[1][r].val for r in range(3)] == [4.0, 2, 3.0]
+
+
+class TestFormulasCannotCrashSetcell:
+    """Formulas that raised out of `setcell` or exhausted memory."""
+
+    def _grid(self, mode=Mode.EXCEL):
+        g = Grid()
+        g.mode = mode
+        g._apply_mode_libs()
+        g.setcells_bulk([(0, r, str(r + 1)) for r in range(3)])
+        return g
+
+    @pytest.mark.parametrize(
+        "formula, err",
+        [
+            ("=FACT(45292)", ExcelError.NUM),
+            ("=FACT(171)", ExcelError.NUM),
+            ("=COMBIN(45292, 5000)", ExcelError.NUM),
+            ("=COMBINA(45292, 45416)", ExcelError.NUM),
+            ("=PERMUT(45292, 5000)", ExcelError.NUM),
+            ("=PERMUTATIONA(45292, 45416)", ExcelError.NUM),
+            ("=MULTINOMIAL(45292, 45416)", ExcelError.NUM),
+            ("=SEQUENCE(45292, 45416)", ExcelError.NUM),
+            ("=RANDARRAY(2000, 2000)", ExcelError.NUM),
+            ("=MAKEARRAY(2000, 2000, LAMBDA(r, c, r))", ExcelError.NUM),
+            ("=EXPAND(A1:A2, 2000, 2000)", ExcelError.NUM),
+            ("=WRAPROWS(A1:A3, 2000000)", ExcelError.NUM),
+            ("=WRAPCOLS(A1:A3, 2000000)", ExcelError.NUM),
+            ('=REPT("ab", 20000)', ExcelError.VALUE),
+            ("=FIXED(1, 128)", ExcelError.VALUE),
+            ("=DOLLAR(1, 128)", ExcelError.VALUE),
+            ("=VEC(A1:A3, 2)", ExcelError.NAME),  # an internal class, not a function
+        ],
+    )
+    def test_is_an_error_value(self, formula, err):
+        g = self._grid()
+        g.setcell(5, 0, formula)
+        assert g.cells[5][0].err is err
+
+    def test_limits_admit_the_largest_valid_result(self):
+        g = self._grid()
+        g.setcell(5, 0, "=FACT(170)")
+        g.setcell(5, 1, '=LEN(REPT("ab", 16383))')
+        g.setcell(5, 2, "=COMBINA(0, 3)")
+        g.setcell(5, 3, "=SUM(SEQUENCE(1024, 1024))")
+        assert g.cells[5][0].val == float(math.factorial(170))
+        assert g.cells[5][1].val == 32766.0
+        assert g.cells[5][2].val == 0.0
+        assert g.cells[5][3].val == 1048576 * 1048577 / 2
+
+    def test_a_py_function_returning_a_huge_int_is_num(self):
+        g = self._grid(Mode.HYBRID)
+        g.code = "def big():\n    return 10**400\n"
+        g.setcell(5, 0, "=py.big()")
+        g.setcell(6, 0, "=MAKEARRAY(2, 1, LAMBDA(r, c, IF(r = 2, py.big(), 1)))")
+        assert g.cells[5][0].err is ExcelError.NUM
+        assert g.cells[6][0].val == 1.0
+        assert g.cells[6][1].err is ExcelError.NUM  # the spilled element
+
+
 class TestNumpyMatrix:
     def test_basic_ndarray_formula(self):
         g = make_np_grid()

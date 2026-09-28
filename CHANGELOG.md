@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## [0.9.0]
+
+### Changed
+
+- **Range formulas recalc 30-60x faster.** Each consumer of `A1:A1000` registered 1000 dependency edges, so 10k `=SUM(A1:A1000)` formulas built and walked 10^7 edges on every full recalc. A multi-cell range is now one graph node, shared by its consumers and dropped with the last one. The materialised range also memoizes its numeric elements and first error, which every consumer rescanned before. At 10k such formulas, full recalc drops from 8.3 s to 0.14 s and a root edit from 2.8 s to 0.1 s. Per-cell edges over an interval index were the alternative; one node per distinct range keeps the graph a plain DAG, and when every range is distinct it costs one extra node per range. Benchmark: `scripts/bench_recalc.py`, results in `docs/dev/ironcalc.md`.
+
+- **Functions apply element-wise to arrays, as in Excel 365.** An array reaching a parameter that takes one value was passed whole: `=SIN(A1:A3)` gave `#VALUE!` and `=UPPER(A1:A3)` returned `"VEC[3X1]([...])"`. The function now runs per element and spills. Errors stay in their element, shapes broadcast, and a position past a shorter array is `#N/A`. This also lifts `SUMIF`/`COUNTIF` criteria, lookup values and `LARGE`'s `k`. Which parameters take one value is read from the library's type annotations; a hand-kept table over ~400 functions was the alternative, and would drift from the signatures.
+
+- **Loading a workbook built its dependency graph twice.** Each written cell registered its edges, then the first recalc discarded them and rebuilt the graph whole. Cells now skip registration while the graph is unbuilt. Load of 10k range formulas halves.
+
+### Fixed
+
+- **Some formulas crashed `setcell` or exhausted memory.** `=FACT(45292)` and four other factorial-family functions return exact Python ints, and storing one past double range raised `OverflowError`. `=SEQUENCE(45292, 45416)` built 2 billion elements before any spill check, so opening a workbook holding it killed the process. A result past double range is now `#NUM!`, as in Excel. `SEQUENCE`, `RANDARRAY`, `MAKEARRAY`, `EXPAND`, `WRAPROWS` and `WRAPCOLS` return `#NUM!` past 2^20 cells. `REPT` past 32,767 characters and `FIXED`/`DOLLAR` past 127 decimals return `#VALUE!`. Found by `scripts/diff_ironcalc.py`.
+
+- **`AND` and `OR` over a range were always TRUE.** They tested the Python truthiness of their arguments, and a range object is truthy: `=AND(A1:A3)` with a 0 in the range gave TRUE. Text in a cell counted as TRUE too. They now follow Excel: numbers and logicals count, text and blanks in cells are skipped, typed text is `#VALUE!`, and no logical value at all is `#VALUE!`. `XOR` and `NOT` likewise.
+
+- **Text reaching a number parameter gave `#NUM!`.** `float("apple")` raises `ValueError`, which the evaluator reports as `#NUM!`; Excel gives `#VALUE!`. Text at a number or logical parameter now converts as Excel converts it (`=ROUND("3.1", 0)` is 3) or is `#VALUE!`. Typed text in `MAXA`, `MINA`, `AVERAGEA`, `SUMSQ`, `MULTINOMIAL`, `GCD` and `LCM` is `#VALUE!` rather than skipped.
+
+- **Numbers reached some text functions as `"3.0"`.** `CLEAN`, `TEXTSPLIT`, `TEXTBEFORE`, `TEXTAFTER`, `UNICODE`, `DECIMAL`, `ARABIC` and the `HEX2DEC` family used `str()`, so `=HEX2DEC(3)` was `#NUM!`. They now format as Excel shows the number. `HEX2DEC` and its family also accepted a sign or `_`, which Python's `int()` parses; both are now `#NUM!`.
+
+- **Array functions rejected a single value.** `HSTACK`, `VSTACK`, `UNIQUE`, `SORT`, `TOCOL`, `TOROW`, `TRANSPOSE`, `TAKE`, `DROP`, `EXPAND`, `CHOOSECOLS`, `CHOOSEROWS`, `FILTER`, `WRAPROWS` and `WRAPCOLS` gave `#VALUE!` for a scalar; Excel treats it as a 1x1 array. `FILTER` now also rejects an `include` of the wrong length or holding text, `SORT` a `sort_order` other than 1 or -1, and `TOCOL`/`TOROW` an `ignore` outside 0-3.
+
+- **An empty array is `#CALC!`.** `=SEQUENCE(0.3)` stored a bare NaN. `#CALC!` is new; `FILTER` with no match and no `if_empty` gives it instead of `#N/A`, as Microsoft documents.
+
+- **An unparseable formula stored a bare NaN.** A table reference such as `=SUM(Sales[Amount])` does not parse; the cell showed `ERROR` and its dependents computed with NaN. It is now `#NAME?`, with the parser's message in the status line.
+
+- **Missing domain checks.** `GCD`/`LCM` accepted negatives, `HOUR`, `YEAR`, `WEEKDAY` and other date functions accepted negative serials, bitwise functions truncated fractions, `CHAR(0)` returned `"\x00"`, and `ADDRESS` took columns past 16,384. Each now returns Excel's error.
+
+- **Smaller numeric fixes.** `PRODUCT` of no numbers is 0, not 1. `DOLLARDE`/`DOLLARFR` miscounted digits when `fraction` is a power of 10 (`DOLLARDE(1.5, 10)` gave 6). `FISHERINV` overflowed to `#NUM!` for large inputs. `T.INV.2T(1, n)` gave 1.4e-8, not 0. `NETWORKDAYS` and `WORKDAY` used the real calendar before March 1900, where Excel counts a 1900-02-29.
+
+- **EXCEL and HYBRID formulas could call `Vec` and `math`.** PYTHON mode's namespace holds the class and the module, and the formula evaluator looked names up in it. `=VEC(A1:A10, 2)` crashed the spill code. Both are now `#NAME?`.
+
 ## [0.8.0]
 
 ### Security

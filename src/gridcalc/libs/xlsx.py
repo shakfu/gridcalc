@@ -13,6 +13,7 @@ import operator
 import random as _random
 import re
 import statistics
+import sys
 from collections.abc import Callable, Iterable
 from decimal import (
     ROUND_CEILING,
@@ -175,18 +176,44 @@ def IF(condition: Any, true_val: Any, false_val: Any = 0) -> Any:
     return true_val if condition else false_val
 
 
-def AND(*args: Any) -> bool:
+def _logicals(args: tuple[Any, ...]) -> list[bool] | ExcelError:
+    """The logical values among AND/OR/XOR arguments, as Excel reads them.
+
+    Numbers count (0 is FALSE); text and blanks from cells are skipped. Typed
+    text never reaches here: the evaluator rejects it as #VALUE!. No logical
+    value at all is #VALUE!.
+    """
+    out: list[bool] = []
+    for a in args:
+        for v in a.data if isinstance(a, Vec) else (a,):
+            if isinstance(v, ExcelError):
+                return v
+            if isinstance(v, bool):
+                out.append(v)
+            elif isinstance(v, (int, float)):
+                out.append(v != 0)
+    return out if out else ExcelError.VALUE
+
+
+def AND(*args: Any) -> bool | ExcelError:
     """=AND(A1>0, B1>0, C1>0)"""
-    return all(args)
+    vals = _logicals(args)
+    return vals if isinstance(vals, ExcelError) else all(vals)
 
 
-def OR(*args: Any) -> bool:
+def OR(*args: Any) -> bool | ExcelError:
     """=OR(A1>0, B1>0)"""
-    return any(args)
+    vals = _logicals(args)
+    return vals if isinstance(vals, ExcelError) else any(vals)
 
 
-def NOT(x: Any) -> bool:
-    """=NOT(A1>0)"""
+def NOT(x: Any) -> bool | ExcelError:
+    """=NOT(A1>0). Text other than TRUE/FALSE is #VALUE!."""
+    if isinstance(x, str):
+        u = x.strip().upper()
+        if u not in ("TRUE", "FALSE"):
+            return ExcelError.VALUE
+        return u == "FALSE"
     return not x
 
 
@@ -627,9 +654,10 @@ def SUBSTITUTE(text: str, old: str, new: str, instance: int = 0) -> str:
 
 def REPT(text: str, n: int) -> str | ExcelError:
     """=REPT("*", 5) -> "*****" """
-    if int(n) < 0:
+    s = _text(text)
+    if int(n) < 0 or len(s) * int(n) > _MAX_TEXT:
         return ExcelError.VALUE
-    return _text(text) * int(n)
+    return s * int(n)
 
 
 def EXACT(a: str, b: str) -> bool:
@@ -673,9 +701,12 @@ def TEXTJOIN(sep: str, ignore_empty: Any, *args: Any) -> str:
     return _text(sep).join(p for p in parts if not (skip and p == ""))
 
 
-def CHAR(n: int) -> str:
-    """=CHAR(65) -> 'A'"""
-    return chr(int(n))
+def CHAR(n: int) -> str | ExcelError:
+    """=CHAR(65) -> 'A'. Codes outside 1-255 are #VALUE!."""
+    code = int(n)
+    if not 1 <= code <= 255:
+        return ExcelError.VALUE
+    return chr(code)
 
 
 def CODE(text: str) -> int:
@@ -754,7 +785,13 @@ def TEXT(value: Any, fmt: str) -> str:
 # 1900-leap-year offset would be three chances to disagree.
 _EXCEL_EPOCH = _EPOCH
 _to_serial = to_serial
-_from_serial = from_serial
+
+
+def _from_serial(s: float) -> _dt.datetime:
+    """As `dates.from_serial`; a negative serial raises ValueError, reported as #NUM!."""
+    if s < 0:
+        raise ValueError("negative date serial")
+    return from_serial(s)
 
 
 def NOW() -> float:
@@ -814,6 +851,8 @@ def TIMEVALUE(text: str) -> float | ExcelError:
 
 def _ymd(serial: float) -> tuple[int, int, int]:
     """Year, month, day of ``serial``, including Excel's 1900-01-00 and 1900-02-29."""
+    if serial < 0:
+        raise ValueError("negative date serial")
     days = int(serial)
     if days == 0:
         return 1900, 1, 0
@@ -852,10 +891,19 @@ def SECOND(serial: float) -> int:
 _WEEK_START = {1: 6, 2: 0, **{t: (t - 11) % 7 for t in range(11, 18)}}
 
 
+def _serial_weekday(serial: int) -> int:
+    """Mon=0..Sun=6 of an Excel serial; serial 1 is a Sunday.
+
+    From the serial, not a date: below 61 Excel counts its phantom 1900-02-29.
+    """
+    return (serial + 5) % 7
+
+
 def WEEKDAY(serial: float, return_type: int = 1) -> int | ExcelError:
     """=WEEKDAY(serial[, type]). Default: Sun=1..Sat=7."""
-    # From the serial, not a date: below 60 Excel counts its phantom leap day.
-    py_dow = (int(serial) + 5) % 7  # Mon=0..Sun=6; serial 1 is a Sunday
+    if serial < 0:
+        return ExcelError.NUM
+    py_dow = _serial_weekday(int(serial))
     rt = int(return_type)
     if rt == 3:
         return py_dow  # Mon=0..Sun=6
@@ -1605,32 +1653,34 @@ def EVEN(x: float) -> int:
 
 def FACT(n: int) -> int | ExcelError:
     n = int(n)
-    if n < 0:
+    if n < 0 or n > 170:  # 171! exceeds a double
         return ExcelError.NUM
     return math.factorial(n)
 
 
-def GCD(*args: Any) -> int:
+def _gcd_operands(args: tuple[Any, ...]) -> list[int] | ExcelError:
+    """GCD/LCM operands, truncated. Excel: below 0 or at 2^53 and above is #NUM!."""
     nums: list[int] = []
     for a in args:
-        if isinstance(a, Vec):
-            nums.extend(
-                int(v) for v in a.data if isinstance(v, (int, float)) and not isinstance(v, bool)
-            )
-        elif isinstance(a, (int, float)) and not isinstance(a, bool):
-            nums.append(int(a))
+        for v in a.data if isinstance(a, Vec) else (a,):
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                if v < 0 or v >= 2**53:
+                    return ExcelError.NUM
+                nums.append(int(v))
+    return nums
+
+
+def GCD(*args: Any) -> int | ExcelError:
+    nums = _gcd_operands(args)
+    if isinstance(nums, ExcelError):
+        return nums
     return math.gcd(*nums) if nums else 0
 
 
-def LCM(*args: Any) -> int:
-    nums: list[int] = []
-    for a in args:
-        if isinstance(a, Vec):
-            nums.extend(
-                int(v) for v in a.data if isinstance(v, (int, float)) and not isinstance(v, bool)
-            )
-        elif isinstance(a, (int, float)) and not isinstance(a, bool):
-            nums.append(int(a))
+def LCM(*args: Any) -> int | ExcelError:
+    nums = _gcd_operands(args)
+    if isinstance(nums, ExcelError):
+        return nums
     return math.lcm(*nums) if nums else 0
 
 
@@ -1669,15 +1719,10 @@ def IFNA(value: Any, fallback: Any) -> Any:
     return value
 
 
-def XOR(*args: Any) -> bool:
-    """Logical XOR: True iff an odd number of inputs are truthy."""
-    truthy = 0
-    for a in args:
-        if isinstance(a, Vec):
-            truthy += sum(1 for v in a.data if v)
-        elif a:
-            truthy += 1
-    return truthy % 2 == 1
+def XOR(*args: Any) -> bool | ExcelError:
+    """Logical XOR: True iff an odd number of the logical values are TRUE."""
+    vals = _logicals(args)
+    return vals if isinstance(vals, ExcelError) else sum(vals) % 2 == 1
 
 
 # -- Reference (Tier 2 subset) --
@@ -1916,6 +1961,8 @@ def COUNTBLANK(*args: Any) -> int:
 
 def PRODUCT(*args: Any) -> float:
     nums = _flatten_numeric(args)
+    if not nums:
+        return 0.0  # Excel: no numbers is 0, not the empty product
     p = 1.0
     for v in nums:
         p *= v
@@ -2304,11 +2351,11 @@ def ISREF(env: Any, *args: Any) -> bool:
 
 def CLEAN(text: Any) -> str:
     """Strip non-printable ASCII control characters (codes 0-31)."""
-    return "".join(c for c in str(text) if ord(c) >= 32)
+    return "".join(c for c in _text(text) if ord(c) >= 32)
 
 
 def NUMBERVALUE(text: Any, decimal_sep: str = ".", group_sep: str = ",") -> float | ExcelError:
-    s = str(text).strip()
+    s = _text(text).strip()
     if not s:
         return 0.0
     s = s.replace(str(group_sep), "")
@@ -2325,17 +2372,24 @@ def NUMBERVALUE(text: Any, decimal_sep: str = ".", group_sep: str = ",") -> floa
     return v / (100**pct) if pct else v
 
 
-def FIXED(num: float, decimals: int = 2, no_commas: bool = False) -> str:
+def FIXED(num: float, decimals: int = 2, no_commas: bool = False) -> str | ExcelError:
     """=FIXED(1234.567, -1) -> "1,230". Halves round away from zero."""
     d = int(decimals)
+    if d > 127:
+        return ExcelError.VALUE
     v = _round_dec(num, d, ROUND_HALF_UP) + 0.0  # + 0.0 drops a -0.0 sign
     return f"{v:{'' if no_commas else ','}.{max(d, 0)}f}"
 
 
-def DOLLAR(num: float, decimals: int = 2) -> str:
+def DOLLAR(num: float, decimals: int = 2) -> str | ExcelError:
     """=DOLLAR(-1234.567, -2) -> "($1,200)". Negatives in parentheses."""
+    if int(decimals) > 127:
+        return ExcelError.VALUE
     v = _round_dec(num, decimals, ROUND_HALF_UP)
-    body = "$" + FIXED(abs(v), decimals)
+    fixed = FIXED(abs(v), decimals)
+    if isinstance(fixed, ExcelError):
+        return fixed
+    body = "$" + fixed
     return f"({body})" if v < 0 else body
 
 
@@ -2351,7 +2405,7 @@ def UNICHAR(n: int) -> str | ExcelError:
 
 
 def UNICODE(text: Any) -> int | ExcelError:
-    s = str(text)
+    s = _text(text)
     if not s:
         return ExcelError.VALUE
     return ord(s[0])
@@ -2359,10 +2413,27 @@ def UNICODE(text: Any) -> int | ExcelError:
 
 # -- Tier 3: math --
 
+_LOG_DBL_MAX = math.log(sys.float_info.max)
+
+# Largest array a function may build: Excel's row count. Excel reports a larger
+# one as #NUM!; without a cap, `SEQUENCE(1e5, 1e5)` exhausts memory.
+_MAX_ARRAY_CELLS = 1 << 20
+
+# Longest text Excel holds in a cell.
+_MAX_TEXT = 32767
+
+
+def _array_too_big(rows: int, cols: int) -> bool:
+    return rows * cols > _MAX_ARRAY_CELLS
+
+
+def _log_comb(n: int, k: int) -> float:
+    return math.lgamma(n + 1) - math.lgamma(k + 1) - math.lgamma(n - k + 1)
+
 
 def COMBIN(n: int, k: int) -> int | ExcelError:
     nn, kk = int(n), int(k)
-    if nn < 0 or kk < 0 or kk > nn:
+    if nn < 0 or kk < 0 or kk > nn or _log_comb(nn, kk) > _LOG_DBL_MAX:
         return ExcelError.NUM
     return math.comb(nn, kk)
 
@@ -2374,6 +2445,8 @@ def COMBINA(n: int, k: int) -> int | ExcelError:
         return ExcelError.NUM
     if nn == 0 and kk == 0:
         return 1
+    if nn > 0 and _log_comb(nn + kk - 1, kk) > _LOG_DBL_MAX:
+        return ExcelError.NUM
     return math.comb(nn + kk - 1, kk)
 
 
@@ -2381,12 +2454,14 @@ def PERMUT(n: int, k: int) -> int | ExcelError:
     nn, kk = int(n), int(k)
     if nn < 0 or kk < 0 or kk > nn:
         return ExcelError.NUM
+    if math.lgamma(nn + 1) - math.lgamma(nn - kk + 1) > _LOG_DBL_MAX:
+        return ExcelError.NUM
     return math.perm(nn, kk)
 
 
 def PERMUTATIONA(n: int, k: int) -> int | ExcelError:
     nn, kk = int(n), int(k)
-    if nn < 0 or kk < 0:
+    if nn < 0 or kk < 0 or (nn > 1 and kk * math.log(nn) > _LOG_DBL_MAX):
         return ExcelError.NUM
     return int(nn**kk)
 
@@ -2403,6 +2478,9 @@ def MULTINOMIAL(*args: Any) -> int | ExcelError:
     if any(n < 0 for n in nums):
         return ExcelError.NUM
     total = sum(nums)
+    log_result = math.lgamma(total + 1) - sum(math.lgamma(n + 1) for n in nums)
+    if log_result > _LOG_DBL_MAX:
+        return ExcelError.NUM
     num = math.factorial(total)
     den = 1
     for n in nums:
@@ -2509,10 +2587,11 @@ def ATANH(x: float) -> float | ExcelError:
 
 
 def _bit_arg(x: Any) -> int | ExcelError:
-    n = int(x)
-    if n < 0 or n >= (1 << 48):
+    """A bitwise operand: an integer in [0, 2^48), else #NUM!."""
+    v = float(x)
+    if v != int(v) or v < 0 or v >= (1 << 48):
         return ExcelError.NUM
-    return n
+    return int(v)
 
 
 def BITAND(a: Any, b: Any) -> int | ExcelError:
@@ -2603,7 +2682,8 @@ def ADDRESS(
     r = int(row)
     c = int(col)
     an = int(abs_num)
-    if r <= 0 or c <= 0 or an < 1 or an > 4:
+    # Excel's sheet is 1,048,576 rows by 16,384 columns.
+    if not (1 <= r <= 1048576 and 1 <= c <= 16384) or an < 1 or an > 4:
         return ExcelError.VALUE
     use_a1 = bool(a1) if not isinstance(a1, str) else a1.upper() not in ("FALSE", "0")
     if use_a1:
@@ -2710,10 +2790,17 @@ def FILTER(rng: Vec, include: Vec, if_empty: Any = None) -> Vec | Any:
     For a 2D ``rng``, ``include`` selects whole rows (when its length matches
     the row count) or whole columns (when it matches the column count), and
     the surviving shape is preserved. A length that matches neither dimension
-    yields #VALUE!. With no matches, returns ``if_empty`` (or #N/A).
+    yields #VALUE!. With no matches, returns ``if_empty`` (or #CALC!).
     """
+    rng = _as_vec(rng)
+    include = _as_vec(include)
     b = include.data
-    empty = if_empty if if_empty is not None else ExcelError.NA
+    for v in b:  # include holds logicals or numbers
+        if isinstance(v, ExcelError):
+            return v
+        if isinstance(v, str):
+            return ExcelError.VALUE
+    empty = if_empty if if_empty is not None else ExcelError.CALC
     if rng.is_2d:
         rows, cols = rng.shape
         data = rng.data
@@ -2733,8 +2820,9 @@ def FILTER(rng: Vec, include: Vec, if_empty: Any = None) -> Vec | Any:
             return Vec(out, cols=len(keep))
         return ExcelError.VALUE
     a = rng.data
-    n = min(len(a), len(b))
-    out = [a[i] for i in range(n) if b[i]]
+    if len(a) != len(b):
+        return ExcelError.VALUE
+    out = [a[i] for i in range(len(a)) if b[i]]
     return Vec(out) if out else empty
 
 
@@ -2773,8 +2861,13 @@ def SORT(
     A 1D range sorts its values directly. ``sort_order``: 1 ascending
     (default), -1 descending. An out-of-range ``sort_index`` gives #VALUE!.
     """
+    rng = _as_vec(rng)
+    if int(sort_order) not in (1, -1):
+        return ExcelError.VALUE
     desc = int(sort_order) == -1
     if not rng.is_2d:
+        if int(sort_index) != 1:
+            return ExcelError.VALUE
         order = _sort_order(list(rng.data), desc)
         return Vec([rng.data[i] for i in order])
     rows, cols = rng.shape
@@ -2803,6 +2896,7 @@ def UNIQUE(rng: Vec, by_col: bool = False, exactly_once: bool = False) -> Vec:
     result keeps its 2D shape. If ``exactly_once`` is truthy, only entries
     appearing exactly once are returned.
     """
+    rng = _as_vec(rng)
     if rng.is_2d:
         rows, cols = rng.shape
         data = rng.data
@@ -2835,7 +2929,9 @@ def UNIQUE(rng: Vec, by_col: bool = False, exactly_once: bool = False) -> Vec:
     return Vec(sorder)
 
 
-def SEQUENCE(rows: int, columns: int = 1, start: float = 1.0, step: float = 1.0) -> Vec:
+def SEQUENCE(
+    rows: int, columns: int = 1, start: float = 1.0, step: float = 1.0
+) -> Vec | ExcelError:
     """=SEQUENCE(rows, [columns], [start], [step])
 
     Generates ``rows*columns`` numbers row-major. ``cols`` field is set so
@@ -2843,6 +2939,8 @@ def SEQUENCE(rows: int, columns: int = 1, start: float = 1.0, step: float = 1.0)
     """
     n_rows = max(int(rows), 0)
     n_cols = max(int(columns), 1)
+    if _array_too_big(n_rows, n_cols):
+        return ExcelError.NUM
     s = float(start)
     st = float(step)
     total = n_rows * n_cols
@@ -2855,10 +2953,12 @@ def RANDARRAY(
     minimum: float = 0.0,
     maximum: float = 1.0,
     integer: bool = False,
-) -> Vec:
+) -> Vec | ExcelError:
     """=RANDARRAY([rows], [cols], [min], [max], [integer]). 1D Vec, cols set."""
     n_rows = max(int(rows), 1)
     n_cols = max(int(columns), 1)
+    if _array_too_big(n_rows, n_cols):
+        return ExcelError.NUM
     lo = float(minimum)
     hi = float(maximum)
     total = n_rows * n_cols
@@ -3158,6 +3258,8 @@ def T_INV_2T(p: float, df: int) -> float | ExcelError:
     pp = float(p)
     if v < 1 or not 0.0 < pp <= 1.0:
         return ExcelError.NUM
+    if pp == 1.0:
+        return 0.0  # Pr(|T| > 0) = 1; the iterative inverse lands 1e-8 off
     return _t_inv_2tail(pp, v)
 
 
@@ -3773,9 +3875,9 @@ def TEXTBEFORE(
     Negative ``instance`` searches from the end. ``match_end=1`` treats
     end-of-string as a match. Tuple/list delimiters: any element matches.
     """
-    s = str(text)
+    s = _text(text)
     delims: list[str] = (
-        list(delimiter) if isinstance(delimiter, (list, tuple)) else [str(delimiter)]
+        list(delimiter) if isinstance(delimiter, (list, tuple)) else [_text(delimiter)]
     )
     inst = int(instance)
     if inst == 0:
@@ -3814,9 +3916,9 @@ def TEXTAFTER(
     if_not_found: Any = None,
 ) -> Any:
     """=TEXTAFTER(text, delimiter, [instance], [match_mode], [match_end], [if_not_found])."""
-    s = str(text)
+    s = _text(text)
     delims: list[str] = (
-        list(delimiter) if isinstance(delimiter, (list, tuple)) else [str(delimiter)]
+        list(delimiter) if isinstance(delimiter, (list, tuple)) else [_text(delimiter)]
     )
     inst = int(instance)
     if inst == 0:
@@ -3861,11 +3963,11 @@ def TEXTSPLIT(
     parts. Multiple delimiters are supported as list/tuple.
     """
     _ = pad_with  # 2D padding not relevant for 1D-flattened output.
-    s = str(text)
+    s = _text(text)
     case_fold = bool(int(match_mode))
 
     def _splitall(t: str, dlm: Any) -> list[str]:
-        delims = list(dlm) if isinstance(dlm, (list, tuple)) else [str(dlm)]
+        delims = list(dlm) if isinstance(dlm, (list, tuple)) else [_text(dlm)]
         delims = [d for d in delims if d]
         if not delims:
             return [t]
@@ -3889,7 +3991,7 @@ def TEXTSPLIT(
     if not grid:
         return ExcelError.NA
     n_cols = max(len(r) for r in grid)
-    pad = "" if pad_with is None else str(pad_with)
+    pad = "" if pad_with is None else _text(pad_with)
     flat: list[Any] = []
     for r in grid:
         flat.extend(r + [pad] * (n_cols - len(r)))
@@ -3933,9 +4035,9 @@ def _dec_to_base(n: int, base: int, places: int | None) -> str | ExcelError:
 
 def _base_to_dec(s: str, base: int) -> int | ExcelError:
     text = str(s).strip().upper()
-    if not text:
-        return ExcelError.NUM
-    if len(text) > 10:
+    # Digits only: `int()` would also take a sign or `_`. Negatives are
+    # 10-digit two's complement.
+    if not text or len(text) > 10 or not text.isalnum():
         return ExcelError.NUM
     try:
         n = int(text, base)
@@ -3970,33 +4072,33 @@ def DEC2HEX(number: int, places: int | None = None) -> str | ExcelError:
 
 
 def BIN2DEC(text: str) -> int | ExcelError:
-    return _base_to_dec(str(text), 2)
+    return _base_to_dec(_text(text), 2)
 
 
 def OCT2DEC(text: str) -> int | ExcelError:
-    return _base_to_dec(str(text), 8)
+    return _base_to_dec(_text(text), 8)
 
 
 def HEX2DEC(text: str) -> int | ExcelError:
-    return _base_to_dec(str(text), 16)
+    return _base_to_dec(_text(text), 16)
 
 
 def BIN2OCT(text: str, places: int | None = None) -> str | ExcelError:
-    n = _base_to_dec(str(text), 2)
+    n = _base_to_dec(_text(text), 2)
     if isinstance(n, ExcelError):
         return n
     return _dec_to_base(n, 8, places)
 
 
 def BIN2HEX(text: str, places: int | None = None) -> str | ExcelError:
-    n = _base_to_dec(str(text), 2)
+    n = _base_to_dec(_text(text), 2)
     if isinstance(n, ExcelError):
         return n
     return _dec_to_base(n, 16, places)
 
 
 def OCT2BIN(text: str, places: int | None = None) -> str | ExcelError:
-    n = _base_to_dec(str(text), 8)
+    n = _base_to_dec(_text(text), 8)
     if isinstance(n, ExcelError):
         return n
     if n < -(2**9) or n >= 2**9:
@@ -4005,14 +4107,14 @@ def OCT2BIN(text: str, places: int | None = None) -> str | ExcelError:
 
 
 def OCT2HEX(text: str, places: int | None = None) -> str | ExcelError:
-    n = _base_to_dec(str(text), 8)
+    n = _base_to_dec(_text(text), 8)
     if isinstance(n, ExcelError):
         return n
     return _dec_to_base(n, 16, places)
 
 
 def HEX2BIN(text: str, places: int | None = None) -> str | ExcelError:
-    n = _base_to_dec(str(text), 16)
+    n = _base_to_dec(_text(text), 16)
     if isinstance(n, ExcelError):
         return n
     if n < -(2**9) or n >= 2**9:
@@ -4021,7 +4123,7 @@ def HEX2BIN(text: str, places: int | None = None) -> str | ExcelError:
 
 
 def HEX2OCT(text: str, places: int | None = None) -> str | ExcelError:
-    n = _base_to_dec(str(text), 16)
+    n = _base_to_dec(_text(text), 16)
     if isinstance(n, ExcelError):
         return n
     if n < -(8**9) or n >= 8**9:
@@ -4632,6 +4734,7 @@ def TRANSPOSE(rng: Vec) -> Vec:
 
     A 1D Vec (shape n×1) becomes a 1D Vec interpreted as 1×n (cols=n).
     """
+    rng = _as_vec(rng)
     rows, cols = _shape(rng)
     if not rng.is_2d:
         # Column vector -> row vector.
@@ -4669,6 +4772,7 @@ def _normalize_indices(args: tuple[Any, ...], dim: int) -> list[int] | ExcelErro
 
 def CHOOSEROWS(rng: Vec, *indices: Any) -> Vec | ExcelError:
     """=CHOOSEROWS(rng, row1, row2, ...). 1-based; negative counts from end."""
+    rng = _as_vec(rng)
     rows, cols = _shape(rng)
     idx = _normalize_indices(indices, rows)
     if isinstance(idx, ExcelError):
@@ -4686,6 +4790,7 @@ def CHOOSEROWS(rng: Vec, *indices: Any) -> Vec | ExcelError:
 
 def CHOOSECOLS(rng: Vec, *indices: Any) -> Vec | ExcelError:
     """=CHOOSECOLS(rng, col1, col2, ...). 1-based; negative counts from end."""
+    rng = _as_vec(rng)
     rows, cols = _shape(rng)
     idx = _normalize_indices(indices, cols)
     if isinstance(idx, ExcelError):
@@ -4703,12 +4808,15 @@ def CHOOSECOLS(rng: Vec, *indices: Any) -> Vec | ExcelError:
     return Vec(out, cols=len(idx))
 
 
-def TOROW(rng: Vec, ignore: int = 0, scan_by_column: int = 0) -> Vec:
+def TOROW(rng: Vec, ignore: int = 0, scan_by_column: int = 0) -> Vec | ExcelError:
     """=TOROW(rng, [ignore], [scan_by_column]).
 
     ignore: 0 keep all, 1 skip blanks, 2 skip errors, 3 skip both.
     scan_by_column: 0 row-major (default), 1 column-major.
     """
+    rng = _as_vec(rng)
+    if int(ignore) not in (0, 1, 2, 3):
+        return ExcelError.VALUE
     skip_blank = bool(int(ignore) & 1)
     skip_error = bool(int(ignore) & 2)
     rows, cols = _shape(rng)
@@ -4726,13 +4834,16 @@ def TOROW(rng: Vec, ignore: int = 0, scan_by_column: int = 0) -> Vec:
     return Vec(out, cols=len(out) if out else 1)
 
 
-def TOCOL(rng: Vec, ignore: int = 0, scan_by_column: int = 0) -> Vec:
+def TOCOL(rng: Vec, ignore: int = 0, scan_by_column: int = 0) -> Vec | ExcelError:
     """=TOCOL(rng, [ignore], [scan_by_column]). Result is a column (1D Vec)."""
     row = TOROW(rng, ignore, scan_by_column)
+    if isinstance(row, ExcelError):
+        return row
     return Vec(list(row.data))  # 1D = column vector
 
 
 def _wrap(vec: Vec, count: int, pad: Any, by_row: bool) -> Vec | ExcelError:
+    vec = _as_vec(vec)
     n = int(count)
     if n < 1:
         return ExcelError.NUM
@@ -4740,6 +4851,8 @@ def _wrap(vec: Vec, count: int, pad: Any, by_row: bool) -> Vec | ExcelError:
     total = len(flat)
     if total == 0:
         return ExcelError.VALUE
+    if _array_too_big((total + n - 1) // n, n):
+        return ExcelError.NUM
     if by_row:
         n_rows = (total + n - 1) // n
         out: list[Any] = []
@@ -4774,12 +4887,13 @@ def WRAPCOLS(vec: Vec, wrap_count: int, pad: Any = None) -> Vec | ExcelError:
 
 def EXPAND(rng: Vec, rows: int, columns: int | None = None, pad: Any = None) -> Vec | ExcelError:
     """=EXPAND(rng, rows, [cols], [pad]). Pad rng to (rows, cols) with pad."""
+    rng = _as_vec(rng)
     src_rows, src_cols = _shape(rng)
     target_rows = int(rows)
     target_cols = int(columns) if columns is not None else src_cols
     if target_rows < src_rows or target_cols < src_cols:
         return ExcelError.VALUE
-    if target_rows < 1 or target_cols < 1:
+    if target_rows < 1 or target_cols < 1 or _array_too_big(target_rows, target_cols):
         return ExcelError.NUM
     p = pad if pad is not None else ExcelError.NA
     out: list[Any] = []
@@ -4798,6 +4912,7 @@ def EXPAND(rng: Vec, rows: int, columns: int | None = None, pad: Any = None) -> 
 def TAKE(rng: Vec, rows: int, columns: int | None = None) -> Vec | ExcelError:
     """=TAKE(rng, rows, [cols]). Take first ``rows`` (or last if negative) rows;
     same for cols (defaults to all columns)."""
+    rng = _as_vec(rng)
     src_rows, src_cols = _shape(rng)
     nr = int(rows)
     nc = int(columns) if columns is not None else src_cols
@@ -4822,6 +4937,7 @@ def TAKE(rng: Vec, rows: int, columns: int | None = None) -> Vec | ExcelError:
 def DROP(rng: Vec, rows: int, columns: int | None = None) -> Vec | ExcelError:
     """=DROP(rng, rows, [cols]). Drop first ``rows`` (or last if negative);
     same for cols (defaults to drop none)."""
+    rng = _as_vec(rng)
     src_rows, src_cols = _shape(rng)
     dr = int(rows)
     dc = int(columns) if columns is not None else 0
@@ -4845,9 +4961,7 @@ def VSTACK(*ranges: Any) -> Vec | ExcelError:
     if not ranges:
         return ExcelError.VALUE
     grids: list[tuple[int, int, list[Any]]] = []
-    for r in ranges:
-        if not isinstance(r, Vec):
-            return ExcelError.VALUE
+    for r in map(_as_vec, ranges):
         rows, cols = _shape(r)
         grids.append((rows, cols, list(r.data)))
     max_cols = max(g[1] for g in grids)
@@ -4870,9 +4984,7 @@ def HSTACK(*ranges: Any) -> Vec | ExcelError:
     if not ranges:
         return ExcelError.VALUE
     grids: list[tuple[int, int, list[Any]]] = []
-    for r in ranges:
-        if not isinstance(r, Vec):
-            return ExcelError.VALUE
+    for r in map(_as_vec, ranges):
         rows, cols = _shape(r)
         grids.append((rows, cols, list(r.data)))
     max_rows = max(g[0] for g in grids)
@@ -4946,7 +5058,7 @@ def ROMAN(number: int, form: int = 0) -> str | ExcelError:
 def ARABIC(text: str) -> int | ExcelError:
     """=ARABIC(roman) -> integer value of a Roman numeral. Lenient about
     form (mirrors Excel); a leading '-' negates."""
-    s = str(text).strip().upper()
+    s = _text(text).strip().upper()
     if s == "":
         return 0
     neg = s[0] == "-"
@@ -4994,7 +5106,7 @@ def DECIMAL(text: str, radix: int) -> int | ExcelError:
     r = int(radix)
     if r < 2 or r > 36:
         return ExcelError.NUM
-    s = str(text).strip().upper()
+    s = _text(text).strip().upper()
     if len(s) > 255:
         return ExcelError.NUM
     if s == "":
@@ -5243,8 +5355,7 @@ def FISHER(x: float) -> float | ExcelError:
 
 def FISHERINV(y: float) -> float:
     """=FISHERINV(y) -> inverse Fisher transform tanh(y)."""
-    e = math.exp(2 * float(y))
-    return (e - 1) / (e + 1)
+    return math.tanh(float(y))
 
 
 def TRIMMEAN(rng: Vec | float, percent: float) -> float | ExcelError:
@@ -5319,19 +5430,15 @@ def NETWORKDAYS_INTL(
     ws = _weekend_set(weekend)
     if isinstance(ws, ExcelError):
         return ws
-    s = _from_serial(float(start)).date()
-    e = _from_serial(float(end)).date()
+    s, e = int(float(start)), int(float(end))
+    if s < 0 or e < 0:
+        return ExcelError.NUM
     sign = 1
     if e < s:
         s, e = e, s
         sign = -1
     hol = _holiday_serials(holidays)
-    n = 0
-    cur = s
-    while cur <= e:
-        if cur.weekday() not in ws and int(_to_serial(cur)) not in hol:
-            n += 1
-        cur += _dt.timedelta(days=1)
+    n = sum(1 for d in range(s, e + 1) if _serial_weekday(d) not in ws and d not in hol)
     return sign * n
 
 
@@ -5344,14 +5451,18 @@ def WORKDAY_INTL(
     if isinstance(ws, ExcelError):
         return ws
     hol = _holiday_serials(holidays)
-    cur = _from_serial(float(start)).date()
+    cur = int(float(start))
+    if cur < 0:
+        return ExcelError.NUM
     remaining = int(days)
     step = 1 if remaining >= 0 else -1
     while remaining != 0:
-        cur += _dt.timedelta(days=step)
-        if cur.weekday() not in ws and int(_to_serial(cur)) not in hol:
+        cur += step
+        if cur < 0:
+            return ExcelError.NUM
+        if _serial_weekday(cur) not in ws and cur not in hol:
             remaining -= step
-    return _to_serial(cur)
+    return float(cur)
 
 
 # -- Statistical: fringe (continued) --
@@ -5848,7 +5959,8 @@ def TBILLEQ(settlement: float, maturity: float, discount: float) -> float | Exce
 
 
 def _dollar_digits(fraction: int) -> int:
-    return int(math.floor(math.log10(fraction))) + 1 if fraction >= 1 else 1
+    """ceil(log10(fraction)), exactly: 16 -> 2, 10 -> 1, 1 -> 0."""
+    return len(str(fraction - 1)) if fraction > 1 else 0
 
 
 def DOLLARDE(fractional_dollar: float, fraction: int) -> float | ExcelError:
@@ -6313,6 +6425,8 @@ def MAKEARRAY(rows: int, cols: int, func: Any) -> Vec | ExcelError:
     r, c = int(rows), int(cols)
     if r < 1 or c < 1:
         return ExcelError.VALUE
+    if _array_too_big(r, c):
+        return ExcelError.NUM
     out = [func(float(i), float(j)) for i in range(1, r + 1) for j in range(1, c + 1)]
     return Vec(out, cols=c)
 

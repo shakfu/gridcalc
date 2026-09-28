@@ -2779,7 +2779,6 @@ if _HAS_NUMPY:
     import numpy as np  # noqa: I001 -- conditional
 
 
-@pytest.mark.skipif(not _HAS_NUMPY, reason="numpy not installed")
 class TestRangeNodes:
     """A multi-cell range is one graph node shared by its consumers."""
 
@@ -2908,6 +2907,7 @@ class TestFormulasCannotCrashSetcell:
         assert g.cells[6][1].err is ExcelError.NUM  # the spilled element
 
 
+@pytest.mark.skipif(not _HAS_NUMPY, reason="numpy not installed")
 class TestNumpyMatrix:
     def test_basic_ndarray_formula(self):
         g = make_np_grid()

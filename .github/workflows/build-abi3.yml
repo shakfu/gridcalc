@@ -6,14 +6,15 @@ name: Build ABI3 wheels
 # which switches `nanobind_add_module` into STABLE_ABI mode in
 # CMakeLists.txt.
 #
-# Build-only by default. Adopt this matrix for publishing once you've
-# decided whether to drop pre-3.12 support; until then, the per-version
-# `build-publish.yml` is the authoritative publish path.
+# A version tag also creates a GitHub release holding the abi3 wheels,
+# with notes from the matching CHANGELOG.md section. PyPI publishing stays
+# in the per-version `build-publish.yml`.
 
 on:
   push:
     tags:
-      - "v*-abi3"
+      # Release tags are bare semver (`0.10.0`), no `v` prefix.
+      - "[0-9]+.[0-9]+.[0-9]+"
   pull_request:
     branches: [main, master]
     paths:
@@ -181,3 +182,31 @@ jobs:
           name: abi3-all-dist
           path: dist/
           retention-days: 30
+
+  release:
+    name: Create GitHub release
+    needs: collect-abi3
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download abi3 wheels
+        uses: actions/download-artifact@v8
+        with:
+          name: abi3-all-dist
+          path: dist/
+
+      - name: Extract release notes
+        run: python3 scripts/release_notes.py "$GITHUB_REF_NAME" -o release-notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.whl \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+            --verify-tag

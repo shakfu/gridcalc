@@ -48,6 +48,8 @@ CORE_MODULES = (
     "report.py",
     "config.py",
     "sandbox.py",
+    # The reviewed names `sandbox.ModuleFacade` exposes. Data only.
+    "_module_names.py",
     # Excel date serials: the epoch, format classification, and rendering.
     # Shared by the function library, the display layer and the criteria
     # parser, none of which may reach for a terminal.

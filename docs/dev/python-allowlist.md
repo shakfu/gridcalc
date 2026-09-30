@@ -6,7 +6,7 @@ Status: **proposed, not implemented.**
 
 A PYTHON-mode workbook's formulas are passed to `eval()`. Opening an untrusted one runs Python with no code block involved:
 
-- `"{0.__globals__[os].environ[HOME]}".format(SUM)` reads the environment. It passes `validate_formula` (`sandbox.py:281`), which does not inspect string contents.
+- `"{0.__globals__[os].environ[HOME]}".format(SUM)` read the environment. `validate_formula` now refuses it, but it rejects known patterns only.
 - `sum(1 for _ in range(10**100))` hangs the load.
 
 Both use only names gridcalc itself puts in the namespace. Neither needs a code block or `requires`.

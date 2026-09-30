@@ -78,7 +78,7 @@ export function TrustDialog({
             )}
             {info.side_effect.length > 0 && (
               <div className="trust-row">
-                <span className="trust-key">I/O</span>
+                <span className="trust-key">Unrestricted</span>
                 <span className="trust-warn">{info.side_effect.join(', ')}</span>
               </div>
             )}

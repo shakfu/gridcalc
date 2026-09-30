@@ -18,9 +18,9 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ### Security
 
-- [ ] **The formula validator misses string-borne attribute access.** `validate_formula` inspects only `ast.Attribute` and `ast.Name` nodes, so `"{0.__globals__[os].environ[HOME]}".format(SUM)` reads the environment. `str.format` and `format_map` traverse; `%` and f-string format specs do not. Since 0.7.0 a PYTHON-mode JSON file with formulas raises the trust prompt, including one with a missing or unknown `mode`, so this needs the user's approval. That prompt also appears for plain-arithmetic files; `docs/dev/python-allowlist.md` proposes prompting only for formulas outside an allowlist.
+- [ ] **Modules without a facade are handed over whole.** `numpy` and the stdlib modules on the safe list reach a workbook as a `ModuleFacade` of reviewed names (`_module_names.py`). `pandas`, `matplotlib`, `csv`, `xlsxwriter`, `scipy`, `sympy` and any approved unknown module are still module objects, and a module object reaches every module it imported: `pd.io.common.os` is `os`. The prompt labels them unrestricted. A facade for `scipy` needs its public names collected per submodule; it is not installed in the dev environment. `sympy` cannot take one: most of its functions `eval` a string argument.
 
-- [ ] **Curated module facade.** Approved workbook code is handed whole module objects, so `np.savetxt('/anywhere', ...)` writes any path with the sandbox on. Expose a facade (`np.array`, `np.mean`, `np.linalg.solve`) rather than the module. Portable, needs no IPC, and removes the severe outcome -- arbitrary file read and write -- at a fraction of the cost of isolation. Ongoing cost is curation: each newly approved module needs a facade, and an omission is silent.
+- [ ] **Methods on values are outside a facade.** `ndarray.tofile`, `ndarray.dump` and `DataFrame.to_csv` write files. The two `ndarray` methods fail today only because numpy's C code finds no `__import__` in the formula's builtins. Refusing the attribute names in the validator is the available fix.
 
 ### Documentation & infrastructure
 
@@ -68,15 +68,13 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ### Security
 
-- [ ] **`classify_module` classifies a submodule by its top-level package.** `numpy.ctypeslib` classifies as safe and loads under a plain approve, which exposes `ctypes`. Classify by full dotted name.
-
 - [ ] **No limit on formula size or run time.** `=SUM(SEQUENCE(100000000))` (EXCEL) hangs the load with no approval needed. `=sum(range(10**12))` (PYTHON) does too once the file is approved. Cap formula length and nesting depth, and bound evaluation.
 
 - [ ] **Unverified: the file can change between approval and load.** `inspect_file` and the later load read the file twice. Probe artefact exists; outcome not confirmed. (REVIEW.md unchecked lead.)
 
 - [ ] **Unverified: `pager` or `editor` from `./gridcalc.toml` may reach a subprocess.** 0.7.0 says `editor` is ignored there. Probe artefact exists; outcome not confirmed. (REVIEW.md unchecked lead.)
 
-- [ ] **Unverified: `allowed_modules` from `./gridcalc.toml`.** If still honoured there, a directory can pre-approve `numpy.ctypeslib` (see the `classify_module` entry). Probe artefact exists; outcome not confirmed. (REVIEW.md unchecked lead.)
+- [ ] **Unverified: `allowed_modules` from `./gridcalc.toml`.** If still honoured there, a directory can pre-approve `pandas`, which is handed over whole (see the facade entry above). Probe artefact exists; outcome not confirmed. (REVIEW.md unchecked lead.)
 
 ### Documentation & infrastructure
 

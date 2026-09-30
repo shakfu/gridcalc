@@ -8,8 +8,13 @@ import importlib.metadata
 import json
 import os
 import re
+import string
+import warnings
 from dataclasses import dataclass, field
+from types import ModuleType
 from typing import Any
+
+from ._module_names import NAMES
 
 # Sandbox is on by default. Set GRIDCALC_SANDBOX=0 to disable.
 # Can also be controlled via sandbox = true/false in gridcalc.toml.
@@ -24,24 +29,30 @@ def configure_sandbox(enabled: bool) -> None:
         SANDBOX_ENABLED = enabled
 
 
+# Whether a safe module reaches a workbook as a `ModuleFacade`. Set from
+# `module_facades` in the user config; off hands over the whole module.
+FACADES_ENABLED = True
+
+
+def configure_facades(enabled: bool) -> None:
+    """Set facade use from config."""
+    global FACADES_ENABLED
+    FACADES_ENABLED = enabled
+
+
+def _use_facades() -> bool:
+    # With validation off, a facade restricts names and protects nothing.
+    return SANDBOX_ENABLED and FACADES_ENABLED
+
+
 # -- Module classification --
 
-SAFE_MODULES: frozenset[str] = frozenset(
-    {
-        "numpy",
-        "scipy",
-        "sympy",
-        "decimal",
-        "fractions",
-        "statistics",
-        "cmath",
-        "itertools",
-        "functools",
-        "operator",
-        "collections",
-    }
-)
+# A module is safe when it is handed to the workbook as a `ModuleFacade`: the
+# reviewed names in `_module_names.NAMES` and nothing else.
+SAFE_MODULES: frozenset[str] = frozenset(NAMES)
 
+# Handed over whole, and flagged at the trust prompt. A module object reaches
+# every module it imported, so these are unrestricted.
 SIDE_EFFECT_MODULES: frozenset[str] = frozenset(
     {
         "matplotlib",
@@ -49,6 +60,22 @@ SIDE_EFFECT_MODULES: frozenset[str] = frozenset(
         "pandas",
         "csv",
         "xlsxwriter",
+        # No facade yet. Most `sympy` functions `eval` a string argument.
+        "sympy",
+        "scipy",
+        "scipy.cluster",
+        "scipy.constants",
+        "scipy.fft",
+        "scipy.integrate",
+        "scipy.interpolate",
+        "scipy.linalg",
+        "scipy.ndimage",
+        "scipy.optimize",
+        "scipy.signal",
+        "scipy.sparse",
+        "scipy.spatial",
+        "scipy.special",
+        "scipy.stats",
     }
 )
 
@@ -90,18 +117,68 @@ MODULE_ALIASES: dict[str, str] = {
 
 
 def classify_module(name: str) -> str:
-    """Classify a module as 'safe', 'side_effect', 'blocked', or 'unknown'."""
-    base = name.split(".")[0]
-    if name in BLOCKED_MODULES or base in BLOCKED_MODULES:
+    """Classify a module as 'safe', 'side_effect', 'blocked', or 'unknown'.
+
+    A submodule is classified by its own dotted name. Only 'blocked' passes
+    down from a package: `numpy.ctypeslib` is not safe because `numpy` is.
+    'safe' means a facade; 'side_effect' and an approved 'unknown' are whole
+    modules. With facades off, a module that has one is 'side_effect'.
+    """
+    if name in BLOCKED_MODULES or name.split(".")[0] in BLOCKED_MODULES:
         return "blocked"
-    if name in SAFE_MODULES or base in SAFE_MODULES:
-        return "safe"
-    if name in SIDE_EFFECT_MODULES or base in SIDE_EFFECT_MODULES:
+    if name in SAFE_MODULES:
+        return "safe" if _use_facades() else "side_effect"
+    if name in SIDE_EFFECT_MODULES:
         return "side_effect"
     return "unknown"
 
 
 _SPEC_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_.]*)\s*(==|>=|<=|>|<|~=)?\s*(.*)$")
+
+
+class ModuleFacade:
+    """The reviewed names of one approved module, and nothing else.
+
+    A module object reaches every module it imported: `numpy.f2py.os` is `os`.
+    The facade holds the listed functions, classes and constants, and a facade
+    for each listed submodule. It keeps no reference to the module.
+    """
+
+    def __init__(self, name: str, members: dict[str, Any]) -> None:
+        self.__dict__.update(members)
+        self.__dict__["__name__"] = name
+
+    def __getattr__(self, attr: str) -> Any:
+        raise AttributeError(f"'{self.__dict__['__name__']}' has no '{attr}' in a workbook")
+
+    def __setattr__(self, attr: str, value: Any) -> None:
+        raise AttributeError("a module facade is read-only")
+
+    def __delattr__(self, attr: str) -> None:
+        raise AttributeError("a module facade is read-only")
+
+    def __repr__(self) -> str:
+        return f"<facade '{self.__dict__['__name__']}'>"
+
+
+_ABSENT: Any = object()
+
+
+def module_facade(name: str, mod: ModuleType) -> ModuleFacade:
+    """Build the facade for ``mod``, a module with an entry in ``NAMES``."""
+    members: dict[str, Any] = {}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # reading a deprecated name warns
+        for attr in NAMES[name]:
+            # A name from another version is absent; a module is never a member.
+            value = getattr(mod, attr, _ABSENT)
+            if value is not _ABSENT and not isinstance(value, ModuleType):
+                members[attr] = value
+    prefix = name + "."
+    for sub in NAMES:
+        if sub.startswith(prefix) and "." not in sub[len(prefix) :]:
+            members[sub[len(prefix) :]] = module_facade(sub, importlib.import_module(sub))
+    return ModuleFacade(name, members)
 
 
 def _parse_requirement(spec: str) -> tuple[str, str | None, str | None]:
@@ -167,6 +244,9 @@ def load_modules(
     version specifier (``numpy>=1.24``, ``pandas==2.0.3``). Supported
     operators: ``==``, ``>=``, ``<=``, ``>``, ``<``, ``~=``.
 
+    A safe module is returned as a ``ModuleFacade``; any other approved module
+    is returned whole, and so is every module when facades are off.
+
     A module that no list classifies is refused unless ``allow_unknown``.
     The blocklist cannot be the only gate: it names the dangerous modules
     known when it was written, so anything omitted -- ``runpy``, which runs
@@ -200,7 +280,7 @@ def load_modules(
                 errors.append(f"'{name}': installed {installed} does not satisfy {op}{ver}")
                 continue
         alias = MODULE_ALIASES.get(name, name.split(".")[-1])
-        result[alias] = mod
+        result[alias] = module_facade(name, mod) if name in NAMES and _use_facades() else mod
     return result, errors
 
 
@@ -238,6 +318,9 @@ _BLOCKED_NAMES: frozenset[str] = frozenset(
         "memoryview",
         "bytearray",
         "bytes",
+        # `getattr` under another name, from `operator`.
+        "attrgetter",
+        "methodcaller",
     }
 )
 
@@ -274,15 +357,65 @@ _DANGEROUS_ATTRS: frozenset[str] = frozenset(
         # Bound method internals
         "im_func",
         "im_self",
+        # Attribute access named by a string: `operator` and `string.Formatter`.
+        "attrgetter",
+        "methodcaller",
+        "vformat",
+        "get_field",
     }
 )
+
+
+def _plain_fields(template: str) -> bool:
+    """True if no replacement field in ``template`` reads an attribute or an item."""
+    try:
+        for _, name, spec, _ in string.Formatter().parse(template):
+            if name and not (name.isidentifier() or name.isdigit()):
+                return False
+            if spec and not _plain_fields(spec):
+                return False
+    except ValueError:
+        return False
+    return True
+
+
+def _node_error(node: ast.AST) -> str:
+    """Why ``node`` is refused, or "" when it is allowed."""
+    if isinstance(node, ast.Attribute):
+        attr = node.attr
+        if attr.startswith("__") and attr.endswith("__"):
+            return f"dunder attribute '{attr}' is not allowed"
+        if attr in _DANGEROUS_ATTRS:
+            return f"attribute '{attr}' is not allowed"
+        # `str.format` reads whatever attributes and items its template names:
+        # `"{0.__globals__}".format(f)` is `f.__globals__` with no Attribute
+        # node to refuse. A template built at run time cannot be checked here.
+        if attr in ("format", "format_map"):
+            template = node.value
+            if not (
+                isinstance(template, ast.Constant)
+                and isinstance(template.value, str)
+                and _plain_fields(template.value)
+            ):
+                return (
+                    f"'{attr}' is allowed only on a string literal with plain "
+                    "fields such as {}, {0} or {name}; use an f-string"
+                )
+    elif isinstance(node, ast.Name):
+        name = node.id
+        if name in _BLOCKED_NAMES:
+            return f"name '{name}' is not allowed"
+        if name.startswith("__") and name.endswith("__"):
+            return f"dunder name '{name}' is not allowed"
+    return ""
 
 
 def validate_formula(source: str) -> tuple[bool, str]:
     """Validate a formula expression against security rules.
 
     Returns (is_valid, error_message). Blocks dunder attribute access,
-    dangerous names, and known internal attributes used in sandbox escapes.
+    dangerous names, known internal attributes used in sandbox escapes, and
+    `str.format` templates that read attributes or items.
     """
     if not SANDBOX_ENABLED:
         return True, ""
@@ -293,18 +426,9 @@ def validate_formula(source: str) -> tuple[bool, str]:
         return False, f"syntax error: {e}"
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute):
-            attr = node.attr
-            if attr.startswith("__") and attr.endswith("__"):
-                return False, f"dunder attribute '{attr}' is not allowed"
-            if attr in _DANGEROUS_ATTRS:
-                return False, f"attribute '{attr}' is not allowed"
-        elif isinstance(node, ast.Name):
-            name = node.id
-            if name in _BLOCKED_NAMES:
-                return False, f"name '{name}' is not allowed"
-            if name.startswith("__") and name.endswith("__"):
-                return False, f"dunder name '{name}' is not allowed"
+        error = _node_error(node)
+        if error:
+            return False, error
 
     return True, ""
 
@@ -339,20 +463,15 @@ def validate_code(source: str) -> tuple[bool, str]:
                 base = node.module.split(".")[0]
                 if node.module in BLOCKED_MODULES or base in BLOCKED_MODULES:
                     return False, f"import from '{node.module}' is blocked"
-        # Same attribute checks as formulas
-        elif isinstance(node, ast.Attribute):
-            attr = node.attr
-            if attr.startswith("__") and attr.endswith("__"):
-                return False, f"dunder attribute '{attr}' is not allowed"
-            if attr in _DANGEROUS_ATTRS:
-                return False, f"attribute '{attr}' is not allowed"
-        # Same name checks as formulas
-        elif isinstance(node, ast.Name):
-            name = node.id
-            if name in _BLOCKED_NAMES:
-                return False, f"name '{name}' is not allowed"
-            if name.startswith("__") and name.endswith("__"):
-                return False, f"dunder name '{name}' is not allowed"
+            # `from operator import attrgetter as g` would rename a blocked name.
+            for alias in node.names:
+                if alias.name in _BLOCKED_NAMES:
+                    return False, f"import of '{alias.name}' is not allowed"
+        # Same attribute and name checks as formulas
+        else:
+            error = _node_error(node)
+            if error:
+                return False, error
 
     return True, ""
 

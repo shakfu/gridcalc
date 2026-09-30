@@ -33,16 +33,20 @@ CONFIG_FILENAME = "gridcalc.toml"
 # Number formats a workbook default can take; the same set `:gf` accepts.
 FORMATS = "LRIGD$%*"
 
-# `sandbox = false` disables the trust prompt; `editor` is a command `:e` runs.
-USER_ONLY_KEYS = ("sandbox", "editor")
+# `sandbox = false` disables the trust prompt; `editor` is a command `:e` runs;
+# `module_facades = false` hands a workbook whole modules.
+USER_ONLY_KEYS = ("sandbox", "editor", "module_facades")
 
-_KNOWN_KEYS = frozenset({"editor", "sandbox", "width", "format", "libs", "allowed_modules", "keys"})
+_KNOWN_KEYS = frozenset(
+    {"editor", "sandbox", "module_facades", "width", "format", "libs", "allowed_modules", "keys"}
+)
 
 
 @dataclass
 class Config:
     editor: str = ""
     sandbox: bool = True
+    module_facades: bool = True
     width: int = 0
     format: str = ""
     libs: list[str] = field(default_factory=list)
@@ -105,6 +109,14 @@ def _parse_config(data: dict[str, Any]) -> Config:
             cfg.sandbox = data["sandbox"]
         else:
             cfg.warnings.append(f"sandbox: expected bool, got {type(data['sandbox']).__name__}")
+
+    if "module_facades" in data:
+        if isinstance(data["module_facades"], bool):
+            cfg.module_facades = data["module_facades"]
+        else:
+            cfg.warnings.append(
+                f"module_facades: expected bool, got {type(data['module_facades']).__name__}"
+            )
 
     if "width" in data:
         w = data["width"]

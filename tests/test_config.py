@@ -323,3 +323,20 @@ class TestCwdConfigSecurityKeys:
         assert cfg.sandbox is False
         assert cfg.editor == "nano"
         assert cfg.warnings == []
+
+    def test_module_facades_defaults_on(self):
+        assert _parse_config({}).module_facades is True
+        assert _parse_config({"module_facades": False}).module_facades is False
+        cfg = _parse_config({"module_facades": "no"})
+        assert cfg.module_facades is True
+        assert any(w.startswith("module_facades: expected bool") for w in cfg.warnings)
+
+    def test_cwd_config_cannot_turn_facades_off(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch, "module_facades = false\n")
+        cfg = load_config()
+        assert cfg.module_facades is True
+        assert any(w.startswith("module_facades: ignored") for w in cfg.warnings)
+
+    def test_user_config_can_turn_facades_off(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch, None, "module_facades = false\n")
+        assert load_config().module_facades is False

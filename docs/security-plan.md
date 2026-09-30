@@ -29,9 +29,9 @@ Users declare which third-party libraries are available, either per-spreadsheet 
 
 Modules are classified into three categories:
 
-- **Safe** (compute-only, no meaningful side effects): `numpy`, `scipy`, `sympy`, `decimal`, `fractions`, `statistics`, `cmath`, `itertools`, `functools`, `operator`, `collections`. These are injected directly (e.g., `np` for numpy).
+- **Safe**: `numpy` with `numpy.linalg`, `numpy.fft`, `numpy.random` and `numpy.polynomial`, and `decimal`, `fractions`, `statistics`, `cmath`, `itertools`, `functools`, `operator`, `collections`. A safe module reaches the workbook as a `ModuleFacade`: an object holding the reviewed names in `_module_names.py` and nothing else. `np.array` is numpy's function; `np.f2py`, `np.ctypeslib`, `np.savetxt` and every other unlisted name raise `AttributeError`. A test fails when an installed module has a public name that is neither listed nor excluded. `module_facades = false` in the user config hands over whole modules instead, and the prompt then lists them as unrestricted.
 
-- **Side-effect** (can do I/O but are commonly needed): `matplotlib`, `matplotlib.pyplot`, `pandas`, `csv`, `xlsxwriter`. These are injected but flagged at the trust prompt.
+- **Unrestricted** (`side_effect` in the code): `matplotlib`, `matplotlib.pyplot`, `pandas`, `csv`, `xlsxwriter`, `scipy`, `sympy`. These have no facade. They are injected as module objects and flagged at the trust prompt. A module object reaches every module it imported, so approving one approves arbitrary code.
 
 - **Blocked** (filesystem, network, process control): `os`, `sys`, `subprocess`, `shutil`, `pathlib`, `socket`, `http`, `importlib`, `ctypes`, `pickle`, etc. Never injected, even if requested.
 
@@ -48,6 +48,8 @@ Before `eval()`, every formula is parsed with `ast.parse()` and the AST is walke
 - **Dangerous names** are blocked: `__import__`, `eval`, `exec`, `compile`, `getattr`, `setattr`, `delattr`, `globals`, `locals`, `type`, `super`, `open`, `breakpoint`, etc.
 
 - **Dangerous internal attributes** are blocked: `func_globals`, `f_globals`, `co_consts`, `tb_frame`, `gi_frame`, etc.
+
+- **`str.format` templates that read attributes or items** are blocked: `"{0.__globals__}".format(f)`. `format` and `format_map` are allowed only on a string literal with plain fields (`{}`, `{0}`, `{name}`), so a template built at run time is refused.
 
 What remains allowed:
 
@@ -140,7 +142,7 @@ Files without `requires` are fully backward compatible.
 
 ## Known gaps
 
-- **Formula validation misses string-borne attribute access (S1). Open.** `validate_formula` walks `ast.Attribute` and `ast.Name` nodes only. `str.format` and `str.format_map` traverse attributes and indexes named in the string, so `"{0.__globals__[os].environ[HOME]}".format(SUM)` reads the environment. `%` and f-string format specs do not traverse. The demonstrated effect is read-only disclosure. No call primitive has been shown. Since S2 closed, this needs the user to approve the file.
+- **Formula validation missed string-borne attribute access (S1). Closed.** `str.format` and `str.format_map` read the attributes and items their template names, so `"{0.__globals__[os].environ[HOME]}".format(SUM)` read the environment with no `Attribute` node to refuse. Both methods are now allowed only on a string literal whose fields are plain names or positions. `attrgetter`, `methodcaller`, `vformat` and `get_field` are refused by name.
 
 - **Formulas-only still evaluated formulas (S2). Closed.** `formulas_only()` now leaves PYTHON-mode formulas unevaluated, and `FileInfo.python_formulas` makes such a file raise the prompt.
 
@@ -150,7 +152,9 @@ Files without `requires` are fully backward compatible.
 
 - **The startup trust prompt prints the code preview unescaped (S5).** Terminal escape sequences in a code comment can hide lines on screen.
 
-- **Module classification uses the top-level name (S6).** `classify_module("numpy.ctypeslib")` returns `safe`.
+- **Module classification used the top-level name (S6). Closed.** `numpy.ctypeslib` classified as safe. A submodule is now classified by its own dotted name; only `blocked` passes down from a package.
+
+- **An approved module handed out every module it imported (S8). Closed for safe modules.** The formula namespace held the module object, and any non-dunder attribute is allowed: with `numpy` approved, `np.f2py.os` was `os` and `np._globals.enum.bltns` was `builtins`. Refusing attributes named after blocked modules does not hold, because `np.f2py.f2py2e.argparse._os` is `os`. Safe modules are now facades. Modules without one are still whole and are labelled unrestricted. Methods on values (`ndarray.tofile`, `DataFrame.to_csv`) are outside a facade. See `TODO.md`.
 
 - **No limit on formula depth or run time (S7).** Neither needs approval. A deeply nested formula raises `RecursionError`, which the web and CLI load paths now catch. A formula that builds a 10^8-element array hangs the session.
 

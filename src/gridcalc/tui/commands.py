@@ -404,7 +404,8 @@ def trust_prompt(stdscr: curses.window, filename: str, info: FileInfo) -> LoadPo
                 y += 1
             if info.side_effect_modules:
                 stdscr.attron(curses.color_pair(CP_LOCKED))
-                io_mods = f"  I/O:      {', '.join(info.side_effect_modules)}"
+                # Handed over whole: a module object reaches every module it imported.
+                io_mods = f"  Unrestricted: {', '.join(info.side_effect_modules)}"
                 stdscr.addnstr(y, 0, io_mods, curses.COLS - 1)
                 stdscr.attroff(curses.color_pair(CP_LOCKED))
                 y += 1

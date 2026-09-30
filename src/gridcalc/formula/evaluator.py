@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from types import ModuleType
 from typing import Any
 
+from ..sandbox import ModuleFacade
 from .ast_nodes import (
     Apply,
     ArrayLit,
@@ -71,10 +72,12 @@ class Env:
         # `cell_value` so an Env built without spill support degrades to
         # reading the anchor's own value.
         self.cell_spill_value = cell_spill_value or cell_value
-        # The globals also serve PYTHON-mode eval; a class (`Vec`) or module
-        # (`math`) there is not a formula function.
+        # The globals also serve PYTHON-mode eval; a class (`Vec`), a module
+        # (`math`) or a module facade (`np`) there is not a formula function.
         self._builtins = {
-            k.lower(): v for k, v in builtins.items() if not isinstance(v, (type, ModuleType))
+            k.lower(): v
+            for k, v in builtins.items()
+            if not isinstance(v, (type, ModuleType, ModuleFacade))
         }
         self._named = {k.lower(): v for k, v in (named_ranges or {}).items()}
         self.py_registry = py_registry or {}

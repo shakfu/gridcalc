@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.10.0]
+
+### Security
+
+- **A format template could read any attribute.** `str.format` and `str.format_map` follow the attributes and items named in the template, so `="{0.__globals__[os].environ[HOME]}".format(SUM)` read the environment in an approved PYTHON-mode workbook. The validator saw a string, not an attribute access. Both methods are now allowed only on a string literal whose fields are plain names or positions; a template built at run time is refused, and so are `attrgetter`, `methodcaller`, `vformat` and `get_field`. Use an f-string, which the validator can read. Refusing every `.format` was the alternative; it would break `"{:.2f}".format(x)`.
+
+- **An approved `numpy` no longer reaches `os`.** A workbook was handed the module object, and a module object reaches every module it imported: `np.f2py.os` was `os`, `np.ctypeslib.ctypes` was `ctypes`, and the validator allows any attribute that is not a dunder. `numpy` and the stdlib modules on the safe list now reach a workbook as a facade holding their reviewed public names (`_module_names.py`). `np.array` and `np.linalg.solve` work as before; `np.f2py`, `np.lib`, `np.savetxt`, `np.load` and other unlisted names raise `AttributeError`. Refusing attributes named after blocked modules was the alternative; `np.f2py.f2py2e.argparse._os` defeats it. `module_facades = false` in the user config restores the whole module for workbooks that need unlisted names; a launch-directory config cannot set it.
+
+- **`scipy` and `sympy` are no longer classed as safe.** Neither has a facade, so both are handed over whole, as `pandas` is. The trust prompt now labels such modules "Unrestricted" where it said "I/O". A submodule is classified by its own dotted name, so `numpy.ctypeslib` needs the separate unknown-module approval.
+
 ### Changed
 
 - **Scalar formulas recalc 35-45% faster, and workbooks load 25-30% faster.** Bookkeeping cost more per formula than evaluation. Each formula scanned the sheet names to find its cell, ran three imports to refresh its dependencies, and passed about 10 type tests to store a float. The tokenizer rebuilt its operator table for every operator and tried the error-literal pattern at every token. These now run once per pass, once per module, or not at all. Arithmetic on two floats skips the array and coercion checks. At 100k `=X*2+1` formulas, full recalc drops from 1.44 s to 0.78 s and load from 3.12 s to 2.18 s. A C++ evaluator was the alternative: evaluation is 13-41% of a full recalc, so it could gain at most 1.7x. Measurements: `docs/dev/ironcalc.md`.

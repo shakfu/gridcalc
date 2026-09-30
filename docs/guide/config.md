@@ -30,6 +30,8 @@ See [Keybindings](../keybindings.md) for the keyspec grammar (`Tab`, `S-Tab`, `C
 
 `sandbox = true` (the default) enables AST validation of formulas and code blocks: dunder access, dangerous attributes and builtins, and blocked imports are rejected before anything executes. Setting `sandbox = false`, or the environment variable `GRIDCALC_SANDBOX=0`, turns it off.
 
-`sandbox` and `editor` are read only from the user config. A `$PWD/gridcalc.toml` that sets them is ignored for those keys, with a warning: launching in a directory is not consent to its security policy or commands.
+`sandbox`, `module_facades` and `editor` are read only from the user config. A `$PWD/gridcalc.toml` that sets them is ignored for those keys, with a warning: launching in a directory is not consent to its security policy or commands.
+
+`module_facades = true` (the default) hands `numpy` and the stdlib modules on the safe list to a workbook as facades: `np.array` and `np.linalg.solve` work, and unlisted names such as `np.lib`, `np.ma` or `np.load` raise `AttributeError`. Set `module_facades = false` to get the whole module. A whole module reaches every module it imported, including `os` and `subprocess`, so the trust prompt then lists it as unrestricted. With `sandbox = false` modules are whole regardless. The web view does not read the config and always uses facades.
 
 The threat model -- what the sandbox is and is not meant to stop -- is in [Security plan](../security-plan.md). The short version: a workbook can carry a Python code block, and PYTHON-mode formulas are Python. Opening an untrusted file in PYTHON or HYBRID mode is the main risk, and that is what the load-time trust prompt exists for.

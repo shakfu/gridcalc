@@ -9,6 +9,12 @@ editor = "vim"
 # GRIDCALC_SANDBOX env var takes precedence over this setting.
 sandbox = false
 
+# Hand numpy and the stdlib modules on the safe list to a workbook as facades:
+# their reviewed public names only. false hands over the whole module, which
+# reaches os and subprocess (np.f2py.os). User config only. No effect when
+# sandbox = false, which already hands over whole modules.
+# module_facades = true
+
 # Default column width (4-40)
 # width = 8
 
@@ -16,8 +22,8 @@ sandbox = false
 # format = "D"
 
 # Pre-approved modules available in formulas.
-# Safe (compute-only): numpy, scipy, sympy, decimal, fractions, statistics, etc.
-# Side-effect (I/O): matplotlib, pandas, csv, openpyxl
+# Safe (reviewed names only): numpy, decimal, fractions, statistics, etc.
+# Unrestricted (whole module): matplotlib, pandas, scipy, sympy, csv
 # Blocked (always): os, sys, subprocess, shutil, pathlib, socket, pickle, etc.
 # allowed_modules = ["numpy", "matplotlib"]
 

@@ -40,7 +40,7 @@ test('names the file and shows the code that would run', () => {
 test('modules are split by how much is known about them', () => {
   show()
   expect(screen.getByText('numpy')).toBeInTheDocument() // classified safe
-  expect(screen.getByText('requests')).toBeInTheDocument() // I/O
+  expect(screen.getByText('requests')).toBeInTheDocument() // Unrestricted
   expect(screen.getByText('mystery')).toBeInTheDocument() // unclassified
   expect(screen.getByText(/socket .* never imported/)).toBeInTheDocument()
 })

@@ -1,12 +1,21 @@
+import importlib
+import importlib.util
 import json
 import math
+import warnings
 
+import pytest
+
+from gridcalc._module_names import EXCLUDED, NAMES
 from gridcalc.engine import Grid, NamedRange
 from gridcalc.sandbox import (
+    SAFE_MODULES,
     LoadPolicy,
+    ModuleFacade,
     classify_module,
     inspect_file,
     load_modules,
+    module_facade,
     validate_code,
     validate_formula,
 )
@@ -200,6 +209,76 @@ class TestValidateFormulaBlocked:
         assert not ok
 
 
+class TestStringBorneAttributeAccess:
+    """`str.format` reads the attributes and items its template names, and
+    `operator.attrgetter` is `getattr`. Neither shows as an Attribute node."""
+
+    REFUSED = [
+        '"{0.__globals__[os].environ[HOME]}".format(SUM)',
+        '"{f.__globals__}".format_map({"f": SUM})',
+        '"{0[key]}".format(x)',
+        '"{0.real}".format(x)',
+        '"{0:{1.__class__}}".format(1, SUM)',  # a field nested in the format spec
+        '"{".format(x)',  # unparseable template
+        # A template that is not a literal cannot be checked.
+        'str.format("{0.__globals__}", SUM)',
+        '("{0.__glo" + "bals__}").format(SUM)',
+        'f"{{0.__globals__}}".format(SUM)',
+        '"{0}".format("{0.__globals__}").format(SUM)',
+        '(lambda t: t.format(SUM))("{0.__globals__}")',
+        "A1.format(SUM)",
+        # `getattr` by other names.
+        'operator.attrgetter("__globals__")(SUM)',
+        'operator.methodcaller("format", SUM)("{0.__globals__}")',
+        'attrgetter("__globals__")(SUM)',
+        'string.Formatter().vformat("{0.__globals__}", (SUM,), {})',
+        'string.Formatter().get_field("0.__globals__", (SUM,), {})',
+    ]
+    ALLOWED = [
+        '"{:.2f}".format(A1)',
+        '"{} {}".format(A1, B1)',
+        '"{0}-{1:>{2}}".format(1, 2, 3)',
+        '"{name!r}".format(name=A1)',
+        '"{a}".format_map({"a": 1})',
+        '"{{braces}}".format()',
+        'f"{A1:.2f}"',
+        '"%s" % A1',
+        '"abc".upper()',
+        "np.format_float_positional(1.5)",
+    ]
+
+    def test_refused_in_formulas(self):
+        for source in self.REFUSED:
+            assert not validate_formula(source)[0], source
+
+    def test_refused_in_code(self):
+        for source in self.REFUSED:
+            assert not validate_code(f"x = {source}")[0], source
+
+    def test_plain_templates_allowed(self):
+        for source in self.ALLOWED:
+            assert validate_formula(source) == (True, ""), source
+            assert validate_code(f"x = {source}") == (True, ""), source
+
+    def test_import_cannot_rename_a_blocked_name(self):
+        assert not validate_code("from operator import attrgetter as g")[0]
+        assert not validate_code("from operator import methodcaller")[0]
+        assert validate_code("from operator import itemgetter")[0]
+
+    def test_the_read_does_not_reach_a_cell(self, monkeypatch):
+        from gridcalc.formula.errors import ExcelError
+
+        monkeypatch.setenv("HOME", "/secret/home")
+        g = Grid()
+        g.setcell(0, 0, '=len("{0.__globals__[os].environ[HOME]}".format(SUM))')
+        cl = g.cells[0][0]
+        assert cl.err == ExcelError.NAME
+        assert math.isnan(cl.val)
+        assert "secret" not in (cl.err_msg or "")
+        g.setcell(0, 1, '=len("{:.2f}".format(3.14159))')
+        assert g.cells[0][1].val == 4
+
+
 # -- validate_code tests --
 
 
@@ -372,8 +451,10 @@ class TestClassifyModule:
     def test_safe_numpy(self):
         assert classify_module("numpy") == "safe"
 
-    def test_safe_scipy(self):
-        assert classify_module("scipy") == "safe"
+    def test_scipy_and_sympy_are_handed_over_whole(self):
+        # No facade yet, so they are flagged rather than called safe.
+        for name in ("scipy", "scipy.optimize", "sympy"):
+            assert classify_module(name) == "side_effect", name
 
     def test_safe_decimal(self):
         assert classify_module("decimal") == "safe"
@@ -413,6 +494,157 @@ class TestClassifyModule:
 
     def test_unknown_custom(self):
         assert classify_module("my_custom_module") == "unknown"
+
+    def test_submodule_does_not_inherit_safe(self):
+        # `numpy.ctypeslib` holds `ctypes`; `numpy.f2py` holds `os` and `subprocess`.
+        for name in ("numpy.ctypeslib", "numpy.f2py", "numpy.testing", "scipy.io", "pandas.io"):
+            assert classify_module(name) == "unknown", name
+
+    def test_unlisted_submodule_needs_the_unknown_approval(self):
+        mods, errors = load_modules(["numpy.ctypeslib"])
+        assert mods == {}
+        assert "not approved" in errors[0]
+
+    def test_submodule_of_blocked_package_stays_blocked(self):
+        assert classify_module("urllib.request") == "blocked"
+        assert classify_module("http.server") == "blocked"
+
+
+# -- ModuleFacade tests --
+
+
+def _public_names(mod):
+    names = getattr(mod, "__all__", None) or dir(mod)
+    return {n for n in names if not n.startswith("_")}
+
+
+class TestModuleFacade:
+    """A safe module reaches the workbook as its reviewed names only."""
+
+    def test_numpy_is_a_facade_of_the_real_functions(self):
+        np = pytest.importorskip("numpy")
+        facade = load_modules(["numpy"])[0]["np"]
+        assert isinstance(facade, ModuleFacade)
+        assert facade.array is np.array
+        assert facade.ndarray is np.ndarray
+        assert facade.newaxis is None  # a listed constant that happens to be None
+        assert facade.linalg.det(facade.array([[1.0, 2.0], [3.0, 4.0]])) == pytest.approx(-2.0)
+
+    def test_unlisted_names_are_absent(self):
+        pytest.importorskip("numpy")
+        facade = load_modules(["numpy"])[0]["np"]
+        for name in ("f2py", "ctypeslib", "testing", "lib", "core", "_core", "savetxt", "load"):
+            with pytest.raises(AttributeError, match="in a workbook"):
+                getattr(facade, name)
+
+    def test_facade_is_read_only(self):
+        facade = load_modules(["decimal"])[0]["decimal"]
+        with pytest.raises(AttributeError):
+            facade.Decimal = int
+        with pytest.raises(AttributeError):
+            del facade.Decimal
+
+    def test_no_facade_holds_a_module(self):
+        import types
+
+        def walk(facade, path):
+            for name, value in vars(facade).items():
+                assert not isinstance(value, types.ModuleType), f"{path}.{name}"
+                if isinstance(value, ModuleFacade):
+                    walk(value, f"{path}.{name}")
+
+        for name in NAMES:
+            if "." not in name and importlib.util.find_spec(name):
+                walk(module_facade(name, importlib.import_module(name)), name)
+
+    def test_submodule_can_be_required_by_name(self):
+        np = pytest.importorskip("numpy")
+        facade = load_modules(["numpy.linalg"])[0]["linalg"]
+        assert isinstance(facade, ModuleFacade)
+        assert facade.solve is np.linalg.solve
+
+    def test_operator_has_no_attribute_readers(self):
+        facade = load_modules(["operator"])[0]["operator"]
+        assert facade.itemgetter(1)([10, 20]) == 20
+        assert not hasattr(facade, "attrgetter")
+        assert not hasattr(facade, "methodcaller")
+
+    def test_module_without_a_list_is_handed_over_whole(self):
+        import csv
+
+        assert load_modules(["csv"])[0]["csv"] is csv
+
+    def test_every_public_name_is_reviewed(self):
+        """Fails when an installed module gains a public name: add it to
+        `NAMES` or `EXCLUDED` in `_module_names.py` after reading what it does."""
+        import types
+
+        for name, listed in NAMES.items():
+            if not importlib.util.find_spec(name.split(".")[0]):
+                continue
+            mod = importlib.import_module(name)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                public = {
+                    n
+                    for n in _public_names(mod)
+                    if not isinstance(getattr(mod, n, None), types.ModuleType)
+                }
+            assert public - listed - EXCLUDED.get(name, frozenset()) == set(), name
+
+    def test_listed_and_excluded_are_disjoint(self):
+        for name, excluded in EXCLUDED.items():
+            assert not (NAMES[name] & excluded), name
+
+    def test_safe_means_facade(self):
+        assert frozenset(NAMES) == SAFE_MODULES
+
+    def test_formulas_use_the_facade(self):
+        pytest.importorskip("numpy")
+        from gridcalc.engine import Mode
+
+        g = Grid()
+        g.mode = Mode.PYTHON
+        g.load_requires(["numpy"])
+        g.setcell(0, 0, "=np.sum(np.array([1, 2, 3]))")
+        assert g.cells[0][0].val == 6
+        for formula in ("=np.f2py", "=np.ctypeslib", "=np.lib", "=np.testing"):
+            g.setcell(0, 1, formula)
+            assert math.isnan(g.cells[0][1].val), formula
+            assert "in a workbook" in g.cells[0][1].err_msg, formula
+
+    def test_facades_off_hands_over_the_module_and_says_so(self, monkeypatch, tmp_path):
+        import decimal
+
+        from gridcalc import sandbox
+
+        monkeypatch.setattr(sandbox, "FACADES_ENABLED", False)
+        assert load_modules(["decimal"])[0]["decimal"] is decimal
+        # The prompt reads the class, so the module must not be called safe.
+        assert classify_module("decimal") == "side_effect"
+        path = tmp_path / "w.json"
+        path.write_text(json.dumps({"requires": ["decimal"], "cells": [[1]]}))
+        assert inspect_file(str(path)).side_effect_modules == ["decimal"]
+
+    def test_sandbox_off_implies_whole_modules(self, monkeypatch):
+        import decimal
+
+        from gridcalc import sandbox
+
+        monkeypatch.setattr(sandbox, "SANDBOX_ENABLED", False)
+        assert load_modules(["decimal"])[0]["decimal"] is decimal
+
+    def test_facade_is_not_a_formula_function(self):
+        pytest.importorskip("numpy")
+        from gridcalc.engine import Mode
+        from gridcalc.formula.errors import ExcelError
+
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.load_requires(["numpy"])
+        g.setcell(0, 0, "=NP()")
+        assert g.cells[0][0].err == ExcelError.NAME
 
 
 # -- load_modules tests --
@@ -928,7 +1160,7 @@ class TestPythonFormulaTrust:
         from gridcalc.engine import UNTRUSTED_MSG
         from gridcalc.formula.errors import ExcelError
 
-        # Passes validate_formula, and reads $HOME when evaluated.
+        # Would read $HOME if it were evaluated without validation.
         leak = '="{0.__globals__[os].environ[HOME]}".format(SUM)'
         path = self._write(tmp_path, {"cells": [[leak]]})
         g = Grid()

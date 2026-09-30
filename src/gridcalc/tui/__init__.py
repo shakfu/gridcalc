@@ -55,6 +55,7 @@ from ..sandbox import (
     LoadPolicy,
     _parse_requirement,
     classify_module,
+    configure_facades,
     configure_sandbox,
     inspect_file,
 )
@@ -620,7 +621,10 @@ def startup_trust_prompt(filename: str, info: FileInfo) -> LoadPolicy | None:
     if info.requires:
         for mod in info.requires:
             cls = classify_module(_parse_requirement(mod)[0])
-            tag = f" [{cls}]" if cls != "safe" else ""
+            # Only a safe module is a facade; the rest are whole module objects.
+            tag = (
+                "" if cls == "safe" else " [unrestricted]" if cls == "side_effect" else f" [{cls}]"
+            )
             print(f"  Requires: {_printable(mod)}{tag}")
     if info.has_code:
         print(f"\n--- Code ({info.code_lines} lines) ---\n")
@@ -689,11 +693,13 @@ def main() -> None:
         _state._cfg = load_config()
         emit_warnings(_state._cfg)
         configure_sandbox(_state._cfg.sandbox)
+        configure_facades(_state._cfg.module_facades)
         sys.exit(cli_run(args))
 
     _state._cfg = load_config()
     emit_warnings(_state._cfg)
     configure_sandbox(_state._cfg.sandbox)
+    configure_facades(_state._cfg.module_facades)
 
     g = Grid()
     g.mode = Mode.HYBRID

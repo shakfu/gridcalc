@@ -10,21 +10,15 @@ from typing import NamedTuple, cast
 
 from .ast_nodes import (
     Apply,
-    ArrayLit,
     BinOp,
-    Bool,
     Call,
     CellRef,
-    ErrorLit,
-    Missing,
     Name,
     Node,
-    Number,
     Percent,
     PyCall,
     RangeRef,
     SpillRef,
-    String,
     UnaryOp,
 )
 
@@ -125,18 +119,18 @@ def has_dynamic_refs(node: Node) -> bool:
 
     Cells matching this need always-recompute treatment in topo recalc.
     """
-    if isinstance(node, Call):
+    if type(node) is BinOp:
+        return has_dynamic_refs(node.left) or has_dynamic_refs(node.right)
+    if type(node) is Call:
         up = node.name.upper()
         if up in DYNAMIC_REF_FUNCS or up in VOLATILE_FUNCS:
             return True
         return any(has_dynamic_refs(a) for a in node.args)
-    if isinstance(node, Apply):
+    if type(node) is Apply:
         return has_dynamic_refs(node.func) or any(has_dynamic_refs(a) for a in node.args)
-    if isinstance(node, PyCall):
+    if type(node) is PyCall:
         return True  # py.* gateway can read arbitrary cells
-    if isinstance(node, BinOp):
-        return has_dynamic_refs(node.left) or has_dynamic_refs(node.right)
-    if isinstance(node, (UnaryOp, Percent)):
+    if type(node) is UnaryOp or type(node) is Percent:
         return has_dynamic_refs(node.operand)
     return False
 
@@ -148,11 +142,18 @@ def _walk(
     formula_sheet: str | None,
     collapse: bool,
 ) -> None:
-    if isinstance(node, CellRef):
+    if type(node) is CellRef:
         sheet = node.sheet if node.sheet is not None else formula_sheet
         out.add((sheet, node.col, node.row))
-        return
-    if isinstance(node, RangeRef):
+    elif type(node) is BinOp:
+        _walk(node.left, named, out, formula_sheet, collapse)
+        _walk(node.right, named, out, formula_sheet, collapse)
+    elif type(node) is Call:
+        # An address-only function uses its args as references, not for value.
+        if node.name.upper() not in ADDRESS_ONLY_FUNCS:
+            for a in node.args:
+                _walk(a, named, out, formula_sheet, collapse)
+    elif type(node) is RangeRef:
         sheet = node.start.sheet if node.start.sheet is not None else formula_sheet
         c1, c2 = sorted([node.start.col, node.end.col])
         r1, r2 = sorted([node.start.row, node.end.row])
@@ -161,42 +162,23 @@ def _walk(
             out.add(key)
         else:
             out.update(key.cells())
-        return
-    if isinstance(node, SpillRef):
+    elif type(node) is UnaryOp or type(node) is Percent:
+        _walk(node.operand, named, out, formula_sheet, collapse)
+    elif type(node) is SpillRef:
         # A spill range depends on its anchor: when the anchor's array
         # changes, the whole spill (and its consumers) must recompute.
         anchor = node.anchor
         sheet = anchor.sheet if anchor.sheet is not None else formula_sheet
         out.add((sheet, anchor.col, anchor.row))
-        return
-    if isinstance(node, Name):
+    elif type(node) is Name:
         target = named.get(node.name.lower())
         if target is not None:
             _walk(target, named, out, formula_sheet, collapse)
-        return
-    if isinstance(node, Call):
-        if node.name.upper() in ADDRESS_ONLY_FUNCS:
-            # Args are used as references, not read for value.
-            return
-        for a in node.args:
-            _walk(a, named, out, formula_sheet, collapse)
-        return
-    if isinstance(node, Apply):
+    elif type(node) is Apply:
         _walk(node.func, named, out, formula_sheet, collapse)
         for a in node.args:
             _walk(a, named, out, formula_sheet, collapse)
-        return
-    if isinstance(node, PyCall):
+    elif type(node) is PyCall:
         for a in node.args:
             _walk(a, named, out, formula_sheet, collapse)
-        return
-    if isinstance(node, BinOp):
-        _walk(node.left, named, out, formula_sheet, collapse)
-        _walk(node.right, named, out, formula_sheet, collapse)
-        return
-    if isinstance(node, (UnaryOp, Percent)):
-        _walk(node.operand, named, out, formula_sheet, collapse)
-        return
-    # Constants have no refs
-    if isinstance(node, (Number, String, Bool, ErrorLit, Missing, ArrayLit)):
-        return
+    # Constants have no refs.

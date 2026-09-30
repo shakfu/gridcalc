@@ -106,7 +106,17 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ### Performance
 
-- [ ] **Targeted C++ acceleration for measured hot spots.** A full C++ evaluator port (lexer + parser + tree walker + cell store + dep graph) is not justified by current benchmarks: topological recalc closed the gap that originally motivated it. Surgical edits on 10k-cell sheets are <0.1 ms; xlsxload of 5k cells is ~12 ms; long-chain edits are single-digit ms. A wholesale port would duplicate the function library in C++, complicate the HYBRID `py.*` gateway with three-way Python<->C++ bouncing, and slow development velocity (rebuild required for every formula-system change). If a real workload exposes a hot spot, C++ that single component (`Vec` arithmetic, range materialization in `_expand_ranges`, or the closure BFS in `_recalc_topo`) -- a few hundred lines, not thousands. See git history for the original "Phase 3" entry if scope ever shifts.
+Measurements for this section: `docs/dev/ironcalc.md`. Per-formula figures are for a full recalc of 20k scalar formulas.
+
+- [ ] **Remaining range scans in criteria and lookup functions.** `SUMIF`, `COUNTIF`, the `*IFS` family, exact `MATCH`, `VLOOKUP`, and forward `XLOOKUP`/`XMATCH` use the memos on a shared `Vec` (see CHANGELOG). Still scanning per consumer: `HLOOKUP`, last-to-first `XLOOKUP`/`XMATCH`, approximate matches, text and wildcard criteria, and the database functions. `SUMIF` over 1000 cells still costs about 60 us: one pass builds the hit list and one collects the matched numbers. A sorted copy with `bisect` could make approximate matches logarithmic; not measured.
+
+- [ ] **A full `recalc()` rebuilds the dependency graph.** 2.2-2.9 us per formula, the largest piece of a full recalc. Undo, sort, the CLI and the solver's apply step write cells directly and rely on the rebuild (`docs/topological.md`). Skipping it needs each of them to write through `setcells_bulk`, or to pass a dirty set. Undo gains less: `Cell.copy_from` drops the AST, so a restored cell is re-parsed.
+
+- [ ] **A function call costs 2-3 us before its body runs.** `_eval_call` lowers the name four times, checks LET locals and named lambdas before the builtins, and reads `_param_info` twice. Resolve the name once and look the builtin up first when no LET scope is open.
+
+- [ ] **Recalc loop remainder.** Kahn ordering, the loop body, the result store and the spill check total about 2.5 us per formula. No single change is worth more than 0.5 us: Kahn allocates a default empty set and an intersection set per cell, the loop slices `text[1:]` per formula to validate the AST cache, and `_apply_spill` runs for scalar results.
+
+- [ ] **C++ is not justified for the evaluator or the function library.** `evaluate()` is 13-41% of a full recalc, so a C++ tree walker with zero cost gains at most 1.2-1.7x. Scalar function bodies are 1-11% of a formula's cost, so porting `libs/xlsx.py` gains less. IronCalc's 0.4-0.8 us per formula, against 6-8 us here, needs the cell store, graph and values native too: `engine.py` and `formula/`, about 6k lines. PYTHON mode and `py.*` read that store from Python, and `RAW_ARG_FUNCS` receive `env` and AST nodes, so both must stay Python-visible. Reconsider for workbooks past about 1M formulas, or a loop that runs a full recalc per iteration. If native code is added, use C++: nanobind and CMake already build `_core.cpp` and `_opt.cpp`.
 
 ### Refactoring & code quality
 

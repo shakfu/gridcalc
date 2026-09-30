@@ -32,7 +32,7 @@ gridcalc owns its engine:
 ## Costs of gridcalc's approach
 
 1. Excel semantics are open-ended: coercion, error propagation, date-system quirks, locale parsing.
-2. Evaluation runs in Python: a scalar formula costs about 11 us, against about 0.6 us in IronCalc. See the benchmark below.
+2. Evaluation runs in Python: a scalar formula costs 6-8 us, against 0.4-0.8 us in IronCalc. See the benchmark below.
 3. xlsx passes through gridcalc's cell model. Features it lacks (styles, conditional formats) are likely lost on round-trip *(inference)*.
 
 ## Costs of l123's approach
@@ -84,7 +84,7 @@ For gridcalc:
 
 ## Recalc benchmark
 
-EXCEL mode, IronCalc 0.8.3 Python bindings, CPython 3.14.7, arm64 macOS. Best of 3 runs. `n` is the formula count. Reproduce with `uv run --with ironcalc python scripts/bench_recalc.py -e gridcalc -e ironcalc -r 3`. Both engines give the same values on every workload.
+EXCEL mode, IronCalc 0.8.3 Python bindings, CPython 3.14.7, x86_64 Linux (Ryzen 9 PRO 6950H), 2026-09-30. Best of 3 runs. `n` is the formula count. Reproduce with `uv run --with ironcalc python scripts/bench_recalc.py -e gridcalc -e ironcalc -r 3`. Both engines give the same values on every workload.
 
 - **chain**: cell k is `=<cell k-1>+1`. One dependency chain of depth n.
 - **flat**: n constants and n formulas `=X*2+1`, each reading one constant. Depth 1.
@@ -101,28 +101,28 @@ IronCalc's Python API has no incremental recalc, so each edit is `set_user_input
 
 | Workload | n | Engine | load | full | edit-root | edit-leaf |
 |-|-|-|-|-|-|-|
-| chain | 10k | gridcalc | 0.15 s | 0.08 s | 0.05 s | 0.08 ms |
-| | | IronCalc | 0.02 s | 0.005 s | 0.005 s | 4.6 ms |
-| flat | 10k | gridcalc | 0.21 s | 0.11 s | <1 ms | 0.05 ms |
-| | | IronCalc | 0.04 s | 0.005 s | 0.005 s | 5.2 ms |
-| ranges | 10k | gridcalc | 0.28 s | 0.15 s | 0.10 s | 0.08 ms |
-| | | IronCalc | 0.68 s | 0.59 s | 0.60 s | 594 ms |
-| chain | 100k | gridcalc | 1.78 s | 1.13 s | 0.63 s | 0.11 ms |
-| | | IronCalc | 0.25 s | 0.06 s | 0.06 s | 59 ms |
-| flat | 100k | gridcalc | 2.53 s | 1.23 s | <1 ms | 0.05 ms |
-| | | IronCalc | 0.37 s | 0.06 s | 0.06 s | 60 ms |
-| ranges | 100k | gridcalc | 3.15 s | 1.69 s | 1.10 s | 0.11 ms |
-| | | IronCalc | 12.7 s | 6.25 s | 6.11 s | 6276 ms |
+| chain | 10k | gridcalc | 0.15 s | 0.06 s | 0.03 s | 0.10 ms |
+| | | IronCalc | 0.02 s | 0.005 s | 0.005 s | 4.9 ms |
+| flat | 10k | gridcalc | 0.16 s | 0.06 s | <1 ms | 0.05 ms |
+| | | IronCalc | 0.03 s | 0.004 s | 0.004 s | 4.4 ms |
+| ranges | 10k | gridcalc | 0.27 s | 0.14 s | 0.10 s | 0.08 ms |
+| | | IronCalc | 0.51 s | 0.41 s | 0.41 s | 413 ms |
+| chain | 100k | gridcalc | 1.46 s | 0.81 s | 0.44 s | 0.11 ms |
+| | | IronCalc | 0.27 s | 0.08 s | 0.08 s | 82 ms |
+| flat | 100k | gridcalc | 2.21 s | 0.77 s | <1 ms | 0.06 ms |
+| | | IronCalc | 0.37 s | 0.07 s | 0.08 s | 74 ms |
+| ranges | 100k | gridcalc | 3.08 s | 1.65 s | 1.10 s | 0.11 ms |
+| | | IronCalc | 13.2 s | 4.74 s | 4.75 s | 4737 ms |
 
 Findings:
 
-- Scalar full recalc: IronCalc is 16-22x faster, about 0.6 us per formula against gridcalc's 11-12 us.
-- Range full recalc: gridcalc is about 4x faster. It evaluates a shared range once per pass; IronCalc appears to re-read it per formula *(inference from timings)*.
-- Edits: gridcalc recalcs only the dirty closure, so a leaf edit takes 0.05-0.11 ms against IronCalc's 4.6-6276 ms. A root edit on chain 100k is the one edit case IronCalc wins, 0.06 s against 0.63 s.
+- Scalar full recalc: IronCalc is 10-15x faster, 0.4-0.8 us per formula against gridcalc's 6-8 us.
+- Range full recalc: gridcalc is about 3x faster. It evaluates a shared range once per pass; IronCalc appears to re-read it per formula *(inference from timings)*.
+- Edits: gridcalc recalcs only the dirty closure, so a leaf edit takes 0.05-0.11 ms against IronCalc's 4.4-4737 ms. A root edit on chain 100k is the one edit case IronCalc wins, 0.08 s against 0.44 s.
 
 ### gridcalc range workload, before and after
 
-Single runs, ranges at 10k. Each row includes the ones above it.
+Single runs on arm64 macOS, ranges at 10k. Each row includes the ones above it.
 
 | Change | load | full | edit-root |
 |-|-|-|-|
@@ -135,10 +135,28 @@ Single runs, ranges at 10k. Each row includes the ones above it.
 
 At 100k, 0.8.0 took 260 s to load, 109 s for a full recalc and 34.7 s for a root edit.
 
-What remains in a scalar full recalc (chain, 20k, profiled):
+### gridcalc scalar workload, before and after
 
-- About 40% rebuilds the graph. A full `recalc()` always rebuilds, because undo, sort and the CLI write cells directly (`docs/topological.md`).
-- Most of the rest is AST dispatch: `_eval` tests node types with an `isinstance` chain, about 22 calls per formula.
+Full recalc of 20k `=X*2+1` formulas, microseconds per formula, best of 9. Same machine as the benchmark. Each row includes the ones above it.
+
+| Change | full |
+|-|-|
+| 0.9.0 | 13.1 |
+| Dispatch `_eval` on node type through a dict | 12.5 |
+| Resolve each sheet once per pass; store a float before the type tests | 11.8 |
+| Arithmetic on two floats skips array and coercion checks | 9.6 |
+| Import once per module, not per dependency refresh | 8.3 |
+| Dependency walks test the exact node type | 7.3 |
+
+What remains in that 7.3 us, from timers inside `_recalc_topo`:
+
+- Graph rebuild: about 2.9 us. A full `recalc()` always rebuilds, because undo, sort and the CLI write cells directly (`docs/topological.md`).
+- `evaluate()`: about 1.7 us. With a function call it is 4.5 us (`=ROUND(X/3,2)`).
+- Kahn ordering, the loop, the result store and spill check: about 2.5 us.
+
+Load parses each formula, which a recalc does not. Parsing costs 6-18 us per formula, about half of it in the tokenizer.
+
+Evaluation is 13-41% of a full recalc across four workloads (`=A1+1`, `=X*2+1`, `=ROUND(X/3,2)`, `=IF(X>5,X*2,X-1)`). A C++ tree walker with zero cost would gain at most 1.2-1.7x. Compiling each AST to Python closures gained 6% over dict dispatch in a prototype: the cost was in the helpers under each operator, not in dispatch.
 
 ## Sources
 

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Scalar formulas recalc 35-45% faster, and workbooks load 25-30% faster.** Bookkeeping cost more per formula than evaluation. Each formula scanned the sheet names to find its cell, ran three imports to refresh its dependencies, and passed about 10 type tests to store a float. The tokenizer rebuilt its operator table for every operator and tried the error-literal pattern at every token. These now run once per pass, once per module, or not at all. Arithmetic on two floats skips the array and coercion checks. At 100k `=X*2+1` formulas, full recalc drops from 1.44 s to 0.78 s and load from 3.12 s to 2.18 s. A C++ evaluator was the alternative: evaluation is 13-41% of a full recalc, so it could gain at most 1.7x. Measurements: `docs/dev/ironcalc.md`.
+
+- **Criteria and exact lookups over a shared range stop rescanning it.** `SUMIF` formatted each element and the criterion to 15 digits for every comparison, and exact `MATCH` and `VLOOKUP` scanned the range once per formula. A range now keeps its rounded numbers and an index of first positions, as it already kept its numbers and first error. At 10k formulas over one 1000-cell range, `SUMIF` drops from 681 us to 69 us per formula and `VLOOKUP` from 70 us to 10 us. `XLOOKUP` and `XMATCH` use the index when searching first to last. The index is built on the second lookup: one lookup scans faster than it indexes.
+
 ## [0.9.0]
 
 ### Changed

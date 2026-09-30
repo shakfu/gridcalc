@@ -347,6 +347,8 @@ def _finite(r: float) -> Any:
 
 
 def _add(a: Any, b: Any) -> Any:
+    if type(a) is float and type(b) is float:
+        return _finite(a + b)
     err = first_error(a, b)
     if err:
         return err
@@ -360,6 +362,8 @@ def _add(a: Any, b: Any) -> Any:
 
 
 def _sub(a: Any, b: Any) -> Any:
+    if type(a) is float and type(b) is float:
+        return _finite(a - b)
     err = first_error(a, b)
     if err:
         return err
@@ -373,6 +377,8 @@ def _sub(a: Any, b: Any) -> Any:
 
 
 def _mul(a: Any, b: Any) -> Any:
+    if type(a) is float and type(b) is float:
+        return _finite(a * b)
     err = first_error(a, b)
     if err:
         return err
@@ -386,6 +392,8 @@ def _mul(a: Any, b: Any) -> Any:
 
 
 def _div(a: Any, b: Any) -> Any:
+    if type(a) is float and type(b) is float and b != 0:
+        return _finite(a / b)
     err = first_error(a, b)
     if err:
         return err
@@ -533,41 +541,22 @@ def evaluate(node: Node, env: Env) -> Value:
 
 
 def _eval(node: Node, env: Env) -> Value:
-    if isinstance(node, Number):
-        return node.value
-    if isinstance(node, String):
-        return node.value
-    if isinstance(node, Bool):
-        return node.value
-    if isinstance(node, ErrorLit):
-        return node.error
-    if isinstance(node, Missing):
-        return None  # blank, as an empty cell reads
-    if isinstance(node, ArrayLit):
-        from ..engine import Vec  # lazy import to break cycle
+    handler = _EVAL.get(type(node))
+    if handler is None:
+        raise AssertionError(f"unknown node {type(node).__name__}")
+    return handler(node, env)
 
-        return Vec([v for row in node.rows for v in row], cols=len(node.rows[0]))
-    if isinstance(node, CellRef):
-        return env.get_cell(node.col, node.row, node.sheet)
-    if isinstance(node, RangeRef):
-        return _eval_range(node, env)
-    if isinstance(node, SpillRef):
-        return _eval_spill(node, env)
-    if isinstance(node, Name):
-        return _eval_name(node, env)
-    if isinstance(node, Call):
-        return _eval_call(node, env)
-    if isinstance(node, Apply):
-        return _eval_apply(node, env)
-    if isinstance(node, PyCall):
-        return _eval_pycall(node, env)
-    if isinstance(node, BinOp):
-        return _eval_binop(node, env)
-    if isinstance(node, UnaryOp):
-        return _eval_unary(node, env)
-    if isinstance(node, Percent):
-        return _eval_percent(node, env)
-    raise AssertionError(f"unknown node {type(node).__name__}")
+
+def _eval_value(node: Any, env: Env) -> Any:
+    return node.value
+
+
+def _eval_cell(node: CellRef, env: Env) -> Any:
+    return env.get_cell(node.col, node.row, node.sheet)
+
+
+def _eval_array(node: ArrayLit, env: Env) -> Any:
+    return _make_vec([v for row in node.rows for v in row], cols=len(node.rows[0]))
 
 
 def _eval_range(node: RangeRef, env: Env) -> Any:
@@ -1182,11 +1171,16 @@ def _eval_pycall(node: PyCall, env: Env) -> Any:
 
 
 def _eval_binop(node: BinOp, env: Env) -> Any:
-    a = _deref(_eval(node.left, env), env)
-    b = _deref(_eval(node.right, env), env)
-    if node.op in ("=", "<>", "<", ">", "<=", ">="):
+    a = _eval(node.left, env)
+    b = _eval(node.right, env)
+    op = _BINOP.get(node.op)  # None for a comparison
+    # Two floats: no Reference to materialise and no array to broadcast over.
+    if type(a) is float and type(b) is float:
+        return _compare(node.op, a, b) if op is None else op(a, b)
+    a = _deref(a, env)
+    b = _deref(b, env)
+    if op is None:
         return _vec_apply2(lambda x, y: _compare(node.op, x, y), a, b)
-    op = _BINOP[node.op]
     return _vec_apply2(op, a, b)
 
 
@@ -1215,3 +1209,24 @@ def _eval_percent(node: Percent, env: Env) -> Any:
         return n if isinstance(n, ExcelError) else n / 100.0
 
     return _vec_apply1(pct, v)
+
+
+# Node classes have no subclasses, so `_eval` dispatches on the exact type.
+_EVAL: dict[type, Callable[[Any, Env], Any]] = {
+    Number: _eval_value,
+    String: _eval_value,
+    Bool: _eval_value,
+    ErrorLit: lambda node, env: node.error,
+    Missing: lambda node, env: None,  # blank, as an empty cell reads
+    ArrayLit: _eval_array,
+    CellRef: _eval_cell,
+    RangeRef: _eval_range,
+    SpillRef: _eval_spill,
+    Name: _eval_name,
+    Call: _eval_call,
+    Apply: _eval_apply,
+    PyCall: _eval_pycall,
+    BinOp: _eval_binop,
+    UnaryOp: _eval_unary,
+    Percent: _eval_percent,
+}

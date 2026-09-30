@@ -78,8 +78,7 @@ def _parse_criteria(criteria: Any) -> Any:
         cb = criteria
         return lambda x, v=cb: isinstance(x, bool) and x == v
     if isinstance(criteria, (int, float)):
-        cn = float(criteria)
-        return lambda x, v=cn: _crit_eq_number(x, v)
+        return _NumCriterion(operator.eq, criteria)
 
     s = str(criteria).strip()
     if s == "":
@@ -105,10 +104,8 @@ def _parse_criteria(criteria: Any) -> Any:
     for prefix, op in ops:
         if s.startswith(prefix):
             raw = s[len(prefix) :]
-            cmp_val: float | str
             try:
-                cmp_val = float(raw)
-                is_numeric = True
+                return _NumCriterion(op, float(raw))
             except ValueError:
                 # A date criterion (`">1/1/2020"`) is a numeric comparison
                 # wearing a date: cells hold serials, so the operand has to
@@ -116,56 +113,59 @@ def _parse_criteria(criteria: Any) -> Any:
                 # ordering, where "9/1/2020" sorts after "10/1/2020".
                 serial = parse_date(raw)
                 if serial is not None:
-                    cmp_val = serial
-                    is_numeric = True
-                else:
-                    cmp_val = raw
-                    is_numeric = False
-            if op is operator.eq and not is_numeric:
+                    return _NumCriterion(op, serial)
+            if op is operator.eq:
                 regex = _wildcard_regex(raw)
                 return lambda x, r=regex: bool(r.match(str(x))) if x is not None else False
-            if op is operator.ne and not is_numeric:
+            if op is operator.ne:
                 regex = _wildcard_regex(raw)
                 return lambda x, r=regex: not bool(r.match(str(x))) if x is not None else True
-            return lambda x, o=op, v=cmp_val, num=is_numeric: _crit_compare(o, x, v, num)
+            return lambda x, o=op, v=raw: _crit_compare(o, x, v)
 
     # No operator prefix -- equality with wildcards if non-numeric.
     try:
-        val = float(s)
-        return lambda x, v=val: _crit_eq_number(x, v)
+        return _NumCriterion(operator.eq, float(s))
     except ValueError:
         # A bare date, `COUNTIF(range, "2020-01-01")`, is equality against
         # that day's serial rather than a text match against "2020-01-01".
         day = parse_date(s)
         if day is not None:
-            return lambda x, v=day: _crit_eq_number(x, v)
+            return _NumCriterion(operator.eq, day)
         regex = _wildcard_regex(s)
         return lambda x, r=regex: bool(r.match(str(x))) if x is not None else False
 
 
-def _crit_eq_number(x: Any, v: float) -> bool:
-    if isinstance(x, bool):
-        return False
-    if isinstance(x, (int, float)):
-        return sig15(float(x)) == sig15(v)
-    return False
+class _NumCriterion:
+    """A numeric criterion. Only numbers match, compared at 15 significant digits."""
 
+    __slots__ = ("op", "v")
 
-def _crit_compare(op: Any, x: Any, v: Any, numeric: bool) -> bool:
-    """Apply numeric or string comparison, skipping mismatched types like Excel."""
-    if numeric:
+    def __init__(self, op: Callable[[float, float], bool], v: float) -> None:
+        self.op = op
+        self.v = sig15(float(v))
+
+    def __call__(self, x: Any) -> bool:
         if isinstance(x, bool) or not isinstance(x, (int, float)):
             return False
-        try:
-            return bool(op(sig15(float(x)), sig15(float(v))))
-        except (TypeError, ValueError):
-            return False
+        return bool(self.op(sig15(float(x)), self.v))
+
+
+def _crit_compare(op: Any, x: Any, v: Any) -> bool:
+    """Compare text case-insensitively; anything that is not text does not match."""
     if not isinstance(x, str):
         return False
     try:
         return bool(op(x.lower(), str(v).lower()))
     except TypeError:
         return False
+
+
+def _hits(pred: Any, rng: Vec) -> Iterable[bool]:
+    """``pred`` over each element of ``rng``."""
+    if isinstance(pred, _NumCriterion):
+        op, v = pred.op, pred.v
+        return [r is not None and op(r, v) for r in rng.rounded()]
+    return map(pred, rng.data)
 
 
 # -- Logical functions --
@@ -364,9 +364,11 @@ def _matched_numbers(values: list[Any], hits: Iterable[bool]) -> list[float] | E
     for v, hit in zip(values, hits, strict=False):
         if not hit:
             continue
-        if isinstance(v, ExcelError):
+        if type(v) is float:
+            out.append(v)
+        elif isinstance(v, ExcelError):
             return v
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
+        elif isinstance(v, (int, float)) and not isinstance(v, bool):
             out.append(float(v))
     return out
 
@@ -377,14 +379,14 @@ def SUMIF(rng: Vec, criteria: str, sum_rng: Vec | None = None) -> float | ExcelE
     rng = _as_vec(rng)
     pred = _parse_criteria(criteria)
     values = _as_vec(sum_rng).data if sum_rng is not None else rng.data
-    matches = _matched_numbers(values, map(pred, rng.data))
+    matches = _matched_numbers(values, _hits(pred, rng))
     return matches if isinstance(matches, ExcelError) else sum(matches)
 
 
 def COUNTIF(rng: Vec, criteria: str) -> int:
     """=COUNTIF(A1:A10, ">5")"""
     pred = _parse_criteria(criteria)
-    return sum(1 for x in _as_vec(rng).data if pred(x))
+    return sum(1 for hit in _hits(pred, _as_vec(rng)) if hit)
 
 
 def AVERAGEIF(rng: Vec, criteria: str, avg_rng: Vec | None = None) -> float | ExcelError:
@@ -396,7 +398,7 @@ def AVERAGEIF(rng: Vec, criteria: str, avg_rng: Vec | None = None) -> float | Ex
     rng = _as_vec(rng)
     pred = _parse_criteria(criteria)
     values = _as_vec(avg_rng).data if avg_rng is not None else rng.data
-    matches = _matched_numbers(values, map(pred, rng.data))
+    matches = _matched_numbers(values, _hits(pred, rng))
     if isinstance(matches, ExcelError):
         return matches
     return sum(matches) / len(matches) if matches else ExcelError.DIV0
@@ -412,6 +414,24 @@ def _exact_match(target: Any, candidate: Any, wildcards: bool = True) -> bool:
     if isinstance(target, str) and isinstance(candidate, str):
         return target.lower() == candidate.lower()
     return bool(target == candidate)
+
+
+def _exact_pos(lookup: Any, rng: Vec, step: int = 1, wildcards: bool = True) -> int:
+    """Position of the first exact match among every ``step``-th element, or -1."""
+    wild = wildcards and isinstance(lookup, str) and any(c in lookup for c in "*?~")
+    index = None if wild else rng.exact_index(step)
+    if index is not None:
+        try:
+            if isinstance(lookup, str):
+                return index[0].get(lookup.lower(), -1)
+            return index[1].get(lookup, -1)
+        except TypeError:  # an unhashable lookup value
+            pass
+    data = rng.data
+    return next(
+        (i // step for i in range(0, len(data), step) if _exact_match(lookup, data[i], wildcards)),
+        -1,
+    )
 
 
 def VLOOKUP(lookup: Any, table: Vec, col_idx: int, approx: Any = True) -> Any:
@@ -445,12 +465,9 @@ def VLOOKUP(lookup: Any, table: Vec, col_idx: int, approx: Any = True) -> Any:
                 break
             best = i
     else:
-        for i in range(n_rows):
-            if _exact_match(lookup, data[i * cols]):
-                best = i
-                break
+        best = _exact_pos(lookup, table, cols)
 
-    if best < 0:
+    if not 0 <= best < n_rows:
         return ExcelError.NA
     return data[best * cols + (ci - 1)]
 
@@ -544,10 +561,8 @@ def MATCH(lookup: Any, rng: Vec, match_type: int = 1) -> int | ExcelError:
     mt = 1 if raw_mt > 0 else (-1 if raw_mt < 0 else 0)
     data = rng.data
     if mt == 0:
-        for i, v in enumerate(data):
-            if _exact_match(lookup, v):
-                return i + 1
-        return ExcelError.NA
+        pos = _exact_pos(lookup, rng)
+        return pos + 1 if pos >= 0 else ExcelError.NA
     best = -1
     for i, v in enumerate(data):
         c = _lookup_cmp(v, lookup)
@@ -1061,19 +1076,14 @@ def _multi_criteria(
     pairs: list[tuple[Vec, Any]] = [
         (_as_vec(args[i]), _parse_criteria(str(args[i + 1]))) for i in range(0, len(args), 2)
     ]
-    ranges = [p[0].data for p in pairs]
+    # One row per position, as long as the shortest range.
+    rows = zip(*[_hits(pred, rng) for rng, pred in pairs], strict=False)
     if count_only:
-        n = min(len(r) for r in ranges)
-        matched = [
-            1.0 for i in range(n) if all(p[1](r[i]) for p, r in zip(pairs, ranges, strict=False))
-        ]
+        matched = [1.0 for row in rows if all(row)]
         return matched, len(matched)
     if sum_rng is None:
         return [], 0
-    target = _as_vec(sum_rng).data
-    n = min(len(target), *[len(r) for r in ranges])
-    hits = (all(p[1](r[i]) for p, r in zip(pairs, ranges, strict=False)) for i in range(n))
-    nums = _matched_numbers(target, hits)
+    nums = _matched_numbers(_as_vec(sum_rng).data, map(all, rows))
     return nums if isinstance(nums, ExcelError) else (nums, len(nums))
 
 
@@ -2729,7 +2739,7 @@ def XLOOKUP(
     horizontal = lrows == 1 and lcols > 1
     if (rcols if horizontal else rrows) != len(la):
         return ExcelError.VALUE
-    found = _xmatch_index(lookup, la, int(match_mode), int(search_mode))
+    found = _xmatch_index(lookup, lookup_array, int(match_mode), int(search_mode))
     if isinstance(found, ExcelError):
         return found
     if found < 0:
@@ -2742,14 +2752,17 @@ def XLOOKUP(
     return ra[found]
 
 
-def _xmatch_index(lookup: Any, la: list[Any], mm: int, sm: int) -> int | ExcelError:
+def _xmatch_index(lookup: Any, rng: Vec, mm: int, sm: int) -> int | ExcelError:
     """0-based position for XLOOKUP/XMATCH, -1 if absent. Only match_mode 2
     applies wildcards; text compares ignore case."""
+    la = rng.data
     order = range(len(la) - 1, -1, -1) if sm < 0 else range(len(la))
     if mm == 2 and isinstance(lookup, str):
         regex = _wildcard_regex(lookup)
         return next((i for i in order if regex.match(_text(la[i]))), -1)
     if mm in (0, 2):
+        if sm >= 0:
+            return _exact_pos(lookup, rng, wildcards=False)
         return next((i for i in order if _exact_match(lookup, la[i], wildcards=False)), -1)
     if mm not in (-1, 1):
         return ExcelError.VALUE
@@ -2777,7 +2790,7 @@ def XMATCH(
     match_mode: 0=exact, -1=exact-or-next-smaller, 1=exact-or-next-larger,
                 2=wildcard. search_mode: 1=first-to-last, -1=last-to-first.
     """
-    found = _xmatch_index(lookup, lookup_array.data, int(match_mode), int(search_mode))
+    found = _xmatch_index(lookup, lookup_array, int(match_mode), int(search_mode))
     if isinstance(found, ExcelError):
         return found
     return found + 1 if found >= 0 else ExcelError.NA

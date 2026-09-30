@@ -39,6 +39,29 @@ RBRACE = "RBRACE"
 SEMI = "SEMI"
 EOF = "EOF"
 
+_SINGLE = {
+    "(": LPAREN,
+    ")": RPAREN,
+    ",": COMMA,
+    ":": COLON,
+    ".": DOT,
+    "+": PLUS,
+    "-": MINUS,
+    "*": STAR,
+    "/": SLASH,
+    "^": CARET,
+    "&": AMP,
+    "%": PERCENT,
+    "=": EQ,
+    "<": LT,
+    ">": GT,
+    "!": BANG,
+    "#": HASH,  # spill-range operator (A1#); error literals matched above
+    "{": LBRACE,
+    "}": RBRACE,
+    ";": SEMI,
+}
+
 
 @dataclass
 class Token:
@@ -47,7 +70,7 @@ class Token:
     pos: int
 
 
-_CELLREF_RE = re.compile(r"\$?([A-Za-z]+)\$?(\d+)")
+_CELLREF_RE = re.compile(r"(\$?)([A-Za-z]+)(\$?)(\d+)")
 _NUMBER_RE = re.compile(r"\d+(\.\d*)?([eE][+-]?\d+)?|\.\d+([eE][+-]?\d+)?", re.ASCII)
 _SIGNED_NUMBER_RE = re.compile(r"[+-]?(?:" + _NUMBER_RE.pattern + ")", re.ASCII)
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -65,8 +88,9 @@ def parse_number(text: str) -> float | None:
     return None if math.isinf(v) else v
 
 
-def _parse_cellref(text: str) -> tuple[int, int, int, bool, bool] | None:
-    m = re.match(r"(\$?)([A-Za-z]+)(\$?)(\d+)", text)
+def _parse_cellref(text: str, start: int) -> tuple[int, int, int, bool, bool] | None:
+    """The cell reference at ``start``, as (end index, col, row, abs col, abs row)."""
+    m = _CELLREF_RE.match(text, start)
     if not m:
         return None
     abs_c = m.group(1) == "$"
@@ -98,7 +122,7 @@ def tokenize(text: str) -> list[Token]:
             continue
         pos = i + offset
         # error literal
-        m = _ERROR_LIT_RE.match(s, i)
+        m = _ERROR_LIT_RE.match(s, i) if ch == "#" else None
         if m:
             err = parse_error_literal(m.group(0))
             if err is None:
@@ -108,16 +132,15 @@ def tokenize(text: str) -> list[Token]:
             continue
         # cellref (must come before IDENT and NUMBER; handles $A$1 etc.)
         if ch == "$" or ch.isalpha():
-            cr = _parse_cellref(s[i:])
+            cr = _parse_cellref(s, i)
             if cr is not None:
-                end, col, row, ac, ar = cr
+                next_idx, col, row, ac, ar = cr
                 # Validate it's not followed by an alpha/digit that would extend it
                 # (e.g., A1B should NOT be a cellref). Already guaranteed because we
                 # match greedy letters then digits; what follows must not be alnum
                 # for the cellref to be standalone. Also: a cellref-shaped token
                 # followed by `!` is actually a sheet name (e.g. `Sheet1!A1`),
                 # so emit an IDENT instead and let the parser handle the prefix.
-                next_idx = i + end
                 if next_idx < n and (s[next_idx].isalnum() or s[next_idx] == "_"):
                     cr = None  # fall through to IDENT
                 elif next_idx < n and s[next_idx] in "!(":
@@ -125,7 +148,7 @@ def tokenize(text: str) -> list[Token]:
                     cr = None
                 else:
                     tokens.append(Token(CELLREF, (col, row, ac, ar), pos))
-                    i += end
+                    i = next_idx
                     continue
         # identifier (function name, named range, bool, py keyword). A segment
         # straight after `name.` may start with a digit: `T.DIST.2T`.
@@ -209,29 +232,7 @@ def tokenize(text: str) -> list[Token]:
             i += 2
             continue
         # single-char
-        single = {
-            "(": LPAREN,
-            ")": RPAREN,
-            ",": COMMA,
-            ":": COLON,
-            ".": DOT,
-            "+": PLUS,
-            "-": MINUS,
-            "*": STAR,
-            "/": SLASH,
-            "^": CARET,
-            "&": AMP,
-            "%": PERCENT,
-            "=": EQ,
-            "<": LT,
-            ">": GT,
-            "!": BANG,
-            "#": HASH,  # spill-range operator (A1#); error literals matched above
-            "{": LBRACE,
-            "}": RBRACE,
-            ";": SEMI,
-        }
-        kind = single.get(ch)
+        kind = _SINGLE.get(ch)
         if kind is not None:
             tokens.append(Token(kind, ch, pos))
             i += 1

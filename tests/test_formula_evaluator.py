@@ -58,6 +58,18 @@ class TestArithmetic:
     def test_div_by_zero(self):
         assert ev("1/0") == ExcelError.DIV0
 
+    def test_div_by_negative_zero(self):
+        assert ev("1/-0") == ExcelError.DIV0
+
+    def test_float_overflow_is_num(self):
+        for text in ("1e308+1e308", "-1e308-1e308", "1e308*10", "1e308/0.1"):
+            assert ev(text) == ExcelError.NUM, text
+
+    def test_float_and_coerced_operands_agree(self):
+        # Two floats take a shortcut past coercion; text and bools do not.
+        for op in "+-*/":
+            assert ev(f"6{op}3") == ev(f'"6"{op}"3"') == ev(f"6{op}(TRUE+2)"), op
+
     def test_pow(self):
         assert ev("2^10") == 1024.0
 

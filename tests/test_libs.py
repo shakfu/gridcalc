@@ -3909,3 +3909,82 @@ class TestVariadicAggregates:
         assert SUM(a, 10.0) == 20.0
         assert MAX(a, 10.0) == 10.0
         assert COUNT(a, 10.0) == 5
+
+
+class TestSharedRangeMemos:
+    """A range shared by several formulas indexes its exact lookups and
+    memoizes its rounded numbers. Both must answer as the per-element scan."""
+
+    DATA = [
+        3.0,
+        "Beta",
+        True,
+        None,
+        1.0,
+        "beta",
+        ExcelError.NA,
+        0.1 + 0.2,
+        "a*b",
+        float("nan"),
+        "",
+        3.0,
+        0.0,
+        False,
+    ]
+    LOOKUPS = [3.0, 1.0, True, False, 0.0, None, "BETA", "a*b", "be*", "", 0.3, float("nan"), "x"]
+
+    def test_index_agrees_with_scan(self) -> None:
+        from gridcalc.libs.xlsx import _exact_pos
+
+        for wildcards in (True, False):
+            for lookup in self.LOOKUPS:
+                scanned = _exact_pos(lookup, Vec(self.DATA), wildcards=wildcards)
+                shared = Vec(self.DATA)
+                _exact_pos("warm-up", shared)  # the second lookup builds the index
+                assert shared.exact_index() is not None
+                assert _exact_pos(lookup, shared, wildcards=wildcards) == scanned, lookup
+
+    def test_index_by_first_column(self) -> None:
+        from gridcalc.libs.xlsx import VLOOKUP
+
+        table = Vec([1.0, "one", 2.0, "two", 2.0, "again", "K", "text"], cols=2)
+        for _ in range(3):  # scan first, then the index
+            assert VLOOKUP(2, table, 2, False) == "two"
+            assert VLOOKUP("k", table, 2, False) == "text"
+            assert VLOOKUP(9, table, 2, False) is ExcelError.NA
+
+    def test_unhashable_element_falls_back_to_the_scan(self) -> None:
+        rng = Vec([1.0, [2.0], 3.0])
+        for _ in range(3):
+            assert MATCH(3, rng, 0) == 3
+        assert rng.exact_index() is None
+
+    def test_xmatch_forward_and_reverse(self) -> None:
+        from gridcalc.libs.xlsx import XMATCH
+
+        rng = Vec(["a", "b", "A", "c"])
+        for _ in range(3):
+            assert XMATCH("a", rng) == 1
+            assert XMATCH("a", rng, 0, -1) == 3
+            assert XMATCH("a*", rng) is ExcelError.NA  # a wildcard only in match_mode 2
+
+    def test_numeric_criteria_agree_with_the_predicate(self) -> None:
+        from gridcalc.libs.xlsx import _hits, _parse_criteria
+
+        rng = Vec(self.DATA)
+        for criteria in (3, 0.3, ">1", ">=3", "<1", "<=0.3", "<>3", "=1", "0.3", "2020-01-01"):
+            pred = _parse_criteria(criteria)
+            assert list(_hits(pred, rng)) == [pred(x) for x in self.DATA], criteria
+
+    def test_criteria_functions_on_a_shared_range(self) -> None:
+        from gridcalc.libs.xlsx import COUNTIFS, SUMIFS
+
+        rng = Vec(self.DATA)
+        amounts = Vec([float(i) for i in range(len(self.DATA))])
+        for _ in range(2):
+            assert COUNTIF(rng, 3) == 2
+            assert COUNTIF(rng, "0.3") == 1  # 0.1+0.2 at 15 digits
+            assert COUNTIF(rng, "beta") == 2
+            assert SUMIF(rng, ">=1", amounts) == 0.0 + 4.0 + 11.0
+            assert SUMIFS(amounts, rng, ">=1", amounts, "<5") == 0.0 + 4.0
+            assert COUNTIFS(rng, ">=1", amounts, "<5") == 2

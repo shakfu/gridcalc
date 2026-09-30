@@ -18,8 +18,10 @@ from types import MappingProxyType
 from typing import Any, NamedTuple
 
 from .dates import is_date_format, normalise_format
-from .formula.deps import DepKey, RangeKey
+from .formula.deps import DepKey, RangeKey, extract_deps, has_dynamic_refs
+from .formula.errors import FormulaError
 from .formula.lexer import parse_number
+from .formula.parser import parse
 from .sandbox import load_modules, validate_code, validate_formula
 
 
@@ -148,11 +150,14 @@ _UNSET: Any = object()
 
 
 class Vec:
-    # Memos for `numbers` and `first_error`. A range Vec is cached and shared
-    # by every formula reading that range in one recalc, so each is computed
-    # once per range rather than once per consumer. `data` is never mutated.
+    # Memos for `numbers`, `first_error`, `rounded` and `exact_index`. A range
+    # Vec is cached and shared by every formula reading that range in one
+    # recalc, so each is computed once per range rather than once per consumer.
+    # `data` is never mutated.
     _nums: list[float] | None = None
     _err: Any = _UNSET
+    _r15: list[float | None] | None = None
+    _index: dict[int, tuple[dict[str, int], dict[Any, int]] | None] | None = None
 
     def __init__(self, data: Iterable[Any], cols: int | None = None) -> None:
         self.data: list[Any] = list(data)
@@ -174,6 +179,39 @@ class Vec:
 
             self._err = first_error(*self.data)
         return self._err
+
+    def rounded(self) -> list[float | None]:
+        """Each number at 15 significant digits, None for anything else. Do not mutate."""
+        if self._r15 is None:
+            from .formula.evaluator import sig15
+
+            self._r15 = [sig15(float(v)) if _is_num(v) else None for v in self.data]
+        return self._r15
+
+    def exact_index(self, step: int = 1) -> tuple[dict[str, int], dict[Any, int]] | None:
+        """First position of each value among every ``step``-th element.
+
+        Text is keyed in lower case and everything else by value, as an exact
+        lookup compares them. None means the caller scans: on the first call,
+        because one lookup scans faster than it indexes, and when an element
+        is unhashable.
+        """
+        if self._index is None:
+            self._index = {}
+            return None
+        if step not in self._index:
+            text: dict[str, int] = {}
+            values: dict[Any, int] = {}
+            try:
+                for i, v in enumerate(self.data[::step]):
+                    if isinstance(v, str):
+                        text.setdefault(v.lower(), i)
+                    elif not (isinstance(v, float) and v != v):  # NaN equals nothing
+                        values.setdefault(v, i)
+                self._index[step] = (text, values)
+            except TypeError:
+                self._index[step] = None
+        return self._index[step]
 
     def __repr__(self) -> str:
         if self.is_2d:
@@ -1854,8 +1892,11 @@ class Grid:
     ) -> None:
         """Install forward + reverse edges for `key` from `deps`."""
         # A qualifier matches its sheet in any case; key the edge by the real name.
-        canon = {s: self._canon_sheet(s) for s in {d[0] for d in deps}}
+        # `key` already carries one, so only other spellings need resolving.
+        own = key[0]
+        canon = {s: self._canon_sheet(s) for s in {d[0] for d in deps if d[0] != own}}
         if any(canon[s] != s for s in canon):
+            canon[own] = own
             deps = {
                 d._replace(sheet=canon[d.sheet])
                 if isinstance(d, RangeKey)
@@ -1917,10 +1958,6 @@ class Grid:
         """
         if self.mode == Mode.PYTHON:
             return
-        from .formula import parse
-        from .formula.deps import extract_deps, has_dynamic_refs
-        from .formula.errors import FormulaError
-
         if sheet is None:
             sheet = self._active.name
         key = (sheet, c, r)
@@ -2355,11 +2392,12 @@ class Grid:
         return cl.text if cl.text.startswith("=") else f"={cl.text}"
 
     def _cell_lookup_value(self, c: int, r: int, sheet: str | None = None) -> object:
-        if sheet is not None and self._sheet_by_name(sheet) is None:
+        sh = self.sheets[self.active] if sheet is None else self._sheet_by_name(sheet)
+        if sh is None:
             from .formula.errors import ExcelError
 
             return ExcelError.REF
-        cl = self._sheet_cells(sheet).get((c, r))
+        cl = sh._cells.get((c, r))
         if cl is None or cl.type == EMPTY:
             return None
         # An errored cell reads as its error, not as the NaN standing in for a
@@ -2408,6 +2446,10 @@ class Grid:
     def _store_formula_result(self, cl: Cell, result: Any) -> None:
         from .formula.errors import ExcelError
 
+        if type(result) is float and not math.isinf(result):
+            cl.sval = cl.err = cl.err_msg = cl.matrix = cl.arr = cl.arr_cols = None
+            cl.val = result
+            return
         result = _as_double(result)
         if isinstance(result, Vec) and not result.data:
             result = ExcelError.CALC
@@ -2780,12 +2822,25 @@ class Grid:
         # callback resolve in the right scope -- but capture+restore
         # so user-visible `g.active` doesn't change.
         saved_active = self.active
+        # Per sheet name: its cell store and index, resolved once per pass.
+        sheet_info: dict[str, tuple[dict[tuple[int, int], Cell], int | None]] = {}
         try:
             for key in order:
                 if isinstance(key, RangeKey):
                     continue
                 sheet_name, c, r = key
-                fcl = self._cell_at(key)
+                if sheet_name is None:
+                    cells, sheet_idx = self._cells, None
+                else:
+                    info = sheet_info.get(sheet_name)
+                    if info is None:
+                        names = [s.name for s in self.sheets]
+                        info = sheet_info[sheet_name] = (
+                            self._sheet_cells(sheet_name),
+                            names.index(sheet_name) if sheet_name in names else None,
+                        )
+                    cells, sheet_idx = info
+                fcl = cells.get((c, r))
                 if fcl is None or fcl.type != FORMULA:
                     continue
                 text = fcl.text[1:] if fcl.text.startswith("=") else fcl.text
@@ -2807,11 +2862,8 @@ class Grid:
                 # Make this formula's home sheet active during eval so
                 # unsheeted refs in the formula resolve to its own
                 # sheet via the Env callback.
-                if sheet_name is not None:
-                    for i, s in enumerate(self.sheets):
-                        if s.name == sheet_name:
-                            self.active = i
-                            break
+                if sheet_idx is not None:
+                    self.active = sheet_idx
                 env.current_cell = (c, r)
                 env.current_sheet = sheet_name
                 try:
@@ -2837,13 +2889,12 @@ class Grid:
             if sh is None:
                 continue
             # Drop closure cells from this sheet's circular set.
-            closure_cr = {(c, r) for (sn, c, r) in closure_cells if sn == s_name}
-            sh._circular -= closure_cr
-            if dirty3 is not None:
-                dirty_cr = {(c, r) for (sn, c, r) in dirty3 if sn == s_name}
-                sh._circular -= dirty_cr
-            unres_cr = {(c, r) for (sn, c, r) in unresolved if sn == s_name}
-            sh._circular |= unres_cr
+            if sh._circular:
+                sh._circular -= {(c, r) for (sn, c, r) in closure_cells if sn == s_name}
+                if dirty3 is not None:
+                    sh._circular -= {(c, r) for (sn, c, r) in dirty3 if sn == s_name}
+            if unresolved:
+                sh._circular |= {(c, r) for (sn, c, r) in unresolved if sn == s_name}
         if unresolved:
             from .formula.errors import ExcelError as _XE
 

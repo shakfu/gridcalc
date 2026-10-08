@@ -26,10 +26,7 @@ import sys
 from collections.abc import Callable
 from typing import Any, cast
 
-# The module, not the flag: `configure_sandbox` rebinds `SANDBOX_ENABLED` in
-# `sandbox`, so a name imported here would keep the import-time value and
-# `sandbox = false` in gridcalc.toml would never reach the trust prompt.
-from .. import __version__, sandbox
+from .. import __version__
 from .. import commands as shared
 from ..cli import add_headless_arguments, is_headless
 from ..cli import run as cli_run
@@ -48,6 +45,7 @@ from ..engine import (
     ref,
 )
 from ..keys import build_resolved_keymap
+from ..loader import load_into, needs_trust
 from ..opt import parse_bounds as _parse_bounds
 from ..opt import parse_cells as _parse_cells
 from ..sandbox import (
@@ -57,7 +55,6 @@ from ..sandbox import (
     classify_module,
     configure_facades,
     configure_sandbox,
-    inspect_file,
 )
 from . import _state
 from .commands import (
@@ -77,6 +74,7 @@ from .commands import (
     movecmd,
     replcmd,
     selectrange,
+    show_load_warnings,
     trust_prompt,
 )
 from .completion import complete
@@ -469,6 +467,7 @@ def mainloop(stdscr: curses.window, g: Grid) -> None:
     for w in key_warnings:
         print(f"gridcalc: keybinding warning: {w}", file=sys.stderr)
     resolved_grid = _resolved_keymap.get("grid", {})
+    startup_warnings = bool(g.load_warnings)
 
     while True:
         lc = g.tc
@@ -501,6 +500,10 @@ def mainloop(stdscr: curses.window, g: Grid) -> None:
         # `READY`. Transient modes (ENTRY, CMD, VISUAL, ...) still announce
         # themselves; the absence of one means we're in default.
         draw(stdscr, g, "", "", search_info=si)
+        if startup_warnings:
+            startup_warnings = False
+            show_load_warnings(stdscr, g)
+            continue
         ch = stdscr.getch()
 
         # User-bound keys take precedence over the hardcoded fallback
@@ -720,33 +723,19 @@ def main() -> None:
         g.filename = args.file
     elif args.file:
         fn = args.file
-        if fn.lower().endswith(".xlsx"):
-            # xlsx files have no code block / sandbox surface; load
-            # directly via the OpenXLSX-backed C++ extension.
-            if g.xlsxload(fn) < 0:
-                print(f"Failed to load file: {fn}", file=sys.stderr)
-                sys.exit(1)
-            g.filename = fn
-        else:
-            info = inspect_file(fn)
-            if info is None:
-                print(f"Failed to load file: {fn}", file=sys.stderr)
-                sys.exit(1)
-
-            policy = None
-            if info.trust_needed:
-                if sandbox.SANDBOX_ENABLED:
-                    policy = startup_trust_prompt(fn, info)
-                    if policy is None:
-                        print("Load cancelled.", file=sys.stderr)
-                        sys.exit(0)
-                else:
-                    policy = LoadPolicy.trust_all(info.requires)
-
-            if g.jsonload(fn, policy=policy) < 0:
-                print(f"Failed to load file: {fn}", file=sys.stderr)
-                sys.exit(1)
-            g.filename = fn
+        # None for xlsx, csv, a file with no code, or the sandbox off.
+        policy = None
+        info = needs_trust(fn)
+        if info is not None:
+            policy = startup_trust_prompt(fn, info)
+            if policy is None:
+                print("Load cancelled.", file=sys.stderr)
+                sys.exit(0)
+        try:
+            load_into(g, fn, policy)
+        except OSError as exc:
+            print(f"Failed to load file: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     def _main(stdscr: curses.window) -> None:
         curses.raw()

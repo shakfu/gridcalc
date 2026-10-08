@@ -277,6 +277,7 @@ def test_convert_to_an_unwritable_path_is_a_usage_error(tmp_path) -> None:
     code, out, err = _run(EXCEL, "--convert", str(tmp_path / "missing-dir" / "o.json"))
     assert code == cli.EXIT_ERROR and not out
     assert "could not write" in err
+    assert "No such file or directory" in err  # the reason, not only the path
 
 
 # --- save_workbook: the one save-by-extension path (cli, TUI :w) -------------

@@ -911,6 +911,28 @@ NAMES: dict[str, frozenset[str]] = {
             "namedtuple",
         ]
     ),
+    "csv": frozenset(
+        [
+            "Dialect",
+            "DictReader",
+            "DictWriter",
+            "Error",
+            "QUOTE_ALL",
+            "QUOTE_MINIMAL",
+            "QUOTE_NONE",
+            "QUOTE_NONNUMERIC",
+            "QUOTE_NOTNULL",
+            "QUOTE_STRINGS",
+            "Sniffer",
+            "excel",
+            "excel_tab",
+            "get_dialect",
+            "list_dialects",
+            "reader",
+            "unix_dialect",
+            "writer",
+        ]
+    ),
 }
 
 EXCLUDED: dict[str, frozenset[str]] = {
@@ -949,4 +971,6 @@ EXCLUDED: dict[str, frozenset[str]] = {
         ]
     ),
     "operator": frozenset(["attrgetter", "methodcaller"]),
+    # Process-wide state that gridcalc's own CSV import reads.
+    "csv": frozenset(["field_size_limit", "register_dialect", "unregister_dialect"]),
 }

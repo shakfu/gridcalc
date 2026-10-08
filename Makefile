@@ -273,18 +273,21 @@ docs-clean:
 # bump. `scripts/bump_version.py` does the edit rather than sed: the sed here
 # was the BSD spelling (`sed -i ''`), a syntax error on GNU sed, so on Linux
 # the bump did nothing -- and because the steps were joined with `;` the tag
-# was still created, on a tree that still held the old version. The publish
-# workflow triggers on `v*` tags, so that mislabelled tag is what would have
+# was still created, on a tree that still held the old version. A pushed tag
+# triggers the publish workflow, so that mislabelled tag is what would have
 # shipped. The steps are chained with `&&` now: nothing reaches `git tag`
 # unless every step before it succeeded.
+#
+# Tags are bare semver (`0.10.0`), matching every historical tag and the
+# `push: tags` filters in build-publish.yml and build-abi3.yml.
 release:
 	@echo "Current version: $$(grep '^version' pyproject.toml | head -1)"
 	@read -p "New version: " version; \
 	  python3 scripts/bump_version.py "$$version" && \
 	  git add pyproject.toml && \
 	  git commit -m "Bump version to $$version" && \
-	  git tag -a "v$$version" -m "Release $$version" && \
-	  echo "Tagged v$$version. Run 'git push && git push --tags' to publish."
+	  git tag -a "$$version" -m "Release $$version" && \
+	  echo "Tagged $$version. Run 'git push && git push --tags' to publish."
 
 # Clean build artifacts
 clean:

@@ -23,7 +23,7 @@ sandbox = false
 
 # Pre-approved modules available in formulas.
 # Safe (reviewed names only): numpy, decimal, fractions, statistics, etc.
-# Unrestricted (whole module): matplotlib, pandas, scipy, sympy, csv
+# Unrestricted (whole module): matplotlib, pandas, scipy, sympy, xlsxwriter
 # Blocked (always): os, sys, subprocess, shutil, pathlib, socket, pickle, etc.
 # allowed_modules = ["numpy", "matplotlib"]
 

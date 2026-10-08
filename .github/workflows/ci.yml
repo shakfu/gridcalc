@@ -53,6 +53,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.10", "3.12"]
+    # uv sync, uv build and uv run otherwise follow .python-version, so every
+    # leg would run that version.
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
 
     steps:
       - uses: actions/checkout@v7

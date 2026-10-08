@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### Security
+
+- **Methods that write a file are refused.** `ndarray.tofile` and `ndarray.dump`, the pandas `to_*` writers, and `savefig` are attributes of values, which no facade covers. pandas `eval` and `query` evaluate their string argument. The validator now refuses these attribute names in formulas and code blocks. pandas still writes through string dispatch, as in `df.apply("to_csv", path_or_buf=...)`, so `pandas` stays unrestricted at the trust prompt.
+
+- **`csv` is a facade.** The module object exposed `csv.types`, and with it `types.CodeType`. `field_size_limit` and the dialect registry are excluded, since they change process-wide state that gridcalc's own CSV import reads.
+
+### Fixed
+
+- **TUI `:o` opens xlsx and CSV files.** It parsed every file as JSON, and so did a file named at startup unless it ended in `.xlsx`. Both now use `loader.load_into`, which picks the reader by extension.
+
+- **Load warnings and I/O errors are shown.** The TUI reports cells dropped beyond the grid and shared formulas imported as values, after `:o`, `:xlsx load` and at startup. The web client shows the `warnings` that `open_file` returns. Failed saves and exports, and `--convert`, now give the reason as well as the path.
+
+- **A workbook with nothing to withhold opened formulas-only.** The web view loaded such a file under a formulas-only policy, so a PYTHON formula typed after opening a value-only PYTHON-mode file showed `#N/A`. A file with no code, no modules and no PYTHON formulas now loads trusted.
+
+- **Deleting a sheet rewrites references to it as `#REF!`.** `=Sheet1!A2*2` kept its text, so adding a new `Sheet1` revived it. It now becomes `=#REF!*2`, as in Excel.
+
+- **A deleted reference shows `#REF!` in PYTHON mode.** `eval` read `#REF!` as the start of a comment and the cell showed `#NAME?`.
+
+- **Row and column edits missed sheet qualifiers in another case.** Inserting or deleting a row on `Sheet1` left `=sheet1!A3` unshifted, although it resolves to `Sheet1`.
+
+### Changed
+
+- **miniz, pugixml and nowide are vendored.** OpenXLSX fetched them from GitHub at configure time, so the sdist did not build offline, and their licences were not shipped. They live under `thirdparty/` at the versions OpenXLSX pins. The build now ignores system copies and refuses any other fetch. See `THIRD-PARTY-NOTICES.md`.
+
+- **CI build legs run the Python they name.** `uv` followed `.python-version`, so the 3.10 and 3.12 legs ran 3.14.
+
+- **`make release` creates bare tags.** It created `v$version`, which the publish workflows, keyed on bare semver, did not match.
+
 ## [0.10.0]
 
 ### Security

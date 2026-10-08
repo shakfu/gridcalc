@@ -855,7 +855,8 @@ def _rewrite_refs_on_sheet(
         m2 = _ref_at(text, at + 1) if at < n and text[at] == ":" else None
         end = m2 if m2 is not None else m1
         rect = (m1.col, m1.row, end.col, end.row)
-        new = move(m1, end) if edited_sheet in (None, sheet) else rect
+        hit = edited_sheet is None or sheet.casefold() == edited_sheet.casefold()
+        new = move(m1, end) if hit else rect
         if m2 is not None:
             at += 1 + m2.chars_consumed
         if new is None or (new != rect and not _on_grid(*new)):
@@ -897,6 +898,20 @@ def _rewrite_refs_on_sheet(
         changed = changed or moved
 
     return "".join(out) if changed else None
+
+
+def _has_ref_error(text: str) -> bool:
+    """Whether ``text`` holds a ``#REF!`` outside string literals."""
+    i = 0
+    while i < len(text):
+        end = _skip_quoted(text, i)
+        if end is not None:
+            i = end
+        elif text.startswith("#REF!", i):
+            return True
+        else:
+            i += 1
+    return False
 
 
 def adjust_refs(text: str, dcol: int, drow: int) -> str:
@@ -1714,6 +1729,14 @@ class Grid:
         if idx < 0:
             raise KeyError(name)
         del self.sheets[idx]
+        # As Excel: `=Sheet1!A2*2` becomes `=#REF!*2`, so a later sheet of the
+        # same name does not revive it.
+        for sh in self.sheets:
+            for cl in sh._cells.values():
+                if cl.type == FORMULA:
+                    new = _rewrite_refs_on_sheet(cl.text, sh.name, name, lambda a, b: None)
+                    if new is not None:
+                        cl.text = new
         self._dep_graph_built = False
         if self.active >= len(self.sheets):
             self.active = len(self.sheets) - 1
@@ -2195,15 +2218,17 @@ class Grid:
                 oldval = cl.val
                 old_matrix = cl.matrix
                 valid, vmsg = validate_formula(evalbuf)
-                if not valid:
+                # A deleted reference: `eval` would read `#REF!` as a comment.
+                ref_err = "#REF!" in evalbuf and _has_ref_error(evalbuf)
+                if ref_err or not valid:
                     from .formula.errors import ExcelError as _XE
 
                     cl.arr = None
                     cl.arr_cols = None
                     cl.matrix = None
                     cl.val = float("nan")
-                    cl.err = _XE.NAME
-                    cl.err_msg = vmsg
+                    cl.err = _XE.REF if ref_err else _XE.NAME
+                    cl.err_msg = "reference to a deleted cell or sheet" if ref_err else vmsg
                 else:
                     cl.err = None
                     cl.err_msg = None

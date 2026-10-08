@@ -56,6 +56,8 @@ interface OpenOk {
   filename?: string
   cancelled?: boolean
   error?: string
+  // What the load could not import, e.g. cells beyond the grid.
+  warnings?: string[]
 }
 
 // `needs_trust` discriminates: when it is set the load did *not* happen and

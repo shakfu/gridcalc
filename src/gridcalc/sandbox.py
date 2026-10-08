@@ -58,7 +58,6 @@ SIDE_EFFECT_MODULES: frozenset[str] = frozenset(
         "matplotlib",
         "matplotlib.pyplot",
         "pandas",
-        "csv",
         "xlsxwriter",
         # No facade yet. Most `sympy` functions `eval` a string argument.
         "sympy",
@@ -362,6 +361,30 @@ _DANGEROUS_ATTRS: frozenset[str] = frozenset(
         "methodcaller",
         "vformat",
         "get_field",
+        # Methods on values that write a file, outside any facade: ndarray and
+        # pandas writers (each takes a path), and matplotlib's figure save.
+        "tofile",
+        "dump",
+        "to_clipboard",
+        "to_csv",
+        "to_excel",
+        "to_feather",
+        "to_hdf",
+        "to_html",
+        "to_json",
+        "to_latex",
+        "to_markdown",
+        "to_orc",
+        "to_parquet",
+        "to_pickle",
+        "to_sql",
+        "to_stata",
+        "to_string",
+        "to_xml",
+        "savefig",
+        # pandas evaluates the string argument as an expression.
+        "eval",
+        "query",
     }
 )
 

@@ -30,14 +30,12 @@ from ..engine import (
     col_name,
     ref,
 )
-from ..loader import save_losses, save_workbook
+from ..loader import load_into, needs_trust, save_losses, save_workbook
 from ..sandbox import (
-    SANDBOX_ENABLED,
     FileInfo,
     LoadPolicy,
     _parse_requirement,
     classify_module,
-    inspect_file,
 )
 from . import _state
 from .render import CP_CHROME, CP_CURSOR, CP_ERROR, CP_GUTTER, CP_LOCKED, draw
@@ -303,7 +301,7 @@ def _do_save(stdscr: curses.window, g: Grid, args: str) -> bool:
     try:
         save_workbook(g, fn)
     except OSError:
-        show_error(stdscr, f"Failed to save: {fn}. Press any key.")
+        show_error(stdscr, f"Failed to save: {_io_failure(fn, g)}. Press any key.")
         return False
     g.filename = fn
     g.dirty = 0
@@ -468,42 +466,46 @@ def cmd_open(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> bo
         if not fn:
             return False
 
-    info = inspect_file(fn)
-    if info is None:
+    if not os.path.isfile(fn):
         show_error(stdscr, f"Failed to read: {fn}. Press any key.")
         return False
     if not _discard_ok(stdscr, g):
         return False
 
+    # None for xlsx, csv, a file with no code, or the sandbox off; `load_into`
+    # then picks the policy that needs no prompt.
     policy = None
-    if info.trust_needed:
-        if SANDBOX_ENABLED:
-            policy = trust_prompt(stdscr, fn, info)
-            if policy is None:
-                return False
-        else:
-            policy = LoadPolicy.trust_all(info.requires)
+    info = needs_trust(fn)
+    if info is not None:
+        policy = trust_prompt(stdscr, fn, info)
+        if policy is None:
+            return False
 
-    # No pre-clear: `jsonload` performs its own (wider) reset once the file
-    # is known to be loadable, and every rejection returns before it. Clearing
-    # here first meant any unreadable or malformed file left the user holding
-    # an empty workbook -- the open failed *and* took the open sheet with it.
+    # No pre-clear: a failed load leaves the open workbook as it was.
     try:
-        rc = g.jsonload(fn, policy=policy)
+        load_into(g, fn, policy)
+    except OSError as exc:
+        show_error(stdscr, f"Failed to load: {exc}. Press any key.")
+        return False
     except Exception as exc:  # noqa: BLE001
-        # Defence in depth. `jsonload` is documented to report failure by
-        # returning -1, but it runs a recalc over file-supplied formulas; an
-        # uncaught exception here tears down curses and takes the user's
-        # unsaved sheet with it.
+        # A recalc over file-supplied formulas can raise; an uncaught
+        # exception tears down curses and the user's unsaved sheet with it.
         show_error(stdscr, f"Failed to load: {fn} ({type(exc).__name__}). Press any key.")
         return False
-    if rc == 0:
-        g.filename = fn
-        g.dirty = 0
-        undo.clear()
-    else:
-        show_error(stdscr, f"Failed to load: {fn}. Press any key.")
+    g.dirty = 0
+    undo.clear()
+    show_load_warnings(stdscr, g)
     return False
+
+
+def show_load_warnings(stdscr: curses.window, g: Grid) -> None:
+    """Report what the last load could not import, if anything."""
+    if g.load_warnings:
+        show_error(stdscr, "Warning: " + "; ".join(g.load_warnings) + ". Press any key.")
+
+
+def _io_failure(fn: str, g: Grid) -> str:
+    return f"{fn}" + (f" ({g.io_error})" if g.io_error else "")
 
 
 def cmd_clear(stdscr: curses.window, g: Grid, undo: UndoManager) -> bool:
@@ -942,7 +944,7 @@ def _io_command(
         if save_fn(fn) == 0:
             show_error(stdscr, f"Exported to {fn}")
         else:
-            show_error(stdscr, f"Failed to export: {fn}. Press any key.")
+            show_error(stdscr, f"Failed to export: {_io_failure(fn, g)}. Press any key.")
         return False
 
     if sub in ("load", "import", "r"):
@@ -966,10 +968,11 @@ def _io_command(
                 g.dirty = 1
             if opens:
                 undo.clear()
+                show_load_warnings(stdscr, g)
         else:
             if clear_on_load:
                 undo.rollback(g)  # put back the sheet the clear removed
-            show_error(stdscr, f"Failed to load: {fn}. Press any key.")
+            show_error(stdscr, f"Failed to load: {_io_failure(fn, g)}. Press any key.")
         return False
 
     show_error(stdscr, usage)

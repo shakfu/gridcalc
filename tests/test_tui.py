@@ -1131,6 +1131,88 @@ class TestCsvCommands:
         cmdexec(self.stdscr, self.g, self.undo, "csv")
 
 
+class TestOpenCommand:
+    """`:o` opens every format `loader.load_into` reads, and reports what it could not."""
+
+    def setup_method(self):
+        _setup_curses_constants()
+        self.stdscr = MockStdscr()
+        self.g = Grid()
+        self.undo = UndoManager()
+
+    def test_opens_xlsx(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        src = Grid()
+        src.mode = Mode.EXCEL
+        src.setcell(0, 0, "7")
+        src.setcell(0, 1, "=A1*6")
+        path = str(tmp_path / "book.xlsx")
+        assert src.xlsxsave(path) == 0
+        cmdexec(self.stdscr, self.g, self.undo, f"o {path}")
+        assert self.g.filename == path
+        assert self.g.mode == Mode.EXCEL
+        assert self.g.cell(0, 1).val == 42.0
+        assert self.g.dirty == 0
+
+    def test_opens_csv_as_a_new_workbook(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        self.g.add_sheet("Other")
+        self.g.code = "x = 1"
+        path = str(tmp_path / "in.csv")
+        Path(path).write_text("a,1\nb,2\n")
+        self.stdscr.queue_getch(ord("y"))  # discard unsaved changes
+        cmdexec(self.stdscr, self.g, self.undo, f"o {path}")
+        assert self.g.filename == path
+        assert self.g.mode == Mode.EXCEL
+        assert [sh.name for sh in self.g.sheets] == ["Sheet1"]
+        assert self.g.code == ""
+        assert self.g.cell(1, 1).val == 2.0
+
+    def test_shows_load_warnings(self, tmp_path):
+        openpyxl = pytest.importorskip("openpyxl")
+        from gridcalc.tui import cmdexec
+
+        wb = openpyxl.Workbook()
+        wb.active["A1"] = 1
+        wb.active.cell(row=1, column=300, value=2)
+        path = str(tmp_path / "wide.xlsx")
+        wb.save(path)
+        cmdexec(self.stdscr, self.g, self.undo, f"o {path}")
+        assert self.g.cell(0, 0).val == 1.0
+        assert "1 cells beyond 256 columns" in self.stdscr._last_addnstr
+
+    def test_failed_load_keeps_the_workbook_and_says_why(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        self.g.setcell(0, 0, "keep")
+        self.g.dirty = 0
+        path = tmp_path / "bad.xlsx"
+        path.write_bytes(b"not a zip")
+        cmdexec(self.stdscr, self.g, self.undo, f"o {path}")
+        assert self.g.cell(0, 0).text == "keep"
+        assert "Failed to load: could not load workbook" in self.stdscr._last_addnstr
+        assert f"{path} (" in self.stdscr._last_addnstr
+
+    def test_python_formula_typed_after_opening_a_value_only_file_evaluates(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        path = tmp_path / "values.json"
+        path.write_text(
+            json.dumps({"version": 2, "mode": "PYTHON", "sheets": [{"name": "S", "cells": [[1]]}]})
+        )
+        cmdexec(self.stdscr, self.g, self.undo, f"o {path}")
+        self.g.setcell(0, 1, "=A1+1")
+        assert self.g.cell(0, 1).val == 2.0
+
+    def test_export_failure_says_why(self, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, self.undo, f"xlsx save {tmp_path / 'empty.xlsx'}")
+        assert "workbook is empty" in self.stdscr._last_addnstr
+
+
 class TestClipboard:
     """Test cell copy/paste via Clipboard."""
 

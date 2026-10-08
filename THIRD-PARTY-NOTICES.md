@@ -28,10 +28,46 @@ This replaced lp_solve 5.5 (LGPL-2.1). gridcalc is MIT and links the solver stat
 
 Permissive; requires only that the copyright notice and disclaimer be retained, which this file and the vendored `LICENSE.md` do.
 
+## miniz 3.0.2 -- MIT
+
+* Location: `thirdparty/miniz/` (upstream tag `3.0.2`, commit `293d4db`)
+
+* Licence: MIT (`thirdparty/miniz/LICENSE`)
+
+* Copyright 2013-2014 RAD Game Tools and Valve Software; 2010-2014 Rich Geldreich and Tenacious Software LLC
+
+* Upstream: <https://github.com/richgel999/miniz>
+
+* Used by: `gridcalc._core`, through OpenXLSX (zip container)
+
+## pugixml 1.15 -- MIT
+
+* Location: `thirdparty/pugixml/` (upstream tag `v1.15`, commit `ee86beb`)
+
+* Licence: MIT (`thirdparty/pugixml/LICENSE.md`)
+
+* Copyright (c) 2006-2025 Arseny Kapoulkine
+
+* Upstream: <https://github.com/zeux/pugixml>
+
+* Used by: `gridcalc._core`, through OpenXLSX (XML parsing)
+
+## nowide 11.3.1 (standalone) -- Boost Software License 1.0
+
+* Location: `thirdparty/nowide/` (upstream release tarball `nowide_standalone_v11.3.1.tar.gz`, SHA-256 `eaec4d33...6ca6`)
+
+* Licence: BSL-1.0 (`thirdparty/nowide/LICENSE`)
+
+* Upstream: <https://github.com/boostorg/nowide>
+
+* Used by: `gridcalc._core` on Windows only, through OpenXLSX (UTF-8 file paths)
+
+The three are the versions OpenXLSX pins. They hold only build inputs and the licence: tests, docs, examples and IDE project files are not vendored. The top-level `CMakeLists.txt` points OpenXLSX's fetch at these copies.
+
 ## nanobind -- BSD 3-Clause
 
 Not vendored. Fetched at build time (`pyproject.toml` `build-system.requires`) and its headers are compiled into both extension modules. Permissive.
 
 ---
 
-This file is a factual inventory, not legal advice. Every vendored component is now permissively licensed (MIT or BSD-3-Clause), so static linking imposes no copyleft obligation on a distributed wheel.
+This file is a factual inventory, not legal advice. Every vendored component is permissively licensed (MIT, BSD-3-Clause or BSL-1.0), so static linking imposes no copyleft obligation on a distributed wheel.

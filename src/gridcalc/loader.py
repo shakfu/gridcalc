@@ -29,23 +29,38 @@ def load_workbook(path: str | Path, policy: LoadPolicy | None = None) -> Grid:
     show their error state, the safe and honest outcome. ``.xlsx`` and ``.csv``
     carry no code path. The workbook is recalculated before return.
     """
+    g = Grid()
+    load_into(g, path, policy)
+    return g
+
+
+def load_into(g: Grid, path: str | Path, policy: LoadPolicy | None = None) -> None:
+    """Replace ``g``'s workbook with the file at ``path``, as :func:`load_workbook`.
+
+    For a frontend that keeps one ``Grid`` for its lifetime. Raises
+    ``OSError`` and leaves ``g`` unchanged when the load fails.
+    """
     p = str(path)
     low = p.lower()
-    g = Grid()
     if low.endswith(".xlsx"):
         rc = g.xlsxload(p)
     elif low.endswith(".csv"):
-        # A CSV names no mode. The PYTHON default would eval its formulas unprompted.
-        g.mode = Mode.EXCEL
-        g._apply_mode_libs()
-        rc = g.csvload(p)
+        rc = g._load_or_restore(lambda: _csv_into(g, p))
     else:
         rc = g.jsonload(p, policy=policy or _default_policy(p))
     if rc < 0:
         raise OSError(_failure("could not load workbook", p, g))
     g.filename = p
     g.recalc()
-    return g
+
+
+def _csv_into(g: Grid, path: str) -> None:
+    g._reset_workbook()
+    # A CSV names no mode. The PYTHON default would eval its formulas unprompted.
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    if g.csvload(path) < 0:
+        raise OSError(g.io_error or "unreadable")
 
 
 def save_workbook(g: Grid, path: str | Path) -> str:
@@ -195,15 +210,16 @@ def _style_extras(root: ET.Element, ns: str) -> list[str]:
 def _default_policy(path: str) -> LoadPolicy:
     """What to load when no frontend has asked anyone.
 
-    Formulas only while the sandbox is on -- opening a file is not consent to
-    run what is in it. With the sandbox off there is nothing to consent to: no
-    prompt would be shown, and withholding the code would leave the workbook
-    broken for the one user who has said they want it run. That is the same
-    rule the curses frontend applies at startup.
+    Formulas only while the sandbox is on and the file holds something to
+    withhold -- opening a file is not consent to run what is in it. With the
+    sandbox off there is nothing to consent to: no prompt would be shown, and
+    withholding the code would leave the workbook broken for the one user who
+    has said they want it run. A file with nothing to withhold is trusted too;
+    formulas-only would also refuse every PYTHON formula typed after the load.
     """
-    if sandbox.SANDBOX_ENABLED:
-        return LoadPolicy.formulas_only()
     info = inspect_file(path)
+    if sandbox.SANDBOX_ENABLED and (info is None or info.trust_needed):
+        return LoadPolicy.formulas_only()
     return LoadPolicy.trust_all(info.requires if info else None)
 
 

@@ -337,7 +337,7 @@ def run_convert(g: Grid, path: str) -> dict[str, Any]:
     try:
         fmt = save_workbook(g, path)
     except OSError as exc:
-        raise CliError(f"could not write {path}") from exc
+        raise CliError(str(exc)) from exc
     return {"path": str(Path(path)), "format": fmt, "cells": _cell_count(g)}
 
 

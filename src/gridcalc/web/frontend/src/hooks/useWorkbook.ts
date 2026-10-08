@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { bridge, whenReady } from '../bridge/api'
-import type { Dims, Sheets, SheetsResult, TrustInfo, TrustPolicy } from '../bridge/types'
+import type { Dims, OpenResult, Sheets, SheetsResult, TrustInfo, TrustPolicy } from '../bridge/types'
 import type { Rect } from '../lib/grid'
 import { failureOf } from '../bridge/result'
 import type { ConfirmRequest } from '../components/ConfirmDialog'
@@ -201,11 +201,17 @@ export function useWorkbook({ confirm, onMutate }: WorkbookOptions): Workbook {
   )
 
   // A load replaces every cell, so it counts as a mutation as well as a load.
-  const loaded = useCallback(async () => {
-    await refresh()
-    setLoads((n) => n + 1)
-    mutated(true)
-  }, [refresh, mutated])
+  // Warnings use the error style, which stays on screen longer.
+  const loaded = useCallback(
+    async (r: OpenResult, msg: string) => {
+      await refresh()
+      setLoads((n) => n + 1)
+      mutated(true)
+      if (r.warnings?.length) fail(`${msg}: ${r.warnings.join('; ')}`)
+      else flash(msg)
+    },
+    [refresh, mutated, flash, fail],
+  )
 
   const actions = useMemo<WorkbookActions>(
     () => ({
@@ -231,8 +237,7 @@ export function useWorkbook({ confirm, onMutate }: WorkbookOptions): Workbook {
           return
         }
         if (r.ok) {
-          await loaded()
-          flash('opened')
+          await loaded(r, 'opened')
         } else {
           fail(r.error ?? 'could not open that workbook')
         }
@@ -247,8 +252,7 @@ export function useWorkbook({ confirm, onMutate }: WorkbookOptions): Workbook {
           fail(r.error ?? 'could not open that workbook')
           return
         }
-        await loaded()
-        flash(policy.load_code ? 'opened with code' : 'opened, formulas only')
+        await loaded(r, policy.load_code ? 'opened with code' : 'opened, formulas only')
       },
       save: async () => {
         let r = await guard('save', () => bridge.save())

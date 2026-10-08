@@ -18,7 +18,7 @@
 
 - Dates in a workbook using the 1904 date system are converted to gridcalc's 1900-based serials.
 
-The load warns with a count of fallback formulas and dropped cells. The [headless CLI](../reference/cli.md) prints these warnings to stderr; the terminal and desktop apps do not show them.
+The load warns with a count of fallback formulas and dropped cells. The terminal app shows the warnings after `:o`, `:xlsx load` and at startup; the desktop app shows them after an open, but not for the file it starts with. The [headless CLI](../reference/cli.md) prints them to stderr.
 
 `:xlsx save` writes named ranges as Excel defined names. A name without a sheet resolves on each formula's own sheet, so it is written as a sheet-local name on every sheet. `:xlsx load` reads that form back as one sheet-less name.
 

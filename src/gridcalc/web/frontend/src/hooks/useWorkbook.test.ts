@@ -144,6 +144,18 @@ test('approving completes the open with the policy', async () => {
   expect(result.current.status).toBe('opened with code')
 })
 
+test('open shows what the load could not import', async () => {
+  window.pywebview!.api.open_dialog = () =>
+    Promise.resolve({ ok: true, filename: '/tmp/big.xlsx', warnings: ['3 cells beyond 256 columns x 1024 rows were not imported'] })
+  const { result } = renderHook(() => useWorkbook(YES))
+  await waitFor(() => expect(result.current.ready).toBe(true))
+  await act(async () => {
+    await result.current.actions.open()
+  })
+  expect(result.current.status).toBe('opened: 3 cells beyond 256 columns x 1024 rows were not imported')
+  expect(result.current.statusKind).toBe('error')
+})
+
 test('cancelling loads nothing', async () => {
   let opened = 0
   window.pywebview!.api.open_file = (path: string) => {

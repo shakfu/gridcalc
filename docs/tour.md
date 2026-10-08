@@ -23,7 +23,7 @@ Press `:` for the command line. The basics:
 | Command | Purpose |
 |---|---|
 | `:w [file]` | save; the extension picks the format (`.json`, `.xlsx`, `.csv`) |
-| `:o file` | open a JSON workbook |
+| `:o file` | open a workbook; the extension picks the reader (`.json`, `.xlsx`, `.csv`) |
 | `:q`, `:q!` | quit (asks about unsaved changes), force-quit |
 | `Ctrl-C` | same as `:q` |
 | `:e` | edit the workbook's Python code block in `$EDITOR` |

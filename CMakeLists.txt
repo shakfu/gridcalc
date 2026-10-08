@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Build every target -- including the static third-party deps that OpenXLSX
-# fetches (miniz, pugixml) and HiGHS -- as position-independent code. They
+# builds (miniz, pugixml) and HiGHS -- as position-independent code. They
 # are linked into the `_core` / `_opt` shared modules, and GNU ld on Linux
 # rejects non-PIC static objects in a shared object ("relocation R_X86_64_PC32
 # against symbol ... can not be used when making a shared object; recompile
@@ -35,6 +35,16 @@ set(BUILD_SHARED_LIBS       OFF CACHE BOOL "" FORCE)
 # miniz / older fetched deps still declare cmake_minimum_required(VERSION < 3.5);
 # CMake 4 removed that compat. Restore the floor for fetched subprojects.
 set(CMAKE_POLICY_VERSION_MINIMUM "3.5" CACHE STRING "" FORCE)
+# OpenXLSX fetches miniz, pugixml and (on Windows) nowide at configure time.
+# Build the vendored copies instead, so the sdist builds offline, and ignore
+# system copies, which would link a different version than the one vendored.
+# FULLY_DISCONNECTED makes any other fetch an error rather than a download.
+set(FORCE_FETCH_ALL ON CACHE BOOL "" FORCE)
+set(FETCHCONTENT_SOURCE_DIR_MINIZ_FETCH   ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/miniz   CACHE PATH "" FORCE)
+set(FETCHCONTENT_SOURCE_DIR_PUGIXML_FETCH ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/pugixml CACHE PATH "" FORCE)
+set(FETCHCONTENT_SOURCE_DIR_NOWIDE_FETCH  ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/nowide  CACHE PATH "" FORCE)
+set(FETCHCONTENT_FULLY_DISCONNECTED ON CACHE BOOL "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)  # nowide's tests are not vendored
 add_subdirectory(thirdparty/OpenXLSX EXCLUDE_FROM_ALL)
 
 # --- HiGHS + _opt extension -------------------------------------------------

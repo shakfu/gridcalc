@@ -208,6 +208,39 @@ class TestValidateFormulaBlocked:
         ok, _ = validate_formula("dir(x)")
         assert not ok
 
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "A1.tofile('x')",
+            "A1.dump('x')",
+            "df.to_csv('x')",
+            "df.to_pickle('x')",
+            "df.to_excel('x')",
+            "df.to_string('x')",
+            "df.eval('a + 1')",
+            "df.query('a > 1')",
+            "fig.savefig('x')",
+        ],
+    )
+    def test_file_writing_and_string_eval_methods(self, source):
+        ok, msg = validate_formula(source)
+        assert not ok and "is not allowed" in msg, source
+        assert not validate_code(f"y = {source}")[0], source
+
+    def test_ndarray_cannot_write_a_file(self, tmp_path, monkeypatch):
+        pytest.importorskip("numpy")
+        from gridcalc.engine import Mode
+
+        monkeypatch.chdir(tmp_path)
+        g = Grid()
+        g.mode = Mode.PYTHON
+        g.load_requires(["numpy"])
+        g.setcell(0, 0, "=np.array([1.0, 2.0]).tofile('out.bin')")
+        g.setcell(0, 1, "=np.array([1.0, 2.0]).dump('out.pkl')")
+        assert "is not allowed" in g.cells[0][0].err_msg
+        assert "is not allowed" in g.cells[0][1].err_msg
+        assert list(tmp_path.iterdir()) == []
+
 
 class TestStringBorneAttributeAccess:
     """`str.format` reads the attributes and items its template names, and
@@ -468,6 +501,9 @@ class TestClassifyModule:
     def test_side_effect_pandas(self):
         assert classify_module("pandas") == "side_effect"
 
+    def test_safe_csv(self):
+        assert classify_module("csv") == "safe"
+
     def test_side_effect_pyplot(self):
         assert classify_module("matplotlib.pyplot") == "side_effect"
 
@@ -570,9 +606,18 @@ class TestModuleFacade:
         assert not hasattr(facade, "methodcaller")
 
     def test_module_without_a_list_is_handed_over_whole(self):
+        import textwrap
+
+        assert load_modules(["textwrap"], allow_unknown=True)[0]["textwrap"] is textwrap
+
+    def test_csv_is_a_facade_without_its_imports(self):
         import csv
 
-        assert load_modules(["csv"])[0]["csv"] is csv
+        facade = load_modules(["csv"])[0]["csv"]
+        assert isinstance(facade, ModuleFacade)
+        assert facade.reader is csv.reader
+        assert not hasattr(facade, "types")  # reaches types.CodeType
+        assert not hasattr(facade, "field_size_limit")
 
     def test_every_public_name_is_reviewed(self):
         """Fails when an installed module gains a public name: add it to

@@ -6,29 +6,9 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ## High
 
-### Refactoring & code quality
-
-- [ ] **TUI `:o` cannot open an xlsx or CSV file.** `cmd_open` always calls `jsonload`. Route it through `loader.load_workbook`, which picks the reader by extension.
-
-- [ ] **Load warnings and I/O errors are not shown.** `Grid.load_warnings` counts shared formulas imported as values and cells dropped beyond 256x1024. `Grid.io_error` holds why a load or save failed. The CLI prints warnings and `Api.open_file` returns them, but the TUI shows neither, and the web client ignores `warnings`. TUI `:xlsx save` and friends print only "Failed to export", and `--convert` prints "could not write PATH" without the reason.
-
-- [ ] **Deleting a sheet leaves its name in formula text.** `=Sheet1!A2*2` on another sheet evaluates to `#REF!` after `Sheet1` is removed, but keeps its text, so re-adding a sheet called `Sheet1` revives it. Excel rewrites the reference to `#REF!`.
-
-- [ ] **A deleted reference shows `#NAME?` in PYTHON mode.** Deleting a referenced row rewrites `=A2*2` to `=#REF!*2`, which PYTHON-mode `eval()` cannot parse. EXCEL mode shows `#REF!`.
-
 ### Security
 
-- [ ] **Modules without a facade are handed over whole.** `numpy` and the stdlib modules on the safe list reach a workbook as a `ModuleFacade` of reviewed names (`_module_names.py`). `pandas`, `matplotlib`, `csv`, `xlsxwriter`, `scipy`, `sympy` and any approved unknown module are still module objects, and a module object reaches every module it imported: `pd.io.common.os` is `os`. The prompt labels them unrestricted. A facade for `scipy` needs its public names collected per submodule; it is not installed in the dev environment. `sympy` cannot take one: most of its functions `eval` a string argument.
-
-- [ ] **Methods on values are outside a facade.** `ndarray.tofile`, `ndarray.dump` and `DataFrame.to_csv` write files. The two `ndarray` methods fail today only because numpy's C code finds no `__import__` in the formula's builtins. Refusing the attribute names in the validator is the available fix.
-
-### Documentation & infrastructure
-
-- [ ] **The CI build matrix runs Python 3.14 on every leg.** `ci.yml` calls `uv python install ${{ matrix.python-version }}`, then `uv sync`, which follows `.python-version` (3.14). The 3.10 and 3.12 legs run 3.14.7. Pass `--python ${{ matrix.python-version }}` to `uv sync` or set `UV_PYTHON`.
-
-- [ ] **miniz and pugixml are fetched at configure time and their licences are not shipped.** OpenXLSX's `CMakeLists.txt` git-fetches both, so the sdist does not build offline. Both are MIT and linked into `_core`, but neither licence is in `THIRD-PARTY-NOTICES.md` or `license-files`. Vendor them under `thirdparty/` and add their licences.
-
-- [ ] **Tag names and the publish trigger disagree, so no tag has ever published.** Every tag in the repo is bare (`0.6.0`, `0.5.1`, ... ten of them), `make release` creates `v$version`, and `build-publish.yml` fires on `tags: - "v*"`. No existing tag matches the trigger. 0.6.0 is on PyPI, but the only Build and Publish run was a manual dispatch with its publish jobs skipped, so the upload happened outside CI. Pick one convention and make the Makefile and the workflow agree; the `v` prefix is the cheaper side to keep, since only the historical tags disagree with it. `v*` also matches the `v*-abi3` tags that `build-abi3.yml` builds, so narrow the pattern before pushing a `v` tag.
+- [ ] **Modules without a facade are handed over whole.** `pandas`, `matplotlib`, `xlsxwriter`, `scipy`, `sympy` and any approved unknown module are module objects, and a module object reaches every module it imported: `pd.io.common.os` is `os`. The prompt labels them unrestricted. A pandas facade would not make pandas safe: `apply`, `agg`, `aggregate` and `transform` dispatch a method named by a string, so `df.apply("to_csv", path_or_buf=...)` writes a file past the validator's attribute check (verified on pandas 3.0.2). It needs a runtime guard on that dispatch first. `scipy` needs its public names collected per submodule; it, `matplotlib` and `xlsxwriter` are not installed in the dev environment. `sympy` cannot take a facade: most of its functions `eval` a string argument.
 
 ## Medium
 
@@ -37,6 +17,8 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 - [ ] **Sensitivity for quadratic models.** Withheld today: a QP's duals do not carry the shadow-price reading the report describes. HiGHS does return them, so this is a question of deciding what they mean to a spreadsheet user, not of plumbing.
 
 ### Web frontend
+
+- [ ] **Load warnings for the startup file are dropped.** `web.run(path)` loads before the client exists, and no bridge call carries `load_warnings`, so only a later open shows them.
 
 - [ ] **Move row and column (`swaprow`/`swapcol`).** Insert and delete now ship in both frontends; reordering does not. The engine primitives are ready, so this is a `gridcalc/commands.py` entry (which both frontends then get) plus a client gesture -- dragging a header.
 
@@ -182,8 +164,6 @@ Measurements for this section: `docs/dev/ironcalc.md`. Per-formula figures are f
 - [ ] **Plugin interface.** Allow third-party packages to register custom functions, commands, and cell formats via entry points or a plugin API.
 
 ### Security
-
-- [ ] **TUI `:o` reads the sandbox flag at import time.** `tui/commands.py` imports `SANDBOX_ENABLED` by value, so `configure_sandbox` from `gridcalc.toml` does not reach it. With `sandbox = false`, `:o` still shows the trust prompt; startup and `loader` read `sandbox.SANDBOX_ENABLED` and do not. The error is on the safe side, but the two paths disagree.
 
 - [ ] **Process isolation for PYTHON-mode recalc.** Only worth building if running untrusted workbook code becomes a supported feature; `LoadPolicy.formulas_only()` is the current answer everywhere but the TUI trust prompt. Buys a resource ceiling on every platform but filesystem confinement mainly on Linux. HYBRID's `py.*` gateway is a separate decision -- it is called mid-expression from the evaluator in the parent.
 

@@ -18,6 +18,9 @@ license-files = [
     "thirdparty/HiGHS/LICENSE.txt",
     "thirdparty/HiGHS/THIRD_PARTY_NOTICES.md",
     "thirdparty/OpenXLSX/LICENSE.md",
+    "thirdparty/miniz/LICENSE",
+    "thirdparty/pugixml/LICENSE.md",
+    "thirdparty/nowide/LICENSE",
 ]
 authors = [
     { name = "Shakeeb Alireza", email = "shakfu@users.noreply.github.com" }

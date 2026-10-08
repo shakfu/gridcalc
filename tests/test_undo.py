@@ -214,6 +214,19 @@ class TestSheetOpsAreUndoable:
         assert u.redo(g) and u.redo(g)
         assert g.sheet_names() == ["Sheet1"]
 
+    def test_undo_restores_references_to_a_deleted_sheet(self):
+        g = _two_sheets()
+        u = UndoManager()
+        g.setcell(1, 0, "=S2!A1+1")
+        u.save_grid(g)
+        g.remove_sheet("S2")
+        g.recalc()
+        assert g.cells[1][0].text == "=#REF!+1"
+        assert u.undo(g) is True
+        g.recalc()
+        assert g.cells[1][0].text == "=S2!A1+1"
+        assert g.cells[1][0].val == 5.0
+
     def test_undo_of_add_move_and_rename(self):
         g = _two_sheets()
         u = UndoManager()

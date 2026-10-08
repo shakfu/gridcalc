@@ -985,6 +985,18 @@ class TestStringLiteralsAreNotRewritten:
         assert g.cells[0][1].text == '="A1"'
         assert g.cells[1][1].text == "=A3*2"
 
+    def test_a_deleted_reference_is_ref_in_python_mode(self):
+        g = Grid()
+        g.mode = Mode.PYTHON
+        g.setcell(0, 0, "1")
+        g.setcell(0, 1, "=A1*2")
+        g.setcell(1, 1, "=len('#REF!')")
+        g.deleterow(0)
+        g.recalc()
+        assert g.cells[0][0].text == "=#REF!*2"
+        assert g.cells[0][0].err == ExcelError.REF
+        assert g.cells[1][0].val == 5.0  # `#REF!` inside a string is text
+
     def test_deleterow_does_not_rewrite_literals(self):
         g = self._grid()
         g.deleterow(0)
@@ -2079,6 +2091,39 @@ class TestCrossSheet:
         g.remove_sheet("Sheet2")
         g.recalc()
         assert g.cells[0][0].err == ExcelError.REF
+
+    def test_removing_a_sheet_rewrites_its_references_to_ref(self):
+        g = self._make()
+        g.setcell(0, 0, "=Sheet2!A1*2")
+        g.setcell(1, 0, "=SUM(sheet2!A1:B2)+'Sheet2'!C3")
+        g.setcell(2, 0, '="Sheet2!A1"')
+        g.remove_sheet("Sheet2")
+        assert g.cells[0][0].text == "=#REF!*2"
+        assert g.cells[1][0].text == "=SUM(#REF!)+#REF!"
+        assert g.cells[2][0].text == '="Sheet2!A1"'  # a string, not a reference
+
+    def test_a_new_sheet_of_a_removed_name_does_not_revive_its_references(self):
+        g = self._make()
+        g.setcell(0, 0, "=Sheet2!A1*2")
+        g.remove_sheet("Sheet2")
+        g.add_sheet("Sheet2")
+        g.set_active("Sheet2")
+        g.setcell(0, 0, "4")
+        g.set_active("Sheet1")
+        g.recalc()
+        assert g.cells[0][0].err == ExcelError.REF
+
+    def test_deleting_a_row_shifts_a_reference_in_another_case(self):
+        g = self._make()
+        g.setcell(0, 2, "5")
+        g.set_active("Sheet2")
+        g.setcell(0, 0, "=sheet1!A3*2")
+        g.set_active("Sheet1")
+        g.deleterow(1)
+        g.recalc()
+        g.set_active("Sheet2")
+        assert g.cells[0][0].text == "=sheet1!A2*2"
+        assert g.cells[0][0].val == 10.0
 
     def test_read_cross_sheet_value(self):
         g = self._make()

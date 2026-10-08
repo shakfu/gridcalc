@@ -28,7 +28,7 @@ See [Keybindings](../keybindings.md) for the keyspec grammar (`Tab`, `S-Tab`, `C
 
 ## Sandboxing
 
-`sandbox = true` (the default) enables AST validation of formulas and code blocks: dunder access, dangerous attributes and builtins, and blocked imports are rejected before anything executes. Setting `sandbox = false`, or the environment variable `GRIDCALC_SANDBOX=0`, turns it off.
+`sandbox = true` (the default) enables AST validation of formulas and code blocks: dunder access, dangerous attributes and builtins, methods that write a file (`to_csv`, `tofile`, `savefig`, ...), and blocked imports are rejected before anything executes. Setting `sandbox = false`, or the environment variable `GRIDCALC_SANDBOX=0`, turns it off.
 
 `sandbox`, `module_facades` and `editor` are read only from the user config. A `$PWD/gridcalc.toml` that sets them is ignored for those keys, with a warning: launching in a directory is not consent to its security policy or commands.
 

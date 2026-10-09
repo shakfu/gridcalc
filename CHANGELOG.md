@@ -10,6 +10,10 @@
 
 ### Fixed
 
+- **xlsx shared and array formulas import as formulas.** OpenXLSX returns only their saved values, so each imported as a constant that never recalculated. Excel writes a filled-down column as shared formulas and every dynamic-array formula as an array formula, so this froze most formulas in a typical workbook. The import now reads both from the sheet XML. A shared formula's text, stored once, is shifted to each cell; an array formula sits on its top-left cell and spills over the rest of its range.
+
+- **Functions newer than Excel 2007 import from xlsx.** Excel stores them as `_xlfn.XLOOKUP(...)`, `_xlfn._xlws.FILTER(...)`, and LAMBDA parameters as `_xlpm.x`. The prefixes reached the parser, so every such formula gave `#NAME?`. The import now removes them outside quoted text. Export still writes none (`TODO.md`).
+
 - **The web status bar says why the selected cell shows an error.** The TUI showed `Cell.err_msg` on its status line, but the web client never received it. `Api.stats` now returns it as `message` for a one-cell selection.
 
 - **`ROWS` and `COLUMNS` take arrays; `ISFORMULA` takes ranges.** `ROWS` and `COLUMNS` accepted only a reference, so `=ROWS(FILTER(...))`, `=ROWS({1,2;3,4})` and `=ROWS(x)` over a `LET` array gave `#VALUE!`. `ISFORMULA` accepted one cell and ignored its sheet prefix: `=ISFORMULA(S2!A1)` checked the current sheet. It now gives one result per cell of a range. A plain reference passed to `ROWS`, `COLUMNS`, `ROW`, `COLUMN`, `ISREF` or `AREAS` is still not a dependency, since only its address matters. Any other argument now is, so `=ROWS(FILTER(C1:C4,C1:C4>15))` recalculates when `C1:C4` changes.
@@ -22,7 +26,7 @@
 
 - **TUI `:o` opens xlsx and CSV files.** It parsed every file as JSON, and so did a file named at startup unless it ended in `.xlsx`. Both now use `loader.load_into`, which picks the reader by extension.
 
-- **Load warnings and I/O errors are shown.** The TUI reports cells dropped beyond the grid and shared formulas imported as values, after `:o`, `:xlsx load` and at startup. The web client shows the `warnings` that `open_file` returns. Failed saves and exports, and `--convert`, now give the reason as well as the path.
+- **Load warnings and I/O errors are shown.** The TUI reports cells dropped beyond the grid and formulas imported as values, after `:o`, `:xlsx load` and at startup. The web client shows the `warnings` that `open_file` returns. Failed saves and exports, and `--convert`, now give the reason as well as the path.
 
 - **A workbook with nothing to withhold opened formulas-only.** The web view loaded such a file under a formulas-only policy, so a PYTHON formula typed after opening a value-only PYTHON-mode file showed `#N/A`. A file with no code, no modules and no PYTHON formulas now loads trusted.
 
@@ -39,6 +43,10 @@
 - **An approximate lookup over data whose order changes the answer gives `#N/A` with a reason.** This applies to `MATCH` with `match_type` 1 or -1, and to `VLOOKUP`, `HLOOKUP` and `LOOKUP` with approximate match. Before, the scan stopped at the first value past the lookup: `=MATCH(3,{1,5,2})` gave 1, but `=MATCH(3,{5,1,4,2})` gave `#N/A`. Excel gives 2 for the second case, which is whatever its binary search lands on. Unsorted data whose values on the lookup's side all come first still answers, as Excel does. So `=MATCH(9.99E+307,A:A)` and `=LOOKUP(2,1/(cond),result)` keep working. A plain sortedness check would have broken both. The TUI status line, the web status bar and `--eval` show the reason, e.g. `MATCH: range is not sorted ascending around 3; use match_type 0 or XMATCH`. `IFNA` and `IFERROR` catch the error like any `#N/A`.
 
 - **miniz, pugixml and nowide are vendored.** OpenXLSX fetched them from GitHub at configure time, so the sdist did not build offline, and their licences were not shipped. They live under `thirdparty/` at the versions OpenXLSX pins. The build now ignores system copies and refuses any other fetch. See `THIRD-PARTY-NOTICES.md`.
+
+- **`scripts/excel_corpus.py` checks gridcalc against real workbooks.** It recalculates each `.xlsx` file and compares every formula cell with the value Excel saved, listing the mismatches whose inputs agree. See `docs/dev/excel-corpus.md`.
+
+- **CI lints `scripts/`.** `make lint` already checked it and CI did not, so `scripts/release_notes.py` failed only locally.
 
 - **CI build legs run the Python they name.** `uv` followed `.python-version`, so the 3.10 and 3.12 legs ran 3.14.
 

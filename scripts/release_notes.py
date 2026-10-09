@@ -22,10 +22,9 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Optional
 
 
-def extract_section(changelog_text: str, version: str) -> Optional[str]:
+def extract_section(changelog_text: str, version: str) -> str | None:
     """Return the body under `## [<version>]`, or None if the heading is absent.
 
     The body is everything between the matched heading and the next
@@ -55,8 +54,10 @@ def strip_blank_edges(text: str) -> str:
     return "\n".join(lines)
 
 
-def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Extract a CHANGELOG.md section into a release notes file.")
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Extract a CHANGELOG.md section into a release notes file."
+    )
     parser.add_argument(
         "version",
         help='Release version, e.g. "0.1.2"; must match a `## [<version>]` heading.',

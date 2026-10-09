@@ -145,7 +145,11 @@ Measurements for this section: `docs/dev/ironcalc.md`. Per-formula figures are f
 
 - [ ] **xlsx interop level (c) for HYBRID and PYTHON mode.** EXCEL mode round-trips formulas today: `Grid.xlsxsave` emits kind `'f'` with the formula text and a cached value, and `_core.xlsx_write` sets `cell.formula()`. The remaining gap is the other two modes, whose syntax (`**`, list comprehensions, `py.*`) is not Excel grammar -- they still export values. Closing it needs a serialiser from the gridcalc AST to Excel-grammar text, and is only worth it for the subset that has an Excel equivalent.
 
-- [ ] **xlsx shared formulas and constant cells.** Shared and array formulas import as their cached values, because OpenXLSX does not expose the shared formula's `si` and `ref` attributes. xlsx booleans import as `=TRUE`/`=FALSE` and error values as `=#N/A`-style formulas, because the engine has no boolean or error constant cell.
+- [ ] **xlsx constant cells.** xlsx booleans import as `=TRUE`/`=FALSE` and error values as `=#N/A`-style formulas, because the engine has no boolean or error constant cell.
+
+- [ ] **xlsx export writes newer functions without their `_xlfn.` prefix.** Import strips `_xlfn.`, `_xlws.` and `_xlpm.`; export adds none back. Excel then likely reads `=XLOOKUP(...)` from a gridcalc file as an unknown name (`#NAME?`), which `scripts/excel_check.py` works around with its own prefix table. Not yet checked in Excel. Needs the list of functions Excel stores prefixed.
+
+- [ ] **Shared formulas past a shifted whole-column reference.** `adjust_refs` shifts `A1`-style references but not `B:B` or `1:1`, so a shared formula that uses one keeps the master's columns in every cell.
 
 - [ ] **Migration tool `gridcalc migrate file.json`.** Attempts to upgrade a PYTHON-mode file to HYBRID by reparsing each formula with the EXCEL grammar and reporting the unparseable ones.
 

@@ -1042,8 +1042,96 @@ def _xlsx_read_cells(filename: str) -> tuple[list[str], list[tuple[Any, ...]], i
     """
     from gridcalc import _core
 
-    names, cells, fallbacks = _core.xlsx_read(filename)
-    return list(names), list(cells), int(fallbacks)
+    names, raw, fallbacks = _core.xlsx_read(filename)
+    cells = [(*t[:4], _strip_xl_prefixes(t[4]), *t[5:]) if t[3] == "f" else t for t in raw]
+    if not fallbacks:
+        return list(names), cells, 0
+    formulas, covered = _xlsx_read_formula_xml(filename)
+    out: list[tuple[Any, ...]] = []
+    for t in cells:
+        key = (t[0], t[1], t[2])
+        if key in covered:
+            continue  # inside an array formula's range: the anchor spills there
+        text = formulas.pop(key, None)
+        if text is not None and t[3] != "f":
+            t = (*t[:3], "f", text, *t[5:])
+            fallbacks -= 1
+        out.append(t)
+    # A formula whose saved value was empty reached no tuple above.
+    out += [(s, c, r, "f", text, "", 0, 0) for (s, c, r), text in formulas.items()]
+    return list(names), out, max(0, int(fallbacks) - len(formulas))
+
+
+# Excel stores a function newer than Excel 2007 as `_xlfn.NAME`, a few as
+# `_xlfn._xlws.NAME`, and a LAMBDA or LET parameter as `_xlpm.name`.
+_XL_PREFIX_RE = re.compile(r"\"(?:[^\"]|\"\")*\"|'(?:[^']|'')*'|_xl(?:fn|ws|pm)\.", re.IGNORECASE)
+
+
+def _strip_xl_prefixes(text: str) -> str:
+    """``text`` without Excel's file-format function prefixes, outside quotes."""
+    if "_xl" not in text and "_XL" not in text:
+        return text
+    return _XL_PREFIX_RE.sub(lambda m: m[0] if m[0][0] in "\"'" else "", text)
+
+
+def _xlsx_read_formula_xml(filename: str) -> tuple[dict[tuple[str, int, int], str], set[Any]]:
+    """Shared and array formulas, read from the sheet XML. Never raises.
+
+    OpenXLSX gives such a cell only its saved value. A shared formula's text
+    is stored once, on its first cell; each other cell holds that text with
+    relative references shifted by the offset. Returns ``{(sheet, col, row):
+    text}`` and the cells inside a multi-cell array formula other than its
+    top-left, where the formula spills.
+    """
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    formulas: dict[tuple[str, int, int], str] = {}
+    covered: set[tuple[str, int, int]] = set()
+    root = _xlsx_workbook_xml(filename)
+    if root is None:
+        return formulas, covered
+    try:
+        with zipfile.ZipFile(filename) as z:
+            for name, part in _xlsx_sheet_parts(z, root).items():
+                masters: dict[str, tuple[int, int, str]] = {}
+                shared: list[tuple[int, int, str]] = []
+                with z.open(part) as f:
+                    for _, el in ET.iterparse(f):  # noqa: S314 -- see _xlsx_workbook_xml
+                        if el.tag != f"{_XLSX_NS}c":
+                            continue
+                        fe = el.find(f"{_XLSX_NS}f")
+                        at = ref(el.get("r", ""))
+                        kind = None if fe is None else fe.get("t")
+                        if fe is None or at is None or kind not in ("shared", "array"):
+                            el.clear()
+                            continue
+                        _, c, r = at
+                        text = _strip_xl_prefixes(fe.text or "")
+                        if kind == "array":
+                            formulas[(name, c, r)] = "=" + text
+                            span = _parse_defined_ref(f"x!{fe.get('ref', '')}")
+                            if span is not None:
+                                _, c1, r1, c2, r2 = span
+                                covered |= {
+                                    (name, cc, rr)
+                                    for rr in range(r1, r2 + 1)
+                                    for cc in range(c1, c2 + 1)
+                                    if (cc, rr) != (c, r)
+                                }
+                        elif fe.text:
+                            masters[fe.get("si", "")] = (c, r, text)
+                            formulas[(name, c, r)] = "=" + text
+                        else:
+                            shared.append((c, r, fe.get("si", "")))
+                        el.clear()
+                for c, r, si in shared:
+                    if si in masters:
+                        mc, mr, text = masters[si]
+                        formulas[(name, c, r)] = adjust_refs("=" + text, c - mc, r - mr)
+    except (KeyError, zipfile.BadZipFile, OSError, ET.ParseError):
+        return {}, set()
+    return formulas, covered
 
 
 def _parse_defined_ref(text: str) -> tuple[str, int, int, int, int] | None:

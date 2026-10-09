@@ -290,17 +290,79 @@ class TestTableAndChart:
         assert isinstance(cell.val, float) and math.isnan(cell.val)
 
 
+def _with_sheet_data(tmp_path: Path, sheet_data: str) -> Grid:
+    """``shared_formulas.xlsx`` with its ``<sheetData>`` replaced, loaded."""
+    import re
+    import zipfile
+
+    src = XLSX / "shared_formulas.xlsx"
+    with zipfile.ZipFile(src) as z:
+        parts = {n: z.read(n) for n in z.namelist()}
+    sheet = "xl/worksheets/sheet1.xml"
+    xml = re.sub(r"<sheetData>.*</sheetData>", sheet_data, parts[sheet].decode(), flags=re.S)
+    parts[sheet] = xml.encode()
+    path = tmp_path / "book.xlsx"
+    with zipfile.ZipFile(path, "w") as z:
+        for k, v in parts.items():
+            z.writestr(k, v)
+    g = Grid()
+    assert g.xlsxload(str(path)) == 0
+    return g
+
+
 class TestSharedAndArrayFormulas:
-    def test_unreadable_formulas_fall_back_to_cached_values(self) -> None:
-        # OpenXLSX cannot return shared or array formula text; the load keeps
-        # each one's cached value and says so, rather than failing outright.
+    def test_shared_and_array_formulas_import_as_formulas(self) -> None:
+        # OpenXLSX gives only their saved values; the sheet XML holds the text.
         g = _load("shared_formulas.xlsx")
-        assert [g.cells[1][r].val for r in range(3)] == [2.0, 4.0, 6.0]  # B1:B3 shared
-        assert g.cells[2][0].val == 12.0  # C1 array
+        assert [g.cells[1][r].text for r in range(3)] == ["=A1*2", "=A2*2", "=A3*2"]
+        assert g.cells[2][0].text == "=SUM(A1:A3*2)"  # C1, a one-cell array formula
         assert g.cells[3][0].type == FORMULA and g.cells[3][0].text == "=SUM(A1:A3)"
-        assert g.load_warnings == [
-            "4 shared or array formulas were imported as their cached values"
-        ]
+        assert g.load_warnings == []
+        g.setcell(0, 0, "10")
+        assert [g.cells[1][r].val for r in range(3)] == [20.0, 4.0, 6.0]
+        assert g.cells[2][0].val == 30.0
+
+    def test_a_shared_formula_shifts_only_relative_references(self, tmp_path) -> None:
+        g = _with_sheet_data(
+            tmp_path,
+            '<sheetData><row r="1"><c r="B1"><f t="shared" ref="B1:C2" si="0">A1+$A$1+A$1</f>'
+            '<v>0</v></c><c r="C1"><f t="shared" si="0"/><v>0</v></c></row><row r="2">'
+            '<c r="B2"><f t="shared" si="0"/><v>0</v></c></row></sheetData>',
+        )
+        assert g.cells[2][0].text == "=B1+$A$1+B$1"
+        assert g.cells[1][1].text == "=A2+$A$1+A$1"
+
+    def test_a_multi_cell_array_formula_spills_from_its_anchor(self, tmp_path) -> None:
+        # Excel saves each cell of the range with its value; only A1 has the formula.
+        g = _with_sheet_data(
+            tmp_path,
+            '<sheetData><row r="1"><c r="A1"><f t="array" ref="A1:A3">SEQUENCE(3)</f><v>1</v>'
+            '</c></row><row r="2"><c r="A2"><v>2</v></c></row><row r="3"><c r="A3"><v>3</v>'
+            "</c></row></sheetData>",
+        )
+        assert g.cells[0][0].text == "=SEQUENCE(3)"
+        assert [g.cells[0][r].val for r in range(3)] == [1.0, 2.0, 3.0]
+        assert g.cells[0][1].type != FORMULA and g.cells[0][0].err is None  # no #SPILL!
+
+    def test_a_formula_with_no_saved_value_still_imports(self, tmp_path) -> None:
+        g = _with_sheet_data(
+            tmp_path,
+            '<sheetData><row r="1"><c r="A1"><v>1</v></c><c r="B1"><f t="shared" ref="B1:B2"'
+            ' si="0">A1&amp;""</f></c></row><row r="2"><c r="B2"><f t="shared" si="0"/></c>'
+            "</row></sheetData>",
+        )
+        assert g.cells[1][0].text == '=A1&""' and g.cells[1][1].text == '=A2&""'
+
+    def test_newer_function_prefixes_are_removed_outside_text(self, tmp_path) -> None:
+        g = _with_sheet_data(
+            tmp_path,
+            '<sheetData><row r="1"><c r="A1"><f>_xlfn.CONCAT("_xlfn.",1)</f><v>0</v></c>'
+            '<c r="B1"><f>_xlfn._xlws.FILTER({1;2;3},{1;0;1})</f><v>0</v></c>'
+            '<c r="C1"><f>_xlfn.LAMBDA(_xlpm.x,_xlpm.x+1)(2)</f><v>0</v></c></row></sheetData>',
+        )
+        assert g.cells[0][0].sval == "_xlfn.1"
+        assert g.cells[1][0].text == "=FILTER({1;2;3},{1;0;1})" and g.cells[1][0].val == 1.0
+        assert g.cells[2][0].val == 3.0
 
 
 class TestChartsheet:

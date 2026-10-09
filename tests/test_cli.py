@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -277,7 +278,10 @@ def test_convert_to_an_unwritable_path_is_a_usage_error(tmp_path) -> None:
     code, out, err = _run(EXCEL, "--convert", str(tmp_path / "missing-dir" / "o.json"))
     assert code == cli.EXIT_ERROR and not out
     assert "could not write" in err
-    assert "No such file or directory" in err  # the reason, not only the path
+    # The reason, not only the path. Its wording is the OS's, so provoke the same mkdir failure.
+    with pytest.raises(FileNotFoundError) as reason:
+        os.mkdir(tmp_path / "missing-dir" / "probe")
+    assert reason.value.strerror in err
 
 
 # --- save_workbook: the one save-by-extension path (cli, TUI :w) -------------

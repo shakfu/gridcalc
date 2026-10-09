@@ -64,9 +64,10 @@ _COMPARE_OPS = {EQ, NE, LT, GT, LE, GE}
 
 
 class _Parser:
-    def __init__(self, tokens: list[Token]) -> None:
+    def __init__(self, tokens: list[Token], pow_right: bool) -> None:
         self.tokens = tokens
         self.i = 0
+        self.pow_right = pow_right
 
     def _peek(self) -> Token:
         return self.tokens[self.i]
@@ -126,10 +127,14 @@ class _Parser:
 
     def _exponent(self) -> Node:
         node = self._unary()
-        if self._peek().kind == CARET:
+        if self.pow_right:
+            if self._peek().kind == CARET:
+                self._advance()
+                node = BinOp("^", node, self._exponent())
+            return node
+        while self._peek().kind == CARET:
             self._advance()
-            right = self._exponent()
-            node = BinOp("^", node, right)
+            node = BinOp("^", node, self._unary())
         return node
 
     def _unary(self) -> Node:
@@ -298,6 +303,11 @@ class _Parser:
         return args
 
 
-def parse(text: str) -> Node:
+def parse(text: str, *, pow_right: bool = False) -> Node:
+    """Parse formula ``text`` (no leading ``=``) into an AST.
+
+    ``^`` groups left to right, as in Excel: ``2^3^2`` is 64. ``pow_right``
+    groups it right to left, as Python's ``**`` does, for HYBRID mode.
+    """
     tokens = tokenize(text)
-    return _Parser(tokens).parse()
+    return _Parser(tokens, pow_right).parse()

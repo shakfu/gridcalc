@@ -36,8 +36,9 @@ from ..dates import (
     to_serial,
 )
 from ..engine import Vec, _is_ndarray, _scalar_or_error, _vec_per_elem
-from ..formula.errors import ExcelError
-from ..formula.evaluator import _to_string, sig15
+from ..formula.errors import ExcelError, explain, first_error
+from ..formula.evaluator import Reference, _to_string, number_text, sig15
+from ..formula.lexer import parse_number
 
 # -- Criteria parsing --
 
@@ -136,15 +137,24 @@ def _parse_criteria(criteria: Any) -> Any:
 
 
 class _NumCriterion:
-    """A numeric criterion. Only numbers match, compared at 15 significant digits."""
+    """A numeric criterion, compared at 15 significant digits.
 
-    __slots__ = ("op", "v")
+    Only numbers match, except that an equality criterion also matches text
+    that reads as its number: Excel counts a text "3" for `3` and `"3"`, but
+    not for `">1"` (`crit-1`..`crit-3` in docs/dev/excel-check.md).
+    """
+
+    __slots__ = ("op", "text", "v")
 
     def __init__(self, op: Callable[[float, float], bool], v: float) -> None:
         self.op = op
         self.v = sig15(float(v))
+        self.text = op is operator.eq
 
     def __call__(self, x: Any) -> bool:
+        if isinstance(x, str) and self.text:
+            n = parse_number(x.strip())
+            return n is not None and sig15(n) == self.v
         if isinstance(x, bool) or not isinstance(x, (int, float)):
             return False
         return bool(self.op(sig15(float(x)), self.v))
@@ -164,7 +174,12 @@ def _hits(pred: Any, rng: Vec) -> Iterable[bool]:
     """``pred`` over each element of ``rng``."""
     if isinstance(pred, _NumCriterion):
         op, v = pred.op, pred.v
-        return [r is not None and op(r, v) for r in rng.rounded()]
+        hits = [r is not None and op(r, v) for r in rng.rounded()]
+        if pred.text:
+            for i, x in enumerate(rng.data):
+                if type(x) is str:
+                    hits[i] = pred(x)
+        return hits
     return map(pred, rng.data)
 
 
@@ -455,15 +470,10 @@ def VLOOKUP(lookup: Any, table: Vec, col_idx: int, approx: Any = True) -> Any:
         return ExcelError.NA
 
     use_approx = bool(approx) if not isinstance(approx, str) else approx != "0"
-    best = -1
     if use_approx:
-        for i in range(n_rows):
-            c = _lookup_cmp(data[i * cols], lookup)
-            if c is None:
-                continue
-            if c > 0:
-                break
-            best = i
+        best = _approx_pos(data[0 : n_rows * cols : cols], lookup, 1, "VLOOKUP", _LOOKUP_HINT)
+        if isinstance(best, ExcelError):
+            return best
     else:
         best = _exact_pos(lookup, table, cols)
 
@@ -490,13 +500,10 @@ def HLOOKUP(lookup: Any, table: Vec, row_idx: int, approx: Any = True) -> Any:
     use_approx = bool(approx) if not isinstance(approx, str) else approx != "0"
     best = -1
     if use_approx:
-        for j in range(n_cols):
-            c = _lookup_cmp(data[j], lookup)
-            if c is None:
-                continue
-            if c > 0:
-                break
-            best = j
+        found = _approx_pos(data[:n_cols], lookup, 1, "HLOOKUP", _LOOKUP_HINT)
+        if isinstance(found, ExcelError):
+            return found
+        best = found
     else:
         for j in range(n_cols):
             if _exact_match(lookup, data[j]):
@@ -563,14 +570,9 @@ def MATCH(lookup: Any, rng: Vec, match_type: int = 1) -> int | ExcelError:
     if mt == 0:
         pos = _exact_pos(lookup, rng)
         return pos + 1 if pos >= 0 else ExcelError.NA
-    best = -1
-    for i, v in enumerate(data):
-        c = _lookup_cmp(v, lookup)
-        if c is None:
-            continue
-        if c * mt > 0:
-            break
-        best = i
+    best = _approx_pos(data, lookup, mt, "MATCH", "use match_type 0 or XMATCH")
+    if isinstance(best, ExcelError):
+        return best
     return best + 1 if best >= 0 else ExcelError.NA
 
 
@@ -1773,20 +1775,28 @@ def COLUMN(env: Any, *args: Any) -> int | ExcelError:
     return ref.c1 + 1 if ref is not None else ExcelError.VALUE
 
 
-def ROWS(env: Any, *args: Any) -> int | ExcelError:
-    """=ROWS(A1:B10) -> 10. =ROWS(A1) -> 1. =ROWS(OFFSET(A1,0,0,5,1)) -> 5."""
+def _ref_shape(env: Any, args: tuple[Any, ...]) -> tuple[int, int] | ExcelError:
+    """(rows, cols) of the one reference or array in ``args``; a scalar is 1x1."""
     if len(args) != 1:
         return ExcelError.VALUE
-    ref = env.resolve_ref(args[0])
-    return ref.r2 - ref.r1 + 1 if ref is not None else ExcelError.VALUE
+    v = env.ref_or_value(args[0])
+    if isinstance(v, Reference):
+        return v.r2 - v.r1 + 1, v.c2 - v.c1 + 1
+    if isinstance(v, ExcelError):
+        return v
+    return v.shape if isinstance(v, Vec) else (1, 1)
+
+
+def ROWS(env: Any, *args: Any) -> int | ExcelError:
+    """=ROWS(A1:B10) -> 10. =ROWS(OFFSET(A1,0,0,5,1)) -> 5. =ROWS(FILTER(...)) counts rows."""
+    shape = _ref_shape(env, args)
+    return shape if isinstance(shape, ExcelError) else shape[0]
 
 
 def COLUMNS(env: Any, *args: Any) -> int | ExcelError:
-    """=COLUMNS(A1:C10) -> 3. =COLUMNS(A1) -> 1."""
-    if len(args) != 1:
-        return ExcelError.VALUE
-    ref = env.resolve_ref(args[0])
-    return ref.c2 - ref.c1 + 1 if ref is not None else ExcelError.VALUE
+    """=COLUMNS(A1:C10) -> 3. =COLUMNS({1,2,3}) -> 3."""
+    shape = _ref_shape(env, args)
+    return shape if isinstance(shape, ExcelError) else shape[1]
 
 
 def _offset_int(v: Any) -> int | ExcelError:
@@ -1886,6 +1896,35 @@ def _lookup_cmp(a: Any, b: Any) -> int | None:
     return None
 
 
+_LOOKUP_HINT = "use an exact match or XLOOKUP"
+
+
+def _approx_pos(
+    values: Iterable[Any], lookup: Any, mt: int, name: str, hint: str
+) -> int | ExcelError:
+    """Index of the last value on ``lookup``'s side of the order, or -1.
+
+    ``mt`` 1 takes values <= ``lookup``, -1 values >= it. When those values
+    are all first, this is what Excel's binary search returns. When they are
+    not, Excel's answer depends on where its search probes, so give #N/A.
+    """
+    best = -1
+    passed = False  # a comparable value on the far side has been seen
+    for i, v in enumerate(values):
+        c = _lookup_cmp(v, lookup)
+        if c is None:
+            continue
+        if c * mt > 0:
+            passed = True
+        elif passed:
+            order = "ascending" if mt > 0 else "descending"
+            why = f"{name}: range is not sorted {order} around {_text(lookup)}; {hint}"
+            return explain(ExcelError.NA, why)
+        else:
+            best = i
+    return best
+
+
 def LOOKUP(lookup_value: Any, lookup_vector: Any, result_vector: Any = None) -> Any:
     """=LOOKUP(lookup_value, lookup_vector, [result_vector]). Legacy lookup.
 
@@ -1912,15 +1951,9 @@ def LOOKUP(lookup_value: Any, lookup_vector: Any, result_vector: Any = None) -> 
             result = list(result_vector.data)
         else:
             result = [result_vector]
-    best = -1
-    for i, v in enumerate(search):
-        c = _lookup_cmp(v, lookup_value)
-        if c is None:
-            continue
-        if c <= 0:
-            best = i
-        else:
-            break
+    best = _approx_pos(search, lookup_value, 1, "LOOKUP", "use XLOOKUP")
+    if isinstance(best, ExcelError):
+        return best
     if best < 0 or best >= len(result):
         return ExcelError.NA
     return result[best]
@@ -2336,16 +2369,17 @@ def ISNONTEXT(x: Any) -> bool:
     return not isinstance(x, str)
 
 
-def ISFORMULA(env: Any, *args: Any) -> bool | ExcelError:
-    """Raw-args. True if the referenced cell holds a formula."""
-    from ..formula.ast_nodes import CellRef as _CellRef
-
-    if len(args) != 1:
+def ISFORMULA(env: Any, *args: Any) -> bool | Vec | ExcelError:
+    """Raw-args. True if the referenced cell holds a formula; per cell over a range."""
+    ref = env.resolve_ref(args[0]) if len(args) == 1 else None
+    if ref is None:
         return ExcelError.VALUE
-    a = args[0]
-    if isinstance(a, _CellRef):
-        return bool(env.cell_is_formula(a.col, a.row))
-    return ExcelError.VALUE
+    out = [
+        bool(env.cell_is_formula(c, r, ref.sheet))
+        for r in range(ref.r1, ref.r2 + 1)
+        for c in range(ref.c1, ref.c2 + 1)
+    ]
+    return out[0] if len(out) == 1 else Vec(out, cols=ref.c2 - ref.c1 + 1)
 
 
 def ISREF(env: Any, *args: Any) -> bool:
@@ -4605,7 +4639,16 @@ def _row_matches_criteria(
 
 
 def _d_collect(database: Vec, field: Any, criteria: Vec) -> list[Any] | ExcelError:
-    """Return the field values from rows passing the criteria."""
+    """Return the field values from rows passing the criteria.
+
+    An error in a row the criteria do not match is skipped, as in Excel
+    (`db-1`, `db-2` in docs/dev/excel-check.md). One in the header, the
+    criteria, or a matched row's field propagates.
+    """
+    cols = database.cols or 0
+    err = first_error(*database.data[:cols], *criteria.data)
+    if err:
+        return err
     db = _vec_table(database)
     if isinstance(db, ExcelError):
         return db
@@ -4617,11 +4660,12 @@ def _d_collect(database: Vec, field: Any, criteria: Vec) -> list[Any] | ExcelErr
     field_idx = _resolve_field(db_header, field)
     if isinstance(field_idx, ExcelError):
         return field_idx
-    return [
+    vals = [
         row[field_idx]
         for row in db_body
         if _row_matches_criteria(row, db_header, crit_header, crit_body)
     ]
+    return first_error(*vals) or vals
 
 
 def _d_numerics(database: Vec, field: Any, criteria: Vec) -> list[float] | ExcelError:
@@ -5142,11 +5186,8 @@ def DECIMAL(text: str, radix: int) -> int | ExcelError:
 
 
 def _fmt_num(x: float) -> str:
-    """Excel-style number formatting: integers lose the decimal, otherwise
-    up to 15 significant digits. Normalises -0.0 to 0."""
-    if x == 0:
-        x = 0.0
-    return f"{x:.15g}"
+    """A complex part as Excel writes it: :func:`number_text`."""
+    return number_text(x)
 
 
 def _fmt_complex(z: complex, suffix: str = "i") -> str:

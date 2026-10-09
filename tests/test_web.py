@@ -877,6 +877,19 @@ def test_stats_over_an_empty_selection_has_no_aggregates() -> None:
     assert s["min"] is None and s["max"] is None
 
 
+def test_stats_says_why_a_selected_cell_shows_its_error() -> None:
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    g.setcell(0, 0, "=MATCH(3,{5,1,4,2},1)")
+    g.setcell(1, 0, "=1/0")  # an error with no reason
+    api = Api(g)
+    assert api.stats(0, 0, 0, 0)["message"].startswith("MATCH: range is not sorted")
+    assert api.stats(0, 1, 0, 1)["message"] is None
+    assert api.stats(0, 0, 0, 1)["message"] is None  # only a one-cell selection
+    assert api.stats(-3, -3, -3, -3)["message"] is None  # off the sheet
+
+
 def test_stats_normalizes_reversed_corners_and_clamps() -> None:
     g = _grid()
     g.setcell(0, 0, "3")

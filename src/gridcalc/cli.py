@@ -312,10 +312,12 @@ def run_eval(g: Grid, formulas: list[str]) -> list[dict[str, Any]]:
                 "text": cell_text(cl) if cl is not None else "",
                 "value": None,
                 "error": None,
+                "message": None,
             }
             if cl is not None:
                 if cl.err is not None:
                     entry["error"] = str(cl.err)
+                    entry["message"] = cl.err_msg
                 elif isinstance(cl.val, float) and math.isnan(cl.val):
                     entry["error"] = "ERROR"
                 else:
@@ -419,7 +421,11 @@ def _text_goal(d: dict[str, Any]) -> list[str]:
 
 
 def _text_eval(entries: list[dict[str, Any]]) -> list[str]:
-    return [f"{e['formula']}  ->  {e['error'] or e['text']}" for e in entries]
+    return [
+        f"{e['formula']}  ->  {e['error'] or e['text']}"
+        + (f"  ({e['message']})" if e["message"] else "")
+        for e in entries
+    ]
 
 
 def render_text(result: dict[str, Any]) -> str:

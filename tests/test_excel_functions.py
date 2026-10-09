@@ -340,6 +340,216 @@ class TestApproximateLookupCase:
         assert ev('=MATCH("b", A1:A3, 1)', LOOKUP_CELLS) == 2.0
 
 
+def _lookup_cell(formula: str) -> Any:
+    """The cell `formula` lands in, with data 5,1,4,2 in A1:A4."""
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    for r, v in enumerate((5, 1, 4, 2)):
+        g.setcell(0, r, repr(v))
+    g.setcell(25, 99, formula)
+    return g, g.cells[25][99]
+
+
+class TestNumberToText:
+    """Excel's results from `text-1`..`text-8` in `docs/dev/excel-check.md`."""
+
+    @pytest.mark.parametrize(
+        ("formula", "expected"),
+        [
+            ('=0.00001&""', "0.00001"),
+            ('=1E-10&""', "0.0000000001"),
+            ('=-0.0000123&""', "-0.0000123"),
+            ('=1/3&""', "0.333333333333333"),
+            ('=(0.1+0.2)&""', "0.3"),
+            ('=123456789012&""', "123456789012"),
+            ('=1E+20&""', "1E+20"),
+            ("=CONCAT(-2.5, 0, 100)", "-2.50100"),
+            ('=TEXTJOIN(",", TRUE, 1.5E+20, 1E-5)', "1.5E+20,0.00001"),
+        ],
+    )
+    def test_confirmed_in_excel(self, formula: str, expected: str) -> None:
+        assert ev(formula) == expected
+
+    def test_complex_parts_use_the_same_form(self) -> None:
+        # `misc-2`: Excel writes the residue as 1.22464679914735E-16.
+        assert ev("=COMPLEX(1.22464679914735E-16, 2)") == "1.22464679914735E-16+2i"
+
+
+# B3 is the text "3"; G3 is #N/A in a row the criteria H1:H2 do not match.
+CRITERIA_CELLS = {
+    "A1": 5,
+    "A3": 7,
+    "A4": -2.5,
+    "B1": 1,
+    "B2": 2,
+    "B3": '"3',  # `"` marks a label: the text "3"
+    "C1": 10,
+    "C2": 20,
+    "C3": 30,
+    "C4": 40,
+    "F1": "Name",
+    "G1": "Val",
+    "F2": "x",
+    "G2": 1,
+    "F3": "y",
+    "G3": "=NA()",
+    "F4": "x",
+    "G4": 3,
+    "H1": "Name",
+    "H2": "x",
+}
+
+
+class TestCriteriaAgainstExcel:
+    """Excel's results from `crit-*` and `db-*` in `docs/dev/excel-check.md`."""
+
+    @pytest.mark.parametrize(
+        ("formula", "expected"),
+        [
+            ("=COUNTIF(B1:B3, 3)", 1.0),  # the text "3" counts for equality
+            ('=COUNTIF(B1:B3, "3")', 1.0),
+            ('=COUNTIF(B1:B3, ">1")', 1.0),  # but not for a comparison
+            ("=COUNTIFS(B1:B3, 3)", 1.0),
+            ('=SUMIF(C1:C4, ">15", A1:A2)', 4.5),  # sums A2:A4
+            ('=AVERAGEIF(C1:C4, ">15", A1)', 2.25),
+            ('=DSUM(F1:G4, "Val", H1:H2)', 4.0),
+            ('=DCOUNT(F1:G4, "Val", H1:H2)', 2.0),
+        ],
+    )
+    def test_matches_excel(self, formula: str, expected: Any) -> None:
+        assert ev(formula, CRITERIA_CELLS) == expected
+
+    def test_an_error_in_a_matched_row_still_propagates(self) -> None:
+        cells = {**CRITERIA_CELLS, "H2": "y"}
+        assert ev('=DSUM(F1:G4, "Val", H1:H2)', cells) is ExcelError.NA
+
+    def test_a_resized_sum_range_tracks_the_cells_it_reads(self) -> None:
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        for r, v in enumerate((10, 20, 30, 40)):
+            g.setcell(2, r, repr(v))
+        g.setcell(5, 0, '=SUMIF(C1:C4, ">15", A1:A2)')
+        g.setcell(0, 3, "100")  # A4: outside the written sum range
+        assert g.cells[5][0].val == 100.0
+
+
+class TestReferenceFunctionsOverArrays:
+    """`arr-1` and `arr-3` in `docs/dev/excel-check.md`."""
+
+    @pytest.mark.parametrize(
+        ("formula", "expected"),
+        [
+            ("=ROWS(FILTER(C1:C4, C1:C4>15))", 3.0),
+            ("=ROWS({1,2;3,4})", 2.0),
+            ("=COLUMNS({1,2,3})", 3.0),
+            ("=LET(x, SEQUENCE(3), ROWS(x))", 3.0),
+            ("=ROWS(5)", 1.0),
+            ("=ROWS(1/0)", ExcelError.DIV0),
+            ('=TEXTJOIN(",", FALSE, ISFORMULA(G1:G3))', "FALSE,FALSE,TRUE"),
+        ],
+    )
+    def test_value(self, formula: str, expected: Any) -> None:
+        assert ev(formula, CRITERIA_CELLS) == expected
+
+    def test_rows_of_a_filter_follows_its_data(self) -> None:
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        for r, v in enumerate((10, 20, 30, 40)):
+            g.setcell(2, r, repr(v))
+        g.setcell(5, 0, "=ROWS(FILTER(C1:C4, C1:C4>15))")
+        g.setcell(2, 0, "99")
+        assert g.cells[5][0].val == 4.0
+
+    def test_isformula_reads_the_named_sheet(self) -> None:
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.add_sheet("S2")
+        g.active = 1
+        g.setcell(0, 0, "=1")
+        g.active = 0
+        g.setcell(0, 0, "1")
+        g.setcell(1, 0, "=ISFORMULA(S2!A1)")
+        assert g.cells[1][0].sval == "TRUE"
+
+
+class TestBlankArguments:
+    """A blank reads as 0 for a number parameter, FALSE for a bool (`blank-*`, `lift-2`)."""
+
+    @pytest.mark.parametrize(
+        ("formula", "expected"),
+        [
+            ("=ROUND(2.5,)", 3.0),
+            ("=ROUND(2.5, Z9)", 3.0),  # Z9 is empty
+            ('=LEFT("abc",)', ""),
+            ('=SUBSTITUTE("abc", "b",)', "ac"),  # a text parameter keeps "", not "0"
+            ('=TEXTJOIN(",", FALSE, ROUND(A1:A4, 0))', "1,2,3,0"),  # A4 is empty
+            ("=EXP(Z9)", 1.0),  # a bare `math` builtin
+            ('=EXP("2")', approx(math.exp(2))),
+            ("=LN(Z9)", ExcelError.NUM),  # LN(0)
+            ('=MID("abc",, 2)', ExcelError.VALUE),  # start 0
+        ],
+    )
+    def test_blank(self, formula: str, expected: Any) -> None:
+        assert ev(formula) == expected
+
+    def test_an_optional_parameter_keeps_its_default(self) -> None:
+        # `places: int | None`: a blank means omitted, not 0 places. Not checked in Excel.
+        assert ev("=DEC2BIN(5,)") == "101"
+
+
+class TestUnsortedApproximateLookup:
+    """Excel's answer here depends on where its binary search probes (`misc-5`)."""
+
+    @pytest.mark.parametrize(
+        ("formula", "fn"),
+        [
+            ("=MATCH(3, A1:A4, 1)", "MATCH"),
+            ("=MATCH(3, {1,5,2})", "MATCH"),
+            ("=MATCH(3, {1,2,4}, -1)", "MATCH"),
+            ('=MATCH("b", {"a","c","b"})', "MATCH"),
+            ("=VLOOKUP(3, {1,10;5,50;2,20}, 2)", "VLOOKUP"),
+            ("=HLOOKUP(3, {1,5,2;10,50,20}, 2)", "HLOOKUP"),
+            ("=LOOKUP(3, A1:A4)", "LOOKUP"),
+        ],
+    )
+    def test_order_dependent_answer_is_na_with_reason(self, formula: str, fn: str) -> None:
+        _, cell = _lookup_cell(formula)
+        assert cell.err is ExcelError.NA
+        assert cell.err_msg is not None
+        assert cell.err_msg.startswith(f"{fn}: range is not sorted")
+
+    @pytest.mark.parametrize(
+        ("formula", "expected"),
+        [
+            ("=MATCH(9.99E+307, A1:A4)", 4.0),  # last number
+            ("=LOOKUP(2, 1/({1,0,1,0}), {10,20,30,40})", 30.0),  # last match
+            ("=MATCH(0, A1:A4)", ExcelError.NA),  # nothing <= 0: not found
+            ("=MATCH(3, {5,4,1}, -1)", 2.0),
+        ],
+    )
+    def test_unsorted_data_with_one_answer_still_answers(self, formula: str, expected: Any) -> None:
+        _, cell = _lookup_cell(formula)
+        assert (cell.err or cell.val) == expected
+        assert cell.err_msg is None
+
+    def test_a_caught_error_leaves_no_reason(self) -> None:
+        _, cell = _lookup_cell('=IFNA(MATCH(3, A1:A4, 1), "none")')
+        assert cell.sval == "none"
+        assert cell.err_msg is None
+
+    def test_sorting_the_data_clears_the_reason(self) -> None:
+        g, cell = _lookup_cell("=MATCH(3, A1:A4, 1)")
+        for r, v in enumerate((1, 2, 4, 5)):
+            g.setcell(0, r, repr(v))
+        g.recalc()
+        assert cell.val == 2.0
+        assert cell.err is None and cell.err_msg is None
+
+
 class TestEdgeCases:
     """L12."""
 

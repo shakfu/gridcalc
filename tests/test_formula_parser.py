@@ -146,9 +146,14 @@ class TestParseOperators:
         n = parse("(1+2)*3")
         assert n == BinOp("*", BinOp("+", Number(1.0), Number(2.0)), Number(3.0))
 
-    def test_exp_right_assoc(self):
-        # 2^3^2 -> 2^(3^2) -> 512 semantically
+    def test_exp_left_assoc(self):
+        # 2^3^2 -> (2^3)^2, as in Excel
         n = parse("2^3^2")
+        assert n == BinOp("^", BinOp("^", Number(2.0), Number(3.0)), Number(2.0))
+
+    def test_exp_right_assoc_on_request(self):
+        # 2^3^2 -> 2^(3^2), as Python's ** groups
+        n = parse("2^3^2", pow_right=True)
         assert n == BinOp("^", Number(2.0), BinOp("^", Number(3.0), Number(2.0)))
 
     def test_unary_minus(self):

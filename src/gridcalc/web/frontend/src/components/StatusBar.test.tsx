@@ -46,6 +46,28 @@ test('a selection with no numbers shows no aggregates', async () => {
   await waitFor(() => expect(screen.queryByText(/^sum /)).not.toBeInTheDocument())
 })
 
+test('shows why the selected cell holds an error', async () => {
+  const reason = 'MATCH: range is not sorted ascending around 3; use match_type 0 or XMATCH'
+  vi.spyOn(window.pywebview!.api, 'stats').mockResolvedValue({
+    message: reason,
+    count: 1,
+    numeric: 0,
+    sum: null,
+    avg: null,
+    min: null,
+    max: null,
+  })
+  renderBar({ selection: { r0: 0, c0: 0, r1: 0, c1: 0, ref: 'A1', active: 'A1' } })
+  const shown = await screen.findByText(reason)
+  expect(shown).toHaveAttribute('title', reason) // the full text when truncated
+})
+
+test('a cell without an error message shows none', async () => {
+  renderBar({ selection: QTY })
+  await screen.findByText('sum 21')
+  expect(document.querySelector('.status-reason')).toBeNull()
+})
+
 test('an error is announced, not just coloured', () => {
   renderBar({ status: 'engine exploded', statusKind: 'error' })
   const msg = screen.getByRole('status')

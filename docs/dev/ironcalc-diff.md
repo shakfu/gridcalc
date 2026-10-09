@@ -2,7 +2,7 @@
 
 Status: **triaged, 2026-09-28.** Crash and semantic fixes shipped (CHANGELOG, Unreleased); two gridcalc items remain open.
 
-`scripts/diff_ironcalc.py` evaluates the same formulas in both engines. Neither is ground truth. A disagreement marks a candidate bug; the verdicts below come from Excel's documented behaviour, or are marked *(inference)* where that is not established. No verdict was checked in Excel itself.
+`scripts/diff_ironcalc.py` evaluates the same formulas in both engines. Neither is ground truth. A disagreement marks a candidate bug; the verdicts below come from Excel's documented behaviour, or are marked *(inference)* where that is not established. `excel-check.md` records the verdicts since checked in Excel.
 
 ## Corpus
 
@@ -56,8 +56,7 @@ The fixes exposed four latent gridcalc bugs, also fixed:
 
 ## gridcalc: still open
 
-- **`EOMONTH` into February 1900** gives 59; Excel likely gives 60, the phantom 1900-02-29 *(inference)*.
-- **`ISFORMULA(range)`** does not lift. It takes raw references, outside the lifting path.
+None.
 
 ## IronCalc: candidate upstream reports
 

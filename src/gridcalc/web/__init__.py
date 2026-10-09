@@ -316,7 +316,8 @@ class Api:
         ones and come back ``None`` when there are none. This is the
         selection-summary a spreadsheet shows in its status bar, computed
         engine-side so the client never has to re-derive values it only ever
-        received as formatted text.
+        received as formatted text. ``message`` is why a one-cell selection
+        shows its error (``Cell.err_msg``), else ``None``.
         """
         g = self._g
         ra, rb = sorted((int(r0), int(r1)))
@@ -336,7 +337,9 @@ class Api:
             total = math.fsum(nums) if nums else None
         except OverflowError:
             total = None  # the true sum is not a finite float
+        one = g.cell(ca, ra) if (ra, ca) == (rb, cb) else None
         return {
+            "message": one.err_msg if one is not None and one.err is not None else None,
             "count": count,
             "numeric": len(nums),
             "sum": total,

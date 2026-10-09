@@ -51,10 +51,21 @@ class TestExcelMode:
         g.setcell(0, 0, "=NOPE()")
         assert math.isnan(g.cells[0][0].val)
 
-    def test_pow_right_assoc(self):
+    def test_pow_groups_left_to_right(self):
         g = make_excel_grid()
         g.setcell(0, 0, "=2^3^2")
+        assert g.cells[0][0].val == 64.0
+
+    def test_mode_switch_regroups_pow(self):
+        # The AST cache is keyed by text, so a switch must drop it.
+        g = make_excel_grid()
+        g.setcell(0, 0, "=2^3^2")
+        g.mode = Mode.HYBRID
+        g.recalc()
         assert g.cells[0][0].val == 512.0
+        g.mode = Mode.EXCEL
+        g.recalc()
+        assert g.cells[0][0].val == 64.0
 
     def test_string_concat(self):
         g = make_excel_grid()
@@ -102,6 +113,11 @@ class TestHybridMode:
         g = make_hybrid_grid()
         g.setcell(0, 0, "=1+2")
         assert g.cells[0][0].val == 3.0
+
+    def test_pow_groups_right_to_left(self):
+        g = make_hybrid_grid()
+        g.setcell(0, 0, "=2^3^2")
+        assert g.cells[0][0].val == 512.0
 
     def test_py_call_unregistered_yields_nan(self):
         g = make_hybrid_grid()
@@ -696,6 +712,14 @@ class TestMetadataFormulasTrackTheirReference:
         assert extract_refs(parse("ROWS(A1:B10)")) == set()
         assert extract_refs(parse("ISREF(A1)")) == set()
         assert extract_refs(parse("ISFORMULA(A1)")) == {(None, 0, 0)}
+
+    def test_a_computed_argument_to_rows_is_a_dependency(self):
+        """`ROWS(FILTER(...))` reads the cells the array is built from."""
+        from gridcalc.formula import parse
+        from gridcalc.formula.deps import extract_refs
+
+        assert extract_refs(parse("ROWS(FILTER(A1:A2, A1:A2>0))")) == {(None, 0, 0), (None, 0, 1)}
+        assert extract_refs(parse("COLUMNS(B3#)")) == {(None, 1, 2)}
 
 
 def _xg():

@@ -425,6 +425,7 @@ export function installMockBridge(): void {
         }
         const sum = nums.length ? nums.reduce((a, b) => a + b, 0) : null
         return {
+          message: null,
           count,
           numeric: nums.length,
           sum,

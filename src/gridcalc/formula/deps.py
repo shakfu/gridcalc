@@ -73,6 +73,41 @@ ADDRESS_ONLY_FUNCS: frozenset[str] = frozenset(
 )
 
 
+# Excel sums or averages a range that starts at the sum range's top-left cell
+# and has the criteria range's dimensions, whatever the sum range's size.
+_RESIZED_SUM_RANGE = frozenset({"SUMIF", "AVERAGEIF"})
+
+
+def _corners(node: Node) -> tuple[CellRef, int, int, int, int] | None:
+    if type(node) is CellRef:
+        return node, node.col, node.row, node.col, node.row
+    if type(node) is RangeRef:
+        c1, c2 = sorted([node.start.col, node.end.col])
+        r1, r2 = sorted([node.start.row, node.end.row])
+        return node.start, c1, r1, c2, r2
+    return None
+
+
+def resize_sum_range(node: Call) -> Call:
+    """``node`` with a SUMIF/AVERAGEIF sum range resized to the criteria range's shape.
+
+    Only literal references resize; the evaluator and dependency extraction
+    both call this, so the cells read are the cells tracked.
+    """
+    if len(node.args) != 3 or node.name.upper() not in _RESIZED_SUM_RANGE:
+        return node
+    crit, total = _corners(node.args[0]), _corners(node.args[2])
+    if crit is None or total is None:
+        return node
+    _, c1, r1, c2, r2 = crit
+    ref, sc1, sr1, sc2, sr2 = total
+    if (sc2 - sc1, sr2 - sr1) == (c2 - c1, r2 - r1):
+        return node
+    start = CellRef(sc1, sr1, ref.abs_col, ref.abs_row, ref.sheet)
+    end = CellRef(sc1 + c2 - c1, sr1 + r2 - r1, ref.abs_col, ref.abs_row, ref.sheet)
+    return Call(node.name, (*node.args[:2], RangeRef(start, end)))
+
+
 def extract_refs(
     node: Node,
     named_ranges: dict[str, Node] | None = None,
@@ -149,9 +184,11 @@ def _walk(
         _walk(node.left, named, out, formula_sheet, collapse)
         _walk(node.right, named, out, formula_sheet, collapse)
     elif type(node) is Call:
-        # An address-only function uses its args as references, not for value.
-        if node.name.upper() not in ADDRESS_ONLY_FUNCS:
-            for a in node.args:
+        # An address-only function uses a reference argument for its address,
+        # not its value; any other argument (`ROWS(FILTER(...))`) is read.
+        address_only = node.name.upper() in ADDRESS_ONLY_FUNCS
+        for a in resize_sum_range(node).args:
+            if not (address_only and type(a) in (CellRef, RangeRef, Name)):
                 _walk(a, named, out, formula_sheet, collapse)
     elif type(node) is RangeRef:
         sheet = node.start.sheet if node.start.sheet is not None else formula_sheet

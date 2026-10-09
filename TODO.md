@@ -102,25 +102,19 @@ Measurements for this section: `docs/dev/ironcalc.md`. Per-formula figures are f
 
 - [ ] **`Cell.ast` cache invalidates by text equality.** For very large sheets where many formulas share text, hashing the text would cut cache lookups; not a priority but worth measuring.
 
-- [ ] **Numeric-vs-text criteria coercion.** `=COUNTIF({1,2,"3"},3)` gives 0. Confirm against Excel whether the text `"3"` counts.
+- [ ] **A typed number keeps more than 15 digits.** Excel keeps 15 significant digits of a number literal or a typed cell value and zeroes the rest, so `=12345678901234567&""` is `12345678901234500` (`text-7`). gridcalc keeps the double. `num-1` in `excel-check.xlsx` confirms the cause.
 
-- [ ] **A blank passed to a scalar parameter gives `#VALUE!`.** `=ROUND(2.5,Z9)` over an empty `Z9`, and an omitted argument such as `=ROUND(2.5,)` or `=LEFT("abc",)`. Excel reads the blank as 0 for a number and `""` for text. A generic fallback to 0 would turn `=SUBSTITUTE("abc","b",)` into `a0c`, so the coercion needs each parameter's type.
+- [ ] **Confirm what `"<>"` criteria count.** gridcalc counts only numbers for `"<>3"`; Excel may also count text and blanks (`crit-8`, `crit-9`). Also unconfirmed: whether a D-function propagates an error in a matched row, as gridcalc does (`db-3`, `db-4`).
 
-- [ ] **`SUMIF`/`COUNTIF` with a `sum_range` shorter than the criteria range.** Excel resizes from the top-left, which needs reference rather than materialised-`Vec` semantics -- now unblocked, since `OFFSET` brought the `Reference` type into the value system.
+- [ ] **Confirm where number-to-text switches to scientific form.** gridcalc uses plain decimals for exponents -10 to 19. Excel checked only at -10, 20 and -16 (`misc-2`). Cases `text-9`..`text-14` probe the rest.
 
-- [ ] **Array criteria.** `=SUMIF(A1:A3,{"a","b"},B1:B3)` answers 0. Excel applies each criterion and spills one sum per element.
+- [ ] **`YEARFRAC` bases 0 and 1.** Basis 0 misses the US 30/360 end-of-February rules: Feb 29 to Feb 28, and Feb 28 to Feb 29, each give 1 in Excel. Basis 1 averages year lengths for dates under a year apart; Excel uses 366 there when the span includes Feb 29 (`yf-2`, `yf-5`..`yf-7`). That rule is inferred from 4 cases; `yf-9`..`yf-20` test it and the 30/360 day rules.
 
-- [ ] **D-functions return an error from any row.** `DSUM`, `DCOUNT`, ... return an error from any row of the database, not only from matched rows. Microsoft does not document the rule.
-
-- [ ] **`=ROWS(FILTER(...))` answers `#VALUE!`.**
-
-- [ ] **Scalar functions do not map over a range.** `=LEN(A1:A3)`, `=UPPER(A1:A3)` and `=TEXT(A1:A3,"0")` stringify the whole `Vec` (`VEC[3X1]([5.0, NONE, 7.0])`). `=ROUND(A1:A3,0)`, `=EXP(A1:A3)` and `=MOD(A1:A3,2)` give `#VALUE!`. Excel applies each element-wise. `ABS`, `SQRT`, `INT` and `SIN` already do.
-
-- [ ] **Number-to-text uses `%g` notation.** 15 significant digits with `%g`, so `=0.00001&""` gives `1e-05`; Excel gives `0.00001`.
-
-- [ ] **`YEARFRAC` bases 0 and 1 across year boundaries.** Confirm against Excel before changing.
-
-- [ ] **Open decision: `^` associativity.** `=2^3^2` answers 512 (right-associative, chosen deliberately); Excel evaluates left to right and answers 64. Decide whether EXCEL mode follows Excel here, since the grammar is described as Excel-compatible.
+- [ ] **Excel disagreements found by `excel-check.xlsx`.** Each is a case id in `docs/dev/excel-check.md`.
+  - `FREQUENCY` with unsorted bins (`arr-2`): Excel gives `2,2,1`, gridcalc `4,0,1`.
+  - `TEXT(3,1)` (`misc-6`): Excel reads the number as the format code `"1"` and gives `"1"`.
+  - `OR`/`XOR` with a text literal (`misc-3`, `misc-4`): Excel gave `TRUE` inside an array formula. `misc-7` and `misc-8` check them as plain formulas.
+  - `IMSQRT("-4")` (`misc-2`): Excel gives `1.22464679914735E-16+2i`. Matching the residue is probably not worth it.
 
 - [ ] **`deps` over-approximates a shadowed named range.** When a `LET` name shadows a real named range the range stays recorded as a dep -- safe, just an occasional extra recalc; tighten only if it ever matters. (`LAMBDA`, the higher-order helpers, and true spill all shipped -- see CHANGELOG.)
 

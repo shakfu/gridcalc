@@ -50,6 +50,11 @@ export function StatusBar({
   return (
     <div className="statusbar">
       <span className="status-ref">{selection?.ref ?? ''}</span>
+      {stats?.message && (
+        <span className="status-reason" title={stats.message} aria-live="polite">
+          {stats.message}
+        </span>
+      )}
       {cells > 1 && <span className="status-dim">{cells} cells</span>}
       {stats && stats.numeric > 0 && (
         <>

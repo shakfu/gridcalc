@@ -10,6 +10,16 @@
 
 ### Fixed
 
+- **The web status bar says why the selected cell shows an error.** The TUI showed `Cell.err_msg` on its status line, but the web client never received it. `Api.stats` now returns it as `message` for a one-cell selection.
+
+- **`ROWS` and `COLUMNS` take arrays; `ISFORMULA` takes ranges.** `ROWS` and `COLUMNS` accepted only a reference, so `=ROWS(FILTER(...))`, `=ROWS({1,2;3,4})` and `=ROWS(x)` over a `LET` array gave `#VALUE!`. `ISFORMULA` accepted one cell and ignored its sheet prefix: `=ISFORMULA(S2!A1)` checked the current sheet. It now gives one result per cell of a range. A plain reference passed to `ROWS`, `COLUMNS`, `ROW`, `COLUMN`, `ISREF` or `AREAS` is still not a dependency, since only its address matters. Any other argument now is, so `=ROWS(FILTER(C1:C4,C1:C4>15))` recalculates when `C1:C4` changes.
+
+- **Criteria and database functions match Excel on three rules.** An equality criterion (`3`, `"3"`, `"=3"`) now also matches text that reads as that number; comparisons such as `">1"` still match only numbers. A `SUMIF` or `AVERAGEIF` sum range of another size is resized from its top-left cell to the criteria range's shape, as [Microsoft documents](https://support.microsoft.com/en-us/office/sumif-function-169b8c99-c05c-4483-a712-1697a653039b): `=SUMIF(C1:C4,">15",A1:A2)` sums over `A1:A4`, and editing `A4` recalculates it. The D-functions (`DSUM`, `DCOUNT`, ...) skip an error in a row the criteria do not match; one in a matched row's field still propagates. Only a literal sum range resizes, not one returned by `OFFSET` or `INDIRECT`.
+
+- **Numbers convert to text as in Excel.** `&`, `CONCAT`, `TEXTJOIN` and the `IM*` functions used `%g`, so `=0.00001&""` gave `1e-05`; Excel gives `0.00001`. Numbers now convert with 15 significant digits as plain decimals, and in scientific form (`1E+20`, `1.5E-11`) only for exponents of 20 and up or below -10. The lower edge is the smallest exponent checked in Excel, not a measured one; `excel-check.xlsx` now probes it.
+
+- **A blank argument reads as 0 or FALSE.** An empty cell or omitted argument reaching a number parameter gave `#VALUE!`: `=ROUND(2.5,)`, `=ROUND(2.5,Z9)`, `=LEFT("abc",)`, and `=ROUND(A1:A4,0)` over a range with a gap. It now reads as 0, or FALSE for a logical parameter, as in Excel. The conversion follows each parameter's type, so a text parameter still reads a blank as `""` and `=SUBSTITUTE("abc","b",)` stays `ac`. An optional parameter (`int | None`) still treats a blank as omitted. The `math` functions (`EXP`, `SIN`, ...) also convert numeric text now: `=EXP("2")` gave `#VALUE!`.
+
 - **TUI `:o` opens xlsx and CSV files.** It parsed every file as JSON, and so did a file named at startup unless it ended in `.xlsx`. Both now use `loader.load_into`, which picks the reader by extension.
 
 - **Load warnings and I/O errors are shown.** The TUI reports cells dropped beyond the grid and shared formulas imported as values, after `:o`, `:xlsx load` and at startup. The web client shows the `warnings` that `open_file` returns. Failed saves and exports, and `--convert`, now give the reason as well as the path.
@@ -23,6 +33,10 @@
 - **Row and column edits missed sheet qualifiers in another case.** Inserting or deleting a row on `Sheet1` left `=sheet1!A3` unshifted, although it resolves to `Sheet1`.
 
 ### Changed
+
+- **`^` groups left to right in EXCEL mode.** `=2^3^2` is now 64, as in Excel, where it was 512. EXCEL-mode files with chained `^` recalculate to different values. HYBRID mode keeps right-to-left grouping, as Python's `**` does. PYTHON mode is unchanged, since Python itself evaluates its formulas. `-2^2` is still 4 in both modes: negation binds tighter than `^`, as in Excel.
+
+- **An approximate lookup over data whose order changes the answer gives `#N/A` with a reason.** This applies to `MATCH` with `match_type` 1 or -1, and to `VLOOKUP`, `HLOOKUP` and `LOOKUP` with approximate match. Before, the scan stopped at the first value past the lookup: `=MATCH(3,{1,5,2})` gave 1, but `=MATCH(3,{5,1,4,2})` gave `#N/A`. Excel gives 2 for the second case, which is whatever its binary search lands on. Unsorted data whose values on the lookup's side all come first still answers, as Excel does. So `=MATCH(9.99E+307,A:A)` and `=LOOKUP(2,1/(cond),result)` keep working. A plain sortedness check would have broken both. The TUI status line, the web status bar and `--eval` show the reason, e.g. `MATCH: range is not sorted ascending around 3; use match_type 0 or XMATCH`. `IFNA` and `IFERROR` catch the error like any `#N/A`.
 
 - **miniz, pugixml and nowide are vendored.** OpenXLSX fetched them from GitHub at configure time, so the sdist did not build offline, and their licences were not shipped. They live under `thirdparty/` at the versions OpenXLSX pins. The build now ignores system copies and refuses any other fetch. See `THIRD-PARTY-NOTICES.md`.
 

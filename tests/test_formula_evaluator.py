@@ -73,9 +73,14 @@ class TestArithmetic:
     def test_pow(self):
         assert ev("2^10") == 1024.0
 
-    def test_pow_right_assoc(self):
-        # 2^3^2 = 2^(3^2) = 2^9 = 512
-        assert ev("2^3^2") == 512.0
+    def test_pow_groups_left_to_right(self):
+        # Excel: (2^3)^2 = 64
+        assert ev("2^3^2") == 64.0
+        assert ev("2^-3^2") == 2.0**-6
+
+    def test_pow_right_groups_right_to_left(self):
+        # Python's **: 2^(3^2) = 512
+        assert evaluate(parse("2^3^2", pow_right=True), make_env()) == 512.0
 
     def test_pow_negative_root(self):
         # (-1)^0.5 -> #NUM!

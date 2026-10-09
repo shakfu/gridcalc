@@ -33,8 +33,10 @@ export interface OkResult {
 
 // Selection summary for the status bar. `count` includes labels; the
 // aggregates cover only the numeric cells and are null when there are none,
-// or (sum and avg) when the sum overflows.
+// or (sum and avg) when the sum overflows. `message` says why a one-cell
+// selection shows an error, and is null otherwise.
 export interface Stats {
+  message: string | null
   count: number
   numeric: number
   sum: number | null

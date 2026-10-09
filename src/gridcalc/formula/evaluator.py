@@ -27,6 +27,7 @@ from .ast_nodes import (
     String,
     UnaryOp,
 )
+from .deps import resize_sum_range
 from .errors import ExcelError, first_error
 from .lexer import parse_number
 
@@ -166,6 +167,14 @@ class Env:
             return v if isinstance(v, Reference) else None
         return None
 
+    def ref_or_value(self, node: Node) -> Any:
+        """``node`` as a Reference when it is one, else its value. Evaluates once."""
+        if isinstance(node, (CellRef, RangeRef, Name)):
+            ref = self.resolve_ref(node)
+            if ref is not None:
+                return ref
+        return _eval(node, self)
+
 
 class LambdaValue:
     """A first-class function produced by ``LAMBDA(param..., body)``.
@@ -261,6 +270,31 @@ def _to_number_or_zero(v: object) -> float | ExcelError:
     return 0.0
 
 
+# Exponents outside [-10, 20) are written in scientific form. Excel gives
+# 1E-10 as "0.0000000001" and 1E+20 as "1E+20" (docs/dev/excel-check.md);
+# the lower bound is the smallest exponent checked, not a measured edge.
+_DECIMAL_EXP = range(-10, 20)
+
+
+def number_text(v: float) -> str:
+    """``v`` as Excel converts a number to text: 15 significant digits."""
+    if v == 0:
+        return "0"
+    if not math.isfinite(v):
+        return format(v, ".15g")
+    mant, exp = format(v, ".14e").split("e")
+    e = int(exp)
+    digits = mant.lstrip("-").replace(".", "").rstrip("0")
+    sign = "-" if v < 0 else ""
+    if e not in _DECIMAL_EXP:
+        frac = f".{digits[1:]}" if len(digits) > 1 else ""
+        return f"{sign}{digits[0]}{frac}E{'-' if e < 0 else '+'}{abs(e):02d}"
+    if e < 0:
+        return f"{sign}0.{'0' * (-e - 1)}{digits}"
+    whole, frac = digits[: e + 1].ljust(e + 1, "0"), digits[e + 1 :]
+    return f"{sign}{whole}.{frac}" if frac else sign + whole
+
+
 def _to_string(v: object) -> str | ExcelError:
     if isinstance(v, ExcelError):
         return v
@@ -269,8 +303,7 @@ def _to_string(v: object) -> str | ExcelError:
     if isinstance(v, bool):
         return "TRUE" if v else "FALSE"
     if isinstance(v, float):
-        # Excel converts with 15 significant digits: `=0.1+0.2&""` is "0.3".
-        return "0" if v == 0 else format(v, ".15g")
+        return number_text(v)
     if isinstance(v, int):
         return str(v)
     if isinstance(v, str):
@@ -673,6 +706,19 @@ _ARRAY_ERROR_TOLERANT_FUNCS = frozenset(
         "bycol",
         "reduce",
         "scan",
+        # The D-functions skip an error in a row the criteria do not match.
+        "daverage",
+        "dcount",
+        "dcounta",
+        "dget",
+        "dmax",
+        "dmin",
+        "dproduct",
+        "dstdev",
+        "dstdevp",
+        "dsum",
+        "dvar",
+        "dvarp",
     }
 )
 
@@ -773,13 +819,17 @@ _NO_LIFT_FUNCS = frozenset({"type", "index", "textjoin", "fsum"})
 # raise ValueError, which `_call_value` reports as #NUM!, and any non-empty
 # text is truthy.
 _NUMERIC_ANNOTATIONS = frozenset({"float", "int", "float | None", "int | None"})
+# A blank (empty cell or omitted argument) reaching a number parameter reads as
+# 0 and a bool one as FALSE, as in Excel. `X | None` keeps it: there None means
+# omitted, and the function picks the default.
+_BLANK = {"num": 0.0, "bool": False}
 _param_cache: dict[Any, tuple[tuple[bool, ...], tuple[str, ...]]] = {}
 
 
 def _coercion(annotation: str) -> str:
-    """How text reaching a parameter converts: "num", "bool", or "" (as is)."""
+    """How text reaching a parameter converts: "num", "num?" (optional), "bool", or "" (as is)."""
     if annotation in _NUMERIC_ANNOTATIONS:
-        return "num"
+        return "num?" if annotation.endswith("None") else "num"
     return "bool" if annotation == "bool" else ""
 
 
@@ -796,8 +846,10 @@ def _param_info(name: str, fn: Any) -> tuple[tuple[bool, ...], tuple[str, ...]]:
     except (TypeError, ValueError):
         sig = None
     if sig is not None:
+        # An unannotated C builtin is a `math` function, which takes numbers.
+        bare = "num" if inspect.isbuiltin(fn) and name not in _NO_LIFT_FUNCS else ""
         numeric = tuple(
-            _coercion(str(p.annotation).strip("'"))
+            bare if p.annotation is p.empty else _coercion(str(p.annotation).strip("'"))
             for p in sig.parameters.values()
             if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
         )
@@ -1103,6 +1155,8 @@ def _eval_call(node: Call, env: Env) -> Any:
             return ExcelError.NUM
         except (TypeError, AttributeError):
             return ExcelError.VALUE
+    if name_lower in ("sumif", "averageif"):
+        node = resize_sum_range(node)
     # Normal (value) functions receive materialised values: any Reference
     # argument (from a nested OFFSET) is dereferenced before the call.
     if name_lower in _DIRECT_ARG_COERCE_FUNCS:
@@ -1131,11 +1185,16 @@ def _call_value(name_lower: str, fn: Any, args: list[Any]) -> Any:
                 return err
     _, coerce = _param_info(name_lower, fn)
     for i, a in enumerate(args[: len(coerce)]):
-        if coerce[i] and isinstance(a, str):
-            n = _to_number(a) if coerce[i] == "num" else _to_bool(a)
+        kind = coerce[i]
+        if not kind:
+            continue
+        if isinstance(a, str):
+            n = _to_bool(a) if kind == "bool" else _to_number(a)
             if isinstance(n, ExcelError):
                 return n
             args = [*args[:i], n, *args[i + 1 :]]
+        elif a is None and kind in _BLANK:
+            args = [*args[:i], _BLANK[kind], *args[i + 1 :]]
     try:
         return fn(*args)
     except ZeroDivisionError:

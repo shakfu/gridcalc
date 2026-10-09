@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
 from enum import Enum
 
 
@@ -35,3 +36,22 @@ def first_error(*values: object) -> ExcelError | None:
         if isinstance(v, ExcelError):
             return v
     return None
+
+
+# The reason a function gave for an error, until the engine copies it to the
+# cell. A ContextVar keeps concurrent recalcs in separate threads apart.
+_reason: ContextVar[tuple[ExcelError, str] | None] = ContextVar("_reason", default=None)
+
+
+def explain(err: ExcelError, why: str) -> ExcelError:
+    """Return ``err``, recording ``why`` as the message its cell shows."""
+    _reason.set((err, why))
+    return err
+
+
+def take_reason() -> tuple[ExcelError, str] | None:
+    """The reason recorded since the last call, cleared."""
+    r = _reason.get()
+    if r is not None:
+        _reason.set(None)
+    return r

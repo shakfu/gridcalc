@@ -1655,8 +1655,13 @@ class Grid:
     @mode.setter
     def mode(self, value: Mode) -> None:
         # PYTHON mode maintains no graph, so any switch leaves it stale.
+        # Cached ASTs go too: `^` groups differently in EXCEL and HYBRID.
         if value != self._mode:
             self._dep_graph_built = False
+            for sh in self.sheets:
+                for cl in sh._cells.values():
+                    cl.ast = None
+                    cl.ast_text = ""
         self._mode = value
 
     # -- Per-sheet state delegated to the active sheet --
@@ -1853,7 +1858,7 @@ class Grid:
                 continue
             text = cl.text[1:] if cl.text.startswith("=") else cl.text
             try:
-                ast = parse(text)
+                ast = parse(text, pow_right=target == Mode.HYBRID)
             except FormulaError as e:
                 errors.append(f"{cellname(c, r)}: {e}")
                 continue
@@ -1991,7 +1996,7 @@ class Grid:
         if cl.ast is None or cl.ast_text != text:
             cl.ast_text = text
             try:
-                cl.ast = parse(text)
+                cl.ast = parse(text, pow_right=self._mode == Mode.HYBRID)
             except FormulaError:
                 cl.ast = None
         if cl.ast is None:
@@ -2775,7 +2780,7 @@ class Grid:
         follow-up pass over their consumers.
         """
         from .formula import Env, evaluate, parse
-        from .formula.errors import ExcelError, FormulaError
+        from .formula.errors import ExcelError, FormulaError, take_reason
 
         py_registry = self._build_py_registry()
         named = self._build_named_ranges()
@@ -2789,6 +2794,7 @@ class Grid:
             cell_formula_text=self._cell_formula_text,
         )
 
+        pow_right = self._mode == Mode.HYBRID
         spill_changed: set[tuple[str | None, int, int]] = set()
 
         # Build the closure: BFS over `_subscribers` from the dirty set and
@@ -2872,7 +2878,7 @@ class Grid:
                 if fcl.ast is None or fcl.ast_text != text:
                     fcl.ast_text = text
                     try:
-                        fcl.ast = parse(text)
+                        fcl.ast = parse(text, pow_right=pow_right)
                     except FormulaError:
                         fcl.ast = None
                 if fcl.ast is None:
@@ -2880,7 +2886,7 @@ class Grid:
                     # value, so references to it propagate one, not a NaN.
                     self._store_formula_result(fcl, ExcelError.NAME)
                     try:
-                        parse(text)
+                        parse(text, pow_right=pow_right)
                     except FormulaError as exc:
                         fcl.err_msg = f"syntax error: {exc}"
                     continue
@@ -2891,11 +2897,16 @@ class Grid:
                     self.active = sheet_idx
                 env.current_cell = (c, r)
                 env.current_sheet = sheet_name
+                take_reason()
                 try:
                     result = evaluate(fcl.ast, env)
                 except Exception:
                     result = float("nan")
                 self._store_formula_result(fcl, result)
+                reason = take_reason()
+                # An error the formula caught leaves a stale reason; match it.
+                if reason is not None and fcl.err is reason[0]:
+                    fcl.err_msg = reason[1]
                 spill_changed |= self._apply_spill(sheet_name, c, r, fcl)
         finally:
             self.active = saved_active

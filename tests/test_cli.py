@@ -221,6 +221,13 @@ def test_eval_reports_an_error_rather_than_a_value() -> None:
     assert entry["error"]
 
 
+def test_eval_reports_why_a_lookup_failed() -> None:
+    _, out, _ = _run(EXCEL, "--eval", "=MATCH(3,{5,1,4,2},1)")
+    entry = out["eval"][0]
+    assert entry["error"] == "#N/A"
+    assert "not sorted ascending" in entry["message"]
+
+
 def test_eval_leaves_the_workbook_byte_for_byte_unchanged(tmp_path) -> None:
     """`--eval` borrows a real cell to evaluate in, and must give it back.
 

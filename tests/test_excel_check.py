@@ -22,9 +22,9 @@ def test_every_case_has_a_row_and_the_inputs_load_as_intended() -> None:
 def test_results_keep_their_excel_type() -> None:
     ws = excel_check.build().active
     by_id = {ws[f"I{r}"].value: ws[f"L{r}"] for r in range(2, ws.max_row + 1)}
-    assert (by_id["pow-1"].value, by_id["pow-1"].data_type) == (512, "n")
-    assert (by_id["text-1"].value, by_id["text-1"].data_type) == ("1e-05", "s")
-    assert (by_id["db-1"].value, by_id["db-1"].data_type) == ("#N/A", "e")
+    assert (by_id["pow-1"].value, by_id["pow-1"].data_type) == (64, "n")
+    assert (by_id["text-1"].value, by_id["text-1"].data_type) == ("0.00001", "s")
+    assert (by_id["misc-5"].value, by_id["misc-5"].data_type) == ("#N/A", "e")
 
 
 def test_newer_functions_are_stored_with_their_prefix() -> None:
@@ -32,3 +32,10 @@ def test_newer_functions_are_stored_with_their_prefix() -> None:
         "=ROWS(_xlfn._xlws.FILTER(A1:A2,A1:A2>0))"
     )
     assert excel_check._stored('=TEXTJOIN(",",FALSE,LEN(A1:A3))').startswith("=_xlfn.TEXTJOIN(")
+
+
+def test_plain_cases_are_not_array_formulas() -> None:
+    ws = excel_check.build().active
+    by_id = {ws[f"I{r}"].value: ws[f"K{r}"].value for r in range(2, ws.max_row + 1)}
+    assert by_id["misc-7"] == '=OR("a",TRUE)'
+    assert isinstance(by_id["misc-3"], excel_check.ArrayFormula)

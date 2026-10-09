@@ -352,6 +352,15 @@ button {
   color: #c8a24a;
 }
 
+/* Why the selected cell shows its error. Long reasons truncate; the title holds the rest. */
+.status-reason {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--err);
+}
+
 .status-msg.info {
   color: var(--ok);
 }

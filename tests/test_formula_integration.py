@@ -1275,7 +1275,10 @@ def test_text_at_a_numeric_parameter_converts_or_is_value_error(formula, expecte
         ("=AND(B1)", ExcelError.VALUE),  # text in a cell is skipped; no logical left
         ("=OR(B1, B2)", ExcelError.VALUE),  # a blank is skipped too
         ("=AND(TRUE, B1)", True),
-        ('=AND("abc")', ExcelError.VALUE),  # typed text
+        ('=AND("abc")', ExcelError.VALUE),  # typed text is skipped; no logical left
+        ('=AND("abc", TRUE)', True),  # `logic-1` in docs/dev/excel-check.md
+        ('=AND("TRUE", 1)', True),
+        ('=AND("FALSE", TRUE)', False),
         ("=XOR(B1, 2)", True),
         ("=XOR(B1, 2, 3)", False),
         ("=OR(1/0, TRUE)", ExcelError.DIV0),

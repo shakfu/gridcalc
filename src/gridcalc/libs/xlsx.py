@@ -6,6 +6,7 @@ All functions accept the same argument patterns as their Excel counterparts.
 
 from __future__ import annotations
 
+import bisect
 import cmath
 import datetime as _dt
 import math
@@ -139,24 +140,27 @@ def _parse_criteria(criteria: Any) -> Any:
 class _NumCriterion:
     """A numeric criterion, compared at 15 significant digits.
 
-    Only numbers match, except that an equality criterion also matches text
-    that reads as its number: Excel counts a text "3" for `3` and `"3"`, but
-    not for `">1"` (`crit-1`..`crit-3` in docs/dev/excel-check.md).
+    Only numbers match, with two exceptions from Excel (`crit-1`..`crit-9` in
+    docs/dev/excel-check.md). An equality criterion also matches text that
+    reads as its number: a text "3" counts for `3` and `"3"`, not for `">1"`.
+    A `"<>"` criterion matches everything that is not a number, blanks and a
+    text "3" included.
     """
 
-    __slots__ = ("op", "text", "v")
+    __slots__ = ("op", "others", "text", "v")
 
     def __init__(self, op: Callable[[float, float], bool], v: float) -> None:
         self.op = op
         self.v = sig15(float(v))
         self.text = op is operator.eq
+        self.others = op is operator.ne
 
     def __call__(self, x: Any) -> bool:
         if isinstance(x, str) and self.text:
             n = parse_number(x.strip())
             return n is not None and sig15(n) == self.v
         if isinstance(x, bool) or not isinstance(x, (int, float)):
-            return False
+            return self.others
         return bool(self.op(sig15(float(x)), self.v))
 
 
@@ -173,8 +177,8 @@ def _crit_compare(op: Any, x: Any, v: Any) -> bool:
 def _hits(pred: Any, rng: Vec) -> Iterable[bool]:
     """``pred`` over each element of ``rng``."""
     if isinstance(pred, _NumCriterion):
-        op, v = pred.op, pred.v
-        hits = [r is not None and op(r, v) for r in rng.rounded()]
+        op, v, others = pred.op, pred.v, pred.others
+        hits = [others if r is None else op(r, v) for r in rng.rounded()]
         if pred.text:
             for i, x in enumerate(rng.data):
                 if type(x) is str:
@@ -194,9 +198,8 @@ def IF(condition: Any, true_val: Any, false_val: Any = 0) -> Any:
 def _logicals(args: tuple[Any, ...]) -> list[bool] | ExcelError:
     """The logical values among AND/OR/XOR arguments, as Excel reads them.
 
-    Numbers count (0 is FALSE); text and blanks from cells are skipped. Typed
-    text never reaches here: the evaluator rejects it as #VALUE!. No logical
-    value at all is #VALUE!.
+    Numbers count (0 is FALSE); text and blanks are skipped. The evaluator
+    handles typed text before this. No logical value at all is #VALUE!.
     """
     out: list[bool] = []
     for a in args:
@@ -769,12 +772,16 @@ def TEXT(value: Any, fmt: str) -> str:
         sign, f = "", sections[1]
     else:
         f = sections[0]
-    m = re.search(r"[0#?,.]*[0#?][0#?,.]*", f)
-    if m is None:
-        return _text(value)
 
     def literal(part: str) -> str:
         return re.sub(r"\\(.)", r"\1", part.replace('"', ""))
+
+    m = re.search(r"[0#?,.]*[0#?][0#?,.]*", f)
+    if m is None:
+        # A code with no digit placeholder is all literal: `TEXT(3,1)` is "1".
+        if f.strip() == "" or f.strip().lower() == "general" or "@" in f:
+            return _text(value)
+        return ("" if n == 0 else sign) + literal(f)
 
     digits = m.group()
     int_part, point, dec_part = digits.partition(".")
@@ -2307,7 +2314,7 @@ def YEARFRAC(start: float, end: float, basis: int = 0) -> float | ExcelError:
     if e < s:
         s, e = e, s
     if b == 0:
-        return DAYS360(_to_serial(s), _to_serial(e), method=False) / 360.0
+        return _yearfrac_30_360(s, e)
     if b == 4:
         return DAYS360(_to_serial(s), _to_serial(e), method=True) / 360.0
     days = (e - s).days
@@ -2316,14 +2323,38 @@ def YEARFRAC(start: float, end: float, basis: int = 0) -> float | ExcelError:
     if b == 3:
         return days / 365.0
     if b == 1:
-        # Actual/actual: average year length over the spanned years
-        if s.year == e.year:
-            yl = 366 if _is_leap(s.year) else 365
-            return days / yl
+        # Up to a year apart, 365 or 366 days; past that, the average length
+        # of the years spanned. All 20 `yf-*` cases in docs/dev/excel-check.md.
+        if s.year == e.year or (e.year == s.year + 1 and (s.month, s.day) >= (e.month, e.day)):
+            leap = s.year == e.year and _is_leap(s.year)
+            leap = leap or any(
+                _is_leap(y) and s <= _dt.date(y, 2, 29) <= e for y in (s.year, e.year)
+            )
+            return days / (366 if leap else 365)
         years = e.year - s.year + 1
         total = sum(366 if _is_leap(y) else 365 for y in range(s.year, e.year + 1))
         return days / (total / years)
     return ExcelError.NUM
+
+
+def _yearfrac_30_360(s: _dt.date, e: _dt.date) -> float:
+    """YEARFRAC basis 0. Its end-of-February rules differ from DAYS360's."""
+
+    def feb_end(d: _dt.date) -> bool:
+        return d.month == 2 and (d + _dt.timedelta(days=1)).month == 3
+
+    d1, d2 = s.day, e.day
+    if d1 == 31 and d2 == 31:
+        d1 = d2 = 30
+    elif d1 == 31:
+        d1 = 30
+    elif d1 == 30 and d2 == 31:
+        d2 = 30
+    elif feb_end(s) and feb_end(e):
+        d1 = d2 = 30
+    elif feb_end(s):
+        d1 = 30
+    return ((e.year - s.year) * 360 + (e.month - s.month) * 30 + d2 - d1) / 360.0
 
 
 def _is_leap(y: int) -> bool:
@@ -4561,15 +4592,14 @@ def FREQUENCY(data_array: Vec | float, bins_array: Vec | float) -> Vec | ExcelEr
     if not bins:
         return Vec([float(len(data))])
     n = len(bins)
+    # Intervals come from the bins in ascending order; each count goes back
+    # to its bin's position, so unsorted bins match Excel (`arr-2`).
+    order = sorted(range(n), key=bins.__getitem__)
+    edges = [bins[i] for i in order]
     counts = [0] * (n + 1)
     for x in data:
-        for i in range(n):
-            lo = bins[i - 1] if i > 0 else float("-inf")
-            if lo < x <= bins[i]:
-                counts[i] += 1
-                break
-        else:
-            counts[n] += 1
+        k = bisect.bisect_left(edges, x)
+        counts[order[k] if k < n else n] += 1
     return Vec([float(c) for c in counts])
 
 
@@ -4638,12 +4668,15 @@ def _row_matches_criteria(
     return False
 
 
-def _d_collect(database: Vec, field: Any, criteria: Vec) -> list[Any] | ExcelError:
+def _d_collect(
+    database: Vec, field: Any, criteria: Vec, skip_errors: bool = False
+) -> list[Any] | ExcelError:
     """Return the field values from rows passing the criteria.
 
     An error in a row the criteria do not match is skipped, as in Excel
-    (`db-1`, `db-2` in docs/dev/excel-check.md). One in the header, the
-    criteria, or a matched row's field propagates.
+    (`db-1`, `db-2` in docs/dev/excel-check.md). One in the header or the
+    criteria propagates, and so does one in a matched row's field unless
+    ``skip_errors``.
     """
     cols = database.cols or 0
     err = first_error(*database.data[:cols], *criteria.data)
@@ -4665,7 +4698,7 @@ def _d_collect(database: Vec, field: Any, criteria: Vec) -> list[Any] | ExcelErr
         for row in db_body
         if _row_matches_criteria(row, db_header, crit_header, crit_body)
     ]
-    return first_error(*vals) or vals
+    return vals if skip_errors else first_error(*vals) or vals
 
 
 def _d_numerics(database: Vec, field: Any, criteria: Vec) -> list[float] | ExcelError:
@@ -4692,10 +4725,11 @@ def DAVERAGE(database: Vec, field: Any, criteria: Vec) -> float | ExcelError:
 
 
 def DCOUNT(database: Vec, field: Any, criteria: Vec) -> int | ExcelError:
-    nums = _d_numerics(database, field, criteria)
-    if isinstance(nums, ExcelError):
-        return nums
-    return len(nums)
+    # Counts numbers, so an error in a matched row is not counted (`db-4`).
+    vals = _d_collect(database, field, criteria, skip_errors=True)
+    if isinstance(vals, ExcelError):
+        return vals
+    return sum(1 for v in vals if isinstance(v, (int, float)) and not isinstance(v, bool))
 
 
 def DCOUNTA(database: Vec, field: Any, criteria: Vec) -> int | ExcelError:

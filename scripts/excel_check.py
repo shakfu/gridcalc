@@ -4,7 +4,7 @@ A:H hold the inputs every case reads; each case row holds the formula as text,
 the live formula, the gridcalc result and a match flag. Open it in Excel 365.
 Procedure: `docs/dev/excel-check.md`.
 
-    uv run python scripts/excel_check.py docs/dev/excel-check.xlsx
+    uv run python scripts/excel_check.py build/excel-check.xlsx
 """
 
 from __future__ import annotations
@@ -12,13 +12,14 @@ from __future__ import annotations
 import argparse
 import math
 import re
+import zipfile
 from pathlib import Path
 
 from openpyxl import Workbook
 from openpyxl.worksheet.formula import ArrayFormula
 
 from gridcalc.cli import run_eval
-from gridcalc.engine import Grid, Mode
+from gridcalc.engine import Grid, Mode, _add_xl_prefixes
 
 # (cell, entry). A leading `'` marks text, as typing it in Excel does.
 INPUTS = [
@@ -59,6 +60,11 @@ CASES = [
     ("text-12", '=1/3*1E-10&""', "15 digits past the edge"),
     ("text-13", '=1E+19&""', "gridcalc writes exponents 20 and up in scientific form"),
     ("text-14", '=2^53&""', "16-digit integer: rounded to 15 digits, or scientific?"),
+    ("text-15", '=1E-18&""', "plain text of 20 characters: plain if the edge is 20 characters"),
+    ("text-16", '=-1E-18&""', "21 characters with the sign"),
+    ("text-17", '=1.5E-17&""', "20 characters"),
+    ("text-18", '=1.5E+19&""', "20 characters"),
+    ("text-19", '=1.2345E-15&""', "21 characters, exponent -15"),
     ("num-1", "=12345678901234567-12345678901234500", "Excel keeps 15 digits of a typed number"),
     ("blank-1", "=ROUND(2.5,)", "omitted number argument reads as 0"),
     ("blank-2", "=ROUND(2.5,Z9)", "blank cell reads as 0"),
@@ -121,10 +127,19 @@ CASES = [
     ("misc-6", "=TEXT(3,1)", ""),
     ("misc-7", '=OR("a",TRUE)', "misc-3 as a plain formula"),
     ("misc-8", '=XOR(TRUE,"a")', "misc-4 as a plain formula"),
+    ("logic-1", '=AND("a",TRUE)', "gridcalc: #VALUE!; OR skips the text"),
+    ("logic-2", '=OR("a")', "no logical value left: #VALUE!?"),
+    ("logic-3", '=OR("TRUE",FALSE)', "text TRUE read as a logical?"),
+    ("3d-1", "=SUM(S3a:S3c!B2)", "hand check after the run: see excel-check.md"),
+    ("3d-2", "=COUNTA(S3a:S3c!B2:B3)", "text on one spanned sheet counts"),
 ]
 
-# Cases stored as plain formulas, to compare with their array-formula twins.
-PLAIN = frozenset({"misc-7", "misc-8"})
+# Sheets after `check` for the 3d-* cases: B2 on each, and text in S3b!B3.
+SPAN_SHEETS = [("S3a", {"B2": "10"}), ("S3b", {"B2": "20", "B3": "'x"}), ("S3c", {"B2": "30"})]
+
+# Cases stored as plain formulas: twins of array-formula cases, and 3D
+# references, which Excel refuses in an array formula.
+PLAIN = frozenset({"misc-7", "misc-8", "3d-1", "3d-2"})
 
 # I id, J formula as text, K live formula, L gridcalc, M match, N note.
 # `=` ignores case on text, so text goes through EXACT.
@@ -138,23 +153,6 @@ def _cell(ref: str) -> tuple[int, int]:
     return ord(ref[0]) - ord("A"), int(ref[1:]) - 1
 
 
-# Functions newer than Excel 2007 are stored under a prefix; without it Excel
-# reads the name as unknown and shows #NAME?.
-_XLFN = {
-    "TEXTJOIN": "_xlfn.TEXTJOIN",
-    "CONCAT": "_xlfn.CONCAT",
-    "XOR": "_xlfn.XOR",
-    "DAYS": "_xlfn.DAYS",
-    "ISFORMULA": "_xlfn.ISFORMULA",
-    "FILTER": "_xlfn._xlws.FILTER",
-}
-
-
-def _stored(formula: str) -> str:
-    """``formula`` as an xlsx file stores it."""
-    return re.sub(r"\b([A-Z]+)\(", lambda m: _XLFN.get(m[1], m[1]) + "(", formula)
-
-
 def _result(entry: dict[str, object]) -> object:
     """gridcalc's answer as an xlsx value; openpyxl stores an error code as an error."""
     if entry["error"]:
@@ -164,9 +162,6 @@ def _result(entry: dict[str, object]) -> object:
         return v == "TRUE"
     if isinstance(v, float) and math.isnan(v):
         return None
-    if isinstance(v, float) and float(f"{v:.16g}") != v:
-        # openpyxl writes 16 significant digits, which can lose the last bit.
-        return f"={v!r}"
     return v
 
 
@@ -181,6 +176,16 @@ def evaluate() -> list[object]:
             g._put_label(c, r, entry[1:])
         else:
             g.setcell(c, r, entry)
+    for i, (name, cells) in enumerate(SPAN_SHEETS, start=1):
+        g.add_sheet(name)
+        g.set_active(i)
+        for ref, entry in cells.items():
+            c, r = _cell(ref)
+            if entry.startswith("'"):
+                g._put_label(c, r, entry[1:])
+            else:
+                g.setcell(c, r, entry)
+    g.set_active(0)
     g.recalc()
     return [_result(e) for e in run_eval(g, [f for _, f, _ in CASES])]
 
@@ -200,10 +205,15 @@ def build() -> Workbook:
         ws[f"J{r}"].data_type = "s"  # shown as text, not computed
         # An array formula, so a range reaching a one-value parameter is not
         # reduced to one cell by implicit intersection.
-        ws[f"K{r}"] = _stored(formula) if cid in PLAIN else ArrayFormula(f"K{r}", _stored(formula))
+        stored = _add_xl_prefixes(formula)
+        ws[f"K{r}"] = stored if cid in PLAIN else ArrayFormula(f"K{r}", stored)
         ws[f"L{r}"] = res
         ws[f"M{r}"] = MATCH.format(r=r)
         ws[f"N{r}"] = note
+    for name, cells in SPAN_SHEETS:
+        sheet = wb.create_sheet(name)
+        for ref, entry in cells.items():
+            sheet[ref] = entry[1:] if entry.startswith("'") else float(entry)
     wb.calculation.fullCalcOnLoad = True  # openpyxl writes no cached values
     return wb
 
@@ -212,11 +222,38 @@ def _number_or_formula(entry: str) -> object:
     return entry if entry.startswith("=") else float(entry)
 
 
+def save(wb: Workbook, path: Path) -> None:
+    """Save ``wb`` with each number in L stored to 17 digits.
+
+    openpyxl writes 16 significant digits, which can lose the last bit. A
+    formula literal is no fix: Excel keeps 15 digits of a typed number.
+    """
+    wb.save(path)
+    ws = wb.active
+    exact = {
+        f"L{r}": repr(ws[f"L{r}"].value)
+        for r in range(2, ws.max_row + 1)
+        if isinstance(ws[f"L{r}"].value, float)
+    }
+    part = "xl/worksheets/sheet1.xml"
+    with zipfile.ZipFile(path) as z:
+        members = [(info, z.read(info)) for info in z.infolist()]
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        for info, data in members:
+            if info.filename == part:
+                data = re.sub(
+                    rb'(<c r="(L\d+)" t="n"><v>)[^<]*(</v>)',
+                    lambda m: m[1] + exact[m[2].decode()].encode() + m[3],
+                    data,
+                )
+            z.writestr(info, data)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("out", type=Path)
     args = parser.parse_args()
-    build().save(args.out)
+    save(build(), args.out)
 
 
 if __name__ == "__main__":

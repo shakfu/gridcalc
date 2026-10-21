@@ -352,7 +352,7 @@ def _lookup_cell(formula: str) -> Any:
 
 
 class TestNumberToText:
-    """Excel's results from `text-1`..`text-8` in `docs/dev/excel-check.md`."""
+    """Excel's results from the `text-*` cases in `docs/dev/excel-check.md`."""
 
     @pytest.mark.parametrize(
         ("formula", "expected"),
@@ -364,6 +364,11 @@ class TestNumberToText:
             ('=(0.1+0.2)&""', "0.3"),
             ('=123456789012&""', "123456789012"),
             ('=1E+20&""', "1E+20"),
+            ('=1E-15&""', "0.000000000000001"),
+            ('=-1E-18&""', "-0.000000000000000001"),  # 21 characters with the sign
+            ('=1E-19&""', "1E-19"),  # 21 characters
+            ('=1.2345E-15&""', "1.2345E-15"),
+            ('=1.5E+19&""', "15000000000000000000"),
             ("=CONCAT(-2.5, 0, 100)", "-2.50100"),
             ('=TEXTJOIN(",", TRUE, 1.5E+20, 1E-5)', "1.5E+20,0.00001"),
         ],

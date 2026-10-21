@@ -139,7 +139,7 @@ def cell_clip_value(cl: Cell | None) -> str:
         return str(cl.err)
     if cl.arr and _is_number(cl.arr[0]):
         return _num_str(cl.arr[0])
-    if cl.type in (FORMULA, SPILL) and cl.sval is not None:
+    if cl.type in (NUM, FORMULA, SPILL) and cl.sval is not None:
         return cl.sval
     if isinstance(cl.val, float) and math.isnan(cl.val):
         return ""
@@ -213,7 +213,7 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
         t = f"{numstr}[{len(cl.arr)}]"
         return f"{t:>{cw}}"[:cw]
 
-    if cl.type in (FORMULA, SPILL) and cl.sval is not None:
+    if cl.type in (NUM, FORMULA, SPILL) and cl.sval is not None:
         fc = cl.fmt or global_fmt
         if fc == "L":
             return f"{cl.sval:<{cw}}"[:cw]

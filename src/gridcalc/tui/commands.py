@@ -849,6 +849,7 @@ def cmd_sheet(stdscr: curses.window, g: Grid, undo: UndoManager, args: str) -> b
             undo.discard_last()
             show_error(stdscr, f"sheet move: {exc}")
             return False
+        g.recalc()  # a 3D reference spans sheets by position
         g.dirty = 1
         return False
 

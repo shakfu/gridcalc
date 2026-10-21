@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from .errors import FormulaError, parse_error_literal
@@ -37,6 +38,11 @@ HASH = "HASH"
 LBRACE = "LBRACE"
 RBRACE = "RBRACE"
 SEMI = "SEMI"
+# Whole columns (`B:B`) and whole rows (`1:1`): value is (first, last, abs first, abs last).
+COLRANGE = "COLRANGE"
+# A 3D reference's sheets with the `!`: `Jan:Mar!`, value (first, last).
+SHEETSPAN = "SHEETSPAN"
+ROWRANGE = "ROWRANGE"
 EOF = "EOF"
 
 _SINGLE = {
@@ -71,6 +77,9 @@ class Token:
 
 
 _CELLREF_RE = re.compile(r"(\$?)([A-Za-z]+)(\$?)(\d+)")
+_COLRANGE_RE = re.compile(r"(\$?)([A-Za-z]{1,3}):(\$?)([A-Za-z]{1,3})(?![A-Za-z0-9_.(!])")
+_SHEETSPAN_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*):([A-Za-z_][A-Za-z0-9_.]*)!")
+_ROWRANGE_RE = re.compile(r"(\$?)(\d+):(\$?)(\d+)(?![A-Za-z0-9_.(])")
 _NUMBER_RE = re.compile(r"\d+(\.\d*)?([eE][+-]?\d+)?|\.\d+([eE][+-]?\d+)?", re.ASCII)
 _SIGNED_NUMBER_RE = re.compile(r"[+-]?(?:" + _NUMBER_RE.pattern + ")", re.ASCII)
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -86,6 +95,34 @@ def parse_number(text: str) -> float | None:
         return None
     v = float(text)
     return None if math.isinf(v) else v
+
+
+def _digits15(text: str) -> str | None:
+    """Number ``text`` cut to 15 significant digits, or None if it has no more.
+
+    Excel reads a typed number this way: `12345678901234567` is
+    `12345678901234500` (`num-1` in docs/dev/excel-check.md).
+    """
+    if sum(ch.isdigit() for ch in text) <= 15:
+        return None
+    sign, digits, exp = Decimal(text).as_tuple()
+    if not isinstance(exp, int) or len(digits) <= 15:
+        return None
+    d = Decimal((sign, digits[:15], exp + len(digits) - 15))
+    return str(d) if "e" in text.lower() else format(d, "f")
+
+
+def float15(text: str) -> float:
+    """A number literal as Excel reads it: 15 significant digits."""
+    return float(_digits15(text) or text)
+
+
+def entry_text(text: str) -> str:
+    """A typed cell entry as Excel keeps it: a number to 15 significant digits."""
+    t = text.strip()
+    if parse_number(t) is None:
+        return text
+    return _digits15(t) or text
 
 
 def _parse_cellref(text: str, start: int) -> tuple[int, int, int, bool, bool] | None:
@@ -105,6 +142,35 @@ def _parse_cellref(text: str, start: int) -> tuple[int, int, int, bool, bool] | 
     col -= 1
     row = rownum - 1
     return (m.end(), col, row, abs_c, abs_r)
+
+
+def bare_span_ok(first: str, last: str) -> bool:
+    """Whether unquoted `first:last!` is a 3D qualifier, not a range such as
+    `A1:Sheet2!B5`. Excel quotes a sheet name that reads as a cell (`'Q1'`)."""
+    return not any(_EXCEL_CELL_RE.fullmatch(name) for name in (first, last))
+
+
+_EXCEL_CELL_RE = re.compile(r"(?i)(?:[A-Z]{1,2}|[A-W][A-Z]{2}|X[A-E][A-Z]|XF[A-D])0*[1-9]\d{0,6}")
+
+
+def _col_index(letters: str) -> int:
+    col = 0
+    for ch in letters.upper():
+        col = col * 26 + (ord(ch) - ord("A") + 1)
+    return col - 1
+
+
+def whole_range(text: str, start: int) -> tuple[str, tuple[int, int, bool, bool], int] | None:
+    """The `B:B` or `1:1` reference at ``start``, as (kind, value, end index)."""
+    m = _COLRANGE_RE.match(text, start)
+    if m:
+        a, b = _col_index(m.group(2)), _col_index(m.group(4))
+        return COLRANGE, (a, b, m.group(1) == "$", m.group(3) == "$"), m.end()
+    m = _ROWRANGE_RE.match(text, start)
+    if m and int(m.group(2)) > 0 and int(m.group(4)) > 0:
+        a, b = int(m.group(2)) - 1, int(m.group(4)) - 1
+        return ROWRANGE, (a, b, m.group(1) == "$", m.group(3) == "$"), m.end()
+    return None
 
 
 def tokenize(text: str) -> list[Token]:
@@ -130,6 +196,19 @@ def tokenize(text: str) -> list[Token]:
             tokens.append(Token(ERROR_LIT, err, pos))
             i = m.end()
             continue
+        # `Jan:Mar!`, before cellref takes `Sheet1` as a cell.
+        m = _SHEETSPAN_RE.match(s, i) if ch.isalpha() or ch == "_" else None
+        if m and bare_span_ok(m.group(1), m.group(2)):
+            tokens.append(Token(SHEETSPAN, (m.group(1), m.group(2)), pos))
+            i = m.end()
+            continue
+        # Whole columns and rows, before cellref, IDENT and NUMBER take a part.
+        if ch == "$" or ch.isalnum():
+            whole = whole_range(s, i)
+            if whole is not None:
+                whole_kind, value, i = whole
+                tokens.append(Token(whole_kind, value, pos))
+                continue
         # cellref (must come before IDENT and NUMBER; handles $A$1 etc.)
         if ch == "$" or ch.isalpha():
             cr = _parse_cellref(s, i)
@@ -173,7 +252,7 @@ def tokenize(text: str) -> list[Token]:
             m3 = _NUMBER_RE.match(s, i)
             if m3 is None:
                 raise FormulaError(f"invalid number at {pos}")
-            tokens.append(Token(NUMBER, float(m3.group(0)), pos))
+            tokens.append(Token(NUMBER, float15(m3.group(0)), pos))
             i = m3.end()
             continue
         # string "..." with "" escape
@@ -215,7 +294,14 @@ def tokenize(text: str) -> list[Token]:
                 j += 1
             else:
                 raise FormulaError(f"unterminated sheet name at {pos}")
-            tokens.append(Token(IDENT, "".join(name), pos))
+            quoted = "".join(name)
+            # `'Jan a:Mar b'!` -- a sheet name cannot hold a colon, so this is a span.
+            if ":" in quoted and j + 1 < n and s[j + 1] == "!":
+                first, _, last = quoted.partition(":")
+                tokens.append(Token(SHEETSPAN, (first, last), pos))
+                i = j + 2
+                continue
+            tokens.append(Token(IDENT, quoted, pos))
             i = j + 1
             continue
         # multi-char operators

@@ -24,7 +24,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .engine import EMPTY, FORMULA, NUM, Grid
+from .engine import EMPTY, FORMULA, NUM, Grid, is_constant
 from .opt import number_text
 
 CellKey = tuple[int, int]
@@ -83,7 +83,7 @@ def seek(
             "variable cell must hold a value (not a formula); "
             "goal-seek would otherwise overwrite a live computation"
         )
-    if vcell.type not in (EMPTY, NUM):
+    if vcell.type not in (EMPTY, NUM) or is_constant(vcell):
         raise GoalSeekError("variable cell must be numeric or empty")
     if not all(math.isfinite(v) for v in (target, lo or 0.0, hi or 0.0)):
         raise GoalSeekError("target and bracket must be finite numbers")

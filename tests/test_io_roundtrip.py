@@ -431,7 +431,7 @@ def test_xlsx_import_keeps_text_as_text_and_booleans_as_booleans(tmp_path: Path)
     a1, a2, a3, a4, a5 = (g.cells[0][r] for r in range(5))
     assert a1.type == LABEL and a1.val == 0
     assert a2.type == LABEL
-    assert a3.type == FORMULA and a3.val is True
+    assert a3.type == NUM and a3.text == "TRUE" and a3.val is True  # a constant, not =TRUE
     assert a4.type == LABEL
     g.setcell(1, 0, "=A3+1")
     g.setcell(1, 1, '=A1&"|"&A2&"|"&A4&"|"&A5')
@@ -441,7 +441,8 @@ def test_xlsx_import_keeps_text_as_text_and_booleans_as_booleans(tmp_path: Path)
     assert g.xlsxsave(str(out)) == 0
     h = Grid()
     assert h.xlsxload(str(out)) == 0
-    assert [h.cells[0][r].type for r in range(5)] == [LABEL, LABEL, FORMULA, LABEL, LABEL]
+    assert [h.cells[0][r].type for r in range(5)] == [LABEL, LABEL, NUM, LABEL, LABEL]
+    assert h.cells[0][2].val is True
 
 
 def test_xlsx_import_keeps_error_values(tmp_path: Path) -> None:
@@ -538,9 +539,10 @@ def test_json_keeps_a_label_that_looks_like_a_number_or_formula(tmp_path: Path) 
     assert g.jsonsave(str(out)) == 0
     h = Grid()
     assert h.jsonload(str(out)) == 0
+    # The leading `"` marks a label, so editing the text keeps it one.
     assert [(h.cells[0][r].type, h.cells[0][r].text) for r in range(2)] == [
-        (LABEL, "00123"),
-        (LABEL, "=SUM(1,2)"),
+        (LABEL, '"00123'),
+        (LABEL, '"=SUM(1,2)'),
     ]
 
 

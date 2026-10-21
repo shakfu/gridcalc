@@ -47,6 +47,7 @@ from .engine import (
     Cell,
     Grid,
     _expand_ranges,
+    is_constant,
     ref,
 )
 from .formula.ast_nodes import (
@@ -960,7 +961,7 @@ def solve(
                 f"decision cell {_cellname(c, r)} contains a formula; "
                 "decision variables must hold values (or be empty)"
             )
-        if cell.type not in (EMPTY, NUM):
+        if cell.type not in (EMPTY, NUM) or is_constant(cell):
             raise OptError(f"decision cell {_cellname(c, r)} must be numeric or empty")
 
     # Objective.
@@ -1133,6 +1134,7 @@ def solve(
             cell = grid._ensure_cell(c, r)
             cell.type = NUM
             cell.val = x
+            cell.sval = None
             cell.text = number_text(x)
             cell.ast = None
             cell.ast_text = ""
@@ -1538,7 +1540,7 @@ def infer_model(grid: Grid, c1: int, r1: int, c2: int, r2: int) -> InferredModel
             cell = grid.cells[c][r]
             if cell is None or cell.type == EMPTY:
                 continue
-            if cell.type == NUM:
+            if cell.type == NUM and not is_constant(cell):
                 decision_vars.append((c, r))
                 continue
             if cell.type != FORMULA:

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from gridcalc.engine import EMPTY, NCOL, NROW, Grid, Mode
+from gridcalc.engine import EMPTY, LABEL, NCOL, NROW, Grid, Mode
 from gridcalc.loader import load_workbook
 from gridcalc.web import Api
 
@@ -2064,3 +2064,32 @@ def test_gui_backend_skips_a_missing_gtk(monkeypatch, platform, env, found, expe
         importlib.util, "find_spec", lambda name, *a: object() if name in found else None
     )
     assert web._gui_backend() == expected
+
+
+def test_set_cell_keeps_15_digits_of_a_typed_number() -> None:
+    g = _grid()
+    api = Api(g)
+    api.set_cell(0, 0, "12345678901234567")
+    assert g.cells[0][0].text == "12345678901234500"
+    assert g.cells[0][0].val == 12345678901234500.0
+
+
+def test_add_sheet_reports_a_name_excel_rejects() -> None:
+    api = Api(_grid())
+    res = api.add_sheet("a/b")
+    assert res["ok"] is False and "forbids" in res["error"]
+
+
+def test_editing_an_imported_numeric_label_keeps_it_text(tmp_path) -> None:
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    wb.active["A1"] = "00123"
+    f = tmp_path / "t.xlsx"
+    wb.save(f)
+    g = Grid()
+    assert g.xlsxload(str(f)) == 0
+    api = Api(g)
+    api.set_cell(0, 0, api.cell_source(0, 0))  # open the editor and commit unchanged
+    assert g.cells[0][0].type == LABEL
+    assert api.viewport(0, 0, 1, 1)["cells"][0]["text"] == "00123"

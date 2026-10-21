@@ -44,6 +44,7 @@ from ..engine import (
     cellname,
     ref,
 )
+from ..formula.lexer import entry_text
 from ..keys import build_resolved_keymap
 from ..loader import load_into, needs_trust
 from ..opt import parse_bounds as _parse_bounds
@@ -259,7 +260,7 @@ def entry(
             g.mc = -1
             g.mr = -1
             undo.save_cell(g, origc, origr)
-            g.setcell(origc, origr, buf)
+            g.setcell(origc, origr, entry_text(buf))
             g.cc = origc
             g.cr = origr
             if g.cr < NROW - 1:
@@ -269,7 +270,7 @@ def entry(
             g.mc = -1
             g.mr = -1
             undo.save_cell(g, origc, origr)
-            g.setcell(origc, origr, buf)
+            g.setcell(origc, origr, entry_text(buf))
             g.cc = origc
             g.cr = origr
             if g.cc < NCOL - 1:

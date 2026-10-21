@@ -762,3 +762,94 @@ def test_a_spec_past_30_decimals_is_not_a_number_format() -> None:
     assert fmt_float(1.5, ".400f") is None
     assert _xlsx_code_for_spec(".400f") == ""
     assert fmt_float(1.5, ".30f") == "1." + "5" + "0" * 29
+
+
+@pytest.mark.parametrize(
+    ("text", "stored"),
+    [
+        ("=XLOOKUP(1,A1:A3,B1:B3)", "=_xlfn.XLOOKUP(1,A1:A3,B1:B3)"),
+        ("=ROWS(FILTER(A1:A2,A1:A2>0))", "=ROWS(_xlfn._xlws.FILTER(A1:A2,A1:A2>0))"),
+        ("=t.dist.2t(1,2)", "=_xlfn.t.dist.2t(1,2)"),
+        ("=SUM(A1:A3)+STDEV(B1:B3)", "=SUM(A1:A3)+STDEV(B1:B3)"),
+        ('=CONCAT("XLOOKUP(",1)', '=_xlfn.CONCAT("XLOOKUP(",1)'),
+        ("=LET(x,2,y,x*3,x+y)", "=_xlfn.LET(_xlpm.x,2,_xlpm.y,_xlpm.x*3,_xlpm.x+_xlpm.y)"),
+        ("=LAMBDA(x,x+1)(2)", "=_xlfn.LAMBDA(_xlpm.x,_xlpm.x+1)(2)"),
+        ("=MAP({1,2},LAMBDA(v,v*2))", "=_xlfn.MAP({1,2},_xlfn.LAMBDA(_xlpm.v,_xlpm.v*2))"),
+        # Outside its LET, `x` is a defined name, not a parameter.
+        ("=LET(x,1,x)+x", "=_xlfn.LET(_xlpm.x,1,_xlpm.x)+x"),
+        (
+            "=LET(f,LAMBDA(n,n+1),f(1))",
+            "=_xlfn.LET(_xlpm.f,_xlfn.LAMBDA(_xlpm.n,_xlpm.n+1),_xlpm.f(1))",
+        ),
+        ("=SUM(A1#)", "=SUM(_xlfn.ANCHORARRAY(A1))"),
+        ("=SUM('a b'!$A$1#)", "=SUM(_xlfn.ANCHORARRAY('a b'!$A$1))"),
+        ('="A1#"&1', '="A1#"&1'),
+        ("=SUM(", "=SUM("),
+    ],
+)
+def test_newer_functions_get_the_prefix_excel_stores(text, stored):
+    from gridcalc.engine import _add_xl_prefixes, _strip_xl_prefixes
+
+    assert _add_xl_prefixes(text) == stored
+    assert _strip_xl_prefixes(stored) == text
+
+
+def test_xlsxsave_writes_prefixes_and_reads_them_back(tmp_path):
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    g.setcell(0, 0, "1")
+    g.setcell(0, 1, "2")
+    g.setcell(1, 0, "=XLOOKUP(2,A1:A2,A1:A2)")
+    g.setcell(2, 0, "=LET(x,A1,x*10)")
+    g.recalc()
+    f = tmp_path / "pre.xlsx"
+    assert g.xlsxsave(str(f)) == 0
+    ws = openpyxl.load_workbook(str(f)).active
+    assert ws["B1"].value == "=_xlfn.XLOOKUP(2,A1:A2,A1:A2)"
+    assert ws["C1"].value == "=_xlfn.LET(_xlpm.x,A1,_xlpm.x*10)"
+
+    g2 = Grid()
+    assert g2.xlsxload(str(f)) == 0
+    assert g2.cells[1][0].text == "=XLOOKUP(2,A1:A2,A1:A2)" and g2.cells[1][0].val == 2.0
+    assert g2.cells[2][0].text == "=LET(x,A1,x*10)" and g2.cells[2][0].val == 10.0
+
+
+def test_xlsxsave_marks_spilling_formulas_as_dynamic_arrays(tmp_path):
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    g.setcell(0, 0, "=SEQUENCE(3)")
+    g.setcell(1, 0, "=SUM(A1#)")
+    g.setcell(2, 0, "=FILTER({1,2},{1,0})")
+    g.recalc()
+    f = tmp_path / "da.xlsx"
+    assert g.xlsxsave(str(f)) == 0
+    ws = openpyxl.load_workbook(str(f)).active
+    assert (ws["A1"].value.ref, ws["A1"].value.text) == ("A1:A3", "=_xlfn.SEQUENCE(3)")
+    assert ws["C1"].value.ref == "C1"  # one value, but still not `=@FILTER(...)`
+    assert ws["B1"].value == "=SUM(_xlfn.ANCHORARRAY(A1))"
+    assert openpyxl.load_workbook(str(f), data_only=True).active["A3"].value == 3
+    import zipfile
+
+    with zipfile.ZipFile(f) as z:
+        assert '<c r="A1" cm="1">' in z.read("xl/worksheets/sheet1.xml").decode()
+        assert "xl/metadata.xml" in z.namelist()
+
+    g2 = Grid()
+    assert g2.xlsxload(str(f)) == 0
+    assert g2.cells[0][0].text == "=SEQUENCE(3)" and g2.cells[0][0].spill_shape == (3, 1)
+    assert g2.cells[1][0].text == "=SUM(A1#)" and g2.cells[1][0].val == 6.0
+
+
+def test_xlsxsave_without_arrays_adds_no_metadata(tmp_path):
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g.setcell(0, 0, "=1+1")
+    g.recalc()
+    f = tmp_path / "plain.xlsx"
+    assert g.xlsxsave(str(f)) == 0
+    import zipfile
+
+    with zipfile.ZipFile(f) as z:
+        assert "xl/metadata.xml" not in z.namelist()

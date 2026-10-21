@@ -15,6 +15,7 @@ from .ast_nodes import (
     Percent,
     PyCall,
     RangeRef,
+    Ref3D,
     SpillRef,
     String,
     UnaryOp,
@@ -27,6 +28,7 @@ from .lexer import (
     CARET,
     CELLREF,
     COLON,
+    COLRANGE,
     COMMA,
     DOT,
     EOF,
@@ -46,8 +48,10 @@ from .lexer import (
     PERCENT,
     PLUS,
     RBRACE,
+    ROWRANGE,
     RPAREN,
     SEMI,
+    SHEETSPAN,
     SLASH,
     STAR,
     STRING,
@@ -183,6 +187,10 @@ class _Parser:
             return ErrorLit(t.value)
         if t.kind == CELLREF:
             return self._cellref_or_range()
+        if t.kind in (COLRANGE, ROWRANGE):
+            return self._whole_range()
+        if t.kind == SHEETSPAN:
+            return self._ref3d()
         if t.kind == LBRACE:
             return self._array()
         if t.kind == LPAREN:
@@ -196,10 +204,12 @@ class _Parser:
                 self.i + 1 < len(self.tokens)
                 and self.tokens[self.i + 1].kind == BANG
                 and self.i + 2 < len(self.tokens)
-                and self.tokens[self.i + 2].kind == CELLREF
+                and self.tokens[self.i + 2].kind in (CELLREF, COLRANGE, ROWRANGE)
             ):
                 sheet_tok = self._advance()
                 self._advance()  # BANG
+                if self._peek().kind != CELLREF:
+                    return self._whole_range(sheet=sheet_tok.value)
                 return self._cellref_or_range(sheet=sheet_tok.value)
             return self._ident_or_call()
         raise ParseError(f"unexpected {t.kind} at {t.pos}")
@@ -235,6 +245,33 @@ class _Parser:
             end = CellRef(col2, row2, ac2, ar2, sheet=end_sheet)
             return RangeRef(start, end)
         return start
+
+    def _ref3d(self) -> Ref3D:
+        """`Jan:Mar!A1`, `Jan:Mar!A1:B2` or `Jan:Mar!B:B`."""
+        first, last = self._advance().value
+        kind = self._peek().kind
+        if kind in (COLRANGE, ROWRANGE):
+            rng = self._whole_range()
+            return Ref3D(first, last, rng.start, rng.end)
+        t = self._expect(CELLREF)
+        start = CellRef(*t.value)
+        end = start
+        if self._peek().kind == COLON:
+            self._advance()
+            end = CellRef(*self._expect(CELLREF).value)
+        return Ref3D(first, last, start, end)
+
+    def _whole_range(self, sheet: str | None = None) -> RangeRef:
+        """`B:B` or `1:1`, as the range it covers on the grid."""
+        from ..engine import NCOL, NROW
+
+        t = self._advance()
+        a, b, abs_a, abs_b = t.value
+        if t.kind == COLRANGE:
+            start = CellRef(min(a, b), 0, abs_a, True, sheet=sheet)
+            return RangeRef(start, CellRef(max(a, b), NROW - 1, abs_b, True, sheet=sheet))
+        start = CellRef(0, min(a, b), True, abs_a, sheet=sheet)
+        return RangeRef(start, CellRef(NCOL - 1, max(a, b), True, abs_b, sheet=sheet))
 
     def _ident_or_call(self) -> Node:
         t = self._advance()

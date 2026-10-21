@@ -136,7 +136,9 @@ def draw(
         status = f" {g._active.name}!{col_name(g.cc)}{g.cr + 1}"
     else:
         status = f" {col_name(g.cc)}{g.cr + 1}"
-    if cur and cur.type == NUM:
+    if cur and cur.type == NUM and (isinstance(cur.val, bool) or cur.err is not None):
+        status += f"  {cur.text}"  # a logical or error constant
+    elif cur and cur.type == NUM:
         coll = _fmt_collection(cur)
         if coll is not None:
             status += f"  {coll}"

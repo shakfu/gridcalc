@@ -4579,3 +4579,14 @@ class TestXlsxOverwriteWarning:
         g.filename = str(f)
         assert cmdexec(self.stdscr, g, UndoManager(), "wq") is True
         assert self._asked() == []
+
+
+def test_entry_keeps_15_digits_of_a_typed_number():
+    from gridcalc.tui import entry
+
+    _setup_curses_constants()
+    stdscr = MockStdscr()
+    stdscr.queue_getch(10)  # Enter commits
+    g = Grid()
+    entry(stdscr, g, UndoManager(), False, 0, initial_text="12345678901234567")
+    assert g.cells[0][0].text == "12345678901234500"

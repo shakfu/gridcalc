@@ -41,6 +41,17 @@ class RangeRef:
 
 
 @dataclass(frozen=True)
+class Ref3D:
+    """A 3D reference, `Jan:Mar!B2:B5`: the same cells on every sheet from
+    ``first`` to ``last`` in workbook order. ``start`` and ``end`` carry no sheet."""
+
+    first: str
+    last: str
+    start: CellRef
+    end: CellRef
+
+
+@dataclass(frozen=True)
 class SpillRef:
     """The spill-range operator ``A1#``: the whole dynamic array that the
     formula in ``anchor`` spilled, as opposed to ``A1`` which reads only
@@ -115,6 +126,7 @@ Node = (
     | ErrorLit
     | CellRef
     | RangeRef
+    | Ref3D
     | SpillRef
     | Name
     | Call

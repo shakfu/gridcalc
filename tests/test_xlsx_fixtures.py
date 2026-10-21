@@ -69,9 +69,12 @@ class TestScalarTypes:
     def test_strings_and_bools(self) -> None:
         g = _load("types.xlsx")
         assert g.cells[1][0].type == LABEL and g.cells[1][0].text == "hello"
-        # Booleans import as boolean constants (=TRUE), not as text labels.
-        assert g.cells[1][2].text == "=TRUE" and g.cells[1][2].val is True
-        assert g.cells[1][3].text == "=FALSE" and g.cells[1][3].val is False
+        # Booleans import as logical constants, not as text or as =TRUE formulas.
+        assert g.cells[1][2].text == "TRUE" and g.cells[1][2].val is True
+        assert g.cells[1][3].text == "FALSE" and g.cells[1][3].val is False
+        g.setcell(0, 9, "=ISFORMULA(B3)")
+        g.recalc()
+        assert g.cells[0][9].val is False
 
     def test_gap_cell_is_empty(self) -> None:
         # B2 was intentionally left blank between B1 and B3.
@@ -144,9 +147,13 @@ class TestTextAndNumbers:
     def test_numeric_text_stays_text(self) -> None:
         # A string cell is text in Excel however it looks: "007" keeps its zeros.
         g = _load("text_and_numbers.xlsx")
-        assert g.cells[0][0].type == LABEL and g.cells[0][0].text == "007"
-        assert g.cells[0][1].type == LABEL and g.cells[0][1].text == "3.5"
-        assert g.cells[0][4].type == LABEL and g.cells[0][4].text == "-42"
+        # Marked with a leading `"`, so editing the text keeps it a label.
+        assert g.cells[0][0].type == LABEL and g.cells[0][0].text == '"007'
+        assert g.cells[0][1].type == LABEL and g.cells[0][1].text == '"3.5'
+        assert g.cells[0][4].type == LABEL and g.cells[0][4].text == '"-42'
+        g.setcell(1, 0, '=A1&"|"&LEN(A2)')
+        g.recalc()
+        assert g.cells[1][0].sval == "007|3"  # the value carries no marker
 
     def test_non_numeric_text_stays_label(self) -> None:
         g = _load("text_and_numbers.xlsx")
@@ -344,6 +351,16 @@ class TestSharedAndArrayFormulas:
         assert [g.cells[0][r].val for r in range(3)] == [1.0, 2.0, 3.0]
         assert g.cells[0][1].type != FORMULA and g.cells[0][0].err is None  # no #SPILL!
 
+    def test_a_shared_formula_shifts_its_whole_column_reference(self, tmp_path) -> None:
+        g = _with_sheet_data(
+            tmp_path,
+            '<sheetData><row r="1"><c r="A1"><v>1</v></c><c r="B1"><v>2</v></c>'
+            '<c r="D1"><f t="shared" ref="D1:E1" si="0">SUM(A:A)</f><v>1</v></c>'
+            '<c r="E1"><f t="shared" si="0"/><v>2</v></c></row></sheetData>',
+        )
+        assert g.cells[3][0].text == "=SUM(A:A)" and g.cells[4][0].text == "=SUM(B:B)"
+        assert g.cells[4][0].val == 2.0
+
     def test_a_formula_with_no_saved_value_still_imports(self, tmp_path) -> None:
         g = _with_sheet_data(
             tmp_path,
@@ -363,6 +380,18 @@ class TestSharedAndArrayFormulas:
         assert g.cells[0][0].sval == "_xlfn.1"
         assert g.cells[1][0].text == "=FILTER({1;2;3},{1;0;1})" and g.cells[1][0].val == 1.0
         assert g.cells[2][0].val == 3.0
+
+    def test_anchorarray_imports_as_a_spill_reference(self, tmp_path) -> None:
+        g = _with_sheet_data(
+            tmp_path,
+            '<sheetData><row r="1"><c r="A1"><f t="array" ref="A1:A3">_xlfn.SEQUENCE(3)</f>'
+            '<v>1</v></c><c r="B1"><f>SUM(_xlfn.ANCHORARRAY(A1))</f><v>6</v></c>'
+            '<c r="C1"><f>"_xlfn.ANCHORARRAY(A1)"</f><v>0</v></c></row>'
+            '<row r="2"><c r="A2"><v>2</v></c></row><row r="3"><c r="A3"><v>3</v></c></row>'
+            "</sheetData>",
+        )
+        assert g.cells[1][0].text == "=SUM(A1#)" and g.cells[1][0].val == 6.0
+        assert g.cells[2][0].sval == "_xlfn.ANCHORARRAY(A1)"
 
 
 class TestChartsheet:

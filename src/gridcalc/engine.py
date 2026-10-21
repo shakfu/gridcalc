@@ -20,7 +20,7 @@ from typing import Any, NamedTuple
 from .dates import is_date_format, normalise_format
 from .formula.deps import DepKey, RangeKey, extract_deps, has_dynamic_refs
 from .formula.errors import FormulaError
-from .formula.lexer import parse_number
+from .formula.lexer import COLRANGE, bare_span_ok, parse_number, whole_range
 from .formula.parser import parse
 from .sandbox import load_modules, validate_code, validate_formula
 
@@ -806,6 +806,76 @@ def _strip_literals(text: str) -> str:
 
 # `Sheet1!`, `'My Sheet'!` -- the sheet qualifier ahead of a reference.
 _SHEET_QUAL_RE = re.compile(r"(?:'((?:[^']|'')*)'|([A-Za-z_][A-Za-z0-9_.]*))!")
+# A 3D reference's qualifier: `Jan:Mar!` or `'Jan a:Mar b'!`.
+_SPAN_QUAL_RE = re.compile(
+    r"(?:'((?:[^':]|'')*):((?:[^':]|'')*)'|([A-Za-z_][A-Za-z0-9_.]*):([A-Za-z_][A-Za-z0-9_.]*))!"
+)
+# Stands for the sheet of a 3D reference, which no single-sheet edit matches.
+_SPAN_SHEET = "\0span"
+
+
+def _span_at(text: str, i: int) -> re.Match[str] | None:
+    """The 3D qualifier at ``text[i]``, or None (`A1:Sheet2!` is a range)."""
+    m = _SPAN_QUAL_RE.match(text, i)
+    if m and m.group(3) is not None and not bare_span_ok(m.group(3), m.group(4)):
+        return None
+    return m
+
+
+def _span_names(m: re.Match[str]) -> tuple[str, str]:
+    if m.group(1) is not None:
+        return m.group(1).replace("''", "'"), m.group(2).replace("''", "'")
+    return m.group(3), m.group(4)
+
+
+def _span_qual(first: str, last: str) -> str:
+    """The qualifier for sheets ``first`` to ``last``, quoted as a whole if either needs it."""
+    if _quote_sheet(first) == first and _quote_sheet(last) == last:
+        return f"{first}:{last}!"
+    return "'" + first.replace("'", "''") + ":" + last.replace("'", "''") + "'!"
+
+
+def _rewrite_span_quals(text: str, fn: Callable[[str, str], tuple[str, str] | str | None]) -> str:
+    """Rewrite each 3D qualifier in ``text`` by ``fn(first, last)``.
+
+    ``fn`` returns new ends, None to keep the qualifier, or "#REF!" to replace
+    the qualifier and its reference. String literals are skipped.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        if i > 0 and (text[i - 1].isalnum() or text[i - 1] in "_."):
+            out.append(text[i])
+            i += 1
+            continue
+        m = _span_at(text, i)
+        if m:
+            new = fn(*_span_names(m))
+            if new is None:
+                out.append(m.group(0))
+                i = m.end()
+            elif isinstance(new, str):
+                out.append(new)
+                i = m.end()
+                w = whole_range(text, i)
+                if w is not None:
+                    i = w[2]
+                elif (r1 := _ref_at(text, i)) is not None:
+                    i += r1.chars_consumed
+                    if i < n and text[i] == ":" and (r2 := _ref_at(text, i + 1)) is not None:
+                        i += 1 + r2.chars_consumed
+            else:
+                out.append(_span_qual(*new))
+                i = m.end()
+            continue
+        end = _skip_quoted(text, i)
+        if end is not None:
+            out.append(text[i:end])
+            i = end
+            continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
 
 
 # Maps a reference's two ends (the same match for a single cell) to new corners
@@ -822,6 +892,7 @@ def _rewrite_refs_on_sheet(
     home_sheet: str,
     edited_sheet: str | None,
     move: _RefMove,
+    whole_refs: bool = False,
 ) -> str | None:
     """Rewrite the references in ``text`` that resolve against ``edited_sheet``,
     or every reference when it is None.
@@ -841,9 +912,40 @@ def _rewrite_refs_on_sheet(
     n = len(text)
     changed = False
 
+    def take_whole(at: int, sheet: str, qual: str) -> tuple[int, bool] | None:
+        """Like ``take_refs`` for `B:B` and `1:1`, or None if there is none at ``at``."""
+        w = whole_range(text, at)
+        if w is None:
+            return None
+        kind, (a, b, abs_a, abs_b), end_at = w
+        cols = kind == COLRANGE
+        if cols:
+            m1, end = RefMatch(0, a, 0, abs_a, 1), RefMatch(0, b, NROW - 1, abs_b, 1)
+        else:
+            m1, end = RefMatch(0, 0, a, 1, abs_a), RefMatch(0, NCOL - 1, b, 1, abs_b)
+        rect = (m1.col, m1.row, end.col, end.row)
+        hit = edited_sheet is None or sheet.casefold() == edited_sheet.casefold()
+        new = move(m1, end) if hit else rect
+        # Only the columns of `B:B` move, and only the rows of `1:1`.
+        if new is not None:
+            new = (new[0], 0, new[2], NROW - 1) if cols else (0, new[1], NCOL - 1, new[3])
+        if new is None or (new != rect and not _on_grid(*new)):
+            out.append("#REF!")
+            return end_at, True
+        lo, hi = (new[0], new[2]) if cols else (new[1], new[3])
+        if (lo > hi) != (a > b):
+            lo, hi, abs_a, abs_b = hi, lo, abs_b, abs_a
+        name = col_name if cols else (lambda k: str(k + 1))
+        out.append(f"{qual}{'$' * abs_a}{name(lo)}:{'$' * abs_b}{name(hi)}")
+        return end_at, new != rect
+
     def take_refs(at: int, sheet: str, qual: str) -> tuple[int, bool]:
         """Consume a reference at ``at``, plus the ``:ref`` completing a range
         so a qualifier governs both ends, and append it after ``qual``."""
+        if whole_refs:
+            taken = take_whole(at, sheet, qual)
+            if taken is not None:
+                return taken
         m1 = _ref_at(text, at)
         if m1 is None:
             if qual:
@@ -878,6 +980,12 @@ def _rewrite_refs_on_sheet(
         if i > 0 and (text[i - 1].isalnum() or text[i - 1] in "_."):
             out.append(text[i])  # inside a name: `LOG10`, `Sheet1`
             i += 1
+            continue
+        # A 3D reference moves with a copy, not with an edit to one sheet.
+        sp = _span_at(text, i) if whole_refs else None
+        if sp:
+            i, moved = take_refs(sp.end(), _SPAN_SHEET, sp.group(0))
+            changed = changed or moved
             continue
         # The qualifier is matched before `_skip_quoted`, or a quoted sheet
         # name would be mistaken for a string literal and its reference left
@@ -914,13 +1022,15 @@ def _has_ref_error(text: str) -> bool:
     return False
 
 
-def adjust_refs(text: str, dcol: int, drow: int) -> str:
+def adjust_refs(text: str, dcol: int, drow: int, whole_refs: bool = False) -> str:
     """Shift every relative cell reference in ``text`` by ``(dcol, drow)``.
 
     Absolute (``$``-prefixed) columns/rows are left unchanged. A reference
     shifted off the grid becomes ``#REF!``, as in Excel. Used both by
     replicate (copy a formula across the grid) and by the frontends' paste, so
-    the two share one definition of reference adjustment.
+    the two share one definition of reference adjustment. ``whole_refs`` also
+    shifts `B:B`, `1:1` and 3D references (`Jan:Mar!B2`); it is off for PYTHON
+    mode, where `x[1:2]` is a slice.
     """
 
     def move(a: RefMatch, b: RefMatch) -> tuple[int, int, int, int]:
@@ -931,7 +1041,7 @@ def adjust_refs(text: str, dcol: int, drow: int) -> str:
             b.row if b.abs_row else b.row + drow,
         )
 
-    new = _rewrite_refs_on_sheet(text, "", None, move)
+    new = _rewrite_refs_on_sheet(text, "", None, move, whole_refs)
     return text if new is None else new
 
 
@@ -979,15 +1089,33 @@ def label_value(text: str) -> str:
     return text[1:] if text.startswith('"') else text
 
 
-def _label_source(value: str) -> str:
-    """Source text for ``_put_label`` holding ``value``; only a leading ``"`` needs marking."""
-    return '"' + value if value.startswith('"') else value
+def _constant(t: str) -> tuple[str, Any, str | None, Any] | None:
+    """A typed `TRUE`, `FALSE` or error code as ``(text, val, sval, err)``, else None.
+
+    Excel keeps these as a logical or an error value, not as text.
+    """
+    from .formula.errors import parse_error_literal
+    from .formula.lexer import _ERROR_LIT_RE
+
+    u = t.strip().upper()
+    if u in ("TRUE", "FALSE"):
+        return u, u == "TRUE", u, None
+    if _ERROR_LIT_RE.fullmatch(u):
+        err = parse_error_literal(u)
+        if err is not None:
+            return str(err), math.nan, None, err
+    return None
+
+
+def is_constant(cl: Cell) -> bool:
+    """Whether ``cl`` holds a typed logical or error value."""
+    return cl.type == NUM and (isinstance(cl.val, bool) or cl.err is not None)
 
 
 def _label_text(t: str) -> str:
     """``setcell`` text that stores ``t`` as a label, verbatim."""
-    number = parse_number(t.rstrip()) is not None
-    return '"' + t if t.startswith(("=", '"')) or number else t
+    reparses = parse_number(t.rstrip()) is not None or _constant(t) is not None
+    return '"' + t if t.startswith(("=", '"')) or reparses else t
 
 
 def _field_text(t: str) -> str:
@@ -1068,10 +1196,132 @@ _XL_PREFIX_RE = re.compile(r"\"(?:[^\"]|\"\")*\"|'(?:[^']|'')*'|_xl(?:fn|ws|pm)\
 
 
 def _strip_xl_prefixes(text: str) -> str:
-    """``text`` without Excel's file-format function prefixes, outside quotes."""
+    """``text`` without Excel's file-format function prefixes, outside quotes.
+
+    Excel stores the spill reference `A1#` as `_xlfn.ANCHORARRAY(A1)`; that
+    becomes `A1#` again.
+    """
     if "_xl" not in text and "_XL" not in text:
         return text
-    return _XL_PREFIX_RE.sub(lambda m: m[0] if m[0][0] in "\"'" else "", text)
+    text = _XL_PREFIX_RE.sub(lambda m: m[0] if m[0][0] in "\"'" else "", text)
+    if "ANCHORARRAY" not in text.upper():
+        return text
+    from .formula import lexer as lx
+
+    try:
+        toks = lx.tokenize(text)
+    except FormulaError:
+        return text
+    edits: list[tuple[int, int, str]] = []
+    for i, t in enumerate(toks[:-4]):
+        if t.kind != lx.IDENT or str(t.value).upper() != "ANCHORARRAY":
+            continue
+        if toks[i + 1].kind != lx.LPAREN:
+            continue
+        j = i + 4 if toks[i + 2].kind == lx.IDENT and toks[i + 3].kind == lx.BANG else i + 2
+        if j + 1 < len(toks) and toks[j].kind == lx.CELLREF and toks[j + 1].kind == lx.RPAREN:
+            edits.append((t.pos, toks[i + 2].pos - t.pos, ""))
+            edits.append((toks[j + 1].pos, 1, "#"))
+    return _apply_edits(text, edits)
+
+
+def _apply_edits(text: str, edits: list[tuple[int, int, str]]) -> str:
+    """``text`` with each ``(pos, length, replacement)`` applied; positions do not overlap."""
+    for pos, length, new in sorted(edits, reverse=True):
+        text = text[:pos] + new + text[pos + length :]
+    return text
+
+
+# The functions Excel stores under a prefix. Without it Excel reads the name as
+# unknown and shows #NAME?. From XlsxWriter's future-function list.
+_XLFN_NAMES = """
+    ACOT ACOTH AGGREGATE ARABIC ARRAYTOTEXT BASE BETA.DIST BETA.INV BINOM.DIST
+    BINOM.DIST.RANGE BINOM.INV BITAND BITLSHIFT BITOR BITRSHIFT BITXOR BYCOL BYROW
+    CEILING.MATH CEILING.PRECISE CHISQ.DIST CHISQ.DIST.RT CHISQ.INV CHISQ.INV.RT
+    CHISQ.TEST CHOOSECOLS CHOOSEROWS COMBINA CONCAT CONFIDENCE.NORM CONFIDENCE.T COT
+    COTH COVARIANCE.P COVARIANCE.S CSC CSCH DAYS DECIMAL DROP ERF.PRECISE
+    ERFC.PRECISE EXPAND EXPON.DIST F.DIST F.DIST.RT F.INV F.INV.RT F.TEST FILTERXML
+    FLOOR.MATH FLOOR.PRECISE FORECAST.ETS FORECAST.ETS.CONFINT
+    FORECAST.ETS.SEASONALITY FORECAST.ETS.STAT FORECAST.LINEAR FORMULATEXT GAMMA
+    GAMMA.DIST GAMMA.INV GAMMALN.PRECISE GAUSS HSTACK HYPGEOM.DIST IFNA IFS IMCOSH
+    IMCOT IMCSC IMCSCH IMSEC IMSECH IMSINH IMTAN ISFORMULA ISOMITTED ISOWEEKNUM
+    LAMBDA LET LOGNORM.DIST LOGNORM.INV MAKEARRAY MAP MAXIFS MINIFS MODE.MULT
+    MODE.SNGL MUNIT NEGBINOM.DIST NETWORKDAYS.INTL NORM.DIST NORM.INV NORM.S.DIST
+    NORM.S.INV NUMBERVALUE PDURATION PERCENTILE.EXC PERCENTILE.INC PERCENTRANK.EXC
+    PERCENTRANK.INC PERMUTATIONA PHI POISSON.DIST QUARTILE.EXC QUARTILE.INC
+    QUERYSTRING RANDARRAY RANK.AVG RANK.EQ REDUCE RRI SCAN SEC SECH SEQUENCE SHEET
+    SHEETS SKEW.P SORTBY STDEV.P STDEV.S SWITCH T.DIST T.DIST.2T T.DIST.RT T.INV
+    T.INV.2T T.TEST TAKE TEXTAFTER TEXTBEFORE TEXTJOIN TEXTSPLIT TOCOL TOROW UNICHAR
+    UNICODE UNIQUE VALUETOTEXT VAR.P VAR.S VSTACK WEBSERVICE WEIBULL.DIST
+    WORKDAY.INTL WRAPCOLS WRAPROWS XLOOKUP XMATCH XOR Z.TEST
+"""
+_XL_PREFIXES: dict[str, str] = {name: "_xlfn." for name in _XLFN_NAMES.split()}
+_XL_PREFIXES.update({"FILTER": "_xlfn._xlws.", "SORT": "_xlfn._xlws."})
+
+
+def _add_xl_prefixes(text: str) -> str:
+    """``text`` with the prefixes Excel stores: the inverse of ``_strip_xl_prefixes``.
+
+    A LET or LAMBDA parameter takes `_xlpm.` where it is declared and wherever
+    it is in scope, and `A1#` becomes `_xlfn.ANCHORARRAY(A1)`. Text that does
+    not tokenize is returned unchanged.
+    """
+    from .formula import lexer as lx
+
+    try:
+        toks = lx.tokenize(text)
+    except FormulaError:
+        return text
+    edits: list[tuple[int, int, str]] = []
+    # One frame per open paren or brace: [function, argument index, at the
+    # argument's first token, parameter names in scope].
+    frames: list[list[Any]] = [[None, 0, True, frozenset()]]
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        top = frames[-1]
+        if t.kind == lx.IDENT and not (i and toks[i - 1].kind == lx.DOT):
+            j = i
+            while toks[j + 1].kind == lx.DOT and toks[j + 2].kind == lx.IDENT:
+                j += 2
+            name = ".".join(str(toks[k].value) for k in range(i, j + 1, 2)).upper()
+            nxt = toks[j + 1].kind
+            params = top[3]
+            if nxt == lx.LPAREN:
+                if name in params:
+                    edits.append((t.pos, 0, "_xlpm."))
+                elif name in _XL_PREFIXES:
+                    edits.append((t.pos, 0, _XL_PREFIXES[name]))
+                top[2] = False
+                frames.append([name, 0, True, params])
+                i = j + 2
+                continue
+            declares = top[2] and nxt == lx.COMMA and i == j
+            if declares and (top[0] == "LAMBDA" or (top[0] == "LET" and top[1] % 2 == 0)):
+                top[3] = params | {name}
+                edits.append((t.pos, 0, "_xlpm."))
+            elif nxt != lx.BANG and i == j and name in params:
+                edits.append((t.pos, 0, "_xlpm."))
+            top[2] = False
+            i = j + 1
+            continue
+        if t.kind == lx.CELLREF and toks[i + 1].kind == lx.HASH:
+            start = toks[i - 2].pos if i >= 2 and toks[i - 1].kind == lx.BANG else t.pos
+            edits.append((start, 0, "_xlfn.ANCHORARRAY("))
+            edits.append((toks[i + 1].pos, 1, ")"))
+            top[2] = False
+        elif t.kind in (lx.LPAREN, lx.LBRACE):
+            top[2] = False
+            frames.append([None, 0, True, top[3]])
+        elif t.kind in (lx.RPAREN, lx.RBRACE) and len(frames) > 1:
+            frames.pop()
+        elif t.kind in (lx.COMMA, lx.SEMI):
+            top[1] += 1
+            top[2] = True
+        else:
+            top[2] = False
+        i += 1
+    return _apply_edits(text, edits)
 
 
 def _xlsx_read_formula_xml(filename: str) -> tuple[dict[tuple[str, int, int], str], set[Any]]:
@@ -1128,7 +1378,7 @@ def _xlsx_read_formula_xml(filename: str) -> tuple[dict[tuple[str, int, int], st
                 for c, r, si in shared:
                     if si in masters:
                         mc, mr, text = masters[si]
-                        formulas[(name, c, r)] = adjust_refs("=" + text, c - mc, r - mr)
+                        formulas[(name, c, r)] = adjust_refs("=" + text, c - mc, r - mr, True)
     except (KeyError, zipfile.BadZipFile, OSError, ET.ParseError):
         return {}, set()
     return formulas, covered
@@ -1305,14 +1555,22 @@ def _xlsx_widths_patch(data: bytes, cw: int, widths: dict[int, int]) -> bytes:
 
 
 def _xlsx_postprocess(
-    path: str, names_xml: str, cw: int, widths: dict[str, dict[int, int]]
+    path: str,
+    names_xml: str,
+    cw: int,
+    widths: dict[str, dict[int, int]],
+    arrays: dict[str, list[tuple[str, str]]],
+    errors: dict[str, list[tuple[str, str]]],
 ) -> None:
-    """Add defined names and column widths to the xlsx OpenXLSX wrote at ``path``.
+    """Add defined names, column widths and dynamic arrays to the xlsx at ``path``.
 
-    OpenXLSX has no API for either a defined name or a sheet's default column
-    width. The schema places ``definedNames`` directly after ``sheets``, and
-    ``cols`` directly before ``sheetData``. Raises when a part does not have
-    the layout OpenXLSX writes, rather than guess.
+    OpenXLSX has no API for a defined name, a sheet's default column width or
+    an array formula. The schema places ``definedNames`` directly after
+    ``sheets``, and ``cols`` directly before ``sheetData``. ``arrays`` maps a
+    sheet to ``(cell, span)`` for each formula to mark as a dynamic array, and
+    ``errors`` to ``(cell, code)`` for each error constant.
+    Raises when a part does not have the layout OpenXLSX writes, rather than
+    guess.
     """
     import xml.etree.ElementTree as ET
     import zipfile
@@ -1329,8 +1587,75 @@ def _xlsx_postprocess(
                     raise ValueError("unexpected xl/workbook.xml layout; names not written")
                 data = data.replace(marker, marker + names_xml.encode("utf-8"))
             elif info.filename in parts:
-                data = _xlsx_widths_patch(data, cw, widths.get(parts[info.filename], {}))
+                sheet = parts[info.filename]
+                data = _xlsx_widths_patch(data, cw, widths.get(sheet, {}))
+                data = _xlsx_arrays_patch(data, arrays.get(sheet, []))
+                data = _xlsx_errors_patch(data, errors.get(sheet, []))
+            elif arrays and info.filename == "[Content_Types].xml":
+                data = _insert_once(data, b"</Types>", _XLSX_METADATA_TYPE)
+            elif arrays and info.filename == "xl/_rels/workbook.xml.rels":
+                n = max((int(m) for m in re.findall(rb'Id="rId(\d+)"', data)), default=0) + 1
+                rel = _XLSX_METADATA_REL.replace(b"{id}", str(n).encode())
+                data = _insert_once(data, b"</Relationships>", rel)
             z.writestr(info, data)
+        if arrays:
+            z.writestr("xl/metadata.xml", _XLSX_METADATA)
+
+
+# The cell metadata that marks a formula as a dynamic array (`cm="1"`), as
+# Excel and XlsxWriter write it.
+_XLSX_METADATA = (
+    b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    b'<metadata xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+    b' xmlns:xda="http://schemas.microsoft.com/office/spreadsheetml/2017/dynamicarray">'
+    b'<metadataTypes count="1"><metadataType name="XLDAPR" minSupportedVersion="120000"'
+    b' copy="1" pasteAll="1" pasteValues="1" merge="1" splitFirst="1" rowColShift="1"'
+    b' clearFormats="1" clearComments="1" assign="1" coerce="1" cellMeta="1"/>'
+    b'</metadataTypes><futureMetadata name="XLDAPR" count="1"><bk><extLst>'
+    b'<ext uri="{bdbb8cdc-fa1e-496e-a857-3c3f30c029c3}">'
+    b'<xda:dynamicArrayProperties fDynamic="1" fCollapsed="0"/></ext></extLst></bk>'
+    b'</futureMetadata><cellMetadata count="1"><bk><rc t="1" v="0"/></bk></cellMetadata>'
+    b"</metadata>"
+)
+_XLSX_METADATA_TYPE = (
+    b'<Override PartName="/xl/metadata.xml" ContentType='
+    b'"application/vnd.openxmlformats-officedocument.spreadsheetml.sheetMetadata+xml"/>'
+)
+_XLSX_METADATA_REL = (
+    b'<Relationship Id="rId{id}" Type='
+    b'"http://schemas.openxmlformats.org/officeDocument/2006/relationships/sheetMetadata"'
+    b' Target="metadata.xml"/>'
+)
+
+
+def _insert_once(data: bytes, marker: bytes, new: bytes) -> bytes:
+    """``data`` with ``new`` before its one ``marker``."""
+    if data.count(marker) != 1:
+        raise ValueError(f"unexpected xlsx layout at {marker!r}; dynamic arrays not written")
+    return data.replace(marker, new + marker)
+
+
+def _xlsx_errors_patch(data: bytes, cells: list[tuple[str, str]]) -> bytes:
+    """Turn each ``(cell, code)`` formula in one worksheet part into an error value."""
+    for cell, code in cells:
+        head = b'<c r="' + cell.encode() + b'"'
+        new = head + rb'\1 t="e"><v>' + code.encode() + b"</v></c>"
+        pat = re.escape(head) + rb'((?: [\w:]+="[^"]*")*)><f>[^<]*</f>(?:<v>[^<]*</v>)?</c>'
+        data, n = re.subn(pat, new, data)
+        if n != 1:
+            raise ValueError(f"unexpected worksheet layout at {cell}; error value not written")
+    return data
+
+
+def _xlsx_arrays_patch(data: bytes, cells: list[tuple[str, str]]) -> bytes:
+    """Mark each ``(cell, span)`` formula in one worksheet part as a dynamic array."""
+    for cell, span in cells:
+        head = b'<c r="' + cell.encode() + b'"'
+        new = head + rb'\1 cm="1"><f t="array" ref="' + span.encode() + b'">'
+        data, n = re.subn(re.escape(head) + rb'((?: [\w:]+="[^"]*")*)><f>', new, data)
+        if n != 1:
+            raise ValueError(f"unexpected worksheet layout at {cell}; dynamic array not written")
+    return data
 
 
 def _xlsx_read_widths(filename: str, root: Any) -> dict[str, tuple[float | None, dict[int, int]]]:
@@ -1377,18 +1702,26 @@ def _xlsx_read_widths(filename: str, root: Any) -> dict[str, tuple[float | None,
 _XML_INVALID = re.compile("[^\t\n\r\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
 
 
+def _sheet_name_error(name: str) -> str | None:
+    """Why Excel would reject ``name`` as a sheet name, or None."""
+    if _XML_INVALID.search(name):
+        return f"sheet name {name!r} has a control character, which xlsx cannot hold"
+    if not name.strip() or len(name) > 31:
+        return f"sheet name {name!r} must be 1-31 characters for xlsx"
+    if any(ch in name for ch in ":\\/?*[]") or name[0] == "'" or name[-1] == "'":
+        return f"sheet name {name!r} has a character xlsx forbids (: \\ / ? * [ ] or edge ')"
+    if name.lower() == "history":
+        return "sheet name 'History' is reserved in xlsx"
+    return None
+
+
 def _xlsx_sheet_name_error(names: list[str]) -> str | None:
     """Why Excel would reject this list of sheet names, or None."""
     seen: set[str] = set()
     for name in names:
-        if _XML_INVALID.search(name):
-            return f"sheet name {name!r} has a control character, which xlsx cannot hold"
-        if not name.strip() or len(name) > 31:
-            return f"sheet name {name!r} must be 1-31 characters for xlsx"
-        if any(ch in name for ch in ":\\/?*[]") or name[0] == "'" or name[-1] == "'":
-            return f"sheet name {name!r} has a character xlsx forbids (: \\ / ? * [ ] or edge ')"
-        if name.lower() == "history":
-            return "sheet name 'History' is reserved in xlsx"
+        err = _sheet_name_error(name)
+        if err:
+            return err
         if name.lower() in seen:
             return f"sheet name {name!r} differs from another only by case, which xlsx forbids"
         seen.add(name.lower())
@@ -1609,6 +1942,11 @@ def _rewrite_sheet_prefix(text: str, old: str, new: str) -> str:
                 i += 1
             continue
         prev = text[i - 1] if i > 0 else ""
+        sp = None if prev.isalnum() or prev == "_" else _span_at(text, i)
+        if sp:
+            out.append(sp.group(0))  # `rename_sheet` rewrites 3D qualifiers itself
+            i = sp.end()
+            continue
         q = None if prev.isalnum() or prev == "_" else _SHEET_QUAL_RE.match(text, i)
         if q:
             quoted, bare = q.group(1), q.group(2)
@@ -1810,6 +2148,11 @@ class Grid:
         """
         if self._sheet_by_name(name) is not None:
             raise ValueError(f"sheet {name!r} already exists")
+        # Checked here, not only at xlsx export, so a workbook never holds a
+        # name it cannot be saved under. A loaded file's names are kept as is.
+        err = _sheet_name_error(name)
+        if err:
+            raise ValueError(err)
         sh = Sheet(name=name)
         self.sheets.append(sh)
         self._dep_graph_built = False  # formulas that already name it now resolve
@@ -1821,13 +2164,33 @@ class Grid:
         idx = next((i for i, s in enumerate(self.sheets) if s.name == name), -1)
         if idx < 0:
             raise KeyError(name)
+        order = [s.name for s in self.sheets]
         del self.sheets[idx]
+
+        def shrink(first: str, last: str) -> tuple[str, str] | str | None:
+            # As Excel: a deleted end moves inward; a span of only it is #REF!.
+            folded = [n.casefold() for n in order]
+            try:
+                i, j = folded.index(first.casefold()), folded.index(last.casefold())
+            except ValueError:
+                return None
+            if name not in (order[i], order[j]):
+                return None
+            rest = [n for n in order[min(i, j) : max(i, j) + 1] if n != name]
+            if not rest:
+                return "#REF!"
+            return (rest[0], rest[-1]) if i <= j else (rest[-1], rest[0])
+
         # As Excel: `=Sheet1!A2*2` becomes `=#REF!*2`, so a later sheet of the
         # same name does not revive it.
         for sh in self.sheets:
             for cl in sh._cells.values():
                 if cl.type == FORMULA:
-                    new = _rewrite_refs_on_sheet(cl.text, sh.name, name, lambda a, b: None)
+                    if self.mode != Mode.PYTHON:
+                        cl.text = _rewrite_span_quals(cl.text, shrink)
+                    new = _rewrite_refs_on_sheet(
+                        cl.text, sh.name, name, lambda a, b: None, self.mode != Mode.PYTHON
+                    )
                     if new is not None:
                         cl.text = new
         self._dep_graph_built = False
@@ -1858,6 +2221,7 @@ class Grid:
         self.sheets.insert(new_idx, sh)
         # Restore active by identity.
         self.active = self.sheets.index(active_sheet)
+        self._dep_graph_built = False  # a 3D reference spans sheets by position
 
     def rename_sheet(self, old: str, new: str) -> None:
         """Rename a sheet and rewrite formula text that references the old name.
@@ -1876,13 +2240,26 @@ class Grid:
             raise ValueError(f"sheet {new!r} already exists")
         if target is None:
             raise KeyError(old)
+        err = _sheet_name_error(new)
+        if err:
+            raise ValueError(err)
         target.name = new
+        folded = old.casefold()
+
+        def renamed(a: str, b: str) -> tuple[str, str] | None:
+            if folded not in (a.casefold(), b.casefold()):
+                return None
+            return (new if a.casefold() == folded else a, new if b.casefold() == folded else b)
+
         # Rewrite formula text that references the old sheet name.
         for sh in self.sheets:
             for cl in sh._cells.values():
                 if cl.type != FORMULA:
                     continue
-                rewritten = _rewrite_sheet_prefix(cl.text, old, new)
+                rewritten = cl.text
+                if self.mode != Mode.PYTHON:
+                    rewritten = _rewrite_span_quals(rewritten, renamed)
+                rewritten = _rewrite_sheet_prefix(rewritten, old, new)
                 if rewritten != cl.text:
                     cl.text = rewritten
                     cl.ast = None
@@ -2091,7 +2468,7 @@ class Grid:
             return
         if named is None:
             named = self._dep_named_ranges()
-        deps = extract_deps(cl.ast, named, formula_sheet=sheet)
+        deps = extract_deps(cl.ast, named, formula_sheet=sheet, sheet_span=self._sheet_span)
         volatile = has_dynamic_refs(cl.ast)
         self._register_deps(key, deps, volatile)
 
@@ -2127,6 +2504,9 @@ class Grid:
         elif (num := parse_number(text.rstrip())) is not None:
             cl.val = num
             cl.type = NUM
+        elif self.mode != Mode.PYTHON and (const := _constant(text)) is not None:
+            cl.type = NUM
+            cl.text, cl.val, cl.sval, cl.err = const
         else:
             cl.type = LABEL
             cl.val = 0
@@ -2509,6 +2889,15 @@ class Grid:
             return None
         return cl.text if cl.text.startswith("=") else f"={cl.text}"
 
+    def _sheet_span(self, first: str, last: str) -> list[str] | None:
+        """The sheets from ``first`` to ``last`` in workbook order, either way round."""
+        folded = [s.name.casefold() for s in self.sheets]
+        try:
+            i, j = sorted((folded.index(first.casefold()), folded.index(last.casefold())))
+        except ValueError:
+            return None
+        return [s.name for s in self.sheets[i : j + 1]]
+
     def _cell_lookup_value(self, c: int, r: int, sheet: str | None = None) -> object:
         sh = self.sheets[self.active] if sheet is None else self._sheet_by_name(sheet)
         if sh is None:
@@ -2874,6 +3263,7 @@ class Grid:
         named = self._build_named_ranges()
         env = Env(
             cell_value=self._cell_lookup_value,
+            sheet_span=self._sheet_span,
             builtins=self._eval_globals,
             named_ranges=named,
             py_registry=py_registry,
@@ -3070,7 +3460,9 @@ class Grid:
             for cl in sheet._cells.values():
                 if cl.type != FORMULA:
                     continue
-                new = _rewrite_refs_on_sheet(cl.text, sheet.name, edited, move)
+                new = _rewrite_refs_on_sheet(
+                    cl.text, sheet.name, edited, move, self.mode != Mode.PYTHON
+                )
                 if new is not None:
                     cl.text = new
 
@@ -3319,7 +3711,8 @@ class Grid:
             return
 
         # Formula: rewrite refs by replicate offset.
-        self._setcell_no_recalc(dc, dr, adjust_refs(src.text, dc - sc, dr - sr))
+        whole = self.mode != Mode.PYTHON
+        self._setcell_no_recalc(dc, dr, adjust_refs(src.text, dc - sc, dr - sr, whole))
         dst = self._cells.get((dc, dr))
         if dst is not None:
             dst.fmt = src.fmt
@@ -3365,6 +3758,8 @@ class Grid:
                     continue
                 if isinstance(v, str):
                     text = v
+                elif isinstance(v, bool):
+                    text = "TRUE" if v else "FALSE"
                 elif isinstance(v, (int, float)):
                     if isinstance(v, int) or (abs(v) < 1e15 and v == int(v)):
                         text = str(int(v))
@@ -3374,7 +3769,8 @@ class Grid:
                 else:
                     continue
                 if label:
-                    self._put_label(c_idx, r_idx, text)
+                    # Marked, so an edit that keeps the text keeps a label.
+                    self._put_label(c_idx, r_idx, _label_text(text))
                 else:
                     self._setcell_no_recalc(c_idx, r_idx, text)
                 cl = self._cells.get((c_idx, r_idx))
@@ -3638,6 +4034,8 @@ class Grid:
                 if not sc or sc.type == EMPTY or sc.type == SPILL:
                     row.append(None)
                     continue
+                elif is_constant(sc):
+                    row.append(sc.text)  # TRUE or an error code reloads as itself
                 elif sc.type == NUM:
                     if math.isinf(sc.val):
                         # JSON has no infinity. Only a solver or goal seek writes
@@ -3655,7 +4053,9 @@ class Grid:
                 # A label whose text would load back as a number or formula
                 # (an imported "00123") says so; older readers ignore the key.
                 label = sc.type == LABEL and (
-                    sc.text.startswith("=") or parse_number(sc.text.rstrip()) is not None
+                    sc.text.startswith("=")
+                    or parse_number(sc.text.rstrip()) is not None
+                    or _constant(sc.text) is not None
                 )
 
                 has_style = sc.bold or sc.underline or sc.italic or sc.fmt or sc.fmtstr or label
@@ -3804,14 +4204,14 @@ class Grid:
             self.active = sheet_index[sname]
             datefmt = normalise_format(numfmt_code, numfmt_id)
             if kind == "s":
-                self._put_label(c, r, _label_source(value))
+                self._put_label(c, r, _label_text(value))
             elif kind == "e":
                 if parse_error_literal(value) is not None:
-                    self._setcell_no_recalc(c, r, "=" + value)
+                    self._put_constant(c, r, value)
                 else:
-                    self._put_label(c, r, _label_source(value))
+                    self._put_label(c, r, _label_text(value))
             elif kind == "b":
-                self._setcell_no_recalc(c, r, "=TRUE" if value else "=FALSE")
+                self._put_constant(c, r, "TRUE" if value else "FALSE")
             elif kind == "n":
                 if not math.isfinite(value):
                     continue
@@ -3842,6 +4242,17 @@ class Grid:
         self.recalc()
         self.dirty = 0
         self.filename = filename
+
+    def _put_constant(self, c: int, r: int, text: str) -> None:
+        """Store a logical or error constant on the active sheet, in any mode."""
+        const = _constant(text)
+        if const is None:
+            self._setcell_no_recalc(c, r, text)
+            return
+        self._setcell_no_recalc(c, r, '"' + text)  # a label first: clears the cell
+        cl = self._cells[(c, r)]
+        cl.type = NUM
+        cl.text, cl.val, cl.sval, cl.err = const
 
     def _put_label(self, c: int, r: int, text: str) -> None:
         """Store ``text`` as a label on the active sheet without parsing it."""
@@ -3889,6 +4300,8 @@ class Grid:
         # historical values-only behavior.
         preserve_formulas = self.mode == Mode.EXCEL
         payload: list[tuple[Any, ...]] = []
+        arrays: dict[str, list[tuple[str, str]]] = {}
+        errors: dict[str, list[tuple[str, str]]] = {}
         for s in self.sheets:
             for (c, r), cl in s._cells.items():
                 if cl.type == EMPTY:
@@ -3901,9 +4314,17 @@ class Grid:
                 if cl.type == LABEL:
                     text = label_value(cl.text)
                     payload.append((s.name, c, r, "s", text, "", style))
+                elif is_constant(cl):
+                    if cl.err is not None:
+                        # OpenXLSX writes no error cell; the postprocess turns
+                        # this formula into one.
+                        payload.append((s.name, c, r, "f", cl.text, None, numfmt, style))
+                        errors.setdefault(s.name, []).append((cellname(c, r), cl.text))
+                    else:
+                        payload.append((s.name, c, r, "b", cl.val, "", style))
                 elif cl.type == NUM:
                     payload.append((s.name, c, r, "n", float(cl.val), numfmt, style))
-                elif cl.type == FORMULA or (cl.type == SPILL and not preserve_formulas):
+                elif cl.type in (FORMULA, SPILL):
                     # The cached result: a bool or a finite float. A text or
                     # error result is written with no cached value.
                     val = cl.val
@@ -3915,7 +4336,16 @@ class Grid:
                         elif math.isfinite(val):
                             cached = float(val)
                     if preserve_formulas and cl.type == FORMULA and cl.text:
-                        payload.append((s.name, c, r, "f", cl.text, cached, numfmt, style))
+                        text = _add_xl_prefixes(cl.text)
+                        payload.append((s.name, c, r, "f", text, cached, numfmt, style))
+                        if cl.arr:
+                            # Without the dynamic-array flag Excel reads it as
+                            # `=@...` and keeps one value.
+                            rows, cols = cl.spill_shape or (1, 1)
+                            span = cellname(c, r)
+                            if (rows, cols) != (1, 1):
+                                span += ":" + cellname(c + cols - 1, r + rows - 1)
+                            arrays.setdefault(s.name, []).append((cellname(c, r), span))
                     elif result is not None:
                         payload.append((s.name, c, r, "s", result, "", style))
                     elif isinstance(cached, bool):
@@ -3940,7 +4370,7 @@ class Grid:
 
         def write(path: str) -> None:
             _xlsx_write_cells(path, payload, sheet_names)
-            _xlsx_postprocess(path, names_xml, self.cw, widths)
+            _xlsx_postprocess(path, names_xml, self.cw, widths, arrays, errors)
 
         return self._save_via(filename, write)
 

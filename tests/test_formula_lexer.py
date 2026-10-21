@@ -249,3 +249,26 @@ class TestParseNumber:
         from gridcalc.formula.lexer import parse_number
 
         assert parse_number(text) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "kept"),
+    [
+        ("12345678901234567", "12345678901234500"),
+        ("-0.12345678901234567", "-0.123456789012345"),
+        ("1.2345678901234567e300", "1.23456789012345E+300"),
+        ("123456789012345", "123456789012345"),
+        ("3.14", "3.14"),
+        ("abc12345678901234567", "abc12345678901234567"),
+        ("=12345678901234567", "=12345678901234567"),
+    ],
+)
+def test_a_typed_number_keeps_15_significant_digits(text: str, kept: str) -> None:
+    from gridcalc.formula.lexer import entry_text
+
+    assert entry_text(text) == kept
+
+
+def test_a_number_literal_keeps_15_significant_digits() -> None:
+    num = [t.value for t in tokenize("=12345678901234567-12345678901234500") if t.kind == NUMBER]
+    assert num[0] == num[1]

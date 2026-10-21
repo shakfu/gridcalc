@@ -23,6 +23,7 @@ from .ast_nodes import (
     Percent,
     PyCall,
     RangeRef,
+    Ref3D,
     SpillRef,
     String,
     UnaryOp,
@@ -61,6 +62,7 @@ class Env:
         cell_is_formula: Callable[..., bool] | None = None,
         cell_spill_value: Callable[..., object] | None = None,
         cell_formula_text: Callable[..., object] | None = None,
+        sheet_span: Callable[[str, str], list[str] | None] | None = None,
     ) -> None:
         # `cell_value` is `(c, r, sheet=None) -> object`; `cell_is_formula`
         # is `(c, r, sheet=None) -> bool`. The single-sheet case keeps
@@ -87,6 +89,9 @@ class Env:
         # (leading '=' included) of a formula cell, else None. Backs
         # FORMULATEXT.
         self.cell_formula_text = cell_formula_text or (lambda _c, _r, _s=None: None)
+        # `sheet_span(first, last)` names the sheets a 3D reference covers, in
+        # workbook order, or None when either end does not exist.
+        self.sheet_span = sheet_span or (lambda _a, _b: None)
         # Set by recalc before evaluating each formula. Functions in
         # `RAW_ARG_FUNCS` (e.g. ROW(), COLUMN()) consult this when called
         # with no arguments.
@@ -270,10 +275,10 @@ def _to_number_or_zero(v: object) -> float | ExcelError:
     return 0.0
 
 
-# Exponents outside [-10, 20) are written in scientific form. Excel gives
-# 1E-10 as "0.0000000001" and 1E+20 as "1E+20" (docs/dev/excel-check.md);
-# the lower bound is the smallest exponent checked, not a measured edge.
-_DECIMAL_EXP = range(-10, 20)
+# Plain text longer than this, sign excluded, is written in scientific form.
+# The bound fits all 19 `text-*` cases in docs/dev/excel-check.md; Microsoft
+# does not document it.
+_PLAIN_MAX = 20
 
 
 def number_text(v: float) -> str:
@@ -286,13 +291,15 @@ def number_text(v: float) -> str:
     e = int(exp)
     digits = mant.lstrip("-").replace(".", "").rstrip("0")
     sign = "-" if v < 0 else ""
-    if e not in _DECIMAL_EXP:
-        frac = f".{digits[1:]}" if len(digits) > 1 else ""
-        return f"{sign}{digits[0]}{frac}E{'-' if e < 0 else '+'}{abs(e):02d}"
     if e < 0:
-        return f"{sign}0.{'0' * (-e - 1)}{digits}"
-    whole, frac = digits[: e + 1].ljust(e + 1, "0"), digits[e + 1 :]
-    return f"{sign}{whole}.{frac}" if frac else sign + whole
+        plain = f"0.{'0' * (-e - 1)}{digits}"
+    else:
+        whole, frac = digits[: e + 1].ljust(e + 1, "0"), digits[e + 1 :]
+        plain = f"{whole}.{frac}" if frac else whole
+    if len(plain) <= _PLAIN_MAX:
+        return sign + plain
+    frac = f".{digits[1:]}" if len(digits) > 1 else ""
+    return f"{sign}{digits[0]}{frac}E{'-' if e < 0 else '+'}{abs(e):02d}"
 
 
 def _to_string(v: object) -> str | ExcelError:
@@ -624,6 +631,55 @@ def _eval_range(node: RangeRef, env: Env) -> Any:
     return result
 
 
+# The functions Excel accepts a 3D reference in. Anywhere else it is #VALUE!.
+_3D_FUNCS = frozenset(
+    {
+        "sum",
+        "average",
+        "averagea",
+        "count",
+        "counta",
+        "max",
+        "maxa",
+        "min",
+        "mina",
+        "product",
+        "stdev",
+        "stdev.s",
+        "stdev.p",
+        "stdeva",
+        "stdevp",
+        "stdevpa",
+        "var",
+        "var.s",
+        "var.p",
+        "vara",
+        "varp",
+        "varpa",
+    }
+)
+
+
+def _ref3d_values(node: Ref3D, env: Env) -> Any:
+    """The cells of a 3D reference on each sheet it spans, as one ``Vec``."""
+    sheets = env.sheet_span(node.first, node.last)
+    if sheets is None:
+        return ExcelError.REF
+    data: list[Any] = []
+    for sheet in sheets:
+        start = CellRef(node.start.col, node.start.row, False, False, sheet)
+        end = CellRef(node.end.col, node.end.row, False, False, sheet)
+        data.extend(_eval_range(RangeRef(start, end), env).data)
+    from ..engine import Vec
+
+    return Vec(data)
+
+
+def _eval_ref3d(node: Ref3D, env: Env) -> Any:
+    # Reached only outside the argument list of a `_3D_FUNCS` function.
+    return ExcelError.VALUE
+
+
 def _eval_spill(node: SpillRef, env: Env) -> Any:
     a = node.anchor
     return env.get_spill(a.col, a.row, a.sheet)
@@ -730,8 +786,9 @@ _CRITERIA_FUNCS = frozenset(
 
 # Aggregates that coerce a value typed directly as an argument (`SUM("3",TRUE)`
 # is 4) but skip the same value read from a cell or range. COUNT skips
-# non-numeric text instead of failing on it. AND/OR/XOR are here so typed text
-# is #VALUE! while text in a cell is skipped.
+# non-numeric text instead of failing on it. AND/OR/XOR are here so a typed
+# number counts and other typed text is skipped, as in Excel (`misc-3`,
+# `logic-1` in docs/dev/excel-check.md).
 _DIRECT_ARG_COERCE_FUNCS = frozenset(
     {
         "sum",
@@ -771,16 +828,24 @@ _DIRECT_ARG_COERCE_FUNCS = frozenset(
 )
 
 
+_REF_NODES = (CellRef, RangeRef, SpillRef, Ref3D)
+
+
 def _coerce_direct_args(name: str, nodes: tuple[Node, ...], env: Env) -> list[Any] | ExcelError:
     """Evaluate aggregate arguments, converting direct scalar values to numbers."""
     out: list[Any] = []
     for node in nodes:
-        raw = _eval(node, env)
-        is_ref = isinstance(raw, Reference) or isinstance(node, (CellRef, RangeRef, SpillRef))
+        raw = _ref3d_values(node, env) if isinstance(node, Ref3D) else _eval(node, env)
+        is_ref = isinstance(raw, Reference) or isinstance(node, _REF_NODES)
         if isinstance(node, Name) and not env.lookup_local(node.name)[0]:
             is_ref = True  # a named range
         v = _deref(raw, env)
         if not is_ref and isinstance(v, (bool, str)):
+            if name in ("and", "or", "xor") and isinstance(v, str):
+                u = v.strip().upper()
+                if u in ("TRUE", "FALSE"):
+                    out.append(u == "TRUE")
+                continue
             n = _to_number(v)
             if isinstance(n, ExcelError) and name != "count":
                 return n
@@ -1157,6 +1222,9 @@ def _eval_call(node: Call, env: Env) -> Any:
             return ExcelError.VALUE
     if name_lower in ("sumif", "averageif"):
         node = resize_sum_range(node)
+    has_3d = any(isinstance(a, Ref3D) for a in node.args)
+    if has_3d and name_lower not in _3D_FUNCS:
+        return ExcelError.VALUE
     # Normal (value) functions receive materialised values: any Reference
     # argument (from a nested OFFSET) is dereferenced before the call.
     if name_lower in _DIRECT_ARG_COERCE_FUNCS:
@@ -1164,6 +1232,11 @@ def _eval_call(node: Call, env: Env) -> Any:
         if isinstance(coerced, ExcelError):
             return coerced
         args = coerced
+    elif has_3d:
+        args = [
+            _ref3d_values(a, env) if isinstance(a, Ref3D) else _deref(_eval(a, env), env)
+            for a in node.args
+        ]
     else:
         args = [_deref(_eval(a, env), env) for a in node.args]
     positions, _ = _param_info(name_lower, fn)
@@ -1283,6 +1356,7 @@ _EVAL: dict[type, Callable[[Any, Env], Any]] = {
     ArrayLit: _eval_array,
     CellRef: _eval_cell,
     RangeRef: _eval_range,
+    Ref3D: _eval_ref3d,
     SpillRef: _eval_spill,
     Name: _eval_name,
     Call: _eval_call,

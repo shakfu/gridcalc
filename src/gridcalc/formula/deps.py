@@ -6,6 +6,7 @@ topological recalc. Pure-AST analysis: no evaluation.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import NamedTuple, cast
 
 from .ast_nodes import (
@@ -18,6 +19,7 @@ from .ast_nodes import (
     Percent,
     PyCall,
     RangeRef,
+    Ref3D,
     SpillRef,
     UnaryOp,
 )
@@ -43,6 +45,9 @@ class RangeKey(NamedTuple):
 
 
 DepKey = CellKey | RangeKey
+
+# `(first, last) -> sheet names in workbook order`, or None for a missing end.
+SheetSpan = Callable[[str, str], "list[str] | None"]
 
 
 # Functions whose read set depends on a value, not on static text. Cells
@@ -138,6 +143,7 @@ def extract_deps(
     node: Node,
     named_ranges: dict[str, Node] | None = None,
     formula_sheet: str | None = None,
+    sheet_span: SheetSpan | None = None,
 ) -> set[DepKey]:
     """As `extract_refs`, but a multi-cell range is one `RangeKey`, not its cells.
 
@@ -145,7 +151,7 @@ def extract_deps(
     range cost N + size edges rather than N * size.
     """
     out: set[DepKey] = set()
-    _walk(node, named_ranges or {}, out, formula_sheet, True)
+    _walk(node, named_ranges or {}, out, formula_sheet, True, sheet_span)
     return out
 
 
@@ -176,20 +182,28 @@ def _walk(
     out: set[DepKey],
     formula_sheet: str | None,
     collapse: bool,
+    span: SheetSpan | None = None,
 ) -> None:
     if type(node) is CellRef:
         sheet = node.sheet if node.sheet is not None else formula_sheet
         out.add((sheet, node.col, node.row))
     elif type(node) is BinOp:
-        _walk(node.left, named, out, formula_sheet, collapse)
-        _walk(node.right, named, out, formula_sheet, collapse)
+        _walk(node.left, named, out, formula_sheet, collapse, span)
+        _walk(node.right, named, out, formula_sheet, collapse, span)
     elif type(node) is Call:
         # An address-only function uses a reference argument for its address,
         # not its value; any other argument (`ROWS(FILTER(...))`) is read.
         address_only = node.name.upper() in ADDRESS_ONLY_FUNCS
         for a in resize_sum_range(node).args:
             if not (address_only and type(a) in (CellRef, RangeRef, Name)):
-                _walk(a, named, out, formula_sheet, collapse)
+                _walk(a, named, out, formula_sheet, collapse, span)
+    elif type(node) is Ref3D:
+        # One range per sheet in the span. Sheet order is not tracked here:
+        # adding, moving or removing a sheet rebuilds the whole graph.
+        for sheet in (span(node.first, node.last) if span else None) or ():
+            start = CellRef(node.start.col, node.start.row, False, False, sheet)
+            end = CellRef(node.end.col, node.end.row, False, False, sheet)
+            _walk(RangeRef(start, end), named, out, formula_sheet, collapse, span)
     elif type(node) is RangeRef:
         sheet = node.start.sheet if node.start.sheet is not None else formula_sheet
         c1, c2 = sorted([node.start.col, node.end.col])
@@ -200,7 +214,7 @@ def _walk(
         else:
             out.update(key.cells())
     elif type(node) is UnaryOp or type(node) is Percent:
-        _walk(node.operand, named, out, formula_sheet, collapse)
+        _walk(node.operand, named, out, formula_sheet, collapse, span)
     elif type(node) is SpillRef:
         # A spill range depends on its anchor: when the anchor's array
         # changes, the whole spill (and its consumers) must recompute.
@@ -210,12 +224,12 @@ def _walk(
     elif type(node) is Name:
         target = named.get(node.name.lower())
         if target is not None:
-            _walk(target, named, out, formula_sheet, collapse)
+            _walk(target, named, out, formula_sheet, collapse, span)
     elif type(node) is Apply:
-        _walk(node.func, named, out, formula_sheet, collapse)
+        _walk(node.func, named, out, formula_sheet, collapse, span)
         for a in node.args:
-            _walk(a, named, out, formula_sheet, collapse)
+            _walk(a, named, out, formula_sheet, collapse, span)
     elif type(node) is PyCall:
         for a in node.args:
-            _walk(a, named, out, formula_sheet, collapse)
+            _walk(a, named, out, formula_sheet, collapse, span)
     # Constants have no refs.

@@ -91,10 +91,12 @@ from ..engine import (
     NUM,
     SPILL,
     Grid,
+    Mode,
     adjust_refs,
     col_name,
     ref,
 )
+from ..formula.lexer import entry_text
 from ..loader import demo_grid, load_workbook, needs_trust, save_workbook
 from ..opt import OptError, OptModel, cells_to_spec, parse_bounds, parse_cells
 from ..report import goal_json, solve_json, sweep_json
@@ -238,7 +240,7 @@ class Api:
         """
         g = self._g
         self._undo.save_cell(g, int(c), int(r))
-        g.setcell(int(c), int(r), text if text is not None else "")
+        g.setcell(int(c), int(r), entry_text(text) if text is not None else "")
         g.recalc()
         return self._touch()
 
@@ -390,9 +392,10 @@ class Api:
         if any(not (0 <= tc < NCOL and 0 <= tr < NROW) for tc, tr in dest):
             return {"ok": False, "error": "the paste does not fit on the sheet"}
         self._undo.save_grid(g)  # paste (and cut's source clear) can touch scattered cells
+        whole = g.mode != Mode.PYTHON
         for cell in clip["cells"]:
             text = cell["text"]
-            adjusted = adjust_refs(text, dcol, drow) if text.startswith("=") else text
+            adjusted = adjust_refs(text, dcol, drow, whole) if text.startswith("=") else text
             g.setcell(c + cell["dc"], r + cell["dr"], adjusted)
         if clip["cut"]:
             for cell in clip["cells"]:
@@ -453,18 +456,23 @@ class Api:
         if direction not in ("down", "right"):
             return {"ok": False}
         self._undo.save_region(g, c0, r0, c1, r1)
+        whole = g.mode != Mode.PYTHON
         if direction == "down":
             for c in range(c0, c1 + 1):
                 for r in range(r0 + n, r1 + 1):
                     sr = r0 + (r - r0) % n
                     text = self._source_at(c, sr)
-                    g.setcell(c, r, adjust_refs(text, 0, r - sr) if text.startswith("=") else text)
+                    if text.startswith("="):
+                        text = adjust_refs(text, 0, r - sr, whole)
+                    g.setcell(c, r, text)
         else:
             for r in range(r0, r1 + 1):
                 for c in range(c0 + n, c1 + 1):
                     sc = c0 + (c - c0) % n
                     text = self._source_at(sc, r)
-                    g.setcell(c, r, adjust_refs(text, c - sc, 0) if text.startswith("=") else text)
+                    if text.startswith("="):
+                        text = adjust_refs(text, c - sc, 0, whole)
+                    g.setcell(c, r, text)
         g.recalc()
         return self._touch()
 
@@ -622,6 +630,7 @@ class Api:
         except (IndexError, KeyError, ValueError) as exc:
             self._undo.discard_last()
             return {"ok": False, "error": self._sheet_error(exc, name), **self.sheets()}
+        self._g.recalc()  # a 3D reference spans sheets by position
         return {**self._touch(), **self.sheets()}
 
     @staticmethod

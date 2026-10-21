@@ -41,4 +41,13 @@ The dependency graph is keyed on `(sheet, col, row)`, so cross-sheet recalculati
 
 Inserting, deleting or swapping rows and columns moves only the references that resolve against the edited sheet. A formula on another sheet that names this one follows the edit; one on this sheet that names another is left alone, because that sheet's lines did not move.
 
-Cross-sheet *ranges* (`Sheet1!A1:Sheet2!B5`) are not supported. Neither does Excel, and they would defeat the static dependency analysis -- see [Limitations](../reference/limitations.md).
+Cross-sheet *ranges* (`Sheet1!A1:Sheet2!B5`) are not supported. Neither does Excel.
+
+## 3D references
+
+A 3D reference reads the same cells on a run of sheets: `=SUM(Jan:Mar!B2)` adds B2 on `Jan`, `Mar` and every sheet between them. Quote the span when a name needs it: `='Q1 a:Q4 b'!A1`.
+
+- The run is by sheet position. Moving a sheet into or out of it changes the result.
+- Only `SUM`, `AVERAGE`, `COUNT`, `COUNTA`, `MAX`, `MIN`, `PRODUCT`, the `STDEV` and `VAR` families and their `A` forms accept one, as in Excel. Elsewhere it gives `#VALUE!`.
+- Renaming an end rewrites the reference. Deleting an end moves it inward; deleting the only sheet gives `#REF!`.
+- Copying shifts it like any reference. Inserting or deleting rows on one sheet of the run does not.

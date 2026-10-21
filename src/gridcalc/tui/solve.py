@@ -105,6 +105,7 @@ def _write_sensitivity(
             else:
                 cell.type = NUM
                 cell.val = float(value)
+                cell.sval = None
                 # Copy and replicate read `text`; empty text pasted as a blank.
                 cell.text = number_text(cell.val)
     g.recalc()

@@ -6,10 +6,6 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ## High
 
-### Security
-
-- [ ] **Modules without a facade are handed over whole.** `pandas`, `matplotlib`, `xlsxwriter`, `scipy`, `sympy` and any approved unknown module are module objects, and a module object reaches every module it imported: `pd.io.common.os` is `os`. The prompt labels them unrestricted. A pandas facade would not make pandas safe: `apply`, `agg`, `aggregate` and `transform` dispatch a method named by a string, so `df.apply("to_csv", path_or_buf=...)` writes a file past the validator's attribute check (verified on pandas 3.0.2). It needs a runtime guard on that dispatch first. `scipy` needs its public names collected per submodule; it, `matplotlib` and `xlsxwriter` are not installed in the dev environment. `sympy` cannot take a facade: most of its functions `eval` a string argument.
-
 ## Medium
 
 ### Optimization
@@ -42,10 +38,6 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 - [ ] **Undo gaps.** `:e` code edits, `:opt def`/`:opt undef` and `:width` (web `set_col_width`) record no undo entry. A workbook-level undo also reverts any width change made after its snapshot.
 
-- [ ] **Sheet names are validated only at xlsx export.** `add_sheet` and `rename_sheet` accept names Excel rejects (`a/b`, `Q?`, 32+ characters, `History`), so the workbook saves as JSON and fails as xlsx. Validate on creation and rename.
-
-- [ ] **Editing an imported label re-parses it.** xlsx text such as `00123` or `=SUM(1,2)` imports as a label and saves with `"label": true`. Committing an edit to it in either frontend turns it back into a number or a formula. Neither frontend has label-entry syntax that maps to the `label` key.
-
 - [ ] **xlsx styles gridcalc has no model for.** Number formats in the `[,][.N][f|e|%]` grammar, bold, italic, underline and left/right alignment cross both ways (see CHANGELOG). Font sizes, colours and faces, fills, borders, other alignments, merged cells, and number formats outside that grammar (currency symbols, colours, sections) are neither read nor written. Saving over a file that has them asks first. Adding any of them needs a place in `Cell` and in the JSON format.
 
 ### Security
@@ -56,7 +48,7 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 - [ ] **Unverified: `pager` or `editor` from `./gridcalc.toml` may reach a subprocess.** 0.7.0 says `editor` is ignored there. Probe artefact exists; outcome not confirmed. (REVIEW.md unchecked lead.)
 
-- [ ] **Unverified: `allowed_modules` from `./gridcalc.toml`.** If still honoured there, a directory can pre-approve `pandas`, which is handed over whole (see the facade entry above). Probe artefact exists; outcome not confirmed. (REVIEW.md unchecked lead.)
+- [ ] **Unverified: `allowed_modules` from `./gridcalc.toml`.** If still honoured there, a directory can pre-approve `pandas`, which is handed over whole (see the trust-prompt entry under Low). Probe artefact exists; outcome not confirmed. (REVIEW.md unchecked lead.)
 
 ### Documentation & infrastructure
 
@@ -102,19 +94,10 @@ Measurements for this section: `docs/dev/ironcalc.md`. Per-formula figures are f
 
 - [ ] **`Cell.ast` cache invalidates by text equality.** For very large sheets where many formulas share text, hashing the text would cut cache lookups; not a priority but worth measuring.
 
-- [ ] **A typed number keeps more than 15 digits.** Excel keeps 15 significant digits of a number literal or a typed cell value and zeroes the rest, so `=12345678901234567&""` is `12345678901234500` (`text-7`). gridcalc keeps the double. `num-1` in `excel-check.xlsx` confirms the cause.
 
-- [ ] **Confirm what `"<>"` criteria count.** gridcalc counts only numbers for `"<>3"`; Excel may also count text and blanks (`crit-8`, `crit-9`). Also unconfirmed: whether a D-function propagates an error in a matched row, as gridcalc does (`db-3`, `db-4`).
+- [ ] **Confirm whether a row insert on one sheet shifts a 3D reference.** gridcalc leaves `Jan:Mar!B2` unchanged. The `3d-1` hand check in `docs/dev/excel-check.md` settles it.
 
-- [ ] **Confirm where number-to-text switches to scientific form.** gridcalc uses plain decimals for exponents -10 to 19. Excel checked only at -10, 20 and -16 (`misc-2`). Cases `text-9`..`text-14` probe the rest.
-
-- [ ] **`YEARFRAC` bases 0 and 1.** Basis 0 misses the US 30/360 end-of-February rules: Feb 29 to Feb 28, and Feb 28 to Feb 29, each give 1 in Excel. Basis 1 averages year lengths for dates under a year apart; Excel uses 366 there when the span includes Feb 29 (`yf-2`, `yf-5`..`yf-7`). That rule is inferred from 4 cases; `yf-9`..`yf-20` test it and the 30/360 day rules.
-
-- [ ] **Excel disagreements found by `excel-check.xlsx`.** Each is a case id in `docs/dev/excel-check.md`.
-  - `FREQUENCY` with unsorted bins (`arr-2`): Excel gives `2,2,1`, gridcalc `4,0,1`.
-  - `TEXT(3,1)` (`misc-6`): Excel reads the number as the format code `"1"` and gives `"1"`.
-  - `OR`/`XOR` with a text literal (`misc-3`, `misc-4`): Excel gave `TRUE` inside an array formula. `misc-7` and `misc-8` check them as plain formulas.
-  - `IMSQRT("-4")` (`misc-2`): Excel gives `1.22464679914735E-16+2i`. Matching the residue is probably not worth it.
+- [ ] **`IMSQRT("-4")` keeps no residue.** Excel computes it in polar form and gives `1.22464679914735E-16+2i`; gridcalc gives `2i` (`misc-2`). Matching the residue is probably not worth it.
 
 - [ ] **`deps` over-approximates a shadowed named range.** When a `LET` name shadows a real named range the range stays recorded as a dep -- safe, just an occasional extra recalc; tighten only if it ever matters. (`LAMBDA`, the higher-order helpers, and true spill all shipped -- see CHANGELOG.)
 
@@ -139,17 +122,9 @@ Measurements for this section: `docs/dev/ironcalc.md`. Per-formula figures are f
 
   Decide first whether DataFrame growth means a richer formula API or grid integration (range to frame, spilling a frame), and whether frames get their own extra.
 
-- [ ] **3D range references (`Sheet1:Sheet3!A1:B2`).** Currently unsupported: `_expand_ranges` only recognises the `<ref>:<ref>` shape, so a sheet-span prefix passes through unexpanded and the formula evaluates to `nan`. Workaround in user files is to expand manually, e.g. `=SUM(Jan!B2:B3)+SUM(Feb!B2:B3)` instead of `=SUM(Jan:Feb!B2:B3)` (see `examples/example_multisheet.xlsx`). To implement: (1) extend `ref`/`refabs` to recognise the `<sheet>:<sheet>!<cell>[:<cell>]` shape; (2) add a pre-pass (or branch in `_expand_ranges`) that enumerates sheets between the two named endpoints in workbook order and emits a `Vec([...])` over every (sheet, cell) pair; (3) decide rebind semantics on `move_sheet`/`rename_sheet` -- Excel binds 3D refs to sheet *position* between the endpoints, so reordering changes which sheets are summed, while renaming an endpoint should rewrite the formula text the same way `_rewrite_sheet_prefix` handles single-sheet refs; (4) extend dependency tracking so cells in the spanned sheets register as subscribers, and a `move_sheet`/`add_sheet` between the endpoints invalidates the cached recalc.
-
 - [ ] **TUI keybindings system -- v2 generalisations.** All five contexts are wired (`grid`, `entry`, `visual`, `cmdline`, `search`) with curated action vocabularies; see `docs/keybindings.md`. Outstanding gaps for a future iteration: (a) **Removing hardcoded defaults.** `[keys.<ctx>] cancel = []` currently does *not* unbind Esc, because the hardcoded fallback chain still matches `ch == 27`. To make unbind work, the hardcoded chain has to migrate fully into `DEFAULT_KEYMAP` and the contexts must dispatch only via the action lookup. Mechanical but tedious. (b) **Bind-to-`:command`.** The action vocabulary is fixed at module load time. If users want `[keys.grid] save = [...]` where "save" runs `:w`, the schema has to grow a way to carry the command text alongside the key spec, and an `exec_command`-style action that takes parameters. Out of scope until someone asks. (c) **Pick-mode actions in entry.** The `KEY_UP`/`KEY_DOWN` cursor-pick sub-mode in `entry` is too tangled with local state to expose as actions today. Refactor it to a small state machine before binding it. (d) **Keymap warnings are erased.** They print inside the alternate screen, and the first draw clears them.
 
 - [ ] **xlsx interop level (c) for HYBRID and PYTHON mode.** EXCEL mode round-trips formulas today: `Grid.xlsxsave` emits kind `'f'` with the formula text and a cached value, and `_core.xlsx_write` sets `cell.formula()`. The remaining gap is the other two modes, whose syntax (`**`, list comprehensions, `py.*`) is not Excel grammar -- they still export values. Closing it needs a serialiser from the gridcalc AST to Excel-grammar text, and is only worth it for the subset that has an Excel equivalent.
-
-- [ ] **xlsx constant cells.** xlsx booleans import as `=TRUE`/`=FALSE` and error values as `=#N/A`-style formulas, because the engine has no boolean or error constant cell.
-
-- [ ] **xlsx export writes newer functions without their `_xlfn.` prefix.** Import strips `_xlfn.`, `_xlws.` and `_xlpm.`; export adds none back. Excel then likely reads `=XLOOKUP(...)` from a gridcalc file as an unknown name (`#NAME?`), which `scripts/excel_check.py` works around with its own prefix table. Not yet checked in Excel. Needs the list of functions Excel stores prefixed.
-
-- [ ] **Shared formulas past a shifted whole-column reference.** `adjust_refs` shifts `A1`-style references but not `B:B` or `1:1`, so a shared formula that uses one keeps the master's columns in every cell.
 
 - [ ] **Migration tool `gridcalc migrate file.json`.** Attempts to upgrade a PYTHON-mode file to HYBRID by reparsing each formula with the EXCEL grammar and reporting the unparseable ones.
 
@@ -162,6 +137,8 @@ Measurements for this section: `docs/dev/ironcalc.md`. Per-formula figures are f
 - [ ] **Plugin interface.** Allow third-party packages to register custom functions, commands, and cell formats via entry points or a plugin API.
 
 ### Security
+
+- [ ] **Say what approving a whole module means at the trust prompt.** Modules in `SIDE_EFFECT_MODULES` are handed over whole by design, and the trust prompt is the boundary: approving one approves code execution (`pd.read_pickle`, `pd.io.common.os`). A facade cannot contain pandas, since `df.agg("to_pickle", ...)` dispatches by string. The prompts label these modules only "unrestricted" (`tui/__init__.py`, `tui/commands.py`, `TrustDialog.tsx`); say they can run any code.
 
 - [ ] **Process isolation for PYTHON-mode recalc.** Only worth building if running untrusted workbook code becomes a supported feature; `LoadPolicy.formulas_only()` is the current answer everywhere but the TUI trust prompt. Buys a resource ceiling on every platform but filesystem confinement mainly on Linux. HYBRID's `py.*` gateway is a separate decision -- it is called mid-expression from the evaluator in the parent.
 

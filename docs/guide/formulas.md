@@ -38,6 +38,12 @@ In `EXCEL` and `HYBRID`, values convert as they do in Excel:
 
 - Numbers compare at 15 significant digits: `=0.1+0.2=0.3` is `TRUE`.
 
+- A typed number or number literal keeps 15 significant digits: `12345678901234567` is stored as `12345678901234500`.
+
+- A typed `TRUE`, `FALSE` or error code (`#N/A`) is a logical or error value, not text. Type `"TRUE` for the text.
+
+- `B:B` and `1:1` are whole-column and whole-row references. They cover the 1024-row, 256-column grid.
+
 - There is no infinity: an overflow such as `=1e308*10`, and `=0^0`, give `#NUM!`.
 
 - A blank cell inside a range is blank, not 0: `AVERAGE`, `MIN` and `COUNT` skip it. Arithmetic reads it as 0: `=SUM(A1:A3*2)`.

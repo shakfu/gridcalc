@@ -4008,3 +4008,13 @@ class TestTypedNumberInput:
         g.setcell(0, 0, text)
         assert g.cells[0][0].type == NUM
         assert g.cells[0][0].val == val
+
+
+@pytest.mark.parametrize("name", ["a/b", "Q?", "x" * 32, "History", "'quoted", " "])
+def test_a_sheet_name_excel_rejects_is_refused_on_add_and_rename(name) -> None:
+    g = Grid()
+    with pytest.raises(ValueError, match="sheet name"):
+        g.add_sheet(name)
+    with pytest.raises(ValueError, match="sheet name"):
+        g.rename_sheet(g.sheets[0].name, name)
+    assert [s.name for s in g.sheets] == ["Sheet1"]

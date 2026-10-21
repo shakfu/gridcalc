@@ -1126,8 +1126,9 @@ class TestCriteriaAuditFixes:
         assert COUNTIF(rng, "=") == 2
         # SUMIF over a non-blank criterion sums only the numeric non-blanks.
         assert SUMIF(rng, "<>") == 3.0
-        # A numeric "<>N" still ignores blanks (unchanged behaviour).
-        assert COUNTIF(Vec([1.0, None, 2.0]), "<>1") == 1  # type: ignore[list-item]
+        # A numeric "<>N" counts blanks and text, as in Excel (`crit-8`, `crit-9`).
+        assert COUNTIF(Vec([1.0, None, 2.0]), "<>1") == 2  # type: ignore[list-item]
+        assert COUNTIF(Vec([1.0, 2.0, "3", "a"]), "<>3") == 4  # type: ignore[list-item]
 
 
 class TestLookupAuditFixes:

@@ -13,6 +13,45 @@ For each file the report gives:
 
 Root mismatches are then counted by the functions their formulas call.
 
+## Survey of real workbooks
+
+`scripts/xlsx_survey.py` needs no saved values. For each file it reports load time, unparseable formulas, missing functions, what a save would drop (`loader.xlsx_extras`), and what an xlsx save and reload changes.
+
+    uv run python scripts/xlsx_survey.py --list files.txt --sample 2000 --json out.json
+
+Run 2026-10-24 on 2,000 files sampled from Sheetpedia (`tianzl66/Sheetpedia_xlsx` on Hugging Face, CC-BY-SA-4.0). It mixes Enron files and Excel-forum attachments. openpyxl re-saved every file, so none has saved values to compare.
+
+| | before | after |
+|-|-|-|
+| files loaded | 2,000 | 2,000 |
+| unparseable formulas (of 558,513) | 48,248 | 46,054 |
+| `#NAME?` results | 10,359 | 8,864 |
+| files a round trip changes | 208 | 0 |
+
+The fixes are in the CHANGELOG.
+
+A second round added tables, `AGGREGATE`, array broadcasting and frozen panes, and sped up loading (CHANGELOG). Same 2,000 files:
+
+| | after round 1 | after round 2 |
+|-|-|-|
+| unparseable formulas | 46,054 | 4,066 |
+| `#NAME?` results | 8,864 | 7,857 |
+| files a round trip changes | 0 | 0 |
+| slowest three loads, 8 in parallel | 50-60 s | 18-33 s |
+
+All 55 files with tables save and reload with the same tables and the same values. openpyxl reads the written table parts; no Excel or LibreOffice was available to open them. The corpus check moved to 76,683 of 79,104 (96.9%), 1,501 root mismatches, with no file worse. IronCalc's `tables.xlsx` keeps 35: `SUBTOTAL` there skips hidden and filtered rows, which gridcalc does not model.
+
+What remains after round 1 is below; round 2 closed the structured references, `AGGREGATE` and frozen panes.
+
+- Unparseable: structured references (`Table1[col]`), 42,182 cells in 55 files; references into other workbooks, 3,408 cells in 25 files. Those now show Excel's saved value. About 470 more are typos, `;` separators, or a reference union (`(A1:B2,C1:D2)`).
+- Missing functions: `AGGREGATE` (5 files), `FILTERXML`, `GETPIVOTDATA`, and user-defined functions.
+- A save drops, by files: conditional formatting 178, frozen panes 139, data validation 118, font effects 109, tables 106, comments 50, pivot tables 33, hyperlinks 30, charts 28, pattern fills 20, diagonal borders 15.
+- Loads take up to 60 s; three files took over 25 s.
+
+Rerunning the corpus check after these fixes: 76,476 of 79,104 agree (96.7%), 1,706 root mismatches. `BINOM.xlsx` now finishes; its 13 are argument checks that should give `#NUM!` or `#VALUE!`.
+
+GitHub code search finds no binary files: its `.xlsx` hits are CSV text. It cannot supply Excel-saved workbooks.
+
 ## Limits
 
 - Only `.xlsx` files are read. Many public spreadsheet corpora are `.xls`.

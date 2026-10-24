@@ -204,7 +204,8 @@ def read_styles(styles_xml: bytes | None, theme_xml: bytes | None) -> list[XStyl
                 kw["font"] = face[:31]
             if size and size != base[1] and 1 <= size <= 409:
                 kw["size"] = size
-            if col and col != base[2]:
+            # No colour on the default font is automatic: black.
+            if col and col != (base[2] or "000000"):
                 kw["color"] = col
             kw["strike"] = strike
         li = _index(xf.get("fillId"))

@@ -106,6 +106,28 @@ class Percent:
 
 
 @dataclass(frozen=True)
+class RangeOp:
+    """``left:right`` where a side is not a plain cell, as in
+    ``A1:INDEX(A:A, 5)``: the rectangle spanning both references."""
+
+    left: Node
+    right: Node
+
+
+@dataclass(frozen=True)
+class StructRef:
+    """A structured reference, `Table1[[#This Row],[Amount]]`. ``table`` is
+    None for a bare `[@Amount]`, which names the table holding the formula.
+    ``areas`` holds lower-case specifiers (`#all`, `#data`, `#headers`,
+    `#totals`, `#this row`); none means `#data`. No column means every one."""
+
+    table: str | None
+    areas: tuple[str, ...]
+    col1: str | None
+    col2: str | None
+
+
+@dataclass(frozen=True)
 class Missing:
     """An omitted argument, as in ``IF(1,,2)``. Evaluates to blank."""
 
@@ -135,4 +157,6 @@ Node = (
     | BinOp
     | UnaryOp
     | Percent
+    | RangeOp
+    | StructRef
 )

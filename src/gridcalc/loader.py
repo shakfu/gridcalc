@@ -50,8 +50,7 @@ def load_into(g: Grid, path: str | Path, policy: LoadPolicy | None = None) -> No
         rc = g.jsonload(p, policy=policy or _default_policy(p))
     if rc < 0:
         raise OSError(_failure("could not load workbook", p, g))
-    g.filename = p
-    g.recalc()
+    g.filename = p  # each loader ends with a full recalc; another would repeat it
 
 
 def _csv_into(g: Grid, path: str) -> None:
@@ -123,7 +122,6 @@ _SHEET_MARKERS = (
     (b"<conditionalFormatting", "conditional formatting"),
     (b"<dataValidation ", "data validation"),
     (b"<hyperlink ", "hyperlinks"),
-    (b"<pane ", "frozen panes"),
 )
 # Package parts gridcalc never writes.
 _PART_PREFIXES = (
@@ -132,7 +130,6 @@ _PART_PREFIXES = (
     ("xl/charts/", "charts"),
     ("xl/media/", "images"),
     ("xl/pivotTables/", "pivot tables"),
-    ("xl/tables/", "tables"),
     ("xl/vbaProject.bin", "macros"),
 )
 

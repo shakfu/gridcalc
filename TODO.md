@@ -9,11 +9,18 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 - [ ] **Corpus mismatches still open** (`docs/dev/excel-corpus.md`). Largest first:
   - Date text without a year (`"1/2"`) should read as that day this year, as Excel does; it gives `#VALUE!`.
   - A legacy formula keeps its rule only through copy and fill; pasting its text from the clipboard makes it dynamic. Excel keeps the `@` in the text instead.
-  - About 1,700 remain, none over 70 for one function: `INDEX` edge cases, `XLOOKUP` match modes, `CONVERT` units, `LCM`/`GCD`, `WEEKNUM`, `LINEST`, `IPMT`/`PPMT`, `XIRR`, `BINOM.INV` limits.
+  - About 1,700 remain, none over 70 for one function: `INDEX` edge cases, `XLOOKUP` match modes, `CONVERT` units, `LCM`/`GCD`, `WEEKNUM`, `LINEST`, `IPMT`/`PPMT`, `XIRR`.
   - `HYPGEOM.DIST`'s cumulative form sums one term per success and has no closed form here; a sample of a billion runs that long.
   - `ODDFPRICE` basis 2 and `ODDLPRICE` bases 2 and 3 differ from Excel by up to 0.1 per 100; the other bases match.
   - `BESSELJ` order 1 and up, for |x| >= 8, differs from Excel in the sixth digit. gridcalc's value is the more accurate one.
   - `A1#` on a cell that does not spill should be `#REF!`.
+  - `BINOM.DIST` with 1E30 trials is `#NUM!` in Excel; gridcalc gives 0. Excel saved no value for 1E10, so the limit is unknown.
+- [ ] **Real-workbook survey gaps** (`docs/dev/excel-corpus.md`, survey section). By files: conditional formatting (178), data validation (118), comments (50), hyperlinks (30). The reference union `(A1:B2,C1:D2)` does not parse.
+- [ ] **Hidden and filtered rows.** `SUBTOTAL` 1-11 skips rows a filter hides, and 101-111 also those hidden by hand; `AGGREGATE` options 1, 3, 5 and 7 likewise. gridcalc reads neither, so IronCalc's `tables.xlsx` has 35 mismatches. Needs per-sheet state in xlsx, JSON, insert/delete and undo.
+- [ ] **Tables:** editing a header cell should rename the column and rewrite the formulas that name it, as Excel does. A bare `[Qty]` inside a table is not read; `[@Qty]` is.
+- [ ] **Evaluator speed on large lambda formulas.** A `LET` over 12,516 rows with `BYROW`, `FILTER` and `MAP` per row (Sheetpedia `846882d...`) still reaches the 30 s limit. Element-wise operators and `IF` over Vecs dominate the profile.
+- [ ] **OpenXLSX reads about 7 us per cell**: a 1M-cell sheet takes 7 s before any Python runs.
+- [ ] **No Excel-saved real workbooks to check results against.** Sheetpedia lost its saved values when openpyxl re-saved it. The original Enron files are `.xls`, which gridcalc cannot read.
 
 ## Medium
 

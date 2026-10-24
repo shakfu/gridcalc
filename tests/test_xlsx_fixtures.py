@@ -297,14 +297,12 @@ class TestTableAndChart:
         g.set_active("Report")
         assert g.cells[0][0].val == 450.0  # =SUM(Sales!B2:B4)
 
-    def test_structured_reference_is_unsupported(self) -> None:
-        # =SUM(SalesTable[Amount]) -- structured references are not part of the
-        # formula grammar; the cell keeps its text but evaluates to nan.
+    def test_structured_reference_reads_the_table(self) -> None:
         g = _load("table_and_chart.xlsx")
         g.set_active("Report")
         cell = g.cells[0][1]
         assert cell.text == "=SUM(SalesTable[Amount])"
-        assert isinstance(cell.val, float) and math.isnan(cell.val)
+        assert cell.val == 450.0  # as =SUM(Sales!B2:B4) beside it
 
 
 def _with_sheet_data(tmp_path: Path, sheet_data: str) -> Grid:

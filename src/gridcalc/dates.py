@@ -26,6 +26,7 @@ for it, and `YEAR`/`MONTH`/`DAY` special-case it.
 from __future__ import annotations
 
 import datetime as _dt
+import functools
 import re
 
 EXCEL_EPOCH = _dt.date(1899, 12, 30)
@@ -299,6 +300,7 @@ def parse_time(text: str) -> float | None:
     return (h * 3600 + mi * 60 + sec) / 86400.0
 
 
+@functools.lru_cache(maxsize=4096)  # criteria re-parse each cell's text; strptime is slow
 def parse_date(text: str) -> float | None:
     """Parse a date string to an Excel serial, or ``None`` if it is not one.
 

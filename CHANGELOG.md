@@ -10,7 +10,46 @@
 
 - **`csv` is a facade.** The module object exposed `csv.types`, and with it `types.CodeType`. `field_size_limit` and the dialect registry are excluded, since they change process-wide state that gridcalc's own CSV import reads.
 
+### Added
+
+- **Excel tables and structured references.** `Sales[Qty]`, `Sales[[#This Row],[Qty]]`, `[@Qty]`, `Sales[#All]`, `[#Headers]`, `[#Totals]` and column ranges evaluate. An xlsx load reads each sheet's tables, and a save writes them back with their filters and sort state. JSON keeps them. Inserting or deleting rows and columns moves a table; undo restores it. In the survey of 2,000 real files, 42,182 cells used them and gave `#NAME?`.
+
+  A reference resolves to a plain range for the formula's own cell before dependencies are taken. A whole-table dependency was the simpler option, but a calculated column reading `[#This Row]` would then depend on itself: 40,308 cells showed `#CIRC!`. A header edit does not rename its column, so a save writes the stored names; writing the header text instead broke every formula naming the old column.
+
+- **`AGGREGATE`**, all 19 functions and 8 options. The options that skip hidden rows act as their non-hidden forms, since gridcalc has no hidden rows.
+
+- **Frozen panes cross xlsx and JSON, per sheet.** They were one setting for the whole workbook and were not saved. Excel freezes each sheet on its own, so the setting moved to the sheet.
+
 ### Fixed
+
+- **Arrays of different shapes broadcast, as in Excel.** `={1;2;3}*{2,3}` is a 3x2 grid, `A1:A3+{10}` adds 10 to each, and a position past the smaller array is `#N/A` ([Exceljet](https://exceljet.net/glossary/broadcasting)). The operators gave `#VALUE!`; function lifting already followed this rule.
+
+- **`ROW` and `COLUMN` of a range return an array.** `ROW(A1:A5)` was 1, so `SMALL(IF(...,ROW(A1:A5)),k)`, a common lookup idiom, gave the wrong row.
+
+- **`COUNTIFS`, `SUMIFS` and the other `*IFS` take an array criterion.** `COUNTIFS(A:A,{1;2})` counts each; it gave 0. A lambda result of one element is now that element in `BYROW`, `MAP` and the others, so `BYROW(x,LAMBDA(r,COUNTIFS(A:A,r)))` works. A larger one is `#CALC!`.
+
+- **`CHOOSE` and `IF` return references.** `SUM(CHOOSE(1,A1):A5)` and `ROWS(IF(x,A1:A3,B1:B5))` work, as in Excel.
+
+- **Distribution functions refuse what Excel refuses.** `BINOM.INV` takes p and alpha strictly inside (0, 1), and `NEGBINOM.DIST` p below 1, although Microsoft's help says [0, 1]. Text as `cumulative` is `#VALUE!`; a negative `x` is `#NUM!` before truncation. Values are from IronCalc's `BINOM.xlsx`, saved by Excel.
+
+- **A formula reading a range through a one-value parameter saves as a dynamic array.** `=SUM(IF(WEEKDAY(A1:A7)=2,1))` was saved without the flag, so Excel and a reload would intersect it to one cell.
+
+- **Loading is faster.** A load ran two full recalcs; it runs one. `INDEX` no longer marks its cell volatile, so its formulas no longer recalculate on every edit; its reads lie inside its first argument, which is a static dependency. Date parsing in criteria is cached: `strptime` took 19 s of a 24 s load. Timed alone, three of the slowest survey files went from 48, 26 and 14 s to 3.9, 5.4 and 7.9 s.
+
+- **An xlsx save and reload changes nothing in 2,000 real workbooks.** Before, 208 of them changed (`docs/dev/excel-corpus.md`, survey section). The causes:
+  - A number format on a cell showing text, a logical or an error was dropped. `=IFERROR(x," ")` lost its `0.00`.
+  - A name into another workbook (`[1]Data!$A$1`) or onto a missing sheet was dropped. It is kept now as a formula name.
+  - Explicit black on a font with no colour of its own read as a change of colour.
+  - An array formula with no saved value lost its style. OpenXLSX returns no value for it, so the reader skipped the cell.
+  - `singleAccounting` and `doubleAccounting` underlines read as none. The vendored OpenXLSX is patched (`THIRD-PARTY-NOTICES.md`).
+
+- **The range operator takes any two references.** `A1:INDEX(A:A,4)`, `INDEX(...):INDEX(...)` and `A2:OFFSET(A1,6,0)` gave a syntax error, in about 100 cells of the survey. `INDEX` now returns a reference wherever one is read, as in Excel. A side that cannot be a reference, as in `"a":A1`, is still a syntax error.
+
+- **A deleted reference keeps its sheet.** `=SUM(Data!#REF!)` was a syntax error; it is `#REF!`, as in Excel. The survey found about 2,100 such cells.
+
+- **A formula into another workbook shows the value Excel saved.** gridcalc cannot open `[1]Data!A1`. The cell gave `#NAME?`; it now shows the saved value, and JSON keeps it.
+
+- **`POISSON.DIST` and the gamma functions converge at large arguments.** `POISSON.DIST(1E6,1E6,TRUE)` was 0.659; Excel gives 0.500. The incomplete-gamma loops stopped at 200 and 1000 terms, and near x = a they need about 20*sqrt(a). The exponent `-x + a*log(x) - lgamma(a)` also lost 9 digits to cancellation, so large a now uses Stirling's series.
 
 - **A number with a positive exponent in an xlsx read as its mantissa.** OpenXLSX took `<v>1E+16</v>` for an integer and read 1, as it checked only for `.` and `E-`. Excel writes any number past 1E+15 that way. The vendored copy is patched (`THIRD-PARTY-NOTICES.md`).
 

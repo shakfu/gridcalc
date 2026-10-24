@@ -1,4 +1,5 @@
 import math
+import re
 from pathlib import Path
 
 import pytest
@@ -677,10 +678,7 @@ def test_xlsx_extras_names_what_a_save_would_drop(tmp_path):
 
     f = tmp_path / "rich.xlsx"
     _rich_xlsx(f)
-    assert set(xlsx_extras(f)) == {
-        "comments",
-        "frozen panes",
-    }
+    assert set(xlsx_extras(f)) == {"comments"}  # frozen panes are kept
 
 
 @pytest.mark.parametrize(
@@ -929,3 +927,188 @@ def test_numbers_with_a_positive_exponent_read_whole(tmp_path):
     g = Grid()
     assert g.xlsxload(str(src)) == 0
     assert (g.cell(0, 0).val, g.cell(0, 1).val) == (1e16, 1.23456e19)
+
+
+def test_a_formula_into_another_workbook_shows_its_saved_value(tmp_path):
+    """gridcalc cannot open the other workbook; Excel shows what it saved."""
+    import zipfile
+
+    wb = openpyxl.Workbook()
+    wb.active["A1"] = 1
+    wb.active["B1"] = "=[1]Data!A1*2"
+    src = tmp_path / "ext.xlsx"
+    wb.save(str(src))
+    # openpyxl writes no saved value; add one as Excel would.
+    tmp = tmp_path / "ext2.xlsx"
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(tmp, "w") as zout:
+        for info in zin.infolist():
+            data = zin.read(info)
+            if info.filename == "xl/worksheets/sheet1.xml":
+                data = data.replace(b"<f>[1]Data!A1*2</f><v></v>", b"<f>[1]Data!A1*2</f><v>84</v>")
+                data = (
+                    data.replace(b"<f>[1]Data!A1*2</f>", b"<f>[1]Data!A1*2</f><v>84</v>", 1)
+                    if b"<v>84" not in data
+                    else data
+                )
+            zout.writestr(info, data)
+    g = Grid()
+    assert g.xlsxload(str(tmp)) == 0
+    cl = g.cell(1, 0)
+    assert cl.text == "=[1]Data!A1*2" and cl.val == 84.0 and cl.err is None
+    f = tmp_path / "ext.json"
+    assert g.jsonsave(str(f)) == 0
+    g2 = Grid()
+    assert g2.jsonload(str(f)) == 0
+    assert g2.cell(1, 0).val == 84.0
+
+
+# -- round-trip regressions found by scripts/xlsx_survey.py ------------------
+
+
+class _Saved:
+    """A finished xlsx with openpyxl's `save` signature, for `_round_trip`."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+
+    def save(self, path: str) -> None:
+        Path(path).write_bytes(self.data)
+
+
+def _rewrite_part(path, part, fn):
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(path) as zin, zipfile.ZipFile(buf, "w") as zout:
+        for info in zin.infolist():
+            data = zin.read(info)
+            zout.writestr(info, fn(data) if info.filename == part else data)
+    return _Saved(buf.getvalue())
+
+
+def _round_trip(tmp_path, wb):
+    src, out = tmp_path / "in.xlsx", tmp_path / "out.xlsx"
+    wb.save(str(src))
+    g = Grid()
+    assert g.xlsxload(str(src)) == 0
+    assert g.xlsxsave(str(out)) == 0
+    g2 = Grid()
+    assert g2.xlsxload(str(out)) == 0
+    return g, g2
+
+
+def test_number_format_survives_on_text_and_logical_results(tmp_path):
+    """`=IFERROR(x," ")` shows text today but keeps its format for later."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws["A1"] = '=IFERROR(1/0," ")'
+    ws["A1"].number_format = "0.00"
+    ws["A2"] = "=TODAY()>1"
+    ws["A2"].number_format = "yyyy-mm-dd"
+    ws["A3"] = "label"
+    ws["A3"].number_format = "0.00"
+    g, g2 = _round_trip(tmp_path, wb)
+    for r in range(3):
+        assert g.cell(0, r).fmtstr, r
+        assert g2.cell(0, r).fmtstr == g.cell(0, r).fmtstr, r
+
+
+def test_names_into_other_workbooks_or_missing_sheets_survive(tmp_path):
+    wb = openpyxl.Workbook()
+    wb.active["A1"] = 1
+    wb.defined_names["Ext"] = openpyxl.workbook.defined_name.DefinedName(
+        "Ext", attr_text="[1]Data!$A$1"
+    )
+    wb.defined_names["Gone"] = openpyxl.workbook.defined_name.DefinedName(
+        "Gone", attr_text="Nosuch!$A$1"
+    )
+    g, g2 = _round_trip(tmp_path, wb)
+
+    def names(grid):
+        return sorted((n.name, n.formula) for n in grid.names)
+
+    assert {n for n, _ in names(g)} >= {"Ext", "Gone"}
+    assert names(g2) == names(g)
+
+
+def test_explicit_black_on_a_default_font_is_not_a_change(tmp_path):
+    """No colour on the default font means black; `000000` must compare equal."""
+    from openpyxl.styles import Font, PatternFill
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws["A1"] = "x"
+    ws["A1"].font = Font(name="Calibri", size=11, color="FF000000")
+    ws["A1"].fill = PatternFill("solid", fgColor="FFC0C0C0")
+    plain = tmp_path / "plain.xlsx"
+    wb.save(str(plain))
+
+    def colourless_default(xml: bytes) -> bytes:
+        # As in Sheetpedia files: a default font with no colour, unlike openpyxl's.
+        return re.sub(
+            rb"<font>.*?</font>", b'<font><name val="Arial"/><sz val="10"/></font>', xml, count=1
+        )
+
+    wb = _rewrite_part(plain, "xl/styles.xml", colourless_default)
+    g, g2 = _round_trip(tmp_path, wb)
+    assert g2.cell(0, 0).xstyle == g.cell(0, 0).xstyle
+
+
+def test_an_array_formula_with_no_saved_value_keeps_its_style(tmp_path):
+    """OpenXLSX returns no value for it; the style bits must still come through."""
+    from openpyxl.styles import Font
+    from openpyxl.worksheet.formula import ArrayFormula
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    for r in range(1, 4):
+        ws.cell(row=r, column=1, value=r)
+    ws["C1"] = ArrayFormula("C1:C3", "=A1:A3*2")
+    ws["C1"].font = Font(bold=True)
+    g, g2 = _round_trip(tmp_path, wb)
+    assert g.cell(2, 0).bold and g2.cell(2, 0).bold
+
+
+@pytest.mark.parametrize("style", ["singleAccounting", "doubleAccounting"])
+def test_accounting_underline_reads_as_underline(tmp_path, style):
+    from openpyxl.styles import Font
+
+    wb = openpyxl.Workbook()
+    wb.active["A1"] = 5
+    wb.active["A1"].font = Font(underline=style)
+    g, g2 = _round_trip(tmp_path, wb)
+    assert g.cell(0, 0).underline and g2.cell(0, 0).underline
+
+
+def test_frozen_panes_round_trip_per_sheet(tmp_path):
+    g = Grid()
+    g.setcell(0, 0, "1")
+    g.tc, g.tr = 1, 2
+    g.add_sheet("B")
+    g.set_active("B")
+    g.setcell(0, 0, "2")
+    g.tr = 1
+    out = tmp_path / "f.xlsx"
+    assert g.xlsxsave(str(out)) == 0
+    wb = openpyxl.load_workbook(str(out))
+    assert [ws.freeze_panes for ws in wb] == ["B3", "A2"]
+    g2 = Grid()
+    assert g2.xlsxload(str(out)) == 0
+    assert [(s.tc, s.tr) for s in g2.sheets] == [(1, 2), (0, 1)]
+    j = tmp_path / "f.json"
+    assert g2.jsonsave(str(j)) == 0
+    g3 = Grid()
+    assert g3.jsonload(str(j)) == 0
+    assert [(s.tc, s.tr) for s in g3.sheets] == [(1, 2), (0, 1)]
+
+
+def test_a_frozen_pane_from_excel_reads(tmp_path):
+    wb = openpyxl.Workbook()
+    wb.active["A1"] = 1
+    wb.active.freeze_panes = "C4"
+    src = tmp_path / "p.xlsx"
+    wb.save(str(src))
+    g = Grid()
+    assert g.xlsxload(str(src)) == 0
+    assert (g.tc, g.tr) == (2, 3)

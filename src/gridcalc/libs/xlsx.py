@@ -9,6 +9,7 @@ from __future__ import annotations
 import bisect
 import cmath
 import datetime as _dt
+import functools
 import math
 import operator
 import random as _random
@@ -39,6 +40,7 @@ from ..formula.errors import ExcelError, explain, first_error, parse_error_liter
 from ..formula.evaluator import (
     MAX_ARRAY_CELLS,
     Reference,
+    _to_bool,
     _to_number,
     _to_string,
     number_text,
@@ -49,6 +51,7 @@ from ..formula.lexer import parse_number
 # -- Criteria parsing --
 
 
+@functools.lru_cache(maxsize=1024)
 def _wildcard_regex(pattern: str, anchored: bool = True) -> re.Pattern[str]:
     """Compile an Excel wildcard pattern. ``*`` -> ``.*``, ``?`` -> ``.``,
     ``~*`` / ``~?`` / ``~~`` escape the next char literally. ``anchored=False``
@@ -1816,27 +1819,37 @@ def CHOOSE(index: int, *args: Any) -> Any:
 # Names must be listed in `formula.evaluator.RAW_ARG_FUNCS`.
 
 
-def ROW(env: Any, *args: Any) -> int | ExcelError:
+def ROW(env: Any, *args: Any) -> int | Vec | ExcelError:
     """=ROW() -> current cell's 1-based row.
-    =ROW(A5) -> 5. =ROW(B2:B7) -> 2 (top row of range).
+    =ROW(A5) -> 5. =ROW(B2:B7) -> {2;3;...;7}, one per row of the range.
     Accepts a reference-producing call too, e.g. =ROW(OFFSET(A1,3,0))."""
     if not args:
         if env.current_cell is None:
             return ExcelError.VALUE
         return int(env.current_cell[1]) + 1
     ref = env.resolve_ref(args[0])
-    return ref.r1 + 1 if ref is not None else ExcelError.VALUE
+    if ref is None:
+        return ExcelError.VALUE
+    r1, r2 = int(ref.r1), int(ref.r2)
+    if r2 == r1:
+        return r1 + 1
+    return Vec([float(r + 1) for r in range(r1, min(r2, r1 + MAX_ARRAY_CELLS - 1) + 1)], cols=1)
 
 
-def COLUMN(env: Any, *args: Any) -> int | ExcelError:
+def COLUMN(env: Any, *args: Any) -> int | Vec | ExcelError:
     """=COLUMN() -> current cell's 1-based column.
-    =COLUMN(A5) -> 1. =COLUMN(B2:D7) -> 2 (leftmost col of range)."""
+    =COLUMN(A5) -> 1. =COLUMN(B2:D7) -> {2,3,4}, one per column of the range."""
     if not args:
         if env.current_cell is None:
             return ExcelError.VALUE
         return int(env.current_cell[0]) + 1
     ref = env.resolve_ref(args[0])
-    return ref.c1 + 1 if ref is not None else ExcelError.VALUE
+    if ref is None:
+        return ExcelError.VALUE
+    c1, c2 = int(ref.c1), int(ref.c2)
+    if c2 == c1:
+        return c1 + 1
+    return Vec([float(c + 1) for c in range(c1, c2 + 1)], cols=c2 - c1 + 1)
 
 
 def _ref_shape(env: Any, args: tuple[Any, ...]) -> tuple[int, int] | ExcelError:
@@ -2058,7 +2071,7 @@ _SUBTOTAL_FUNCS = {
 def SUBTOTAL(env: Any, *args: Any) -> Any:
     """=SUBTOTAL(function_num, ref1, ...): an aggregate of the references that
     leaves out cells which are themselves SUBTOTAL or AGGREGATE formulas."""
-    from ..formula.evaluator import Reference, _deref
+    from ..formula.evaluator import _deref
 
     if len(args) < 2:
         return ExcelError.VALUE
@@ -2072,8 +2085,28 @@ def SUBTOTAL(env: Any, *args: Any) -> Any:
     name = _SUBTOTAL_FUNCS.get(code - 100 if code > 100 else code)
     if name is None:
         return ExcelError.VALUE
+    values = _total_values(env, args[1:], skip_totals=True)
+    err = _total_error(name, values)
+    if err is not None:
+        return err
+    fn = env.lookup_func(name)
+    return fn(Vec(values)) if fn is not None else ExcelError.NAME
+
+
+def _total_error(name: str, values: list[Any]) -> ExcelError | None:
+    """The first error among ``values``; COUNT and COUNTA take errors as values."""
+    if name in ("COUNT", "COUNTA"):
+        return None
+    return next((v for v in values if isinstance(v, ExcelError)), None)
+
+
+def _total_values(env: Any, nodes: Any, *, skip_totals: bool) -> list[Any]:
+    """The values of SUBTOTAL's or AGGREGATE's reference arguments, leaving out
+    cells that are themselves such totals when ``skip_totals``."""
+    from ..formula.evaluator import Reference, _deref
+
     values: list[Any] = []
-    for node in args[1:]:
+    for node in nodes:
         v = env.ref_or_value(node)
         if not isinstance(v, Reference):
             v = _deref(v, env)
@@ -2083,11 +2116,74 @@ def SUBTOTAL(env: Any, *args: Any) -> Any:
         for r in range(ref.r1, ref.r2 + 1):
             for c in range(ref.c1, ref.c2 + 1):
                 text = env.cell_formula_text(c, r, ref.sheet)
-                if isinstance(text, str) and re.search(r"(?i)\b(SUBTOTAL|AGGREGATE)\(", text):
+                if skip_totals and isinstance(text, str) and _TOTAL_RE.search(text):
                     continue
                 values.append(env.get_cell(c, r, ref.sheet))
+    return values
+
+
+_TOTAL_RE = re.compile(r"(?i)\b(SUBTOTAL|AGGREGATE)\(")
+
+_AGGREGATE_FUNCS = {
+    **_SUBTOTAL_FUNCS,
+    7: "STDEV.S",
+    8: "STDEV.P",
+    10: "VAR.S",
+    11: "VAR.P",
+    12: "MEDIAN",
+    13: "MODE.SNGL",
+    14: "LARGE",
+    15: "SMALL",
+    16: "PERCENTILE.INC",
+    17: "QUARTILE.INC",
+    18: "PERCENTILE.EXC",
+    19: "QUARTILE.EXC",
+}
+
+
+def AGGREGATE(env: Any, *args: Any) -> Any:
+    """=AGGREGATE(function_num, options, ref1, ...) or, for function_num 14 to
+    19, AGGREGATE(function_num, options, array, k). Options 2, 3, 6 and 7 skip
+    errors; 4 to 7 keep nested totals. gridcalc has no hidden rows, so the
+    options that skip them change nothing."""
+    from ..formula.evaluator import Reference, _deref
+
+    if len(args) < 3:
+        return ExcelError.VALUE
+    head = []
+    for node in args[:2]:
+        v = _deref(env.eval_node(node), env)
+        if isinstance(v, ExcelError):
+            return v
+        try:
+            head.append(int(float(v)))
+        except (TypeError, ValueError):
+            return ExcelError.VALUE
+    code, opt = head
+    name = _AGGREGATE_FUNCS.get(code)
+    if name is None or not 0 <= opt <= 7:
+        return ExcelError.VALUE
     fn = env.lookup_func(name)
-    return fn(Vec(values)) if fn is not None else ExcelError.NAME
+    if fn is None:
+        return ExcelError.NAME
+    if code >= 14:
+        if len(args) != 4:
+            return ExcelError.VALUE
+        k = _deref(env.eval_node(args[3]), env)
+        if isinstance(k, ExcelError):
+            return k
+        data_nodes = args[2:3]
+    else:
+        # Functions 1 to 13 take references only, as in Excel.
+        if any(not isinstance(env.ref_or_value(n), Reference) for n in args[2:]):
+            return ExcelError.VALUE
+        data_nodes = args[2:]
+    values = _total_values(env, data_nodes, skip_totals=opt < 4)
+    if opt in (2, 3, 6, 7):
+        values = [v for v in values if not isinstance(v, ExcelError)]
+    elif (err := _total_error(name, values)) is not None:
+        return err
+    return fn(Vec(values), k) if code >= 14 else fn(Vec(values))
 
 
 def CELL(env: Any, *args: Any) -> Any:
@@ -3692,9 +3788,12 @@ def BINOM_DIST(num_s: int, trials: int, prob_s: float, cumulative: Any) -> float
     """=BINOM.DIST(num_s, trials, prob_s, cumulative)."""
     k, n = int(num_s), int(trials)
     p = float(prob_s)
-    if n < 0 or k < 0 or k > n or not 0.0 <= p <= 1.0:
+    if n < 0 or float(num_s) < 0 or k > n or not 0.0 <= p <= 1.0:
         return ExcelError.NUM
-    if bool(cumulative):
+    cumulative = _to_bool(cumulative)
+    if isinstance(cumulative, ExcelError):
+        return cumulative
+    if cumulative:
         return _binom_cdf(k, n, p)
     return _binom_pmf(k, n, p)
 
@@ -3717,9 +3816,12 @@ def _binom_cdf(k: int, n: int, p: float) -> float:
 def POISSON_DIST(x: int, mean: float, cumulative: Any) -> float | ExcelError:
     k = int(x)
     lam = float(mean)
-    if k < 0 or lam < 0:
+    if float(x) < 0 or lam < 0:
         return ExcelError.NUM
-    if bool(cumulative):
+    cumulative = _to_bool(cumulative)
+    if isinstance(cumulative, ExcelError):
+        return cumulative
+    if cumulative:
         if k < _CDF_TERMS or lam == 0:
             return sum(_pois_pmf(i, lam) for i in range(k + 1))
         return 1.0 - _incgamma(k + 1, lam)
@@ -3767,6 +3869,21 @@ def TDIST_LEGACY(x: float, df: int, tails: int) -> float | ExcelError:
 # documented precision.
 
 
+def _gamma_iters(a: float) -> int:
+    """Iteration cap for `_gser` and `_gcf`: near x = a both need O(sqrt(a)) terms."""
+    return 1000 + int(20 * math.sqrt(a))
+
+
+def _gamma_log_prefactor(a: float, x: float) -> float:
+    """log(x**a * exp(-x) / gamma(a)). For large a the direct sum cancels
+    terms near a*log(a); this form uses Stirling's series instead."""
+    if a < 30:
+        return -x + a * math.log(x) - math.lgamma(a)
+    t = (x - a) / a
+    stirling = 1 / (12 * a) - 1 / (360 * a**3) + 1 / (1260 * a**5)
+    return a * (math.log1p(t) - t) + 0.5 * math.log(a / (2 * math.pi)) - stirling
+
+
 def _gser(a: float, x: float) -> float:
     """Series for regularised lower incomplete gamma P(a, x). Use when x < a+1."""
     if x <= 0:
@@ -3774,13 +3891,13 @@ def _gser(a: float, x: float) -> float:
     ap = a
     s = 1.0 / a
     delta = s
-    for _ in range(1000):
+    for _ in range(_gamma_iters(a)):
         ap += 1.0
         delta *= x / ap
         s += delta
         if abs(delta) < abs(s) * 1e-15:
             break
-    return s * math.exp(-x + a * math.log(x) - math.lgamma(a))
+    return s * math.exp(_gamma_log_prefactor(a, x))
 
 
 def _gcf(a: float, x: float) -> float:
@@ -3790,7 +3907,7 @@ def _gcf(a: float, x: float) -> float:
     c = 1.0 / fpmin
     d = 1.0 / b
     h = d
-    for i in range(1, 201):
+    for i in range(1, _gamma_iters(a)):
         an = -i * (i - a)
         b += 2.0
         d = an * d + b
@@ -3804,7 +3921,7 @@ def _gcf(a: float, x: float) -> float:
         h *= delta
         if abs(delta - 1.0) < 1e-12:
             break
-    return math.exp(-x + a * math.log(x) - math.lgamma(a)) * h
+    return math.exp(_gamma_log_prefactor(a, x)) * h
 
 
 def _incgamma(a: float, x: float) -> float:
@@ -4148,9 +4265,13 @@ def NEGBINOM_DIST(
     """=NEGBINOM.DIST(num_failures, num_success, prob_success, cumulative)."""
     f, r = int(num_f), int(num_s)
     p = float(prob_s)
-    if f < 0 or r < 1 or not 0 < p <= 1:
+    # Excel refuses p = 1 too (IronCalc `BINOM.xlsx`, NEGBINOM.DIST!E33).
+    if f < 0 or r < 1 or not 0 < p < 1:
         return ExcelError.NUM
-    if bool(cumulative):
+    cumulative = _to_bool(cumulative)
+    if isinstance(cumulative, ExcelError):
+        return cumulative
+    if cumulative:
         return sum(_negbinom_pmf(i, r, p) for i in range(f + 1))
     return _negbinom_pmf(f, r, p)
 
@@ -4163,7 +4284,9 @@ def BINOM_INV(trials: int, prob_s: float, alpha: float) -> int | ExcelError:
     n = int(trials)
     p = float(prob_s)
     a = float(alpha)
-    if n < 0 or not 0.0 <= p <= 1.0 or not 0.0 <= a <= 1.0:
+    # Excel refuses p = 1 and alpha 0 or 1, though its help says [0, 1]
+    # (IronCalc `BINOM.xlsx`, BINOM.INV rows 3, 4 and 25).
+    if n < 0 or not 0.0 <= p < 1.0 or not 0.0 < a < 1.0:
         return ExcelError.NUM
     cum = 0.0
     for k in range(n + 1):
@@ -7018,6 +7141,14 @@ def _as_vec(x: Any) -> Vec:
     return x if isinstance(x, Vec) else Vec([x])
 
 
+def _one_value(v: Any) -> Any:
+    """A lambda's result as one element: a 1x1 array is its value, and a
+    larger one is #CALC!, since an array holds no arrays."""
+    if isinstance(v, Vec):
+        return v.data[0] if len(v.data) == 1 else ExcelError.CALC
+    return v
+
+
 def MAP(*args: Any) -> Vec | ExcelError:
     """=MAP(array1, [array2, ...], lambda) -> element-wise application of the
     lambda across one or more equally-shaped arrays, preserving array1's shape."""
@@ -7030,7 +7161,7 @@ def MAP(*args: Any) -> Vec | ExcelError:
     n = len(arrays[0].data)
     if any(len(a.data) != n for a in arrays):
         return ExcelError.NA
-    out = [func(*[a.data[i] for a in arrays]) for i in range(n)]
+    out = [_one_value(func(*[a.data[i] for a in arrays])) for i in range(n)]
     return Vec(out, cols=arrays[0].cols)
 
 
@@ -7056,7 +7187,7 @@ def SCAN(initial: Any, array: Any, func: Any) -> Vec | ExcelError:
     acc = initial
     out: list[Any] = []
     for v in arr.data:
-        acc = func(acc, v)
+        acc = _one_value(func(acc, v))
         out.append(acc)
     return Vec(out, cols=arr.cols)
 
@@ -7068,7 +7199,7 @@ def BYROW(array: Any, func: Any) -> Vec | ExcelError:
         return ExcelError.VALUE
     arr = _as_vec(array)
     rows, _ = arr.shape
-    out = [func(arr.row(i)) for i in range(1, rows + 1)]
+    out = [_one_value(func(arr.row(i))) for i in range(1, rows + 1)]
     return Vec(out, cols=1)
 
 
@@ -7079,7 +7210,7 @@ def BYCOL(array: Any, func: Any) -> Vec | ExcelError:
         return ExcelError.VALUE
     arr = _as_vec(array)
     _, cols = arr.shape
-    out = [func(arr.col(j)) for j in range(1, cols + 1)]
+    out = [_one_value(func(arr.col(j))) for j in range(1, cols + 1)]
     return Vec(out, cols=len(out))
 
 
@@ -7093,7 +7224,7 @@ def MAKEARRAY(rows: int, cols: int, func: Any) -> Vec | ExcelError:
         return ExcelError.VALUE
     if _array_too_big(r, c):
         return ExcelError.NUM
-    out = [func(float(i), float(j)) for i in range(1, r + 1) for j in range(1, c + 1)]
+    out = [_one_value(func(float(i), float(j))) for i in range(1, r + 1) for j in range(1, c + 1)]
     return Vec(out, cols=c)
 
 
@@ -8101,6 +8232,7 @@ BUILTINS: dict[str, Any] = {
     "OFFSET": OFFSET,
     "INDIRECT": INDIRECT,
     "SUBTOTAL": SUBTOTAL,
+    "AGGREGATE": AGGREGATE,
     "CELL": CELL,
     "SINGLE": SINGLE,
     "TRIMRANGE": TRIMRANGE,

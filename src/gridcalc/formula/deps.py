@@ -18,9 +18,11 @@ from .ast_nodes import (
     Node,
     Percent,
     PyCall,
+    RangeOp,
     RangeRef,
     Ref3D,
     SpillRef,
+    StructRef,
     UnaryOp,
 )
 
@@ -108,8 +110,9 @@ SheetSpan = Callable[[str, str], "list[str] | None"]
 
 # Functions whose read set depends on a value, not on static text. Cells
 # containing one of these calls cannot have their dependencies determined
-# statically and must be treated as volatile (always recompute).
-DYNAMIC_REF_FUNCS: frozenset[str] = frozenset({"INDIRECT", "OFFSET", "INDEX"})
+# statically and must be treated as volatile (always recompute). `INDEX` is
+# not one: it reads inside its first argument, whose cells are static deps.
+DYNAMIC_REF_FUNCS: frozenset[str] = frozenset({"INDIRECT", "OFFSET"})
 
 # Functions whose value changes between calls: random numbers and the clock.
 # Cells calling them must recompute on every recalc -- treat as volatile.
@@ -211,15 +214,22 @@ def extract_deps(
     return out
 
 
-def reads_range_as_array(node: Node, named: dict[str, Node] | None = None) -> bool:
+def reads_range_as_array(
+    node: Node,
+    named: dict[str, Node] | None = None,
+    scalar_params: Callable[[str], tuple[bool, ...]] | None = None,
+) -> bool:
     """Whether ``node`` uses a range other than as a function's whole argument:
     `SUM(A1:A3*2)`, `A1:A3+1`. Excel saves such a formula as a dynamic array,
     since a legacy formula would read each such range by implicit intersection.
-    A range passed whole (`SUM(A1:A3)`) is the same either way."""
+    A range passed whole (`SUM(A1:A3)`) is the same either way.
+    ``scalar_params(name)`` flags each parameter of a function that takes one
+    value, so a range there (`WEEKDAY(A1:A3)`) counts too."""
     named = named or {}
+    scalar = scalar_params or (lambda _name: ())
 
     def rangeish(n: Node) -> bool:
-        if type(n) in (RangeRef, Ref3D, SpillRef):
+        if type(n) in (RangeRef, Ref3D, SpillRef, RangeOp, StructRef):
             return True
         if type(n) is Name:
             target = named.get(n.name.lower())
@@ -230,7 +240,10 @@ def reads_range_as_array(node: Node, named: dict[str, Node] | None = None) -> bo
         if rangeish(n):
             return not whole_arg
         if type(n) is Call:
-            return any(walk(a, True) for a in n.args)
+            flags = scalar(n.name.lower())
+            return any(
+                walk(a, not (i < len(flags) and flags[i])) for i, a in enumerate(n.args)
+            )
         if type(n) is Apply:
             return walk(n.func, False) or any(walk(a, True) for a in n.args)
         if type(n) is BinOp:
@@ -275,6 +288,8 @@ def has_dynamic_refs(
         return any(dyn(a) for a in node.args) or via_name(node.name.lower())
     if type(node) is Apply:
         return dyn(node.func) or any(dyn(a) for a in node.args)
+    if type(node) is RangeOp:
+        return True  # its rectangle is known only once both sides are
     if type(node) is PyCall:
         return True  # py.* gateway can read arbitrary cells
     if type(node) is UnaryOp or type(node) is Percent:
@@ -341,6 +356,9 @@ def _walk(
         target = named.get(nm)
         if target is not None and nm not in seen:  # a name may refer to itself
             _walk(target, named, out, formula_sheet, collapse, span, seen | {nm})
+    elif type(node) is RangeOp:
+        _walk(node.left, named, out, formula_sheet, collapse, span, seen)
+        _walk(node.right, named, out, formula_sheet, collapse, span, seen)
     elif type(node) is Apply:
         _walk(node.func, named, out, formula_sheet, collapse, span, seen)
         for a in node.args:

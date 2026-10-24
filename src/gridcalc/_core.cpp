@@ -123,7 +123,12 @@ nb::tuple xlsx_read(const std::string& path) {
                 } else {
                     kv = cell_value(cell);
                 }
-                if (kv.first.empty()) continue;
+                if (kv.first.empty()) {
+                    // A shared or array formula with no saved value: "z", so
+                    // its style survives; the caller reads its text from XML.
+                    if (!cell.hasFormula()) continue;
+                    kv = {"z", nb::none()};
+                }
                 uint16_t c = cell.cellReference().column();
                 auto fmt = cell_number_format(doc, cell);
                 out.append(nb::make_tuple(nb::str(sname.c_str()),

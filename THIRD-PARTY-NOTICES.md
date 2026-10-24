@@ -28,7 +28,7 @@ This replaced lp_solve 5.5 (LGPL-2.1). gridcalc is MIT and links the solver stat
 
 Permissive; requires only that the copyright notice and disclaimer be retained, which this file and the vendored `LICENSE.md` do.
 
-Local change: `XLCellValue.cpp` classifies a number with any exponent as a float. Upstream treats `1E+16` as an integer and reads it as 1, because it checks only for `.` and `E-`; Excel writes large numbers in that form.
+Local change: `XLCellValue.cpp` classifies a number with any exponent as a float. Upstream treats `1E+16` as an integer and reads it as 1, because it checks only for `.` and `E-`; Excel writes large numbers in that form. `XLStyles.cpp` also reads the `singleAccounting` and `doubleAccounting` underlines, which upstream calls invalid; gridcalc then kept no underline.
 
 ## miniz 3.0.2 -- MIT
 

@@ -29,8 +29,9 @@ from .formula.deps import (
     has_dynamic_refs,
     reads_range_as_array,
 )
-from .formula.errors import FormulaError
-from .formula.lexer import COLRANGE, bare_span_ok, parse_number, whole_range
+from .formula.errors import ExcelError as ExcelErrorType
+from .formula.errors import FormulaError, parse_error_literal
+from .formula.lexer import _ERROR_LIT_RE, COLRANGE, bare_span_ok, parse_number, whole_range
 from .formula.parser import parse
 from .sandbox import load_modules, validate_code, validate_formula
 
@@ -601,6 +602,7 @@ class Cell:
         "spill_shape",
         "xstyle",
         "legacy",
+        "cached",
     )
 
     def __init__(self) -> None:
@@ -637,6 +639,9 @@ class Cell:
         # range in a one-value position by implicit intersection, as Excel's
         # `@`. Cleared when the formula is edited.
         self.legacy: bool = False
+        # The value Excel saved for a formula gridcalc cannot compute, one
+        # linking to another workbook (`[1]Data!A1`); None otherwise.
+        self.cached: Any = None
 
     def clear(self) -> None:
         self.type = EMPTY
@@ -659,6 +664,7 @@ class Cell:
         self.spill_shape = None
         self.xstyle = None
         self.legacy = False
+        self.cached = None
 
     def copy_from(self, src: Cell) -> None:
         self.type = src.type
@@ -681,6 +687,7 @@ class Cell:
         self.spill_shape = src.spill_shape
         self.xstyle = src.xstyle
         self.legacy = src.legacy
+        self.cached = src.cached
 
     def snapshot(self) -> Cell:
         c = Cell()
@@ -714,6 +721,125 @@ class NamedRange:
         # rectangle, as Excel's Name Manager allows. The rectangle is unused.
         # EXCEL and HYBRID mode only.
         self.formula = formula
+
+
+class Table:
+    """An Excel table: a rectangle on ``sheet`` that structured references
+    (`Table1[Amount]`) read by column name. ``header`` and ``totals`` are 1
+    when the first or last row holds the column names or the totals.
+    ``xml`` is the table part as read, written back on xlsx save; ``style``
+    is its table style, such as `TableStyleMedium2`."""
+
+    __slots__ = (
+        "name",
+        "sheet",
+        "c1",
+        "r1",
+        "c2",
+        "r2",
+        "columns",
+        "header",
+        "totals",
+        "xml",
+        "style",
+    )
+
+    def __init__(
+        self,
+        name: str,
+        sheet: str,
+        c1: int,
+        r1: int,
+        c2: int,
+        r2: int,
+        columns: list[str],
+        header: int = 1,
+        totals: int = 0,
+        xml: str | None = None,
+        style: str | None = None,
+    ) -> None:
+        self.name = name
+        self.sheet = sheet
+        self.c1, self.r1, self.c2, self.r2 = c1, r1, c2, r2
+        self.columns = columns
+        self.header = header
+        self.totals = totals
+        self.xml = xml
+        self.style = style
+
+    def data_rows(self) -> tuple[int, int]:
+        return self.r1 + self.header, self.r2 - self.totals
+
+
+def _resolve_struct_refs(node: Any, resolve: Callable[[Any], Any]) -> Any:
+    """``node`` with each structured reference replaced by the range ``resolve``
+    gives it, so dependencies are exact: a calculated column reading
+    `[#This Row]` depends on its own row, not on the whole table."""
+    import dataclasses
+
+    from .formula.ast_nodes import CellRef as F_CellRef
+    from .formula.ast_nodes import RangeRef as F_RangeRef
+    from .formula.ast_nodes import StructRef as F_StructRef
+    from .formula.evaluator import Reference
+
+    def walk(n: Any) -> Any:
+        if type(n) is F_StructRef:
+            ref = resolve(n)
+            if not isinstance(ref, Reference):
+                return n
+            start = F_CellRef(ref.c1, ref.r1, False, False, sheet=ref.sheet)
+            if (ref.c1, ref.r1) == (ref.c2, ref.r2):
+                return start
+            return F_RangeRef(start, F_CellRef(ref.c2, ref.r2, False, False, sheet=ref.sheet))
+        if isinstance(n, tuple):
+            return tuple(walk(x) for x in n)
+        if dataclasses.is_dataclass(n) and not isinstance(n, type):
+            changes = {f.name: walk(getattr(n, f.name)) for f in dataclasses.fields(n)}
+            if any(changes[k] is not getattr(n, k) for k in changes):
+                return dataclasses.replace(n, **changes)
+        return n
+
+    return walk(node)
+
+
+def _table_reference(t: Table, node: Any, row: int | None) -> Any:
+    """The rectangle a structured reference ``node`` names in ``t``, for a
+    formula on ``row``. Excel's errors: an unknown column or a missing header
+    or totals row is #REF!; `#This Row` off the table's data rows is #VALUE!."""
+    from .formula.errors import ExcelError
+    from .formula.evaluator import Reference
+
+    c1, c2 = t.c1, t.c2
+    if node.col1 is not None:
+        folded = [c.casefold() for c in t.columns]
+        try:
+            i, j = folded.index(node.col1.casefold()), folded.index(node.col2.casefold())
+        except ValueError:
+            return ExcelError.REF
+        c1, c2 = t.c1 + min(i, j), t.c1 + max(i, j)
+    d1, d2 = t.data_rows()
+    areas = set(node.areas) or {"#data"}
+    if "#all" in areas:
+        r1, r2 = t.r1, t.r2
+    elif "#this row" in areas:
+        if row is None or not d1 <= row <= d2:
+            return ExcelError.VALUE
+        r1 = r2 = row
+    else:
+        spans = []
+        for area, ok, lo, hi in (
+            ("#headers", t.header, t.r1, t.r1),
+            ("#data", True, d1, d2),
+            ("#totals", t.totals, t.r2, t.r2),
+        ):
+            if area in areas:
+                if not ok:
+                    return ExcelError.REF
+                spans.append((lo, hi))
+        if areas == {"#headers", "#totals"} and t.r2 - t.r1 > 1:
+            return ExcelError.REF  # not one rectangle
+        r1, r2 = spans[0][0], spans[-1][1]
+    return Reference(c1, r1, c2, r2, t.sheet)
 
 
 _REF_RE = re.compile(r"(\$?)([A-Za-z]{1,3})(\$?)(\d+)")
@@ -1150,9 +1276,6 @@ def _constant(t: str) -> tuple[str, Any, str | None, Any] | None:
 
     Excel keeps these as a logical or an error value, not as text.
     """
-    from .formula.errors import parse_error_literal
-    from .formula.lexer import _ERROR_LIT_RE
-
     u = t.strip().upper()
     if u in ("TRUE", "FALSE"):
         return u, u == "TRUE", u, None
@@ -1237,6 +1360,8 @@ def _xlsx_read_cells(filename: str) -> tuple[list[str], list[tuple[Any, ...]], i
         if key in covered:
             continue  # inside an array formula's range: the anchor spills there
         text = formulas.pop(key, None)
+        if t[3] == "z" and text is None:
+            continue  # a formula OpenXLSX could not read, and the XML had none either
         if text is not None and t[3] != "f":
             t = (*t[:3], "F" if key in arrays else "f", text, *t[5:])
             fallbacks -= 1
@@ -1480,6 +1605,52 @@ def _parse_defined_ref(text: str) -> tuple[str, int, int, int, int] | None:
     return sheet, min(c1, c2), min(r1, r2), max(c1, c2), max(r1, r2)
 
 
+# A reference into another workbook: `[1]Data!A1`, `'[2]My Data'!B2`.
+_EXTERNAL_RE = re.compile(r"\[\d+\]")
+
+
+def _xlsx_read_saved_values(
+    filename: str, root: Any, keys: set[tuple[str, int, int]]
+) -> dict[tuple[str, int, int], Any]:
+    """The values Excel saved for the formula cells ``keys``. Never raises."""
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    from .formula.errors import parse_error_literal
+
+    out: dict[tuple[str, int, int], Any] = {}
+    if not keys or root is None:
+        return out
+    wanted = {s for s, _, _ in keys}
+    try:
+        with zipfile.ZipFile(filename) as z:
+            for sheet, part in _xlsx_sheet_parts(z, root).items():
+                if sheet not in wanted:
+                    continue
+                with z.open(part) as f:
+                    for _, el in ET.iterparse(f):  # noqa: S314 -- see _xlsx_workbook_xml
+                        if el.tag != f"{_XLSX_NS}c":
+                            continue
+                        at = ref(el.get("r", ""))
+                        v = el.find(f"{_XLSX_NS}v")
+                        if at is not None and v is not None and (sheet, at[1], at[2]) in keys:
+                            kind, text = el.get("t", "n"), v.text or ""
+                            if kind == "e":
+                                val: Any = parse_error_literal(text)
+                            elif kind == "b":
+                                val = text == "1"
+                            elif kind in ("str", "s", "inlineStr"):
+                                val = text
+                            else:
+                                val = parse_number(text)
+                            if val is not None:
+                                out[(sheet, at[1], at[2])] = val
+                        el.clear()
+    except (KeyError, OSError, ValueError, zipfile.BadZipFile):
+        return {}
+    return out
+
+
 _Layout = tuple[list[tuple[int, int, int, int]], dict[int, float]]
 
 
@@ -1570,8 +1741,8 @@ def _xlsx_read_defined_names(
         if not name or name.startswith("_xlnm."):
             continue
         parsed = _parse_defined_ref((el.text or "").strip())
-        if parsed is None:
-            continue
+        if parsed is None or parsed[0] not in sheet_order:
+            continue  # a formula, or another workbook's range: a formula name
         lid = el.get("localSheetId")
         if lid is not None and lid.isdigit():
             local.setdefault(name, {})[int(lid)] = parsed
@@ -1593,8 +1764,12 @@ def _xlsx_read_defined_names(
     return out
 
 
-def _xlsx_read_formula_names(root: Any, taken: set[str]) -> list[tuple[str, str]]:
-    """``(name, "=formula")`` for each defined name that is not a rectangle.
+def _xlsx_read_formula_names(
+    root: Any, taken: set[str], sheets: list[str]
+) -> list[tuple[str, str]]:
+    """``(name, "=formula")`` for each defined name that is not a rectangle on
+    one of ``sheets``: a formula, or a range in another workbook
+    (`[1]Data!$A$1`) or on a sheet the file lacks, kept as written.
 
     A sheet-local one is kept only when no other name has its name, since
     gridcalc's names are workbook-wide. Never raises.
@@ -1608,7 +1783,8 @@ def _xlsx_read_formula_names(root: Any, taken: set[str]) -> list[tuple[str, str]
         text = (el.text or "").strip()
         if not name or name.startswith("_xlnm.") or not text or name in taken:
             continue
-        if _parse_defined_ref(text) is None:
+        parsed = _parse_defined_ref(text)
+        if parsed is None or parsed[0] not in sheets:
             found.setdefault(name, []).append(text)
     return [(n, "=" + _strip_xl_prefixes(t[0])) for n, t in found.items() if len(t) == 1]
 
@@ -1672,6 +1848,217 @@ def _xlsx_sheet_parts(z: Any, root: Any) -> dict[str, str]:
     return parts
 
 
+_XLSX_TABLE_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/table"
+_XLSX_TABLE_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"
+
+
+def _xml_attr(text: str) -> str:
+    from xml.sax.saxutils import escape
+
+    return escape(text, {'"': "&quot;", "\n": "&#10;", "\r": "&#13;", "\t": "&#9;"})
+
+
+def _xlsx_table_xml(t: Table, tid: int, names: list[str]) -> bytes:
+    """Table part for ``t`` with column ``names``. A part read
+    from a file is patched in place, keeping its filters and sort state;
+    otherwise, or once its shape has changed, a minimal part is written."""
+    ref = f"{cellname(t.c1, t.r1)}:{cellname(t.c2, t.r2)}"
+    d1, d2 = t.data_rows()
+    filt = f"{cellname(t.c1, t.r1)}:{cellname(t.c2, d2)}"
+    xml = t.xml
+    if xml is not None:
+        cols = re.findall(r"<tableColumn\b", xml)
+        no_header = bool(re.search(r'<table\b[^>]*\sheaderRowCount="0"', xml))
+        has_totals = bool(re.search(r'<table\b[^>]*\stotalsRowCount="[1-9]', xml))
+        if len(cols) != len(names) or no_header == bool(t.header) or has_totals != bool(t.totals):
+            xml = None
+    if xml is not None:
+        xml = re.sub(r'(<table\b[^>]*?\sref=")[^"]*', lambda m: m.group(1) + ref, xml, count=1)
+        xml = re.sub(r'(<table\b[^>]*?\sid=")\d+', lambda m: m.group(1) + str(tid), xml, count=1)
+        xml = re.sub(r'(<autoFilter\b[^>]*?\sref=")[^"]*', lambda m: m.group(1) + filt, xml)
+        data = f"{cellname(t.c1, d1)}:{cellname(t.c2, d2)}"
+        xml = re.sub(r'(<sortState\b[^>]*?\sref=")[^"]*', lambda m: m.group(1) + data, xml)
+        it = iter(names)
+        xml = re.sub(
+            r'(<tableColumn\b[^>]*?\sname=")([^"]*)',
+            lambda m: m.group(1) + _xml_attr(next(it)),
+            xml,
+        )
+        return xml.encode("utf-8")
+    name = _xml_attr(t.name)
+    flags = ("" if t.header else ' headerRowCount="0"') + (
+        ' totalsRowCount="1"' if t.totals else ' totalsRowShown="0"'
+    )
+    columns = "".join(
+        f'<tableColumn id="{i + 1}" name="{_xml_attr(n)}"/>' for i, n in enumerate(names)
+    )
+    style = _xml_attr(t.style or "TableStyleMedium2")
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<table xmlns="{_XLSX_NS[1:-1]}" id="{tid}" name="{name}" displayName="{name}"'
+        f' ref="{ref}"{flags}>'
+        + (f'<autoFilter ref="{filt}"/>' if t.header else "")
+        + f'<tableColumns count="{len(names)}">{columns}</tableColumns>'
+        f'<tableStyleInfo name="{style}" showFirstColumn="0" showLastColumn="0"'
+        ' showRowStripes="1" showColumnStripes="0"/></table>'
+    ).encode("utf-8")
+
+
+def _xlsx_tables_patch(
+    members: list[tuple[Any, bytes]], parts: dict[str, str], tables: dict[str, list[bytes]]
+) -> list[tuple[Any, bytes]]:
+    """``members`` with the table parts ``tables`` (sheet -> part XML) added:
+    the parts, each sheet's relationships and `tableParts`, and content types."""
+    import posixpath
+    import zipfile
+
+    by_name = {info.filename: i for i, (info, _) in enumerate(members)}
+    out = list(members)
+    overrides = b""
+    n = 0
+    for part, sheet in parts.items():
+        xmls = tables.get(sheet)
+        if not xmls:
+            continue
+        head, tail = posixpath.split(part)
+        rels_path = f"{head}/_rels/{tail}.rels"
+        if rels_path in by_name:
+            rels = out[by_name[rels_path]][1]
+        else:
+            rels = (
+                b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                b"</Relationships>"
+            )
+        rid = max((int(m) for m in re.findall(rb'Id="rId(\d+)"', rels)), default=0)
+        refs = b""
+        for xml in xmls:
+            n += 1
+            rid += 1
+            target = f"xl/tables/table{n}.xml"
+            out.append((zipfile.ZipInfo(target), xml))
+            rel = (
+                f'<Relationship Id="rId{rid}" Type="{_XLSX_TABLE_REL}"'
+                f' Target="../tables/table{n}.xml"/>'
+            ).encode()
+            rels = _insert_once(rels, b"</Relationships>", rel)
+            refs += f'<tablePart r:id="rId{rid}"/>'.encode()
+            overrides += (
+                f'<Override PartName="/{target}" ContentType="{_XLSX_TABLE_TYPE}"/>'
+            ).encode()
+        if rels_path in by_name:
+            out[by_name[rels_path]] = (out[by_name[rels_path]][0], rels)
+        else:
+            out.append((zipfile.ZipInfo(rels_path), rels))
+        i = by_name[part]
+        rel_ns = _XLSX_REL_NS[1:-1].encode()
+        block = (
+            b'<tableParts xmlns:r="'
+            + rel_ns
+            + b'" count="'
+            + str(len(xmls)).encode()
+            + b'">'
+            + refs
+            + b"</tableParts>"
+        )
+        if b"<extLst" in out[i][1]:
+            raise ValueError("unexpected worksheet layout; tables not written")
+        out[i] = (out[i][0], _insert_once(out[i][1], b"</worksheet>", block))
+    if overrides:
+        i = by_name["[Content_Types].xml"]
+        out[i] = (out[i][0], _insert_once(out[i][1], b"</Types>", overrides))
+    return out
+
+
+def _xlsx_part_rels(z: Any, part: str) -> dict[str, tuple[str, str]]:
+    """Relationship id -> (type, part path) for ``part`` in the open zip ``z``."""
+    import posixpath
+    import xml.etree.ElementTree as ET
+
+    head, tail = posixpath.split(part)
+    try:
+        rels = ET.fromstring(z.read(f"{head}/_rels/{tail}.rels"))  # noqa: S314
+    except KeyError:
+        return {}
+    out = {}
+    for rel in rels.findall(f"{_XLSX_PKG_REL_NS}Relationship"):
+        target = rel.get("Target", "")
+        path = target[1:] if target.startswith("/") else posixpath.normpath(f"{head}/{target}")
+        out[rel.get("Id", "")] = (rel.get("Type", ""), path)
+    return out
+
+
+def _xlsx_read_tables(filename: str, root: Any) -> list[Table]:
+    """The tables of every worksheet in ``filename``. Never raises: a table
+    that cannot be read is left out, and its references give #REF!."""
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    tables: list[Table] = []
+    if root is None:
+        return tables
+    try:
+        with zipfile.ZipFile(filename) as z:
+            for sheet, part in _xlsx_sheet_parts(z, root).items():
+                for kind, path in _xlsx_part_rels(z, part).values():
+                    if kind != _XLSX_TABLE_REL:
+                        continue
+                    try:
+                        raw = z.read(path)
+                        el = ET.fromstring(raw)  # noqa: S314 -- see _xlsx_workbook_xml
+                    except (KeyError, ET.ParseError):
+                        continue
+                    span = _parse_defined_ref("T!" + el.get("ref", ""))
+                    name = el.get("displayName") or el.get("name")
+                    if span is None or not name:
+                        continue
+                    _, c1, r1, c2, r2 = span
+                    cols = [tc.get("name", "") for tc in el.iter(f"{_XLSX_NS}tableColumn")]
+                    if len(cols) != c2 - c1 + 1:
+                        continue
+                    header = 0 if el.get("headerRowCount") == "0" else 1
+                    totals = 1 if el.get("totalsRowCount", "0") not in ("", "0") else 0
+                    info = el.find(f"{_XLSX_NS}tableStyleInfo")
+                    style = info.get("name") if info is not None else None
+                    tables.append(
+                        Table(
+                            name,
+                            sheet,
+                            c1,
+                            r1,
+                            c2,
+                            r2,
+                            cols,
+                            header,
+                            totals,
+                            raw.decode("utf-8"),
+                            style,
+                        )
+                    )
+    except (OSError, ValueError, zipfile.BadZipFile):
+        return []
+    return tables
+
+
+def _xlsx_freeze_patch(data: bytes, tc: int, tr: int) -> bytes:
+    """Freeze the first ``tc`` columns and ``tr`` rows of one worksheet part."""
+    if not (tc or tr):
+        return data
+    m = re.search(rb"<sheetView\b[^>]*?(/?)>", data)
+    if m is None or data.count(b"<sheetView ") != 1:
+        raise ValueError("unexpected worksheet layout; frozen panes not written")
+    active = "bottomRight" if tc and tr else "topRight" if tc else "bottomLeft"
+    pane = (
+        (f'<pane xSplit="{tc}"' if tc else "<pane")
+        + (f' ySplit="{tr}"' if tr else "")
+        + f' topLeftCell="{cellname(tc, tr)}" activePane="{active}" state="frozen"/>'
+    ).encode()
+    head = m.group(0)
+    # `<sheetView .../>` opens up to hold the pane.
+    new = head[:-2] + b">" + pane + b"</sheetView>" if m.group(1) else head + pane
+    return data[: m.start()] + new + data[m.end() :]
+
+
 def _xlsx_widths_patch(data: bytes, cw: int, widths: dict[int, int]) -> bytes:
     """Add ``defaultColWidth`` and a ``<cols>`` element to one worksheet part."""
     marker = b"<sheetFormatPr "
@@ -1698,6 +2085,8 @@ def _xlsx_postprocess(
     xstyles: dict[str, dict[tuple[int, int], XStyle]] | None = None,
     font: tuple[str, float] | None = None,
     layout: dict[str, tuple[list[tuple[int, int, int, int]], dict[int, float]]] | None = None,
+    tables: dict[str, list[bytes]] | None = None,
+    freeze: dict[str, tuple[int, int]] | None = None,
 ) -> None:
     """Add defined names, column widths, dynamic arrays and `XStyle`s to the
     xlsx at ``path``.
@@ -1742,6 +2131,8 @@ def _xlsx_postprocess(
             (info, new_styles if info.filename == "xl/styles.xml" else data)
             for info, data in members
         ]
+    if tables:
+        members = _xlsx_tables_patch(members, parts, tables)
     marker = b"</sheets>"
     with zipfile.ZipFile(path, "w") as z:
         for info, data in members:
@@ -1752,6 +2143,7 @@ def _xlsx_postprocess(
             elif info.filename in parts:
                 sheet = parts[info.filename]
                 data = _xlsx_widths_patch(data, cw, widths.get(sheet, {}))
+                data = _xlsx_freeze_patch(data, *(freeze or {}).get(sheet, (0, 0)))
                 data = _xlsx_arrays_patch(data, arrays.get(sheet, []))
                 data = _xlsx_errors_patch(data, errors.get(sheet, []))
                 if xstyles.get(sheet):
@@ -1801,7 +2193,7 @@ _XLSX_METADATA_REL = (
 def _insert_once(data: bytes, marker: bytes, new: bytes) -> bytes:
     """``data`` with ``new`` before its one ``marker``."""
     if data.count(marker) != 1:
-        raise ValueError(f"unexpected xlsx layout at {marker!r}; dynamic arrays not written")
+        raise ValueError(f"unexpected xlsx layout at {marker!r}; not written")
     return data.replace(marker, new + marker)
 
 
@@ -1828,15 +2220,18 @@ def _xlsx_arrays_patch(data: bytes, cells: list[tuple[str, str]]) -> bytes:
     return data
 
 
-def _xlsx_read_widths(filename: str, root: Any) -> dict[str, tuple[float | None, dict[int, int]]]:
-    """Each sheet's ``(defaultColWidth, {col: pixels})``. Never raises.
+def _xlsx_read_widths(
+    filename: str, root: Any
+) -> dict[str, tuple[float | None, dict[int, int], tuple[int, int]]]:
+    """Each sheet's ``(defaultColWidth, {col: pixels}, (frozen columns, rows))``.
+    Never raises.
 
     Reads each worksheet only up to ``sheetData``, which follows the widths.
     """
     import xml.etree.ElementTree as ET
     import zipfile
 
-    out: dict[str, tuple[float | None, dict[int, int]]] = {}
+    out: dict[str, tuple[float | None, dict[int, int], tuple[int, int]]] = {}
     if root is None:
         return out
     try:
@@ -1844,6 +2239,7 @@ def _xlsx_read_widths(filename: str, root: Any) -> dict[str, tuple[float | None,
             for name, part in _xlsx_sheet_parts(z, root).items():
                 default: float | None = None
                 cols: dict[int, int] = {}
+                freeze = (0, 0)
                 with z.open(part) as f:
                     for _, el in ET.iterparse(f, events=("start",)):  # noqa: S314
                         if el.tag == f"{_XLSX_NS}sheetData":
@@ -1851,6 +2247,15 @@ def _xlsx_read_widths(filename: str, root: Any) -> dict[str, tuple[float | None,
                         if el.tag == f"{_XLSX_NS}sheetFormatPr":
                             with contextlib.suppress(ValueError):
                                 default = float(el.get("defaultColWidth", ""))
+                        elif el.tag == f"{_XLSX_NS}pane" and el.get("state") in (
+                            "frozen",
+                            "frozenSplit",
+                        ):
+                            with contextlib.suppress(ValueError):
+                                # A split may be fractional in a file; a freeze is whole lines.
+                                xs = int(float(el.get("xSplit", "0")))
+                                ys = int(float(el.get("ySplit", "0")))
+                                freeze = (min(max(xs, 0), NCOL - 1), min(max(ys, 0), NROW - 1))
                         elif el.tag == f"{_XLSX_NS}col":
                             try:
                                 lo, hi = int(el.get("min", "")), int(el.get("max", ""))
@@ -1862,7 +2267,7 @@ def _xlsx_read_widths(filename: str, root: Any) -> dict[str, tuple[float | None,
                             if COL_PX_MIN <= px <= COL_PX_MAX:
                                 for c in range(max(lo, 1) - 1, min(hi, NCOL)):
                                     cols[c] = px
-                out[name] = (default, cols)
+                out[name] = (default, cols, freeze)
     except (KeyError, zipfile.BadZipFile, OSError, ET.ParseError):
         return {}
     return out
@@ -1965,19 +2370,24 @@ def _xlsx_cell_style(cl: Cell, global_fmt: str) -> tuple[str, int]:
     Bits: 1 bold, 2 italic, 4 underline, 8 left-aligned, 16 right-aligned.
     """
     bits = (1 if cl.bold else 0) | (2 if cl.italic else 0) | (4 if cl.underline else 0)
-    if cl.type == LABEL:
-        return "", bits  # labels are always left-aligned
-    fc = cl.fmt if cl.fmt not in ("", "D") else global_fmt
-    if cl.sval is not None:
-        # A text result is right-aligned unless `L`; xlsx left-aligns text.
-        return "", bits | (8 if fc == "L" else 16)
+    code = ""
     if cl.fmtstr:
-        # `fmtcell` right-aligns a `fmtstr` number whatever the letter says.
         from .display import fmt_float
 
         if is_date_format(cl.fmtstr) or fmt_float(0.0, cl.fmtstr) is None:
-            return cl.fmtstr, bits  # an xlsx code already
-        return _xlsx_code_for_spec(cl.fmtstr), bits
+            code = cl.fmtstr  # an xlsx code already
+        else:
+            code = _xlsx_code_for_spec(cl.fmtstr)
+    # The format belongs to the cell, whatever it holds now: a formula showing
+    # text today may show a number tomorrow.
+    if cl.type == LABEL:
+        return code, bits  # labels are always left-aligned
+    fc = cl.fmt if cl.fmt not in ("", "D") else global_fmt
+    if cl.sval is not None:
+        # A text result is right-aligned unless `L`; xlsx left-aligns text.
+        return code, bits | (8 if fc == "L" else 16)
+    if code:
+        return code, bits  # `fmtcell` right-aligns a `fmtstr` number whatever the letter says
     return _XLSX_LETTER_CODES.get(fc, ""), bits | {"L": 8, "R": 16}.get(fc, 0)
 
 
@@ -2175,6 +2585,57 @@ def _decode_widths(payload: Any) -> dict[int, int]:
     return out
 
 
+_TABLE_NAME_RE = re.compile(r"[A-Za-z_\\][A-Za-z0-9_.]{0,254}")
+_TABLE_STYLE_RE = re.compile(r"[A-Za-z0-9 _-]{1,64}")
+
+
+def _json_tables(raw: Any, sheets: set[str]) -> list[Table]:
+    """Tables from a JSON file, which is untrusted: an entry that is not a
+    well-formed table on an existing sheet is dropped."""
+    out: list[Table] = []
+    seen: set[str] = set()
+    for t in raw if isinstance(raw, list) else []:
+        if not isinstance(t, dict):
+            continue
+        name, sheet, rng, cols = t.get("name"), t.get("sheet"), t.get("ref"), t.get("columns")
+        header, totals, style = t.get("header", 1), t.get("totals", 0), t.get("style")
+        if not (
+            isinstance(name, str)
+            and _TABLE_NAME_RE.fullmatch(name)
+            and name.casefold() not in seen
+            and sheet in sheets
+            and isinstance(rng, str)
+            and isinstance(cols, list)
+            and all(isinstance(c, str) and 0 < len(c) <= 255 for c in cols)
+            and len({c.casefold() for c in cols}) == len(cols)
+            and header in (0, 1)
+            and totals in (0, 1)
+            and (style is None or (isinstance(style, str) and _TABLE_STYLE_RE.fullmatch(style)))
+        ):
+            continue
+        span = _parse_defined_ref("T!" + rng)
+        if span is None:
+            continue
+        _, c1, r1, c2, r2 = span
+        if len(cols) != c2 - c1 + 1 or r2 - r1 + 1 <= header + totals:
+            continue
+        seen.add(name.casefold())
+        out.append(Table(name, sheet, c1, r1, c2, r2, list(cols), header, totals, None, style))
+    return out
+
+
+def _json_cached(v: Any) -> Any:
+    """A saved external-link value from JSON: a number, text, logical or error code."""
+    from .formula.errors import parse_error_literal
+
+    if isinstance(v, bool) or (isinstance(v, (int, float)) and math.isfinite(v)):
+        return float(v) if not isinstance(v, bool) else v
+    if isinstance(v, str):
+        err = parse_error_literal(v)
+        return err if err is not None else v[:32767]
+    return None
+
+
 def _decode_layout(
     merges: Any, heights: Any
 ) -> tuple[list[tuple[int, int, int, int]], dict[int, float]]:
@@ -2226,7 +2687,18 @@ class Sheet:
     existing single-sheet code keeps working unchanged.
     """
 
-    __slots__ = ("name", "_cells", "_circular", "cc", "cr", "widths", "merges", "heights")
+    __slots__ = (
+        "name",
+        "_cells",
+        "_circular",
+        "cc",
+        "cr",
+        "tc",
+        "tr",
+        "widths",
+        "merges",
+        "heights",
+    )
 
     def __init__(self, name: str = "Sheet1") -> None:
         self.name: str = name
@@ -2234,6 +2706,10 @@ class Sheet:
         self._circular: set[tuple[int, int]] = set()
         self.cc: int = 0
         self.cr: int = 0
+        # Frozen columns and rows: the first `tc` columns and `tr` rows stay
+        # in view. Excel freezes each sheet on its own.
+        self.tc: int = 0
+        self.tr: int = 0
         # Per-column display widths in pixels, keyed by column index; absent
         # columns use the frontend's default. A *pixel* map is deliberately
         # not the same thing as `Grid.cw`, which is a uniform width in
@@ -2254,8 +2730,6 @@ class Grid:
         self.active: int = 0
         self.vc: int = 0
         self.vr: int = 0
-        self.tc: int = 0
-        self.tr: int = 0
         self.fmt: str = ""
         self.dirty: int = 0
         self.cw: int = CW_DEFAULT
@@ -2264,6 +2738,7 @@ class Grid:
         self.font: tuple[str, float] | None = None
         self.filename: str | None = None
         self.names: list[NamedRange] = []
+        self.tables: list[Table] = []
         # Named ranges bound into the PYTHON-mode eval globals on the last
         # recalc, so a name that disappears can be unbound again.
         # Workbook-persistent LP model definitions. Maps a user-chosen
@@ -2367,6 +2842,22 @@ class Grid:
         self._active.cr = value
 
     @property
+    def tc(self) -> int:
+        return self._active.tc
+
+    @tc.setter
+    def tc(self, value: int) -> None:
+        self._active.tc = value
+
+    @property
+    def tr(self) -> int:
+        return self._active.tr
+
+    @tr.setter
+    def tr(self, value: int) -> None:
+        self._active.tr = value
+
+    @property
     def _circular(self) -> set[tuple[int, int]]:
         return self._active._circular
 
@@ -2408,6 +2899,7 @@ class Grid:
             raise KeyError(name)
         order = [s.name for s in self.sheets]
         del self.sheets[idx]
+        self.tables = [t for t in self.tables if t.sheet != name]
 
         def shrink(first: str, last: str) -> tuple[str, str] | str | None:
             # As Excel: a deleted end moves inward; a span of only it is #REF!.
@@ -2512,6 +3004,9 @@ class Grid:
                     cl.text = rewritten
                     cl.ast = None
                     cl.ast_text = ""
+        for t in self.tables:
+            if t.sheet == old:
+                t.sheet = new
         for nr in self.names:
             if nr.sheet == old:
                 nr.sheet = new
@@ -2718,7 +3213,10 @@ class Grid:
             return
         if named is None:
             named = self._dep_named_ranges()
-        deps = extract_deps(cl.ast, named, formula_sheet=sheet, sheet_span=self._sheet_span)
+        ast = cl.ast
+        if self.tables and "[" in text:
+            ast = _resolve_struct_refs(ast, lambda n: self._table_ref(n, sheet, (c, r)))
+        deps = extract_deps(ast, named, formula_sheet=sheet, sheet_span=self._sheet_span)
         volatile = has_dynamic_refs(cl.ast, named)
         self._register_deps(key, deps, volatile)
 
@@ -2753,6 +3251,7 @@ class Grid:
         cl.err_msg = None
         cl.text = text
         cl.legacy = False
+        cl.cached = None
         self.dirty = 1
 
         if text.startswith("="):
@@ -3133,7 +3632,41 @@ class Grid:
             else:
                 end = F_CellRef(nr.c2, nr.r2, False, False, sheet=nr.sheet)
                 named[nr.name] = F_RangeRef(start, end)
+        for t in self.tables:
+            d1, d2 = t.data_rows()
+            # A table's bare name is its data rows: `=SUM(Table1)`.
+            named.setdefault(
+                t.name,
+                F_RangeRef(
+                    F_CellRef(t.c1, d1, False, False, sheet=t.sheet),
+                    F_CellRef(t.c2, d2, False, False, sheet=t.sheet),
+                ),
+            )
         return named
+
+    def _table_ref(self, node: Any, sheet: str | None, cell: tuple[int, int] | None) -> Any:
+        """Resolve structured reference ``node`` read from ``cell`` on ``sheet``."""
+        from .formula.errors import ExcelError
+
+        if node.table is not None:
+            key = node.table.casefold()
+            t = next((t for t in self.tables if t.name.casefold() == key), None)
+        else:
+            home = sheet if sheet is not None else self._active.name
+            t = next(
+                (
+                    t
+                    for t in self.tables
+                    if cell is not None
+                    and t.sheet == home
+                    and t.c1 <= cell[0] <= t.c2
+                    and t.r1 <= cell[1] <= t.r2
+                ),
+                None,
+            )
+        if t is None:
+            return ExcelError.REF
+        return _table_reference(t, node, cell[1] if cell is not None else None)
 
     def _name_ast(self, formula: str) -> Any:
         """The parsed AST of a name's formula, or None when it does not parse."""
@@ -3590,6 +4123,7 @@ class Grid:
             cell_is_formula=self._cell_is_formula,
             cell_spill_value=self._cell_spill_value,
             cell_formula_text=self._cell_formula_text,
+            table_ref=self._table_ref,
         )
         env.deadline = deadline
 
@@ -3697,6 +4231,10 @@ class Grid:
                     fcl.ast = parse(text, pow_right=pow_right)
                 except FormulaError:
                     fcl.ast = None
+            if fcl.ast is None and fcl.cached is not None:
+                self._store_formula_result(fcl, fcl.cached)
+                fcl.err_msg = "links to another workbook: the value Excel saved"
+                return
             if fcl.ast is None:
                 # Unparseable, e.g. a table reference `T[Col]`: an error
                 # value, so references to it propagate one, not a NaN.
@@ -3954,6 +4492,49 @@ class Grid:
             kept.append(nr)
         self.names = kept
 
+    def _shift_tables(self, axis: str, pos: int, direction: int) -> None:
+        """Move the active sheet's tables across an insert/delete, as
+        `_shift_names` moves names. A table that loses its header row, or
+        every data row, is dropped: its references then give #REF!."""
+        kept: list[Table] = []
+        for t in self.tables:
+            if t.sheet != self._active.name:
+                kept.append(t)
+                continue
+            lo, hi = (t.r1, t.r2) if axis == "R" else (t.c1, t.c2)
+            if direction > 0:
+                if pos <= lo:
+                    lo, hi = lo + 1, hi + 1
+                elif pos <= hi:
+                    hi += 1
+                    if axis == "C":
+                        taken = {c.casefold() for c in t.columns}
+                        k = 1
+                        while f"column{k}" in taken:
+                            k += 1
+                        t.columns.insert(pos - t.c1, f"Column{k}")
+                if hi >= (NROW if axis == "R" else NCOL):
+                    continue  # pushed off the grid
+            else:
+                if pos < lo:
+                    lo, hi = lo - 1, hi - 1
+                elif pos <= hi:
+                    if axis == "R" and t.header and pos == t.r1:
+                        continue
+                    if axis == "R" and t.totals and pos == t.r2:
+                        t.totals = 0
+                    if axis == "C":
+                        del t.columns[pos - t.c1]
+                    hi -= 1
+                if hi < lo or (axis == "R" and hi - lo + 1 <= t.header + t.totals):
+                    continue
+            if axis == "R":
+                t.r1, t.r2 = lo, hi
+            else:
+                t.c1, t.c2 = lo, hi
+            kept.append(t)
+        self.tables = kept
+
     def _shift_layout(self, axis: str, pos: int, direction: int) -> None:
         """Move merged ranges, and row heights, across an insert/delete.
 
@@ -4037,6 +4618,7 @@ class Grid:
         self._cells = new_cells
         self._shiftrefs("R", at, +1)
         self._shift_names("R", at, +1)
+        self._shift_tables("R", at, +1)
         self._shift_layout("R", at, +1)
         self._rebuild_dep_graph()
         self.dirty = 1
@@ -4057,6 +4639,7 @@ class Grid:
         self._cells = new_cells
         self._shiftrefs("C", at, +1)
         self._shift_names("C", at, +1)
+        self._shift_tables("C", at, +1)
         self._shift_layout("C", at, +1)
         self._shift_widths(at, +1)
         self._rebuild_dep_graph()
@@ -4067,6 +4650,7 @@ class Grid:
         self._drop_all_spills()
         self._shiftrefs("R", at, -1)
         self._shift_names("R", at, -1)
+        self._shift_tables("R", at, -1)
         self._shift_layout("R", at, -1)
         new_cells: dict[tuple[int, int], Cell] = {}
         for (c, r), cl in self._cells.items():
@@ -4084,6 +4668,7 @@ class Grid:
         self._drop_all_spills()
         self._shiftrefs("C", at, -1)
         self._shift_names("C", at, -1)
+        self._shift_tables("C", at, -1)
         self._shift_layout("C", at, -1)
         self._shift_widths(at, -1)
         new_cells: dict[tuple[int, int], Cell] = {}
@@ -4194,6 +4779,7 @@ class Grid:
         cell_fmtstr = ""
         xstyle: XStyle | None = None
         legacy = False
+        cached: Any = None
         label = False
         if isinstance(v, dict):
             label = v.get("label") is True
@@ -4208,6 +4794,7 @@ class Grid:
             cell_fmtstr = cell_fmtstr[:255]
             xstyle = XStyle.from_json(v.get("style"))
             legacy = v.get("legacy") is True
+            cached = _json_cached(v.get("cached"))
             v = v.get("v", None)
         if v is None or (isinstance(v, str) and v == ""):
             if xstyle is not None:
@@ -4240,6 +4827,7 @@ class Grid:
         cl.fmtstr = cell_fmtstr
         cl.xstyle = xstyle
         cl.legacy = legacy and cl.type == FORMULA
+        cl.cached = cached if cl.type == FORMULA else None
 
     def jsonload(self, filename: str, policy: Any = None) -> int:
         self.io_error = None
@@ -4295,6 +4883,7 @@ class Grid:
         self.active = 0
         self.clear_all()  # also drops the workbook-wide dep graph
         self.names = []
+        self.tables = []
         self.models = {}
         self.libs = []
         self.requires = []
@@ -4463,6 +5052,15 @@ class Grid:
                 sh = Sheet(name=final_name)
                 sh.widths = _decode_widths(entry.get("widths"))
                 sh.merges, sh.heights = _decode_layout(entry.get("merges"), entry.get("heights"))
+                freeze = entry.get("freeze")
+                if (
+                    isinstance(freeze, list)
+                    and len(freeze) == 2
+                    and all(type(v) is int for v in freeze)
+                    and 0 <= freeze[0] < NCOL
+                    and 0 <= freeze[1] < NROW
+                ):
+                    sh.tc, sh.tr = freeze
                 self.sheets.append(sh)
                 self.active = len(self.sheets) - 1
                 cells_payload = entry.get("cells", [])
@@ -4490,12 +5088,15 @@ class Grid:
             if isinstance(rows, list):
                 self._load_cells_into_active(rows)
 
+        self.tables = _json_tables(d.get("tables"), {s.name for s in self.sheets})
+
         # Single recalc at the end. Per-cell `_refresh_deps` already
         # populated the dep graph during the load loop, so flag it as
         # built and skip the redundant rebuild inside `_recalc_topo`.
-        # LEGACY mode never built a graph in the first place; no flag.
+        # Tables arrive after the cells, so a structured reference needs
+        # the rebuild. LEGACY mode never built a graph; no flag.
         if self.mode != Mode.PYTHON:
-            self._dep_graph_built = True
+            self._dep_graph_built = not self.tables
         self.recalc()
 
     def _encode_sheet_rows(
@@ -4559,6 +5160,7 @@ class Grid:
             or label
             or sc.xstyle
             or sc.legacy
+            or sc.cached is not None
         )
         if not has_style:
             return val
@@ -4579,6 +5181,10 @@ class Grid:
             styled["style"] = sc.xstyle.to_json()
         if sc.legacy:
             styled["legacy"] = True
+        if sc.cached is not None:
+            styled["cached"] = (
+                str(sc.cached) if isinstance(sc.cached, ExcelErrorType) else sc.cached
+            )
         return styled
 
     def jsonsave(self, filename: str) -> int:
@@ -4608,6 +5214,20 @@ class Grid:
                     rng = f"{nr.sheet}!{rng}"
                 out["names"][nr.name] = rng
 
+        if self.tables:
+            out["tables"] = [
+                {
+                    "name": t.name,
+                    "sheet": t.sheet,
+                    "ref": f"{cellname(t.c1, t.r1)}:{cellname(t.c2, t.r2)}",
+                    "columns": list(t.columns),
+                    "header": t.header,
+                    "totals": t.totals,
+                    **({"style": t.style} if t.style else {}),
+                }
+                for t in self.tables
+            ]
+
         if self.models:
             out["models"] = {name: m.to_json() for name, m in self.models.items()}
 
@@ -4632,6 +5252,8 @@ class Grid:
                 # Omitted when empty, so a workbook never touched by a
                 # graphical frontend serializes exactly as it did before.
                 entry["widths"] = {str(c): w for c, w in sorted(s.widths.items())}
+            if s.tc or s.tr:
+                entry["freeze"] = [s.tc, s.tr]
             out["sheets"].append(entry)
 
         def write(path: str) -> None:
@@ -4696,13 +5318,15 @@ class Grid:
         ]
         taken = {nr.name for nr in self.names}
         self.names += [
-            NamedRange(name=nm, formula=f) for nm, f in _xlsx_read_formula_names(root, taken)
+            NamedRange(name=nm, formula=f)
+            for nm, f in _xlsx_read_formula_names(root, taken, sheet_order)
         ]
+        self.tables = _xlsx_read_tables(filename, root)
         # `cw` is workbook-wide in gridcalc, so the first sheet's default sets it.
         sheet_widths = _xlsx_read_widths(filename, root)
         for sh in self.sheets:
-            sh.widths = sheet_widths.get(sh.name, (None, {}))[1]
-        default = sheet_widths.get(sheet_order[0], (None, {}))[0] if sheet_order else None
+            _, sh.widths, (sh.tc, sh.tr) = sheet_widths.get(sh.name, (None, {}, (0, 0)))
+        default = sheet_widths.get(sheet_order[0], (None, {}, (0, 0)))[0] if sheet_order else None
         if default is not None and 4 <= round(default) <= 40:
             self.cw = round(default)
         # 1462 days separate the 1904 and 1900 epochs. A value under 1 is a
@@ -4743,9 +5367,18 @@ class Grid:
             # Any formula Excel did not store as an array formula is legacy.
             cl.legacy = kind == "f" and cl.type == FORMULA
             cl.bold, cl.italic, cl.underline = style & 1, (style >> 1) & 1, (style >> 2) & 1
+            cl.fmtstr = datefmt or _fmtstr_for_xlsx_code(numfmt_code, numfmt_id)
             if cl.type in (NUM, FORMULA):
-                cl.fmtstr = datefmt or _fmtstr_for_xlsx_code(numfmt_code, numfmt_id)
                 cl.fmt = "L" if style & 8 else "R" if style & 16 else ""
+        external = {
+            (s.name, c, r)
+            for s in self.sheets
+            for (c, r), cl in s._cells.items()
+            if cl.type == FORMULA and _EXTERNAL_RE.search(cl.text)
+        }
+        for (sname, c, r), saved in _xlsx_read_saved_values(filename, root, external).items():
+            ext = self.sheets[sheet_index[sname]]._cells[(c, r)]
+            ext.cached = saved
         self.font, xstyled, layouts = _xlsx_read_formatting(filename, root)
         for sname, (merges, heights) in layouts.items():
             if sname in sheet_index:
@@ -4840,6 +5473,13 @@ class Grid:
         # historical values-only behavior.
         preserve_formulas = self.mode == Mode.EXCEL
         dep_names = self._dep_named_ranges()
+        from .formula.evaluator import _param_info
+
+        funcs = {k.lower(): v for k, v in self._eval_globals.items() if callable(v)}
+
+        def scalar_params(name: str) -> tuple[bool, ...]:
+            fn = funcs.get(name)
+            return _param_info(name, fn)[0] if fn is not None else ()
         payload: list[tuple[Any, ...]] = []
         arrays: dict[str, list[tuple[str, str]]] = {}
         errors: dict[str, list[tuple[str, str]]] = {}
@@ -4854,7 +5494,7 @@ class Grid:
                 numfmt, style = _xlsx_cell_style(cl, self.fmt)
                 if cl.type == LABEL:
                     text = label_value(cl.text)
-                    payload.append((s.name, c, r, "s", text, "", style))
+                    payload.append((s.name, c, r, "s", text, numfmt, style))
                 elif is_constant(cl):
                     if cl.err is not None:
                         # OpenXLSX writes no error cell; the postprocess turns
@@ -4862,7 +5502,7 @@ class Grid:
                         payload.append((s.name, c, r, "f", cl.text, None, numfmt, style))
                         errors.setdefault(s.name, []).append((cellname(c, r), cl.text))
                     else:
-                        payload.append((s.name, c, r, "b", cl.val, "", style))
+                        payload.append((s.name, c, r, "b", cl.val, numfmt, style))
                 elif cl.type == NUM:
                     payload.append((s.name, c, r, "n", float(cl.val), numfmt, style))
                 elif cl.type in (FORMULA, SPILL):
@@ -4883,7 +5523,7 @@ class Grid:
                             not cl.arr
                             and not cl.legacy
                             and cl.ast is not None
-                            and reads_range_as_array(cl.ast, dep_names)
+                            and reads_range_as_array(cl.ast, dep_names, scalar_params)
                         )
                         if one_cell_array:  # array evaluation in one cell: as Excel saves it
                             arrays.setdefault(s.name, []).append((cellname(c, r),) * 2)
@@ -4896,9 +5536,9 @@ class Grid:
                                 span += ":" + cellname(c + cols - 1, r + rows - 1)
                             arrays.setdefault(s.name, []).append((cellname(c, r), span))
                     elif result is not None:
-                        payload.append((s.name, c, r, "s", result, "", style))
+                        payload.append((s.name, c, r, "s", result, numfmt, style))
                     elif isinstance(cached, bool):
-                        payload.append((s.name, c, r, "b", cached, "", style))
+                        payload.append((s.name, c, r, "b", cached, numfmt, style))
                     elif cached is not None:
                         payload.append((s.name, c, r, "n", cached, numfmt, style))
         # Refused rather than stripped, so the save never drops text unasked.
@@ -4921,14 +5561,42 @@ class Grid:
             for sh in self.sheets
         }
         layout = {sh.name: (sh.merges, sh.heights) for sh in self.sheets}
+        table_parts = self._xlsx_table_parts()
 
         def write(path: str) -> None:
             _xlsx_write_cells(path, payload, sheet_names)
             _xlsx_postprocess(
-                path, names_xml, self.cw, widths, arrays, errors, xstyles, self.font, layout
+                path,
+                names_xml,
+                self.cw,
+                widths,
+                arrays,
+                errors,
+                xstyles,
+                self.font,
+                layout,
+                table_parts,
+                {sh.name: (sh.tc, sh.tr) for sh in self.sheets},
             )
 
         return self._save_via(filename, write)
+
+    def _xlsx_table_parts(self) -> dict[str, list[bytes]]:
+        """Each sheet's table parts. A table's column names are written as
+        stored, so its formulas keep reading: gridcalc does not rename a
+        column when its header cell is edited, as Excel does."""
+        out: dict[str, list[bytes]] = {}
+        ids = [re.search(r'<table\b[^>]*?\sid="(\d+)"', t.xml or "") for t in self.tables]
+        next_id = max((int(m.group(1)) for m in ids if m), default=0)
+        seen: set[int] = set()
+        for t, m in zip(self.tables, ids, strict=True):
+            tid = int(m.group(1)) if m else 0
+            if not tid or tid in seen:
+                next_id += 1
+                tid = next_id
+            seen.add(tid)
+            out.setdefault(t.sheet, []).append(_xlsx_table_xml(t, tid, t.columns))
+        return out
 
     def csvsave(self, filename: str) -> int:
         """Export evaluated cell values to CSV."""

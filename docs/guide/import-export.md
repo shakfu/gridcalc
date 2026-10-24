@@ -30,7 +30,11 @@ Both also keep:
 - solid fills;
 - borders, each side with its style and colour;
 - horizontal and vertical alignment, wrapping, indent and rotation;
-- merged cells and row heights.
+- merged cells and row heights;
+- frozen rows and columns, per sheet;
+- tables, with their filters and style.
+
+Formulas read a table by name and column, as in Excel: `=SUM(Sales[Qty])`, `=Sales[[#This Row],[Qty]]*2`, `=[@Qty]` inside the table. Inserting rows or columns inside a table grows it. Editing a header cell does not rename its column, as Excel does; formulas keep the old name.
 
 Theme colours load as the colour they show. A blank cell that has only a fill or border is kept, and clearing a cell keeps these styles, as in Excel. The web view draws all of them except rotation and row heights. The terminal view shows horizontal alignment only.
 
@@ -40,7 +44,7 @@ Number formats and alignment cross in both directions. `$`, `%` and `I` become `
 - `*` (bar chart) has no xlsx equivalent and is dropped.
 - Other xlsx formats, such as `"$"#,##0.00`, `#,##0;[Red](#,##0)` or `# ?/?`, are kept as written and display as in Excel. `[Red]` colours the value in the web view.
 
-`:xlsx save` rewrites the whole file from the workbook. Saving over an xlsx that has comments, charts, images, frozen panes, pattern or gradient fills, diagonal borders or font effects such as superscript asks first, because those are lost.
+`:xlsx save` rewrites the whole file from the workbook. Saving over an xlsx that has comments, charts, images, pattern or gradient fills, diagonal borders or font effects such as superscript asks first, because those are lost.
 
 `:xlsx save` also writes column widths. The workbook's width in characters becomes each sheet's default column width. Per-column widths set in the desktop app are in pixels and convert approximately, because an xlsx width depends on the reader's font. `:xlsx load` reads both back; the first sheet's default sets the workbook width.
 

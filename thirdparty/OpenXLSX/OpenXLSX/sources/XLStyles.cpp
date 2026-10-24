@@ -119,6 +119,9 @@ namespace     // anonymous namespace for module local functions
          || underline == "none")   return XLUnderlineNone;
         if (underline == "single") return XLUnderlineSingle;
         if (underline == "double") return XLUnderlineDouble;
+        // gridcalc: the accounting forms of ECMA-376 ST_UnderlineValues (THIRD-PARTY-NOTICES.md)
+        if (underline == "singleAccounting") return XLUnderlineSingle;
+        if (underline == "doubleAccounting") return XLUnderlineDouble;
         std::cerr << __func__ << ": invalid underline style " << underline << std::endl;
         return XLUnderlineInvalid;
     }

@@ -14,6 +14,8 @@ Known gaps, each of them deliberate rather than pending:
 
 - **Whole-column and whole-row references** (`A:A`, `1:1`) work in EXCEL and HYBRID mode only.
 
+- **Structured references** (`Sales[Qty]`) read tables from an xlsx. gridcalc cannot create or rename a table, and editing a header cell does not rename its column. A bare `[Qty]` without the table name is not read; `[@Qty]` is. A reference into another workbook (`[1]!Sales[Qty]`) is a syntax error.
+
 - **xlsx styling is not complete.** Fonts, solid fills, borders, alignment, number formats, merged cells, row and column sizes are read and written ([Import and export](../guide/import-export.md)). Pattern and gradient fills, diagonal borders and font effects such as superscript are not. Saving over an xlsx that has any of them lists what will be lost and asks first. Styles can be loaded but not yet set from either view, except bold, italic, underline and number formats.
 
 The [Excel function coverage audit](../function_coverage.md) tracks the function library itself against Microsoft's documented set, including which absences are architectural and which are merely unimplemented.

@@ -24,10 +24,12 @@ from .ast_nodes import (
     Number,
     Percent,
     PyCall,
+    RangeOp,
     RangeRef,
     Ref3D,
     SpillRef,
     String,
+    StructRef,
     UnaryOp,
 )
 from .deps import resize_sum_range
@@ -82,6 +84,7 @@ class Env:
         sheet_span: Callable[[str, str], list[str] | None] | None = None,
         used_extent: Callable[[], tuple[int, int]] | None = None,
         sheet_names: Callable[[], list[str]] | None = None,
+        table_ref: Callable[..., Any] | None = None,
     ) -> None:
         # `cell_value` is `(c, r, sheet=None) -> object`; `cell_is_formula`
         # is `(c, r, sheet=None) -> bool`. The single-sheet case keeps
@@ -116,6 +119,9 @@ class Env:
         self.used_extent = used_extent
         # `sheet_names()` lists the workbook's sheets in order, for SHEET/SHEETS.
         self.sheet_names = sheet_names or (lambda: [])
+        # `table_ref(node, sheet, cell)` resolves a `StructRef` read by the
+        # formula at ``cell`` on ``sheet`` to a Reference or an ExcelError.
+        self.table_ref = table_ref or (lambda _n, _s, _c: ExcelError.REF)
         self._extent: tuple[int, int] | None = None
         # Set by recalc before evaluating each formula. Functions in
         # `RAW_ARG_FUNCS` (e.g. ROW(), COLUMN()) consult this when called
@@ -225,7 +231,17 @@ class Env:
                 return self.resolve_ref(target)
             finally:
                 self._names_active.discard(key)
-        if isinstance(node, (Call, Apply)):
+        if isinstance(node, StructRef):
+            ref = self.table_ref(node, self.current_sheet, self.current_cell)
+            return ref if isinstance(ref, Reference) else None
+        if isinstance(node, Call) and node.name.lower() == "index":
+            ref = _index_reference(node, self)
+            if ref is not None:
+                return ref
+        if isinstance(node, Call) and node.name.lower() in ("choose", "if"):
+            picked = _picked_arg(node, self)
+            return self.resolve_ref(picked) if picked is not None else None
+        if isinstance(node, (Call, Apply, RangeOp)):
             v = _eval(node, self)
             return v if isinstance(v, Reference) else None
         return None
@@ -426,19 +442,41 @@ def _vec_shape(v: object) -> tuple[int, int]:
 def _vec_apply2(op: Callable[[Any, Any], Any], a: Any, b: Any) -> Any:
     if _is_vec(a) and _is_vec(b):
         ad, bd = _vec_data(a), _vec_data(b)
-        if len(ad) != len(bd):
-            return ExcelError.VALUE
         ca, cb = _vec_cols(a), _vec_cols(b)
-        # Two 2D shapes must match exactly; mismatch -> per-element #VALUE!.
-        if ca and cb and _vec_shape(a) != _vec_shape(b):
-            return _make_vec([ExcelError.VALUE] * len(ad), cols=ca)
-        out_cols = ca if ca else cb
-        return _make_vec([op(x, y) for x, y in zip(ad, bd, strict=False)], cols=out_cols)
+        if len(ad) == len(bd) and (not ca or not cb or _vec_shape(a) == _vec_shape(b)):
+            out_cols = ca if ca else cb
+            return _make_vec([op(x, y) for x, y in zip(ad, bd, strict=False)], cols=out_cols)
+        return _broadcast2(op, ad, _vec_shape(a), bd, _vec_shape(b))
     if _is_vec(a):
         return _make_vec([op(x, b) for x in _vec_data(a)], cols=_vec_cols(a))
     if _is_vec(b):
         return _make_vec([op(a, y) for y in _vec_data(b)], cols=_vec_cols(b))
     return op(a, b)
+
+
+def _broadcast2(
+    op: Callable[[Any, Any], Any],
+    ad: list[Any],
+    ash: tuple[int, int],
+    bd: list[Any],
+    bsh: tuple[int, int],
+) -> Any:
+    """``op`` over two arrays of different shapes, as `_lift_call` broadcasts:
+    a dimension of 1 repeats, and a position past either edge is #N/A."""
+    (ra, wa), (rb, wb) = ash, bsh
+    n_rows, n_cols = max(ra, rb), max(wa, wb)
+    if n_rows * n_cols > MAX_ARRAY_CELLS:  # a column against a row multiplies
+        return explain(ExcelError.NUM, f"result over {MAX_ARRAY_CELLS} cells")
+    out: list[Any] = []
+    for r in range(n_rows):
+        for c in range(n_cols):
+            ia, ja = (0 if ra == 1 else r), (0 if wa == 1 else c)
+            ib, jb = (0 if rb == 1 else r), (0 if wb == 1 else c)
+            if ia >= ra or ja >= wa or ib >= rb or jb >= wb:
+                out.append(ExcelError.NA)
+            else:
+                out.append(op(ad[ia * wa + ja], bd[ib * wb + jb]))
+    return _make_vec(out, cols=n_cols)
 
 
 def _vec_apply1(op: Callable[[Any], Any], a: Any) -> Any:
@@ -651,6 +689,64 @@ def _eval(node: Node, env: Env) -> Value:
     if handler is None:
         raise AssertionError(f"unknown node {type(node).__name__}")
     return handler(node, env)
+
+
+def _picked_arg(node: Call, env: Env) -> Node | None:
+    """The argument node `CHOOSE` or `IF` returns, so a reference there stays
+    one; None when the choice is an error or out of range."""
+    if not node.args:
+        return None
+    v = _deref(_eval(node.args[0], env), env)
+    if node.name.lower() == "if":
+        if not 2 <= len(node.args) <= 3:
+            return None
+        b = _to_bool(v)
+        if isinstance(b, ExcelError):
+            return None
+        i = 1 if b else 2
+        return node.args[i] if i < len(node.args) else None
+    k = _to_number(v)
+    if isinstance(k, ExcelError) or not 1 <= int(k) < len(node.args):
+        return None
+    return node.args[int(k)]
+
+
+def _index_reference(node: Call, env: Env) -> Reference | None:
+    """`INDEX(range, row, [col])` as the reference Excel gives it, for the
+    range operator and the reference-taking functions; None when its first
+    argument is not a reference or an index is out of range."""
+    if not 2 <= len(node.args) <= 3:
+        return None
+    base = env.resolve_ref(node.args[0])
+    if base is None:
+        return None
+    nums = []
+    for a in node.args[1:]:
+        v = _to_number(_deref(_eval(a, env), env)) if not isinstance(a, Missing) else 0.0
+        if isinstance(v, ExcelError):
+            return None
+        nums.append(int(v))
+    rows, cols = base.r2 - base.r1 + 1, base.c2 - base.c1 + 1
+    r, c = nums[0], nums[1] if len(nums) > 1 else 0
+    if len(nums) == 1 and rows == 1 and cols > 1:
+        r, c = 1, r  # one row: the index picks a column
+    elif len(nums) == 1:
+        c = 1 if cols == 1 else 0
+    if not (0 <= r <= rows and 0 <= c <= cols):
+        return None
+    r1, r2 = (base.r1, base.r2) if r == 0 else (base.r1 + r - 1,) * 2
+    c1, c2 = (base.c1, base.c2) if c == 0 else (base.c1 + c - 1,) * 2
+    return Reference(c1, r1, c2, r2, base.sheet)
+
+
+def _eval_rangeop(node: RangeOp, env: Env) -> Any:
+    """``left:right``: the reference spanning both sides, as Excel's `:`."""
+    a, b = env.resolve_ref(node.left), env.resolve_ref(node.right)
+    if a is None or b is None:
+        return ExcelError.VALUE
+    if (a.sheet or "").casefold() != (b.sheet or a.sheet or "").casefold():
+        return ExcelError.REF
+    return Reference(min(a.c1, b.c1), min(a.r1, b.r1), max(a.c2, b.c2), max(a.r2, b.r2), a.sheet)
 
 
 def _eval_value(node: Any, env: Env) -> Any:
@@ -1197,6 +1293,7 @@ RAW_ARG_FUNCS = frozenset(
         "sheet",
         "sheets",
         "subtotal",
+        "aggregate",
         "cell",
         "single",
         "trimrange",
@@ -1315,6 +1412,8 @@ def _eval_call(node: Call, env: Env) -> Any:
         except (TypeError, AttributeError):
             return ExcelError.VALUE
     if name_lower in RAW_ARG_FUNCS:
+        array_arg = env.legacy and name_lower in LEGACY_ARRAY_FUNCS
+        env.array_depth += array_arg
         try:
             return fn(env, *node.args)
         except ZeroDivisionError:
@@ -1323,6 +1422,8 @@ def _eval_call(node: Call, env: Env) -> Any:
             return ExcelError.NUM
         except (TypeError, AttributeError):
             return ExcelError.VALUE
+        finally:
+            env.array_depth -= array_arg
     if name_lower in ("sumif", "averageif"):
         node = resize_sum_range(node)
     if env.legacy and name_lower in LEGACY_ARRAY_FUNCS:
@@ -1335,6 +1436,12 @@ def _eval_call(node: Call, env: Env) -> Any:
 
 
 def _eval_value_call(name_lower: str, fn: Any, node: Call, env: Env) -> Any:
+    if name_lower in _CRITERIA_FUNCS:
+        # A deleted range (`Data!#REF!`) is the error; an error in a cell of
+        # a range, or as a criterion, is a value to match.
+        for i in _criteria_range_positions(name_lower, len(node.args)):
+            if isinstance(node.args[i], ErrorLit):
+                return _eval(node.args[i], env)
     has_3d = any(isinstance(a, Ref3D) for a in node.args)
     if has_3d and name_lower not in _3D_FUNCS:
         return ExcelError.VALUE
@@ -1359,9 +1466,23 @@ def _eval_value_call(name_lower: str, fn: Any, node: Call, env: Env) -> Any:
             for i, a in enumerate(args)
         ]
     lifted = [i for i, a in enumerate(args[: len(positions)]) if positions[i] and _is_vec(a)]
+    if name_lower in _CRITERIA_FUNCS and name_lower.endswith("s"):
+        # `*IFS` take their criteria as varargs, which carry no annotation;
+        # an array criterion gives one result per element, as in `COUNTIF`.
+        ranges = set(_criteria_range_positions(name_lower, len(args)))
+        lifted = [i for i, a in enumerate(args) if i not in ranges and _is_vec(a)]
     if lifted:
         return _lift_call(name_lower, fn, args, lifted, env)
     return _call_value(name_lower, fn, args)
+
+
+def _criteria_range_positions(name: str, n: int) -> list[int]:
+    """Argument positions of a criteria function that hold ranges, not criteria."""
+    if name in ("countif", "sumif", "averageif"):
+        return [i for i in (0, 2) if i < n]
+    if name == "countifs":
+        return list(range(0, n, 2))
+    return [0, *range(1, n, 2)]  # SUMIFS, AVERAGEIFS, MAXIFS, MINIFS
 
 
 def _call_value(name_lower: str, fn: Any, args: list[Any]) -> Any:
@@ -1497,6 +1618,7 @@ LEGACY_ARRAY_FUNCS = frozenset(
         "index",
         "lookup",
         "match",
+        "aggregate",
     }
 )
 
@@ -1556,6 +1678,8 @@ _EVAL: dict[type, Callable[[Any, Env], Any]] = {
     ArrayLit: _eval_array,
     CellRef: _eval_cell,
     RangeRef: _eval_range,
+    RangeOp: lambda node, env: _eval_rangeop(node, env),
+    StructRef: lambda node, env: env.table_ref(node, env.current_sheet, env.current_cell),
     Ref3D: _eval_ref3d,
     SpillRef: _eval_spill,
     Name: _eval_name,

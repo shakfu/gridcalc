@@ -22,7 +22,7 @@ the old name is a different object.
 
 from __future__ import annotations
 
-from .engine import EMPTY, Cell, Grid, Mode, NamedRange, Sheet
+from .engine import EMPTY, Cell, Grid, Mode, NamedRange, Sheet, Table
 
 UNDO_MAX = 64
 
@@ -52,6 +52,14 @@ def _copy_names(names: list[NamedRange]) -> list[NamedRange]:
     ]
 
 
+def _copy_tables(tables: list[Table]) -> list[Table]:
+    """Deep-copy the table list: structural edits move tables in place."""
+    return [
+        Table(t.name, t.sheet, t.c1, t.r1, t.c2, t.r2, list(t.columns), t.header, t.totals, t.xml)
+        for t in tables
+    ]
+
+
 def _book(g: Grid) -> list[_SheetSnap]:
     return [
         (
@@ -73,7 +81,19 @@ def _book(g: Grid) -> list[_SheetSnap]:
 
 
 class UndoEntry:
-    __slots__ = ("cells", "rect", "cc", "cr", "fmt", "sheet", "names", "mode", "book", "active")
+    __slots__ = (
+        "cells",
+        "rect",
+        "cc",
+        "cr",
+        "fmt",
+        "sheet",
+        "names",
+        "mode",
+        "book",
+        "active",
+        "tables",
+    )
 
     def __init__(self) -> None:
         self.cells: list[tuple[int, int, Cell]] = []
@@ -95,6 +115,8 @@ class UndoEntry:
         # Whole-workbook snapshot (see the module docstring), or None.
         self.book: list[_SheetSnap] | None = None
         self.active: Sheet | None = None
+        # The workbook's tables, saved with `book`.
+        self.tables: list[Table] | None = None
 
 
 def _new_entry(g: Grid, sheet: Sheet | None) -> UndoEntry:
@@ -115,6 +137,7 @@ def _capture(g: Grid, like: UndoEntry) -> UndoEntry:
     if like.book is not None:
         e.book = _book(g)
         e.active = g._active
+        e.tables = _copy_tables(g.tables)
     if like.rect is not None:
         _snap_region(g, e, *like.rect)
     return e
@@ -134,6 +157,8 @@ def _restore(g: Grid, e: UndoEntry) -> None:
             s._cells = {(c, r): snap.snapshot() for c, r, snap in cells}
             s._circular = set()
         g.active = g.sheets.index(e.active)
+        if e.tables is not None:
+            g.tables = _copy_tables(e.tables)
         g._dep_graph_built = False
     if e.rect is not None:
         kept = {(c, r) for c, r, _ in e.cells}
@@ -199,6 +224,7 @@ class UndoManager:
         e.mode = g.mode
         e.book = _book(g)
         e.active = g._active
+        e.tables = _copy_tables(g.tables)
         self._push(e)
 
     def discard_last(self) -> None:

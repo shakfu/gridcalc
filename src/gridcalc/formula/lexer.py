@@ -43,6 +43,8 @@ COLRANGE = "COLRANGE"
 # A 3D reference's sheets with the `!`: `Jan:Mar!`, value (first, last).
 SHEETSPAN = "SHEETSPAN"
 ROWRANGE = "ROWRANGE"
+# `Table1[...]` or a bare `[...]`: value (table name or None, text inside the brackets).
+STRUCT = "STRUCT"
 EOF = "EOF"
 
 _SINGLE = {
@@ -173,6 +175,26 @@ def whole_range(text: str, start: int) -> tuple[str, tuple[int, int, bool, bool]
     return None
 
 
+def _bracket_end(s: str, i: int) -> int:
+    """The index after the `]` closing the `[` at ``i``. A `'` escapes the
+    next character, as in `[Price '[USD']]`."""
+    depth = 0
+    j = i
+    while j < len(s):
+        ch = s[j]
+        if ch == "'":
+            j += 2
+            continue
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return j + 1
+        j += 1
+    raise FormulaError(f"unterminated structured reference at {i}")
+
+
 def tokenize(text: str) -> list[Token]:
     s = text.lstrip()
     if s.startswith("="):
@@ -222,8 +244,9 @@ def tokenize(text: str) -> list[Token]:
                 # so emit an IDENT instead and let the parser handle the prefix.
                 if next_idx < n and (s[next_idx].isalnum() or s[next_idx] == "_"):
                     cr = None  # fall through to IDENT
-                elif next_idx < n and s[next_idx] in "!(":
-                    # `Sheet1!A1` is a sheet prefix; `LOG10(` a function name.
+                elif next_idx < n and s[next_idx] in "!([":
+                    # `Sheet1!A1` is a sheet prefix; `LOG10(` a function name;
+                    # `Table1[` a table.
                     cr = None
                 else:
                     tokens.append(Token(CELLREF, (col, row, ac, ar), pos))
@@ -238,6 +261,11 @@ def tokenize(text: str) -> list[Token]:
                 raise FormulaError(f"unexpected character {ch!r} at {pos}")
             ident = m2.group(0)
             up = ident.upper()
+            if m2.end() < n and s[m2.end()] == "[" and not dotted:
+                end = _bracket_end(s, m2.end())
+                tokens.append(Token(STRUCT, (ident, s[m2.end() + 1 : end - 1]), pos))
+                i = end
+                continue
             if up == "TRUE":
                 tokens.append(Token(BOOL, True, pos))
             elif up == "FALSE":
@@ -303,6 +331,14 @@ def tokenize(text: str) -> list[Token]:
                 continue
             tokens.append(Token(IDENT, quoted, pos))
             i = j + 1
+            continue
+        # `[@Amount]`: a structured reference into the formula's own table.
+        # A bare `[Amount]` is not one here: `[x for x in xs]` is Python, and
+        # Excel writes the table name into files anyway.
+        if ch == "[" and s[i + 1 : i + 2] in ("@", "#", "["):
+            end = _bracket_end(s, i)
+            tokens.append(Token(STRUCT, (None, s[i + 1 : end - 1]), pos))
+            i = end
             continue
         # multi-char operators
         if ch == "<" and i + 1 < n and s[i + 1] == "=":

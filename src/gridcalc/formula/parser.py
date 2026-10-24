@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from .ast_nodes import (
     Apply,
     ArrayLit,
@@ -14,10 +16,12 @@ from .ast_nodes import (
     Number,
     Percent,
     PyCall,
+    RangeOp,
     RangeRef,
     Ref3D,
     SpillRef,
     String,
+    StructRef,
     UnaryOp,
 )
 from .errors import FormulaError
@@ -55,6 +59,7 @@ from .lexer import (
     SLASH,
     STAR,
     STRING,
+    STRUCT,
     Token,
     tokenize,
 )
@@ -176,7 +181,17 @@ class _Parser:
         # A trailing argument list applies the preceding expression as a
         # first-class function: LAMBDA(x, x+1)(5), or (LAMBDA(...))(...).
         node = self._primary()
-        while self._peek().kind == LPAREN:
+        while self._peek().kind in (LPAREN, COLON):
+            if self._peek().kind == COLON:
+                # Excel's range operator over any two references.
+                at = self._advance().pos
+                right = self._primary()
+                while self._peek().kind == LPAREN:
+                    right = Apply(right, tuple(self._call_args()))
+                if not (_can_be_reference(node) and _can_be_reference(right)):
+                    raise ParseError(f"a range needs a reference on each side of ':' at {at}")
+                node = RangeOp(node, right)
+                continue
             args = self._call_args()
             node = Apply(node, tuple(args))
         return node
@@ -216,7 +231,20 @@ class _Parser:
             node = self._expr()
             self._expect(RPAREN)
             return node
+        if t.kind == STRUCT:
+            self._advance()
+            table, inner = t.value
+            return _struct_ref(table, inner, t.pos)
         if t.kind == IDENT:
+            # `Data!#REF!`: a reference Excel has deleted, still qualified.
+            if (
+                self.i + 2 < len(self.tokens)
+                and self.tokens[self.i + 1].kind == BANG
+                and self.tokens[self.i + 2].kind == ERROR_LIT
+            ):
+                self._advance()
+                self._advance()
+                return ErrorLit(self._advance().value)
             # IDENT BANG CELLREF is a sheet-qualified cell reference.
             if (
                 self.i + 1 < len(self.tokens)
@@ -232,6 +260,18 @@ class _Parser:
             return self._ident_or_call()
         raise ParseError(f"unexpected {t.kind} at {t.pos}")
 
+    def _cell_follows(self, i: int) -> bool:
+        """Whether a cell reference, sheet-qualified or not, starts at token ``i``."""
+        toks = self.tokens
+        if i < len(toks) and toks[i].kind == CELLREF:
+            return True
+        return (
+            i + 2 < len(toks)
+            and toks[i].kind == IDENT
+            and toks[i + 1].kind == BANG
+            and toks[i + 2].kind == CELLREF
+        )
+
     def _cellref_or_range(self, sheet: str | None = None) -> Node:
         t = self._advance()
         col, row, ac, ar = t.value
@@ -240,6 +280,8 @@ class _Parser:
             # A1# -- the spill range anchored at A1.
             self._advance()
             return SpillRef(start)
+        if self._peek().kind == COLON and not self._cell_follows(self.i + 1):
+            return start  # `A1:INDEX(...)`: the range operator, in `_postfix`
         if self._peek().kind == COLON:
             self._advance()
             # The right side may carry its own sheet prefix; if so, it
@@ -356,6 +398,68 @@ class _Parser:
             self._advance()
         self._expect(RPAREN)
         return args
+
+
+def _can_be_reference(node: Node) -> bool:
+    return isinstance(node, (CellRef, RangeRef, Name, Call, Apply, RangeOp, SpillRef, StructRef))
+
+
+_TABLE_AREAS = ("#all", "#data", "#headers", "#totals", "#this row")
+
+
+def _unescape_column(text: str) -> str:
+    """A column name as written inside brackets: `'` escapes the next character.
+    Spaces are part of the name: Excel allows `[the two ]`."""
+    return re.sub(r"'(.)", r"\1", text)
+
+
+def _struct_ref(table: str | None, inner: str, pos: int) -> StructRef:
+    """Parse the text between a structured reference's outer brackets."""
+    areas: list[str] = []
+    cols: list[str] = []
+    body = inner
+    if body.lstrip().startswith("@"):
+        areas.append("#this row")
+        body = body.lstrip()[1:]
+    if body.strip() and not body.lstrip().startswith("["):
+        # `Table1[Amount]`, `Table1[#All]`, `[@Amount]`: one item, no brackets.
+        body = f"[{body}]"
+    i, sep_ok, range_next = 0, True, False
+    while i < len(body):
+        ch = body[i]
+        if ch.isspace():
+            i += 1
+        elif ch == "[" and sep_ok:
+            j = i + 1
+            while j < len(body) and body[j] != "]":
+                j += 2 if body[j] == "'" else 1
+            if j >= len(body):
+                raise ParseError(f"unterminated structured reference at {pos}")
+            item = body[i + 1 : j]
+            if item.strip().startswith("#"):
+                area = " ".join(item.lower().split())
+                if area not in _TABLE_AREAS or range_next:
+                    raise ParseError(f"unknown table specifier {item!r} at {pos}")
+                areas.append(area)
+            elif range_next and len(cols) == 1:
+                cols.append(_unescape_column(item))
+            elif cols:
+                raise ParseError(f"a structured reference names one column range at {pos}")
+            else:
+                cols.append(_unescape_column(item))
+            i, sep_ok, range_next = j + 1, False, False
+        elif ch in ",:" and not sep_ok:
+            range_next = ch == ":"
+            if range_next and not cols:
+                raise ParseError(f"':' joins two columns in a structured reference at {pos}")
+            i, sep_ok = i + 1, True
+        else:
+            raise ParseError(f"unexpected {ch!r} in a structured reference at {pos}")
+    if sep_ok and body.strip():
+        raise ParseError(f"incomplete structured reference at {pos}")
+    col1 = cols[0] if cols else None
+    col2 = cols[-1] if cols else None
+    return StructRef(table, tuple(dict.fromkeys(areas)), col1, col2)
 
 
 def parse(text: str, *, pow_right: bool = False) -> Node:

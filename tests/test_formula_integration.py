@@ -1366,7 +1366,7 @@ def test_numeric_edge_cases_match_excel(formula, expected):
 def test_an_unparseable_formula_is_an_error_its_dependents_see():
     g = make_excel_grid()
     g._apply_mode_libs()
-    g.setcell(0, 0, "=SUM(Sales[Amount])")  # structured references do not parse
+    g.setcell(0, 0, "=SUM(1+)")
     g.setcell(1, 0, "=A1*2")
     assert g.cells[0][0].err is ExcelError.NAME
     assert g.cells[0][0].err_msg.startswith("syntax error:")

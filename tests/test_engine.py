@@ -2840,7 +2840,8 @@ class TestRangeNodes:
         g.setcell(1, 1, "=MAX(A1:A3)")
         rk = RangeKey("Sheet1", 0, 0, 0, 2)
         assert g._subscribers[rk] == {("Sheet1", 1, 0), ("Sheet1", 1, 1)}
-        assert g._subscribers[("Sheet1", 0, 1)] == {rk}
+        assert g._ranges.containing("Sheet1", 0, 1) == [rk]
+        assert ("Sheet1", 0, 1) not in g._subscribers
         g.setcell(0, 1, "10")
         assert (g.cells[1][0].val, g.cells[1][1].val) == (14.0, 10.0)
 
@@ -2849,10 +2850,11 @@ class TestRangeNodes:
         g.setcell(1, 0, "=SUM(A1:A3)")
         g.setcell(1, 1, "=SUM(A1:A3)")
         g.setcell(1, 0, "")
-        assert RangeKey("Sheet1", 0, 0, 0, 2) in g._dep_of
+        assert RangeKey("Sheet1", 0, 0, 0, 2) in g._ranges
         g.setcell(1, 1, "5")
         assert g._dep_of == {}
         assert g._subscribers == {}
+        assert len(g._ranges) == 0
 
     def test_full_recalc_orders_range_inputs_first(self):
         g = Grid()
@@ -2892,6 +2894,29 @@ class TestRangeNodes:
         assert g.cells[1][2].err is ExcelError.DIV0
         g.setcell(0, 1, "text")
         assert [g.cells[1][r].val for r in range(3)] == [4.0, 2, 3.0]
+
+    def test_a_range_adds_no_edge_per_cell(self):
+        g = self._grid()
+        g.setcell(3, 0, "=SUM(A1:B1000)")
+        assert len(g._subscribers) == 1  # the range node only
+        g.setcell(1, 999, "5")
+        assert g.cells[3][0].val == 11.0
+
+    def test_wide_and_overlapping_ranges_recompute(self):
+        g = self._grid()
+        # 100 columns wide: past RangeIndex._NARROW, so in the per-sheet scan.
+        g.setcell(0, 10, "=SUM(B1:CW3)")
+        g.setcell(0, 11, "=SUM(A1:A2)")
+        g.setcell(0, 12, "=SUM(A2:B3)")
+        g.setcell(99, 2, "7")
+        g.setcell(0, 1, "20")
+        assert [g.cells[0][r].val for r in (10, 11, 12)] == [7.0, 21.0, 23.0]
+
+    def test_running_totals_recompute_in_order(self):
+        g = self._grid()
+        g.setcells_bulk([(1, r, f"=SUM($A$1:A{r + 1})") for r in range(3)])
+        g.setcell(0, 0, "10")
+        assert [g.cells[1][r].val for r in range(3)] == [10.0, 12.0, 15.0]
 
 
 class TestFormulasCannotCrashSetcell:
@@ -3831,8 +3856,8 @@ class TestRewriteNeedsIdentifierBoundary:
             ("=A1+B2", -1, -1, "=#REF!+A1"),
             ("=SUM(A1:A3)", 0, -2, "=SUM(#REF!)"),
             ("=Sheet1!A1+1", 0, -1, "=#REF!+1"),
-            ("=IV1", 1, 0, "=#REF!"),
-            ("=A1024", 0, 1, "=#REF!"),
+            ("=XFD1", 1, 0, "=#REF!"),
+            ("=A1048576", 0, 1, "=#REF!"),
             ("=$A$1+A1", 0, -1, "=$A$1+#REF!"),
         ],
     )
@@ -3854,7 +3879,7 @@ class TestRewriteNeedsIdentifierBoundary:
         assert g.cells[0][12].text == "=LOG10(100)+A2"
 
     def test_expand_ranges_skips_identifiers(self):
-        assert _expand_ranges("sum(xfa1:b2)") == "sum(xfa1:b2)"
+        assert _expand_ranges("sum(xfe1:b2)") == "sum(xfe1:b2)"  # past XFD
 
 
 class TestDeleteReferencedLine:

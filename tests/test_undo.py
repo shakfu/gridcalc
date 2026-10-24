@@ -370,3 +370,23 @@ class TestManagerApi:
         assert g.cell(1, 0).text == "keep"
         assert u.undo_stack == [] and len(u.redo_stack) == 1
         assert g.dirty == 0
+
+
+class TestWholeColumnRegion:
+    """A region entry stores only cells, so a whole column costs its cells."""
+
+    def test_undo_and_redo_over_a_whole_column(self):
+        from gridcalc.engine import NROW
+
+        g = Grid()
+        u = UndoManager()
+        g.setcell(0, 0, "1")
+        u.save_region(g, 0, 0, 0, NROW - 1)
+        assert len(u.undo_stack[-1].cells) == 1
+        g.setcell(0, 0, "2")
+        g.setcell(0, NROW - 1, "new")  # created after the save
+        assert u.undo(g) is True
+        assert g.cell(0, 0).val == 1.0
+        assert (0, NROW - 1) not in g._cells
+        assert u.redo(g) is True
+        assert g.cell(0, 0).val == 2.0 and g.cell(0, NROW - 1).text == "new"

@@ -166,7 +166,7 @@ The work isn't just "build a DAG." Several subtleties:
 
 Some functions read cells whose addresses depend on a **value**, not text:
 
-- `INDIRECT(A1)` — reads whatever cell `A1` names (e.g. `"B7"`). Already deliberately unsupported (`TODO.md:128`); leave it that way for the topo path.
+- `INDIRECT(A1)` — reads whatever cell `A1` names (e.g. `"B7"`). Implemented as volatile: a pending cell it reads is evaluated on demand (`_recalc_topo`).
 
 - `OFFSET(A1, B1, 0)` — reads a cell offset by `B1`'s value.
 
@@ -182,7 +182,7 @@ Recommendation: start with **(a)** since `OFFSET`/`INDEX` are uncommon and the f
 
 ### 2. Range explosion
 
-`SUM(A1:Z1000)` adds 26 000 reverse-index entries. Pathological cases (`SUM(A:A)` over a whole column) blow up to `NROW = 1024` entries.
+`SUM(A1:Z1000)` adds 26 000 reverse-index entries. Pathological cases (`SUM(A:A)` over a whole column) blow up to `NROW` entries. Resolved by the interval representation below: `RangeIndex` in `formula/deps.py` buckets ranges by column.
 
 Three mitigations, in increasing complexity:
 

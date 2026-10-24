@@ -5,6 +5,7 @@ import pytest
 
 openpyxl = pytest.importorskip("openpyxl")
 
+from gridcalc.cellstyle import Side, XStyle  # noqa: E402
 from gridcalc.engine import Grid, Mode, NamedRange  # noqa: E402
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
@@ -678,15 +679,33 @@ def test_xlsx_extras_names_what_a_save_would_drop(tmp_path):
     _rich_xlsx(f)
     assert set(xlsx_extras(f)) == {
         "comments",
-        "merged cells",
         "frozen panes",
-        "row heights",
-        "font sizes, colours or faces",
-        "cell fills",
-        "borders",
-        "centred, vertical or wrapped alignment",
-        "number formats such as currency",
     }
+
+
+@pytest.mark.parametrize(
+    ("code", "value", "shown"),
+    [
+        ('"$"#,##0.00', 1234.5, "$1,234.50"),
+        ("#,##0.00;[Red](#,##0.00)", -2, "(2.00)"),
+        ('0.0,,"M"', 2500000, "2.5M"),
+        ("# ?/?", 1.5, "1 1/2"),
+    ],
+)
+def test_number_formats_outside_the_grammar_round_trip(tmp_path, code, value, shown):
+    from gridcalc.display import cell_text
+
+    wb = openpyxl.Workbook()
+    wb.active["A1"] = value
+    wb.active["A1"].number_format = code
+    src = tmp_path / "in.xlsx"
+    wb.save(str(src))
+    g = Grid()
+    assert g.xlsxload(str(src)) == 0
+    assert cell_text(g.cell(0, 0)) == shown
+    out = tmp_path / "out.xlsx"
+    assert g.xlsxsave(str(out)) == 0
+    assert openpyxl.load_workbook(str(out)).active["A1"].number_format == code
 
 
 def test_gridcalc_output_has_no_extras(tmp_path):
@@ -696,13 +715,58 @@ def test_gridcalc_output_has_no_extras(tmp_path):
     blank = tmp_path / "blank.xlsx"
     openpyxl.Workbook().save(str(blank))
     assert xlsx_extras(blank) == []
-    for name, g in (("styled", _styled_grid()), ("formatted", _formatted_grid()[0])):
+    rich = _styled_grid()
+    rich.cell(0, 0).xstyle = XStyle(font="Arial", size=9, color="FF0000", fill="FFFF00")
+    rich._ensure_cell(4, 4).xstyle = XStyle(top=Side("thin"), halign="center", wrap=True)
+    rich.font = ("Aptos", 11.0)
+    grids = (("styled", _styled_grid()), ("formatted", _formatted_grid()[0]), ("rich", rich))
+    for name, g in grids:
         g.names = [NamedRange(name="n", c1=0, r1=0, c2=0, r2=0)]
         g._active.widths = {1: 100}
         f = tmp_path / f"{name}.xlsx"
         assert g.xlsxsave(str(f)) == 0
         assert xlsx_extras(f) == [], name
     assert xlsx_extras(EXAMPLES / "example_excel.xlsx") == []
+
+
+def test_xlsx_extras_names_styles_gridcalc_cannot_keep(tmp_path):
+    from openpyxl.styles import Border, Font, PatternFill
+    from openpyxl.styles import Side as XSide
+
+    from gridcalc.loader import xlsx_extras
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws["A1"] = 1
+    ws["A1"].fill = PatternFill("darkGrid", fgColor="FF0000")
+    ws["A2"] = 2
+    ws["A2"].border = Border(diagonal=XSide("thin"), diagonalUp=True)
+    ws["A3"] = 3
+    ws["A3"].font = Font(vertAlign="superscript")
+    f = tmp_path / "f.xlsx"
+    wb.save(str(f))
+    assert set(xlsx_extras(f)) == {
+        "pattern or gradient fills",
+        "diagonal borders",
+        "font effects such as superscript",
+    }
+
+
+def test_default_font_round_trips(tmp_path):
+    from openpyxl.styles import Font
+
+    wb = openpyxl.Workbook()
+    wb._fonts[0] = Font(name="Aptos", sz=11)  # the workbook default
+    wb.active["A1"] = 1
+    src = tmp_path / "in.xlsx"
+    wb.save(str(src))
+    g = Grid()
+    assert g.xlsxload(str(src)) == 0
+    assert g.font == ("Aptos", 11.0)
+    out = tmp_path / "out.xlsx"
+    assert g.xlsxsave(str(out)) == 0
+    font = openpyxl.load_workbook(str(out))._fonts[0]
+    assert (font.name, font.sz) == ("Aptos", 11)
 
 
 def test_xlsx_extras_of_an_unreadable_file_is_empty(tmp_path):
@@ -722,7 +786,7 @@ def test_save_losses_includes_the_target_files_extras(tmp_path):
     g = Grid()
     g.mode = Mode.EXCEL
     g.setcell(0, 0, "1")
-    assert "merged cells" in save_losses(g, f)
+    assert "comments" in save_losses(g, f)
     assert save_losses(g, tmp_path / "new.xlsx") == []
 
 
@@ -853,3 +917,15 @@ def test_xlsxsave_without_arrays_adds_no_metadata(tmp_path):
 
     with zipfile.ZipFile(f) as z:
         assert "xl/metadata.xml" not in z.namelist()
+
+
+def test_numbers_with_a_positive_exponent_read_whole(tmp_path):
+    """OpenXLSX read `1E+16` as the integer 1 (patched; THIRD-PARTY-NOTICES.md)."""
+    wb = openpyxl.Workbook()
+    wb.active["A1"] = 1e16
+    wb.active["A2"] = 1.23456e19
+    src = tmp_path / "big.xlsx"
+    wb.save(str(src))
+    g = Grid()
+    assert g.xlsxload(str(src)) == 0
+    assert (g.cell(0, 0).val, g.cell(0, 1).val) == (1e16, 1.23456e19)

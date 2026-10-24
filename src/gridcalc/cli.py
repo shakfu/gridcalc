@@ -301,6 +301,7 @@ def run_eval(g: Grid, formulas: list[str]) -> list[dict[str, Any]]:
     # Bottom-right corner: outside any plausible data, and restored regardless.
     sc, sr = NCOL - 1, NROW - 1
     had = (sc, sr) in sheet._cells
+    g._extent_skip = (sheet.name, sc, sr)  # or every large range reads to the corner
     saved = sheet._cells[(sc, sr)].snapshot() if had else None
     try:
         for text in formulas:
@@ -326,6 +327,7 @@ def run_eval(g: Grid, formulas: list[str]) -> list[dict[str, Any]]:
                     entry["value"] = cl.sval
             out.append(entry)
     finally:
+        g._extent_skip = None
         g.setcell(sc, sr, "")
         if saved is not None:
             sheet._cells[(sc, sr)] = saved

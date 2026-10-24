@@ -32,6 +32,8 @@ from .engine import (
     _is_dataframe,
     label_value,
 )
+from .formula.evaluator import number_text
+from .numfmt import format_value
 
 # Width (in characters) handed to ``fmtcell`` by :func:`cell_text` before the
 # padding is stripped. Wide enough that ordinary values and array badges
@@ -173,6 +175,21 @@ def cell_text(cl: Cell | None, global_fmt: str = "") -> str:
     return fmtcell(cl, _CELL_CHARS, global_fmt).strip()
 
 
+def cell_color(cl: Cell | None) -> str | None:
+    """The colour an xlsx number format gives the cell's value (`[Red]`), or None."""
+    if cl is None or not cl.fmtstr or cl.type not in (NUM, FORMULA, SPILL) or cl.err:
+        return None
+    if cl.sval is not None or is_date_format(cl.fmtstr) or fmt_float(0.0, cl.fmtstr) is not None:
+        return None
+    name = format_value(cl.val, cl.fmtstr).color
+    if name is not None and name.startswith("color"):
+        from .xlsx_styles import INDEXED
+
+        n = int(name[5:])  # `[Color1]` is palette entry 8
+        return "#" + INDEXED[n + 7] if 1 <= n <= 56 else None
+    return name
+
+
 def cell_right_aligned(cl: Cell | None) -> bool:
     """Whether a cell should be right-aligned (numbers and computed values)."""
     if cl is None or cl.type == LABEL:
@@ -182,6 +199,18 @@ def cell_right_aligned(cl: Cell | None) -> bool:
 
 def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
     """Format a cell value for display. Returns a string of exactly cw chars."""
+    out = _fmtcell(cl, cw, global_fmt)
+    halign = cl.xstyle.halign if cl is not None and cl.xstyle is not None else None
+    if halign in ("center", "centerContinuous", "distributed"):
+        return out.strip().center(cw)
+    if halign == "right":
+        return out.strip().rjust(cw)
+    if halign == "left":
+        return out.strip().ljust(cw)
+    return out
+
+
+def _fmtcell(cl: Cell | None, cw: int, global_fmt: str) -> str:
     if cl is None or cl.type == EMPTY:
         return " " * cw
 
@@ -239,6 +268,8 @@ def fmtcell(cl: Cell | None, cw: int, global_fmt: str = "") -> str:
         formatted = format_date(cl.val, cl.fmtstr)
         if formatted is None:
             formatted = fmt_float(cl.val, cl.fmtstr)
+        if formatted is None:
+            formatted = format_value(cl.val, cl.fmtstr, general=number_text).text
         if formatted is not None:
             return f"{_fit(formatted, cw):>{cw}}"
 

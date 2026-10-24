@@ -132,6 +132,25 @@ CASES = [
     ("logic-3", '=OR("TRUE",FALSE)', "text TRUE read as a logical?"),
     ("3d-1", "=SUM(S3a:S3c!B2)", "hand check after the run: see excel-check.md"),
     ("3d-2", "=COUNTA(S3a:S3c!B2:B3)", "text on one spanned sheet counts"),
+    (
+        "accrint-1",
+        "=ACCRINT(DATE(2008,3,1),DATE(2008,8,31),DATE(2008,5,1),0.1,1000,2,1)",
+        "basis 1: quasi-coupon periods anchored at first_interest (inference)",
+    ),
+    (
+        "accrint-2",
+        "=ACCRINT(DATE(2008,3,1),DATE(2008,8,31),DATE(2008,9,30),0.1,1000,2,1)",
+        "basis 1 across a coupon date",
+    ),
+    (
+        "chisq-1",
+        "=CHISQ.TEST({58,35;11,25;10,23},{45.35,47.65;17.56,18.44;16.09,16.91})",
+        "2D table: df = (rows-1)(cols-1)",
+    ),
+    ("chisq-2", "=CHISQ.TEST({1,2,3},{1,2})", "different sizes: #N/A per Microsoft"),
+    ("ind-1", '=INDIRECT("A"&3)+INDIRECT("R3C1",FALSE)', ""),
+    ("whole-1", "=COUNTBLANK(Z:Z)", "gridcalc reads Z:Z to the used extent"),
+    ("whole-2", '=COUNTIF(Z:Z,"<>3")', "blanks past the used extent count"),
 ]
 
 # Sheets after `check` for the 3d-* cases: B2 on each, and text in S3b!B3.

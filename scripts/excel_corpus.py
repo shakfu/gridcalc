@@ -26,7 +26,7 @@ from openpyxl import load_workbook as openpyxl_load
 from openpyxl.utils.datetime import to_excel
 
 from gridcalc.engine import FORMULA, Grid
-from gridcalc.formula.deps import extract_refs
+from gridcalc.formula.deps import RangeKey, extract_deps
 from gridcalc.loader import load_workbook
 
 Key = tuple[str, int, int]  # (sheet, col, row), 0-based
@@ -49,26 +49,26 @@ def application(path: Path) -> str:
 def excel_values(path: Path) -> tuple[dict[Key, str], dict[Key, Any]]:
     """Formula text and Excel's saved value for each formula cell."""
     formulas: dict[Key, str] = {}
+    # `_cells` holds only stored cells. `iter_rows` builds one for every
+    # position in the sheet's dimension, a million per whole-column sheet.
     for ws in openpyxl_load(path, data_only=False):
-        for row in ws.iter_rows():
-            for cell in row:
-                if cell.data_type != "f":  # text that starts with "=" is not a formula
-                    continue
-                text = getattr(cell.value, "text", cell.value)  # ArrayFormula holds its text
-                formulas[(ws.title, cell.column - 1, cell.row - 1)] = str(text)
+        for cell in list(ws._cells.values()):
+            if cell.data_type != "f":  # text that starts with "=" is not a formula
+                continue
+            text = getattr(cell.value, "text", cell.value)  # ArrayFormula holds its text
+            formulas[(ws.title, cell.column - 1, cell.row - 1)] = str(text)
     saved: dict[Key, Any] = {}
     for ws in openpyxl_load(path, data_only=True):
-        for row in ws.iter_rows():
-            for cell in row:
-                key = (ws.title, cell.column - 1, cell.row - 1)
-                if key not in formulas or cell.value is None:
-                    continue
-                v = cell.value
-                if cell.data_type == "e":
-                    v = ("error", str(v))
-                elif isinstance(v, (dt.datetime, dt.date, dt.time)):
-                    v = float(to_excel(v))
-                saved[key] = v
+        for cell in list(ws._cells.values()):
+            key = (ws.title, cell.column - 1, cell.row - 1)
+            if key not in formulas or cell.value is None:
+                continue
+            v = cell.value
+            if cell.data_type == "e":
+                v = ("error", str(v))
+            elif isinstance(v, (dt.datetime, dt.date, dt.time)):
+                v = float(to_excel(v))
+            saved[key] = v
     return formulas, saved
 
 
@@ -128,8 +128,9 @@ def compare(path: Path, rel: float = 1e-9) -> dict[str, Any]:
     roots = []
     for key in bad:
         cl = next(s for s in g.sheets if s.name == key[0])._cells[(key[1], key[2])]
-        reads = extract_refs(cl.ast, formula_sheet=key[0]) if cl.ast is not None else set()
-        if not any((s or key[0], c, r) in bad for s, c, r in reads):
+        # Ranges stay whole: `A:A` as cells would be a million keys.
+        reads = extract_deps(cl.ast, formula_sheet=key[0]) if cl.ast is not None else set()
+        if not any(_reads_bad(d, key[0], bad) for d in reads):
             roots.append(key)
     by_function: Counter[str] = Counter()
     for key in roots:
@@ -150,6 +151,14 @@ def compare(path: Path, rel: float = 1e-9) -> dict[str, Any]:
         by_function=dict(by_function.most_common()),
     )
     return report
+
+
+def _reads_bad(dep: Any, sheet: str, bad: dict[Key, Any]) -> bool:
+    """Whether dependency ``dep`` (a cell key or a `RangeKey`) covers a bad cell."""
+    if isinstance(dep, RangeKey):
+        s = dep.sheet or sheet
+        return any(k[0] == s and dep.c1 <= k[1] <= dep.c2 and dep.r1 <= k[2] <= dep.r2 for k in bad)
+    return (dep[0] or sheet, dep[1], dep[2]) in bad
 
 
 def _a1(c: int, r: int) -> str:

@@ -2,7 +2,7 @@
 
 Known gaps, each of them deliberate rather than pending:
 
-- **`INDIRECT`** is unsupported. A reference computed at evaluation time cannot be seen by the static dependency extractor, so the recalculation order would be wrong -- see [Topological recalc](../topological.md).
+- **External and cube functions** (`WEBSERVICE`, `RTD`, `IMAGE`, `CUBEVALUE`, `CUBEMEMBER`) are not implemented. They give `#NAME?`.
 
 - **xlsx export of formulas is EXCEL mode only.** PYTHON and HYBRID syntax (`**`, list comprehensions, `py.*`) is not strict Excel, so those modes export values.
 
@@ -10,11 +10,11 @@ Known gaps, each of them deliberate rather than pending:
 
 - **Cross-sheet ranges** (`Sheet1!A1:Sheet2!B5`) are rejected at parse time. Excel does not support them either.
 
-- **Grid size** is 256 columns by 1024 rows per sheet. xlsx import drops cells outside it and warns. A reference past the grid (`=A2000`) reads as an empty cell, and copying a formula so a reference leaves the grid writes `#REF!`.
+- **A range over 65536 cells is read only to the workbook's last used row and column.** The rest is blank. Results match Excel except where the result's shape shows: `=A:A` spills the used rows, not 1048576, and `=ROWS(A:A*1)` counts them. Counting blanks and indexing past the used rows still answer for the whole range. One cell far down the sheet makes every such range read to it, and recalculation slows to match.
 
-- **Whole-column and whole-row references** (`A:A`, `1:1`) cover the grid, not Excel's sheet: `=ROWS(A:A)` is 1024, not 1048576. They work in EXCEL and HYBRID mode only.
+- **Whole-column and whole-row references** (`A:A`, `1:1`) work in EXCEL and HYBRID mode only.
 
-- **xlsx styling is partial.** Bold, italic, underline, left and right alignment, column widths, date formats and plain number formats (`0.00`, `#,##0.00`, `0.0%`, `0.00E+00`) are read and written. Font sizes, colours and faces, fills, borders, centred, vertical or wrapped alignment, merged cells, row heights and formats such as currency are not. Saving over an xlsx that has any of them lists what will be lost and asks first.
+- **xlsx styling is not complete.** Fonts, solid fills, borders, alignment, number formats, merged cells, row and column sizes are read and written ([Import and export](../guide/import-export.md)). Pattern and gradient fills, diagonal borders and font effects such as superscript are not. Saving over an xlsx that has any of them lists what will be lost and asks first. Styles can be loaded but not yet set from either view, except bold, italic, underline and number formats.
 
 The [Excel function coverage audit](../function_coverage.md) tracks the function library itself against Microsoft's documented set, including which absences are architectural and which are merely unimplemented.
 
@@ -29,6 +29,11 @@ For what the desktop frontend does not do yet -- a separate question from engine
     returns a real reference, and array results spill into neighbouring
     cells. `tests/test_docs_conformance.py` now fails if a function named
     on this page is one the evaluator actually resolves.
+
+    It also listed `HYPERLINK`, which now shows its text but opens nothing.
+
+    It also listed `INDIRECT`. A cell calling it now recalculates every
+    time, as in Excel, and reads the cells it names on demand.
 
     It also said xlsx dates were neither read nor written. They now are:
     a date's number format is read, rendered, written back, and understood

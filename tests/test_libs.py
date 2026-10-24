@@ -1120,8 +1120,9 @@ class TestCriteriaAuditFixes:
         from gridcalc.libs.xlsx import COUNTIF, SUMIF
 
         rng = Vec([1.0, None, "", 2.0])  # type: ignore[list-item]
-        # "<>" counts non-blank cells; a blank (None) or "" must not match.
-        assert COUNTIF(rng, "<>") == 2
+        # "<>" counts every cell that is not empty: an `=""` result counts, as
+        # Excel's saved answers in IronCalc's COUNTIF.xlsx show (M9, AB5).
+        assert COUNTIF(rng, "<>") == 3
         # "=" is the blank complement, matching None and "".
         assert COUNTIF(rng, "=") == 2
         # SUMIF over a non-blank criterion sums only the numeric non-blanks.
@@ -2454,6 +2455,22 @@ class TestStatDistributionsHeavier:
         # chi2 ≈ 90.5 with df=4 underflows to ~0; tolerate very small p.
         assert 0 <= result < 1e-15
 
+    def test_chisq_test_on_a_table(self) -> None:
+        """Microsoft's example: a 3x2 table has df = (3-1)(2-1) = 2."""
+        g = Grid()
+        g.mode = Mode.EXCEL
+        g._apply_mode_libs()
+        g.setcell(
+            0,
+            0,
+            "=CHISQ.TEST({58,35;11,25;10,23},{45.35,47.65;17.56,18.44;16.09,16.91})",
+        )
+        assert math.isclose(g.cells[0][0].val, 0.0003082, rel_tol=1e-3)
+        g.setcell(0, 1, "=CHISQ.TEST({1,2,3},{1,2})")
+        assert g.cells[0][1].err is ExcelError.NA
+        g.setcell(0, 2, "=CHISQ.TEST({1,2;3,4},{1,2,3,4})")  # same count, other shape
+        assert g.cells[0][2].err is ExcelError.NA
+
     def test_gamma_family(self) -> None:
         from gridcalc.libs.xlsx import GAMMA, GAMMA_DIST, GAMMA_INV, GAMMALN
 
@@ -3311,6 +3328,20 @@ class TestBondAccrued:
             self._d(2008, 3, 1), self._d(2008, 8, 31), self._d(2008, 5, 1), 0.1, 1000, 2, 0
         )
         assert math.isclose(got, 16.66666667, abs_tol=1e-6)
+
+    def test_accrint_basis_1_sums_quasi_coupon_periods(self) -> None:
+        from gridcalc.libs.xlsx import ACCRINT
+
+        d = self._d
+        # One period, 2008-02-29 to 2008-08-31 (184 days); 61 of them accrue.
+        got = ACCRINT(d(2008, 3, 1), d(2008, 8, 31), d(2008, 5, 1), 0.1, 1000, 2, 1)
+        assert math.isclose(got, 50 * 61 / 184, rel_tol=1e-12)
+        # Excel's saved answer, IronCalc's accrint_cases.xlsx row 34.
+        got = ACCRINT(44166, 44531, 44256, 0.075, 100, 2, 1, True)
+        assert math.isclose(got, 1.8647540983606556, rel_tol=1e-12)
+        # calc_method FALSE before first_interest: Excel's answer is negative (row 35).
+        got = ACCRINT(44166, 44531, 44256, 0.075, 100, 2, 1, False)
+        assert math.isclose(got, -1.8852459016393444, rel_tol=1e-12)
 
     def test_accrintm(self) -> None:
         from gridcalc.libs.xlsx import ACCRINTM

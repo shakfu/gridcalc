@@ -38,7 +38,7 @@ Solid, keep:
 
 - **Shared formatting.** Cells format identically to the TUI via `display.cell_text` / `cell_right_aligned`. No divergence risk.
 
-- **Virtualized rendering.** Only viewport cells enter the DOM, so the full 256x1024 sheet scrolls without 260k nodes.
+- **Virtualized rendering.** Only viewport cells enter the DOM, so the full 16384x1048576 sheet scrolls without 17 billion nodes.
 
 Spike-grade, must change:
 

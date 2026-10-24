@@ -203,7 +203,9 @@ def format_serial(value: float, code: str) -> str | None:
             # `m` after an hour token is minutes; otherwise it is a month.
             if time_mode and len(run) <= 2:
                 out.append(f"{dt.minute:02d}" if len(run) > 1 else str(dt.minute))
-            elif len(run) >= 4:
+            elif len(run) >= 5:
+                out.append(dt.strftime("%B")[0])  # `mmmmm`: the month's initial
+            elif len(run) == 4:
                 out.append(dt.strftime("%B"))
             elif len(run) == 3:
                 out.append(dt.strftime("%b"))
@@ -244,6 +246,7 @@ def _uses_ampm(code: str) -> bool:
 # ISO first: it is unambiguous, and `03/04/2026` is not, so a file that uses it
 # is read the American way Excel would read it rather than silently the other.
 _PARSE_FORMATS = (
+    "%Y-%m-%d %H:%M:%S.%f",
     "%Y-%m-%d %H:%M:%S",
     "%Y-%m-%d %H:%M",
     "%Y-%m-%d",
@@ -255,6 +258,45 @@ _PARSE_FORMATS = (
     "%b %d, %Y",
     "%d %B %Y",
 )
+
+
+_TIME_FORMATS = ("%H:%M:%S", "%H:%M", "%I:%M %p", "%I:%M:%S %p", "%I %p")
+
+
+_TIME_RE = re.compile(r"(\d+):(\d+)(?::(\d+(?:\.\d*)?))?\s*([AaPp][Mm])?")
+_MIN_SEC_RE = re.compile(r"(\d+):(\d+\.\d*)")
+
+
+def parse_time(text: str) -> float | None:
+    """Parse a time (`10:30`, `2:30 PM`, `23:99`) to a day fraction, or None.
+    As Excel, minutes and seconds may run past 59: `23:99` is 24:39."""
+    s = (text or "").strip()
+    ms = _MIN_SEC_RE.fullmatch(s)
+    if ms is not None:  # `59:9999.0`: minutes and seconds
+        mins, secs = int(ms.group(1)), float(ms.group(2))
+        return None if mins >= 60 or secs >= 10000 else (mins * 60 + secs) / 86400.0
+    m = _TIME_RE.fullmatch(s)
+    if m is None:
+        for fmt in _TIME_FORMATS:
+            try:
+                t = _dt.datetime.strptime(s, fmt).time()
+            except ValueError:
+                continue
+            return (t.hour * 3600 + t.minute * 60 + t.second) / 86400.0
+        return None
+    h, mi = int(m.group(1)), int(m.group(2))
+    sec = float(m.group(3) or 0)
+    if m.group(3) is None and not m.group(4) and "." in s:
+        return None
+    # Excel's limits, from its saved answers (pycel's text.xlsx): h:m takes
+    # minutes up to 9999, h:m:s minutes up to 59 and seconds up to 9999.
+    if h >= 24 or sec >= 10000 or (m.group(3) is not None and mi >= 60) or mi >= 10000:
+        return None
+    if m.group(4):
+        if not 1 <= h <= 12:
+            return None
+        h = h % 12 + (12 if m.group(4).upper() == "PM" else 0)
+    return (h * 3600 + mi * 60 + sec) / 86400.0
 
 
 def parse_date(text: str) -> float | None:

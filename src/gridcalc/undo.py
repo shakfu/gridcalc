@@ -26,8 +26,18 @@ from .engine import EMPTY, Cell, Grid, Mode, NamedRange, Sheet
 
 UNDO_MAX = 64
 
-# (sheet, name, cells, widths, cc, cr) for one sheet of a workbook snapshot.
-_SheetSnap = tuple[Sheet, str, list[tuple[int, int, Cell]], dict[int, int], int, int]
+# (sheet, name, cells, widths, cc, cr, merges, heights) for one sheet of a
+# workbook snapshot.
+_SheetSnap = tuple[
+    Sheet,
+    str,
+    list[tuple[int, int, Cell]],
+    dict[int, int],
+    int,
+    int,
+    list[tuple[int, int, int, int]],
+    dict[int, float],
+]
 
 
 def _copy_names(names: list[NamedRange]) -> list[NamedRange]:
@@ -38,7 +48,7 @@ def _copy_names(names: list[NamedRange]) -> list[NamedRange]:
     mutated by the very edit it is meant to record.
     """
     return [
-        NamedRange(name=n.name, c1=n.c1, r1=n.r1, c2=n.c2, r2=n.r2, sheet=n.sheet) for n in names
+        NamedRange(n.name, n.c1, n.r1, n.c2, n.r2, sheet=n.sheet, formula=n.formula) for n in names
     ]
 
 
@@ -47,20 +57,29 @@ def _book(g: Grid) -> list[_SheetSnap]:
         (
             s,
             s.name,
-            [(c, r, cl.snapshot()) for (c, r), cl in s._cells.items() if cl.type != EMPTY],
+            [
+                (c, r, cl.snapshot())
+                for (c, r), cl in s._cells.items()
+                if cl.type != EMPTY or cl.xstyle is not None
+            ],
             dict(s.widths),
             s.cc,
             s.cr,
+            list(s.merges),
+            dict(s.heights),
         )
         for s in g.sheets
     ]
 
 
 class UndoEntry:
-    __slots__ = ("cells", "cc", "cr", "fmt", "sheet", "names", "mode", "book", "active")
+    __slots__ = ("cells", "rect", "cc", "cr", "fmt", "sheet", "names", "mode", "book", "active")
 
     def __init__(self) -> None:
         self.cells: list[tuple[int, int, Cell]] = []
+        # The (c1, r1, c2, r2) region `cells` covers. `cells` holds only its
+        # stored cells; a restore removes any other cell inside it.
+        self.rect: tuple[int, int, int, int] | None = None
         self.cc: int = 0
         self.cr: int = 0
         # The workbook's default number format at snapshot time, or None for an
@@ -96,24 +115,35 @@ def _capture(g: Grid, like: UndoEntry) -> UndoEntry:
     if like.book is not None:
         e.book = _book(g)
         e.active = g._active
-    for c, r, _ in like.cells:
-        cl = g.cell(c, r)
-        e.cells.append((c, r, cl.snapshot() if cl else Cell()))
+    if like.rect is not None:
+        _snap_region(g, e, *like.rect)
     return e
+
+
+def _snap_region(g: Grid, e: UndoEntry, c1: int, r1: int, c2: int, r2: int) -> None:
+    e.rect = (c1, r1, c2, r2)
+    e.cells = [(c, r, g._cells[(c, r)].snapshot()) for c, r in g.stored_in(c1, r1, c2, r2)]
 
 
 def _restore(g: Grid, e: UndoEntry) -> None:
     if e.book is not None and e.active is not None:
         g.sheets = [snap[0] for snap in e.book]
-        for s, name, cells, widths, cc, cr in e.book:
+        for s, name, cells, widths, cc, cr, merges, heights in e.book:
             s.name, s.widths, s.cc, s.cr = name, dict(widths), cc, cr
+            s.merges, s.heights = list(merges), dict(heights)
             s._cells = {(c, r): snap.snapshot() for c, r, snap in cells}
             s._circular = set()
         g.active = g.sheets.index(e.active)
         g._dep_graph_built = False
+    if e.rect is not None:
+        kept = {(c, r) for c, r, _ in e.cells}
+        for c, r in g.stored_in(*e.rect):
+            if (c, r) not in kept:
+                g._spill_predirty(c, r)
+                g._cells.pop((c, r), None)
     for c, r, snap in e.cells:
         g._spill_predirty(c, r)
-        if snap.type == EMPTY:
+        if snap.type == EMPTY and snap.xstyle is None:
             g._cells.pop((c, r), None)
         else:
             g._ensure_cell(c, r).copy_from(snap)
@@ -146,10 +176,7 @@ class UndoManager:
 
     def save_region(self, g: Grid, c1: int, r1: int, c2: int, r2: int) -> None:
         e = _new_entry(g, g._active)
-        for r in range(r1, r2 + 1):
-            for c in range(c1, c2 + 1):
-                cl = g.cell(c, r)
-                e.cells.append((c, r, cl.snapshot() if cl else Cell()))
+        _snap_region(g, e, c1, r1, c2, r2)
         self._push(e)
 
     def save_cell(self, g: Grid, c: int, r: int) -> None:

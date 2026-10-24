@@ -18,7 +18,7 @@ PYTHON-mode formulas are `eval()`ed, and the formula validator can be bypassed f
 
 Relocate `_recalc_python` (`engine.py:1718`), not individual cells. The parent sends the populated cell values and the code block; the child runs `exec` and the whole 100-pass fixpoint loop; the parent receives one value per cell. That is one round trip per recalc.
 
-Per-cell IPC is not viable. The sheet is 256 x 1024 and the loop runs up to 100 passes, so per-cell calls would cost millions of round trips per recalc.
+Per-cell IPC is not viable. The sheet is 16384 x 1048576 and the loop runs up to 100 passes, so per-cell calls would cost millions of round trips per recalc.
 
 Keep one child warm across recalcs. `fork` is cheap on Unix, but Windows has no `fork` and pays full interpreter startup, which a per-recalc spawn would put on the keystroke path.
 

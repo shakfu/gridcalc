@@ -59,7 +59,7 @@ Details by area:
 
 - a format that drops formulas, other sheets, names, models or the code block;
 
-- overwriting an xlsx that has features gridcalc cannot write back, such as merged cells, comments, charts, fills, borders or currency formats. The save rewrites the file, so they would be lost. `:xlsx save` asks the same question;
+- overwriting an xlsx that has features gridcalc cannot write back, such as comments, charts, images or frozen panes. The save rewrites the file, so they would be lost. `:xlsx save` asks the same question;
 
 - overwriting an existing file other than the one open.
 

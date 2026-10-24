@@ -79,7 +79,7 @@ from typing import Any, Literal, TypeVar
 
 from .. import __version__, goalseek, opt
 from .. import commands as shared
-from ..display import cell_clip_value, cell_right_aligned, cell_text
+from ..display import cell_clip_value, cell_color, cell_right_aligned, cell_text
 from ..engine import (
     COL_PX_MAX,
     COL_PX_MIN,
@@ -205,25 +205,45 @@ class Api:
         r1 = min(NROW, r0 + max(0, int(rows)))
         c1 = min(NCOL, c0 + max(0, int(cols)))
         cells: list[dict[str, Any]] = []
-        for r in range(r0, r1):
-            for c in range(c0, c1):
-                cl = g.cell(c, r)
-                if cl is None or cl.type == EMPTY:
-                    continue
-                cell: dict[str, Any] = {
-                    "r": r,
-                    "c": c,
-                    "text": cell_text(cl, g.fmt),
-                    "align": "r" if cell_right_aligned(cl) else "l",
-                }
-                if cl.bold:
-                    cell["bold"] = True
-                if cl.italic:
-                    cell["italic"] = True
-                if cl.underline:
-                    cell["underline"] = True
-                cells.append(cell)
-        return {"r0": r0, "c0": c0, "rows": r1 - r0, "cols": c1 - c0, "cells": cells}
+        # Merges meeting the window, as [r0, c0, r1, c1]. A merge's anchor
+        # cell is sent even when it lies outside, since it fills the area.
+        merges = [
+            [mr0, mc0, mr1, mc1]
+            for mc0, mr0, mc1, mr1 in g._active.merges
+            if mr0 < r1 and mr1 >= r0 and mc0 < c1 and mc1 >= c0
+        ]
+        outside = [(mc, mr) for mr, mc, _, _ in merges if not (r0 <= mr < r1 and c0 <= mc < c1)]
+        positions = [(c, r) for r in range(r0, r1) for c in range(c0, c1)] + outside
+        for c, r in positions:
+            cl = g.cell(c, r)
+            if cl is None or (cl.type == EMPTY and cl.xstyle is None):
+                continue
+            cell: dict[str, Any] = {
+                "r": r,
+                "c": c,
+                "text": cell_text(cl, g.fmt),
+                "align": "r" if cell_right_aligned(cl) else "l",
+            }
+            if cl.xstyle is not None:
+                cell["style"] = cl.xstyle.to_json()
+            if cl.bold:
+                cell["bold"] = True
+            if cl.italic:
+                cell["italic"] = True
+            if cl.underline:
+                cell["underline"] = True
+            color = cell_color(cl)
+            if color:
+                cell["color"] = color
+            cells.append(cell)
+        return {
+            "r0": r0,
+            "c0": c0,
+            "rows": r1 - r0,
+            "cols": c1 - c0,
+            "cells": cells,
+            "merges": merges,
+        }
 
     def cell_source(self, r: int, c: int) -> str:
         """The editable source text of a cell (formula text / label / number)."""
@@ -326,15 +346,14 @@ class Api:
         ca, cb = sorted((int(c0), int(c1)))
         count = 0
         nums: list[float] = []
-        for r in range(max(0, ra), min(NROW, rb + 1)):
-            for c in range(max(0, ca), min(NCOL, cb + 1)):
-                cl = g.cell(c, r)
-                if cl is None or cl.type == EMPTY:
-                    continue
-                count += 1
-                v = self._num_at(c, r)
-                if v is not None:
-                    nums.append(v)
+        for c, r in g.stored_in(max(0, ca), max(0, ra), min(NCOL - 1, cb), min(NROW - 1, rb)):
+            cl = g.cell(c, r)
+            if cl is None or cl.type == EMPTY:
+                continue
+            count += 1
+            v = self._num_at(c, r)
+            if v is not None:
+                nums.append(v)
         try:
             total = math.fsum(nums) if nums else None
         except OverflowError:
@@ -363,6 +382,8 @@ class Api:
         c0, c1 = sorted((int(c0), int(c1)))
         cells: list[dict[str, Any]] = []
         tsv_rows: list[str] = []
+        # Trailing blank rows and columns add nothing to the buffer or the TSV.
+        c0, r0, c1, r1 = g.stored_bounds(c0, r0, c1, r1) or (c0, r0, c0, r0)
         for r in range(r0, r1 + 1):
             row: list[str] = []
             for c in range(c0, c1 + 1):

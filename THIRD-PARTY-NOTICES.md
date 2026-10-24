@@ -28,6 +28,8 @@ This replaced lp_solve 5.5 (LGPL-2.1). gridcalc is MIT and links the solver stat
 
 Permissive; requires only that the copyright notice and disclaimer be retained, which this file and the vendored `LICENSE.md` do.
 
+Local change: `XLCellValue.cpp` classifies a number with any exponent as a float. Upstream treats `1E+16` as an integer and reads it as 1, because it checks only for `.` and `E-`; Excel writes large numbers in that form.
+
 ## miniz 3.0.2 -- MIT
 
 * Location: `thirdparty/miniz/` (upstream tag `3.0.2`, commit `293d4db`)
@@ -71,3 +73,12 @@ Not vendored. Fetched at build time (`pyproject.toml` `build-system.requires`) a
 ---
 
 This file is a factual inventory, not legal advice. Every vendored component is permissively licensed (MIT, BSD-3-Clause or BSL-1.0), so static linking imposes no copyleft obligation on a distributed wheel.
+
+## IronCalc -- Apache-2.0
+
+* Upstream: <https://github.com/ironcalc/IronCalc>, `base/src/functions/financial/accrint.rs`
+
+* Licence: Apache-2.0
+
+* Used by: `ACCRINT` in `src/gridcalc/libs/xlsx.py`, a Python port of that algorithm. No IronCalc code is vendored. IronCalc's version is itself a port of the ExcelFinancialFunctions library (<https://github.com/fsprojects/ExcelFinancialFunctions>, Apache-2.0).
+

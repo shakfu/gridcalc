@@ -120,12 +120,10 @@ def save_losses(g: Grid, path: str | Path) -> list[str]:
 
 # Worksheet markup gridcalc never writes, and what a user calls it.
 _SHEET_MARKERS = (
-    (b"<mergeCell ", "merged cells"),
     (b"<conditionalFormatting", "conditional formatting"),
     (b"<dataValidation ", "data validation"),
     (b"<hyperlink ", "hyperlinks"),
     (b"<pane ", "frozen panes"),
-    (b'customHeight="1"', "row heights"),
 )
 # Package parts gridcalc never writes.
 _PART_PREFIXES = (
@@ -146,8 +144,7 @@ def xlsx_extras(path: str | Path) -> list[str]:
     Detection is by markup: a style defined in the file counts even if no cell
     uses it. Returns an empty list for a file that cannot be read. Never raises.
     """
-    from .dates import is_date_format
-    from .engine import _XLSX_NS, _spec_for_xlsx_code
+    from .engine import _XLSX_NS
 
     found: list[str] = []
     try:
@@ -163,46 +160,30 @@ def xlsx_extras(path: str | Path) -> list[str]:
                 # ElementTree does not resolve external entities.
                 styles = ET.fromstring(z.read("xl/styles.xml"))  # noqa: S314
                 found += _style_extras(styles, _XLSX_NS)
-                codes = [el.get("formatCode", "") for el in styles.iter(f"{_XLSX_NS}numFmt")]
-                if any(
-                    c and not is_date_format(c) and not _spec_for_xlsx_code(c, 0) for c in codes
-                ):
-                    found.append("number formats such as currency")
     except (OSError, KeyError, zipfile.BadZipFile, ET.ParseError):
         return []
     return found
 
 
 def _style_extras(root: ET.Element, ns: str) -> list[str]:
-    """Style-table features beyond bold, italic, underline and left/right alignment."""
+    """Style-table features `cellstyle.XStyle` and `Cell` have no field for."""
     out: list[str] = []
-    fonts = root.find(f"{ns}fonts")
-    if fonts is not None and len(fonts) > 1:
-        # gridcalc copies font 0 and changes only b/i/u.
-        def base(font: ET.Element) -> list[tuple[str, dict[str, str]]]:
-            return [
-                (child.tag, dict(child.attrib))
-                for child in font
-                if child.tag not in (f"{ns}b", f"{ns}i", f"{ns}u")
-            ]
-
-        if any(base(f) != base(fonts[0]) for f in fonts):
-            out.append("font sizes, colours or faces")
-    fills = root.find(f"{ns}fills")
-    if fills is not None and len(fills) > 2:  # 0 none and 1 gray125 are mandatory
-        out.append("cell fills")
-    borders = root.find(f"{ns}borders")
-    if borders is not None and any(side.get("style") for b in borders for side in b):
-        out.append("borders")
-    xfs = root.find(f"{ns}cellXfs")
-    for xf in [] if xfs is None else xfs:
-        al = xf.find(f"{ns}alignment")
-        if al is not None and (
-            al.get("horizontal") not in (None, "general", "left", "right")
-            or al.get("vertical") not in (None, "bottom")
-            or al.get("wrapText") in ("1", "true")
+    modelled = {f"{ns}{t}" for t in ("b", "i", "u", "strike", "sz", "color", "name")}
+    modelled |= {f"{ns}{t}" for t in ("family", "scheme", "charset")}
+    if any(child.tag not in modelled for f in root.iter(f"{ns}font") for child in f):
+        out.append("font effects such as superscript")
+    for fill in root.iter(f"{ns}fill"):
+        p = fill.find(f"{ns}patternFill")
+        if p is None or p.get("patternType") not in (None, "none", "solid", "gray125"):
+            out.append("pattern or gradient fills")
+            break
+    for b in root.iter(f"{ns}border"):
+        if any(
+            el.get("style")
+            for el in b
+            if el.tag in (f"{ns}diagonal", f"{ns}vertical", f"{ns}horizontal")
         ):
-            out.append("centred, vertical or wrapped alignment")
+            out.append("diagonal borders")
             break
     return out
 

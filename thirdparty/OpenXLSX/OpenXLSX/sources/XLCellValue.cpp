@@ -265,7 +265,8 @@ XLValueType XLCellValueProxy::type() const
     // ===== If a Type attribute is not present, but a value node is, the cell contains a number.
     if (m_cellNode->attribute("t").empty() || ((strcmp(m_cellNode->attribute("t").value(), "n") == 0) && not m_cellNode->child("v").empty())) {
         if (const std::string numberString = m_cellNode->child("v").text().get();
-            numberString.find('.') != std::string::npos || numberString.find("E-") != std::string::npos || numberString.find("e-") != std::string::npos)
+            numberString.find('.') != std::string::npos || numberString.find('E') != std::string::npos || numberString.find('e') != std::string::npos)
+            // gridcalc: any exponent, not only "E-", so "1E+16" is a float (THIRD-PARTY-NOTICES.md)
             return XLValueType::Float;
         return XLValueType::Integer;
     }

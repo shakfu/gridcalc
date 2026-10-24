@@ -66,12 +66,19 @@ class ParseError(FormulaError):
 
 _COMPARE_OPS = {EQ, NE, LT, GT, LE, GE}
 
+# Excel's limits: 8192 characters of formula, 64 levels of nested functions.
+# The nesting cap also counts parentheses, arrays and unary signs, since each
+# recurses here and in every walker over the tree.
+MAX_FORMULA_CHARS = 8192
+MAX_NESTING = 64
+
 
 class _Parser:
     def __init__(self, tokens: list[Token], pow_right: bool) -> None:
         self.tokens = tokens
         self.i = 0
         self.pow_right = pow_right
+        self.depth = 0
 
     def _peek(self) -> Token:
         return self.tokens[self.i]
@@ -95,7 +102,13 @@ class _Parser:
         return node
 
     def _expr(self) -> Node:
-        return self._compare()
+        self.depth += 1
+        if self.depth > MAX_NESTING + 1:  # the top level is not a nesting
+            raise ParseError(f"nested more than {MAX_NESTING} levels deep")
+        try:
+            return self._compare()
+        finally:
+            self.depth -= 1
 
     def _compare(self) -> Node:
         node = self._concat()
@@ -142,10 +155,15 @@ class _Parser:
         return node
 
     def _unary(self) -> Node:
-        if self._peek().kind in (PLUS, MINUS):
-            op = self._advance().value
-            return UnaryOp(op, self._unary())
-        return self._percent()
+        signs = []
+        while self._peek().kind in (PLUS, MINUS):
+            signs.append(self._advance().value)
+        if len(signs) > MAX_NESTING:
+            raise ParseError(f"more than {MAX_NESTING} signs in a row")
+        node = self._percent()
+        for op in reversed(signs):
+            node = UnaryOp(op, node)
+        return node
 
     def _percent(self) -> Node:
         node = self._postfix()
@@ -346,5 +364,7 @@ def parse(text: str, *, pow_right: bool = False) -> Node:
     ``^`` groups left to right, as in Excel: ``2^3^2`` is 64. ``pow_right``
     groups it right to left, as Python's ``**`` does, for HYBRID mode.
     """
+    if len(text) > MAX_FORMULA_CHARS:
+        raise ParseError(f"longer than {MAX_FORMULA_CHARS} characters")
     tokens = tokenize(text)
     return _Parser(tokens, pow_right).parse()

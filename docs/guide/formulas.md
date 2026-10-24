@@ -42,7 +42,7 @@ In `EXCEL` and `HYBRID`, values convert as they do in Excel:
 
 - A typed `TRUE`, `FALSE` or error code (`#N/A`) is a logical or error value, not text. Type `"TRUE` for the text.
 
-- `B:B` and `1:1` are whole-column and whole-row references. They cover the 1024-row, 256-column grid.
+- `B:B` and `1:1` are whole-column and whole-row references. They cover Excel's 1048576-row, 16384-column grid.
 
 - There is no infinity: an overflow such as `=1e308*10`, and `=0^0`, give `#NUM!`.
 
@@ -83,11 +83,12 @@ The status line prints the full value for the cursor cell. Press `E` on a `Vec`,
 
 ```text
 :name revenue A1:A12       Define a named range (workbook-global)
+:name rate =0.2            Define a name by a formula (EXCEL and HYBRID mode)
 :names                     List
 :unname revenue            Remove
 ```
 
-Used directly in formulas: `=SUM(revenue)`, `=MAX(revenue - costs)`.
+Used directly in formulas: `=SUM(revenue)`, `=MAX(revenue - costs)`. A formula name can hold a `LAMBDA`, called like a function and able to call itself: `:name fact =LAMBDA(n,IF(n<2,1,n*fact(n-1)))`, then `=fact(5)`. Only a sheet-qualified reference in a name's formula moves when rows or columns move.
 
 Open the per-workbook Python code block with `:e`. Anything defined there becomes callable from formulas:
 

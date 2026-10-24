@@ -752,6 +752,16 @@ table.sens tr.breakpoint td {
   text-align: right;
 }
 
+/* A merged area: bottom-aligned, as Excel's default, and opaque over the
+   gridlines. A fill in the inline style replaces the background. */
+.cell.merge {
+  display: flex;
+  align-items: flex-end;
+  line-height: normal;
+  background: var(--bg);
+  z-index: 1;
+}
+
 .cell.b {
   font-weight: 700;
 }

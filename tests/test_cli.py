@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from gridcalc import cli
+from gridcalc import cli, engine
 from gridcalc.engine import Grid, Mode
 from gridcalc.loader import load_workbook, save_losses, save_workbook
 from gridcalc.tui import cli_parser
@@ -397,8 +397,10 @@ def test_convert_keeps_a_withheld_code_block(tmp_path) -> None:
     assert json.loads(out.read_text())["code"] == json.loads(src.read_text())["code"]
 
 
-def test_load_warnings_go_to_stderr(tmp_path) -> None:
+def test_load_warnings_go_to_stderr(tmp_path, monkeypatch) -> None:
     openpyxl = pytest.importorskip("openpyxl")
+    for mod in (engine, cli):  # an xlsx cannot pass Excel's grid
+        monkeypatch.setattr(mod, "NROW", 1024)
     wb = openpyxl.Workbook()
     wb.active["A1"] = 1
     wb.active.cell(row=5000, column=1, value=2)
@@ -406,7 +408,7 @@ def test_load_warnings_go_to_stderr(tmp_path) -> None:
     wb.save(str(src))
     code, payload, err = _run(str(src), "--eval", "=A1")
     assert code == 0 and payload["eval"][0]["value"] == 1
-    assert "warning: 1 cells beyond 256 columns x 1024 rows were not imported" in err
+    assert "warning: 1 cells beyond 16384 columns x 1024 rows were not imported" in err
 
 
 def test_python_workbook_does_not_run_without_trust() -> None:

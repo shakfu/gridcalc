@@ -183,11 +183,9 @@ def apply_format(g: Grid, undo: UndoManager, c1: int, r1: int, c2: int, r2: int,
     # anchors are the cells changed, and the undo snapshot must cover them.
     # A dict keeps each owner once, so a toggle is not applied twice.
     owners: dict[tuple[int, int], None] = {}
-    for r in range(r1, r2 + 1):
-        for c in range(c1, c2 + 1):
-            cl = g.cell(c, r)
-            if cl and cl.type != EMPTY:
-                owners[g.style_owner(c, r)] = None
+    for c, r in g.stored_in(c1, r1, c2, r2):
+        if g._cells[(c, r)].type != EMPTY:
+            owners[g.style_owner(c, r)] = None
     cols = [c for c, _ in owners] + [c1, c2]
     rows = [r for _, r in owners] + [r1, r2]
     undo.save_region(g, min(cols), min(rows), max(cols), max(rows))
@@ -209,7 +207,7 @@ def apply_format(g: Grid, undo: UndoManager, c1: int, r1: int, c2: int, r2: int,
             cl.fmt = spec.upper()
             cl.fmtstr = ""
         else:
-            cl.fmtstr = spec[:31]
+            cl.fmtstr = spec[:255]  # Excel's limit for a number-format code
             cl.fmt = ""
         g.sync_spill_style(c, r)
     return True
@@ -232,6 +230,9 @@ def sort_rows(
     """
     undo.save_grid(g)
     rows: list[tuple[float, str, list[tuple[int, Cell | None]]]] = []
+    # Rows past the last stored one are empty and sort last, so stay put.
+    bounds = g.stored_bounds(c1, r1, c2, r2)
+    r2 = r1 - 1 if bounds is None else bounds[3]
     for r in range(r1, r2 + 1):
         key_cl = g.cell(sort_col, r)
         if key_cl and key_cl.type in (NUM, FORMULA) and not math.isnan(key_cl.val):
@@ -272,9 +273,8 @@ def _blank(ctx: Context) -> Result:
     g = ctx.grid
     c1, r1, c2, r2 = ctx.rect()
     ctx.undo.save_region(g, c1, r1, c2, r2)
-    for r in range(r1, r2 + 1):
-        for c in range(c1, c2 + 1):
-            g.setcell(c, r, "")
+    for c, r in g.stored_in(c1, r1, c2, r2):
+        g.setcell(c, r, "")
     g.recalc()
     return ok(changed=True)
 
@@ -356,29 +356,38 @@ def _name(ctx: Context) -> Result:
     if parse_range(key) is not None:
         return fail(f"{key} is a cell reference, not a name")
     spec = ctx.arg(1)
-    rect = parse_range(spec) if spec else ctx.rect()
+    formula = " ".join(ctx.args[1:]).strip() if spec.startswith("=") else None
+    if formula is not None:
+        if g.mode == Mode.PYTHON:
+            return fail("a name defined by a formula needs EXCEL or HYBRID mode")
+        if g._name_ast(formula) is None:
+            return fail(f"not a formula: {formula}")
+        rect: tuple[int, int, int, int] | None = (0, 0, 0, 0)
+    else:
+        rect = parse_range(spec) if spec else ctx.rect()
     if rect is None:
         return fail(f"bad range: {spec}")
     c1, r1, c2, r2 = rect
+    shown = formula or range_a1(c1, r1, c2, r2)
     existing = any(nr.name == key for nr in g.names)
     if not existing and len(g.names) >= MAXNAMES:
         return fail(f"too many names (limit {MAXNAMES})")
     ctx.undo.save_global(g)
     for nr in g.names:
         if nr.name == key:
-            nr.c1, nr.r1, nr.c2, nr.r2 = c1, r1, c2, r2
+            nr.c1, nr.r1, nr.c2, nr.r2, nr.formula = c1, r1, c2, r2, formula
             g.recalc()
-            return ok(f"{key} = {range_a1(c1, r1, c2, r2)}", changed=True)
-    g.names.append(NamedRange(key, c1, r1, c2, r2))
+            return ok(f"{key} = {shown}", changed=True)
+    g.names.append(NamedRange(key, c1, r1, c2, r2, formula=formula))
     g.recalc()
-    return ok(f"{key} = {range_a1(c1, r1, c2, r2)}", changed=True)
+    return ok(f"{key} = {shown}", changed=True)
 
 
 def _names(ctx: Context) -> Result:
     listed = sorted(ctx.grid.names, key=lambda n: n.name.lower())
     if not listed:
         return ok("no named ranges")
-    pairs = [(nr.name, range_a1(nr.c1, nr.r1, nr.c2, nr.r2)) for nr in listed]
+    pairs = [(nr.name, nr.formula or range_a1(nr.c1, nr.r1, nr.c2, nr.r2)) for nr in listed]
     return ok(
         "  ".join(f"{name}={rng}" for name, rng in pairs),
         lines=[f"{name} = {rng}" for name, rng in pairs],
@@ -569,7 +578,12 @@ COMMANDS: tuple[Command, ...] = (
         needs_selection=True,
         args=(
             Arg("name", "the name to define"),
-            Arg("range", "A1:B3 (defaults to the selection)", required=False, kind="range"),
+            Arg(
+                "range",
+                "A1:B3 (defaults to the selection), or a formula such as =0.2",
+                required=False,
+                kind="range",
+            ),
         ),
         run=_name,
     ),

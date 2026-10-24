@@ -2,7 +2,7 @@
 
 Status: **second run 2026-10-21 in Microsoft Excel for Mac**, `AppVersion` 16.0300. 79 of 87 cases agreed; gridcalc has since been changed to match 6 more. `misc-2` and `misc-5` still disagree. The `3d-1` row-insert hand check was not run.
 
-`excel-check.xlsx` holds 87 formulas whose Excel result is unconfirmed. Each one comes from an open item in `TODO.md` or an *(inference)* verdict in `ironcalc-diff.md`. gridcalc's answers are filled in; Excel computes its own on open.
+`excel-check.xlsx` holds 94 formulas whose Excel result is unconfirmed. The 7 added after the second run (`accrint-*`, `chisq-*`, `ind-1`, `whole-*`) have not been run. Each one comes from an open item in `TODO.md` or an *(inference)* verdict in `ironcalc-diff.md`. gridcalc's answers are filled in; Excel computes its own on open.
 
 ## Run it
 
@@ -34,6 +34,14 @@ These change formula text, so check them by hand:
 - On a sheet `Tmp`, enter 1 in A2. On another sheet, enter `=Tmp!A2*2`. Delete `Tmp`. gridcalc rewrites the formula to `=#REF!*2`.
 - Enter 5 in Sheet1!A3 and `=sheet1!A3*2` on another sheet. Delete Sheet1 row 2. gridcalc rewrites the formula to `=sheet1!A2*2`, keeping the case as typed.
 - After recording the run, select `S3b` alone and insert a row above row 2. Then read `3d-1` on `check`. 40 with the formula unchanged means Excel leaves a 3D reference alone when one sheet of the run gains a row, as gridcalc does. 20 with the formula reading `S3a:S3c!B3` means Excel shifts it.
+
+## Styles written by gridcalc
+
+`excel-check.xlsx` is written by openpyxl, so it does not test gridcalc's own xlsx writer. `style-check.xlsx` does:
+
+    uv run python scripts/style_check.py build/style-check.xlsx
+
+Open it in Excel. It must open with no repair prompt. Each cell in column B must look as column A describes. Record the version and any difference below.
 
 ## Results
 

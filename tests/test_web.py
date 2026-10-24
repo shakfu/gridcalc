@@ -2011,15 +2011,18 @@ def test_open_file_reports_a_pathological_file_instead_of_raising(tmp_path) -> N
     assert api.cell_source(0, 0) == "keep"
 
 
-def test_open_file_passes_load_warnings_to_the_client(tmp_path) -> None:
+def test_open_file_passes_load_warnings_to_the_client(tmp_path, monkeypatch) -> None:
     openpyxl = pytest.importorskip("openpyxl")
+    from gridcalc import engine
+
+    monkeypatch.setattr(engine, "NCOL", 256)  # an xlsx cannot pass Excel's grid
     wb = openpyxl.Workbook()
     wb.active.cell(row=1, column=300, value=1)
     src = tmp_path / "wide.xlsx"
     wb.save(str(src))
     res = Api(_grid()).open_file(str(src))
     assert res["ok"] is True
-    assert res["warnings"] == ["1 cells beyond 256 columns x 1024 rows were not imported"]
+    assert res["warnings"] == ["1 cells beyond 256 columns x 1048576 rows were not imported"]
 
 
 def test_formulas_only_open_then_save_keeps_the_code_block(tmp_path) -> None:
@@ -2093,3 +2096,16 @@ def test_editing_an_imported_numeric_label_keeps_it_text(tmp_path) -> None:
     api.set_cell(0, 0, api.cell_source(0, 0))  # open the editor and commit unchanged
     assert g.cells[0][0].type == LABEL
     assert api.viewport(0, 0, 1, 1)["cells"][0]["text"] == "00123"
+
+
+def test_whole_column_operations_visit_only_stored_cells() -> None:
+    """A header click selects 1048576 rows; each operation must cost its cells."""
+    g = _grid()
+    g.setcell(0, 0, "3")
+    g.setcell(0, 5, "4")
+    g.recalc()
+    api = Api(g)
+    assert api.stats(0, 0, NROW - 1, 0)["sum"] == 7
+    assert api.copy(0, 0, NROW - 1, 0)["tsv"] == "3\n\n\n\n\n4"
+    assert api.set_format(0, 0, NROW - 1, 0, "b")["ok"] is True
+    assert g.cell(0, 5).bold == 1

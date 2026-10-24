@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from gridcalc import engine
 from gridcalc.engine import EMPTY, FORMULA, LABEL, NUM, Grid
 from gridcalc.formula.errors import ExcelError
 
@@ -132,15 +133,23 @@ class TestSparse:
         assert g.cells[4][4].val == 5.0  # E5
         assert g.cells[9][9].text == "deep"  # J10
 
-    def test_bounds(self) -> None:
+    def test_bounds(self, monkeypatch) -> None:
         # A cell on the last valid column/row survives; one past the bound
-        # is dropped, and the load reports how many were.
+        # is dropped, and the load reports how many were. An xlsx cannot pass
+        # Excel's grid, so this shrinks gridcalc's.
+        monkeypatch.setattr(engine, "NCOL", 256)
+        monkeypatch.setattr(engine, "NROW", 1024)
         g = _load("sparse.xlsx")
         assert g.cells[255][0].text == "col256"  # last column (0-based 255)
         assert (256, 0) not in g._active._cells  # column past the bound
         assert g.cells[0][1023].text == "row1024"  # last row (0-based 1023)
         assert (0, 1024) not in g._active._cells  # row past the bound
         assert g.load_warnings == ["2 cells beyond 256 columns x 1024 rows were not imported"]
+
+    def test_excel_sized_grid_keeps_every_cell(self) -> None:
+        g = _load("sparse.xlsx")
+        assert (256, 0) in g._active._cells and (0, 1024) in g._active._cells
+        assert g.load_warnings == []
 
 
 class TestTextAndNumbers:
@@ -238,8 +247,9 @@ class TestNamedRanges:
     def test_defined_names_imported(self) -> None:
         g = _load("named_ranges.xlsx")
         names = {n.name: n for n in g.names}
-        # Simple cell/range names import; a formula-valued name (Total) does not.
-        assert set(names) == {"Nums", "TaxRate", "Local"}
+        # Rectangles import as ranges; a formula-valued name keeps its formula.
+        assert set(names) == {"Nums", "TaxRate", "Local", "Total"}
+        assert names["Total"].formula == "=SUM(Data!$A$1:$A$4)"
         nums = names["Nums"]
         assert nums.sheet == "Data"
         assert (nums.c1, nums.r1, nums.c2, nums.r2) == (0, 0, 0, 3)

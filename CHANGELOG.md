@@ -4,11 +4,51 @@
 
 ### Security
 
+- **Formulas built to hang or crash a load are stopped.** No trust prompt guards EXCEL or HYBRID formulas. An xlsx could crash gridcalc through Python's recursion limit: 5000 nested parentheses, or a 1000-term sum. Nested `MAKEARRAY` lambdas could hang it. Formulas now have Excel's limits: 8192 characters and 64 nesting levels. Each refusal gives a reason. A long `+` chain no longer recurses. A recalc stops after 30 s (`RECALC_TIME_LIMIT`). Formulas it did not finish show `#CALC!` with the reason. A time limit is needed beside the array cap: one formula can be slow with only small arrays. Runaway `LAMBDA` recursion gives `#NUM!`. A function lifted over a column and a row is capped at 1M cells. `WORKDAY` and `NETWORKDAYS` stop at 9999-12-31. PYTHON mode is unchanged.
+
 - **Methods that write a file are refused.** `ndarray.tofile` and `ndarray.dump`, the pandas `to_*` writers, and `savefig` are attributes of values, which no facade covers. pandas `eval` and `query` evaluate their string argument. The validator now refuses these attribute names in formulas and code blocks. pandas still writes through string dispatch, as in `df.apply("to_csv", path_or_buf=...)`, so `pandas` stays unrestricted at the trust prompt.
 
 - **`csv` is a facade.** The module object exposed `csv.types`, and with it `types.CodeType`. `field_size_limit` and the dialect registry are excluded, since they change process-wide state that gridcalc's own CSV import reads.
 
 ### Fixed
+
+- **A number with a positive exponent in an xlsx read as its mantissa.** OpenXLSX took `<v>1E+16</v>` for an integer and read 1, as it checked only for `.` and `E-`. Excel writes any number past 1E+15 that way. The vendored copy is patched (`THIRD-PARTY-NOTICES.md`).
+
+- **Functions match Excel's answers in its saved test workbooks.** Each was a mismatch in the corpus run (`docs/dev/excel-corpus.md`).
+  - `ROMAN` writes the concise forms 1 to 4; TRUE is 0 and FALSE is 4. It was classic only. Ported from LibreOffice.
+  - `FLOOR` with significance 0 is `#DIV/0!` for a non-zero number. A tiny significance gives the number, or `#NUM!` once the quotient overflows. `.MATH` takes any non-zero `mode` as set and snaps the quotient at 15 digits, so `FLOOR.MATH(7.1,0.1)` is 7.1.
+  - Arguments fail left to right: `FLOOR("",1/0)` is `#VALUE!` from its `""`, not `#DIV/0!`.
+  - Criteria: an error criterion matches that error only, not its text, and so does `"<>#N/A"`. `"TRUE"` matches the logical only. A blank criterion cell means 0. `"<>"` counts an `=""` result, and `">"` with no operand matches nothing.
+  - `ACCRINT` follows Excel's per-period day counts for every basis, and `calc_method` FALSE before the first interest date is negative. Ported from IronCalc, credited in `THIRD-PARTY-NOTICES.md`. `ACCRINT` and `ACCRINTM` refuse a rate or par of 0 or below.
+  - `TEXT`: `General` fits 11 characters (`1.23457E+11`, `-2.5E-09`). Elapsed-time codes (`[h]:mm:ss`) work. `mmmmm` is the month's initial. A date code over a serial with no date, or one mixing digit placeholders (`mm###`), is `#VALUE!`. A blank formats as 0.
+  - Time text follows Excel's limits: `"23:99"` is 24:39 but `"24:99"` stays text, and `"59:9999.0"` is minutes and seconds. `VALUE` of a blank is 0 and of a logical `#VALUE!`.
+
+- **Legacy formulas use implicit intersection, as in Excel.** An xlsx formula saved without the dynamic-array flag reads a range in a one-value position as the one cell on its row or column, Excel's `@`. `=SIN(I:I)` in row 40 is `SIN(I40)`; gridcalc spilled the column. A range passed whole (`SUM(A1:A5)`) is unchanged, and so is an argument of `SUMPRODUCT`, `INDEX` and other array-typed functions. The import marks these cells, JSON keeps the mark, and editing the formula clears it. Export now flags a one-cell formula that evaluates arrays, such as `=SUM(A1:A3*2)`, as a dynamic array, as Excel 365 does. Without the flag, Excel would read it as legacy. `examples/example_excel.xlsx` is regenerated to match.
+
+- **Date and time text reads as a number.** `=SIN("2024-01-10")` and `="10:30"*24` gave `#VALUE!`. Text in a format `COUNTIF` criteria already read converts to its serial, as in Excel.
+
+- **48 Excel functions work.** A corpus of Excel-saved test workbooks found them missing (`docs/dev/excel-corpus.md`). They gave `#NAME?`.
+  - Maths: `COT`, `CSC`, `SEC`, `COTH`, `CSCH`, `SECH`, `ACOT`, `ACOTH`, `SQRTPI`, `FACTDOUBLE`, `SERIESSUM`, `GAUSS`, `ERF.PRECISE`, `ERFC.PRECISE`, `CEILING.PRECISE`, `ISO.CEILING`, `FLOOR.PRECISE`.
+  - Matrices: `MMULT`, `MDETERM`, `MINVERSE`, `MUNIT`.
+  - Statistics: `BINOM.DIST.RANGE`, `PERCENTRANK.INC`, `PERCENTRANK.EXC`, `VARA`, `VARPA`, `STDEVA`, `STDEVPA`.
+  - Finance: `FVSCHEDULE`, `ODDFPRICE`, `ODDLPRICE`.
+  - Engineering: `BESSELJ`, `BESSELY`, `BESSELI`, `BESSELK`. They use the approximations Excel's values show, so `BESSELJ(0,0)` is 1.00000000283141.
+  - Text: `REGEXTEST`, `REGEXEXTRACT`, `REGEXREPLACE`, `VALUETOTEXT`, `ARRAYTOTEXT`, `HYPERLINK` (its text only).
+  - Reference: `SUBTOTAL`, `SORTBY`, `TRIMRANGE`, `CELL` (address, col, row, contents, type), `SINGLE` (Excel's `@`), `ANCHORARRAY`, `ISOMITTED`.
+
+  A `LAMBDA` call may now leave out trailing arguments, as in Excel; `ISOMITTED` reports them. The import reads Excel's optional-parameter prefix `_xlop.`. An array whose first element is blank shows 0, not an error.
+
+- **`CHISQ.TEST` on a table uses `(rows-1)(cols-1)` degrees of freedom.** It used `n-1` for every shape. A 3x2 table got the wrong p-value. Ranges of different shapes give `#N/A`, as Microsoft documents.
+
+- **`ACCRINT` basis 1 sums quasi-coupon periods.** It used `YEARFRAC`, which matches Microsoft's formula for the other bases only. The periods are anchored at `first_interest` *(inference)*. `accrint-*` in `docs/dev/excel-check.md` checks this.
+
+- **`SHEET` and `SHEETS` work.** They gave `#NAME?`. `SHEET` takes a reference, a sheet name or nothing. `SHEETS` counts the sheets a 3D reference spans, or all of them.
+
+- **`INDIRECT` works.** It gave `#NAME?`. Its cell recalculates on every edit, as in Excel. It returns a reference, so `=SUM(INDIRECT("A1:A"&B1))` works. R1C1 text works with `a1` FALSE.
+
+- **A volatile formula read stale values.** `OFFSET` and `INDIRECT` read cells the dependency graph cannot see. Recalculation could run the reader before the cell it read. After an edit, `=OFFSET(A1,1,0)` showed `A2`'s previous value. While a volatile formula runs, a read of a pending cell now runs that cell first. Reading a cell still being computed gives `#CIRC!`.
+
+- **Defined names holding a constant, a formula or a `LAMBDA` work.** xlsx import dropped every name that was not a rectangle. A formula using one, such as `=A1*TaxRate`, gave `#NAME?`. These names now import, export and save to JSON as `"=..."`. `:name rate =0.2` defines one. A named `LAMBDA` can call itself. A name using `OFFSET` or `RAND` makes its readers volatile. A name defined in terms of itself gives `#CIRC!`. gridcalc's names are workbook-wide, so a sheet-local formula name imports only when its name is unique.
 
 - **xlsx shared and array formulas import as formulas.** OpenXLSX returns only their saved values, so each imported as a constant that never recalculated. Excel writes a filled-down column as shared formulas and every dynamic-array formula as an array formula, so this froze most formulas in a typical workbook. The import now reads both from the sheet XML. A shared formula's text, stored once, is shifted to each cell; an array formula sits on its top-left cell and spills over the rest of its range.
 
@@ -25,7 +65,7 @@
   - `YEARFRAC` basis 0 has its own end-of-February rules, distinct from `DAYS360`'s. Basis 1 uses 365 or 366 for dates up to a year apart, and averages year lengths only past that. All 20 `yf-*` cases agree.
   - A typed number keeps 15 significant digits: `12345678901234567` becomes `12345678901234500` when entered in the TUI or the web view, and so does a number literal in a formula. Values loaded from a file keep every digit.
 
-- **Whole-column and whole-row references (`B:B`, `$A:$C`, `1:1`) work in EXCEL and HYBRID mode.** They gave `#NAME?`, so any xlsx formula such as `VLOOKUP(x,A:B,2,0)` failed on import. Each covers the grid, so `=ROWS(A:A)` is 1024 where Excel gives 1048576. Copying, filling, shared formulas and inserting or deleting rows and columns shift them as in Excel; deleting every column of `C:C` gives `#REF!`. PYTHON mode leaves them alone, since `x[1:2]` and `lambda x:x` have the same shape.
+- **Whole-column and whole-row references (`B:B`, `$A:$C`, `1:1`) work in EXCEL and HYBRID mode.** They gave `#NAME?`, so any xlsx formula such as `VLOOKUP(x,A:B,2,0)` failed on import. Copying, filling, shared formulas and inserting or deleting rows and columns shift them as in Excel; deleting every column of `C:C` gives `#REF!`. PYTHON mode leaves them alone, since `x[1:2]` and `lambda x:x` have the same shape.
 
 - **Adding or renaming a sheet refuses a name Excel rejects.** `a/b`, `Q?`, names over 31 characters and `History` were accepted, so the workbook saved as JSON and failed only at xlsx export. A loaded file keeps its names; the export check still reports them.
 
@@ -58,6 +98,16 @@
 - **Row and column edits missed sheet qualifiers in another case.** Inserting or deleting a row on `Sheet1` left `=sheet1!A3` unshifted, although it resolves to `Sheet1`.
 
 ### Changed
+
+- **The grid is Excel's: 16384 columns by 1048576 rows.** It was 256 by 1024. xlsx import dropped cells past column `IV` or row 1024. Columns now run to `XFD`. A three-letter name with digits, such as `val1`, is now a cell reference, as in Excel. Loading a JSON name like `TAX1` warns. A range over 65536 cells is read only to the workbook's last used row and column. The dependency graph no longer lists a range's cells. `COUNTBLANK`, `COUNTIF`, `COUNTIFS` and `INDEX` still answer for the whole range. `=A:A` spills only the used rows (`docs/reference/limitations.md`). The extent is one per workbook, so equal-shaped ranges stay equal for `SUMPRODUCT(A:A,B:B)`.
+
+  A header click selects a million rows. Formatting, blanking, copying, sorting, the web status bar and undo now visit only stored cells. A JSON sheet with far-apart cells saves as `{"A1": ...}`. As rows, one cell at `XFD1048576` would take 17 billion entries. Other sheets keep the rows form.
+
+- **xlsx cell styles survive a load and save.** Saving dropped font face, size, colour and strikethrough. It also dropped the default font, solid fills, borders, alignment, wrapping, indent and rotation. Each cell now holds them as an `XStyle` (`cellstyle.py`), saved in JSON as `style`. OpenXLSX has no API for them, so gridcalc adds them to the styles part it writes. Theme colours load as the colour they show. A later theme change in Excel does not recolour them. A blank cell with only a fill or border is kept. Clearing a cell keeps its style. A spilled cell keeps its own. The web view draws them; the terminal view shows alignment only. No command sets them yet.
+
+- **Excel number formats outside gridcalc's grammar are kept and displayed.** `"$"#,##0.00`, `#,##0;[Red](#,##0)`, `# ?/?` and `0.0,,"M"` loaded unformatted. They now keep their code and render through `numfmt.py`. It handles sections, conditions, `_` spacing, scaling commas, fractions and exponents. `TEXT` uses it too, so `[Red]` and `_)` no longer print literally. A `*` fill is dropped, since no column width is known.
+
+- **Merged cells and row heights survive a load and save.** A row or column inserted inside a merge widens it; a deleted one narrows it, as in Excel. The web view draws a merge as one box. Neither view draws row heights.
 
 - **`^` groups left to right in EXCEL mode.** `=2^3^2` is now 64, as in Excel, where it was 512. EXCEL-mode files with chained `^` recalculate to different values. HYBRID mode keeps right-to-left grouping, as Python's `**` does. PYTHON mode is unchanged, since Python itself evaluates its formulas. `-2^2` is still 4 in both modes: negation binds tighter than `^`, as in Excel.
 

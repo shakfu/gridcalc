@@ -402,3 +402,30 @@ test('goto can move the cursor without taking focus', async () => {
   })
   expect(document.activeElement).toBe(box)
 })
+
+describe('xlsx styles', () => {
+  it('draws a merge as one box with its anchor, and styles a cell', async () => {
+    const api = window.pywebview!.api as unknown as Record<string, unknown>
+    api.viewport = async (r0: number, c0: number, rows: number, cols: number) => ({
+      r0,
+      c0,
+      rows,
+      cols,
+      cells: [
+        { r: 0, c: 0, text: 'Title', align: 'l' },
+        { r: 1, c: 1, text: 'hidden', align: 'l' },
+        { r: 4, c: 0, text: '7', align: 'r', style: { fill: 'FFFF00' } },
+      ],
+      merges: [[0, 0, 1, 2]],
+    })
+    const { container } = renderGrid()
+    await waitFor(() => expect(container.querySelector('.cell.merge')).not.toBeNull())
+    const box = container.querySelector('.cell.merge') as HTMLElement
+    expect(box.textContent).toBe('Title')
+    expect(box.style.width).toBe(`${3 * CW}px`)
+    expect(box.style.height).toBe(`${2 * CH}px`)
+    expect(container.textContent).not.toContain('hidden')
+    const filled = [...container.querySelectorAll('.cell')].find((el) => el.textContent === '7')
+    expect((filled as HTMLElement).style.background).toBe('#FFFF00')
+  })
+})

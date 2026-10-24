@@ -9,7 +9,7 @@ importers keep working. `Clipboard` (OS-clipboard interchange) stays here.
 from __future__ import annotations
 
 from ..display import cell_clip_value
-from ..engine import EMPTY, NCOL, NROW, Cell, Grid
+from ..engine import EMPTY, NCOL, NROW, Cell, Grid, _copy_style
 from ..undo import UNDO_MAX, UndoEntry, UndoManager
 from .osclip import SystemClipboard, rows_to_tsv, tsv_to_rows
 
@@ -48,18 +48,19 @@ class Clipboard:
         self.width = c2 - c1 + 1
         self.height = r2 - r1 + 1
         count = 0
-        for r in range(r1, r2 + 1):
-            for c in range(c1, c2 + 1):
-                cl = g.cell(c, r)
-                if cl and cl.type != EMPTY:
-                    self.cells.append((c - c1, r - r1, cl.snapshot()))
-                    count += 1
+        for c, r in g.stored_in(c1, r1, c2, r2):
+            cl = g._cells[(c, r)]
+            if cl.type != EMPTY:
+                self.cells.append((c - c1, r - r1, cl.snapshot()))
+                count += 1
         self._push_to_system(g, c1, r1, c2, r2)
         return count
 
     def _push_to_system(self, g: Grid, c1: int, r1: int, c2: int, r2: int) -> None:
         if self.system is None:
             return
+        # Trailing blank rows and columns add nothing to the TSV.
+        c1, r1, c2, r2 = g.stored_bounds(c1, r1, c2, r2) or (c1, r1, c1, r1)
         rows = [
             [cell_clip_value(g.cell(c, r)) for c in range(c1, c2 + 1)] for r in range(r1, r2 + 1)
         ]
@@ -82,11 +83,7 @@ class Clipboard:
                 g.setcell(tc, tr, snap.text)
                 cl = g.cell(tc, tr)
                 if cl:
-                    cl.bold = snap.bold
-                    cl.underline = snap.underline
-                    cl.italic = snap.italic
-                    cl.fmt = snap.fmt
-                    cl.fmtstr = snap.fmtstr
+                    _copy_style(snap, cl)
         g.recalc()
 
     def _paste_from_system(self, g: Grid, undo: UndoManager, dc: int, dr: int) -> bool:

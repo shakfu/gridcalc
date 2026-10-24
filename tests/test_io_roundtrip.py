@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from gridcalc import loader
+from gridcalc import engine, loader
 from gridcalc.display import cell_clip_value
 from gridcalc.engine import FORMULA, LABEL, NUM, Grid, Mode
 from gridcalc.sandbox import LoadPolicy
@@ -460,7 +460,11 @@ def test_xlsx_import_keeps_error_values(tmp_path: Path) -> None:
     assert g.cells[0][1].err is ExcelError.NA
 
 
-def test_xlsx_import_reports_cells_beyond_the_grid(tmp_path: Path) -> None:
+def test_xlsx_import_reports_cells_beyond_the_grid(tmp_path: Path, monkeypatch) -> None:
+    # An xlsx cannot pass Excel's grid, so shrink gridcalc's.
+    monkeypatch.setattr(engine, "NCOL", 256)
+    monkeypatch.setattr(engine, "NROW", 1024)
+
     def fill(wb):
         ws = wb.active
         ws["A1"] = 1

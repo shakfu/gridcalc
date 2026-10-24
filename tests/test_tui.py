@@ -1170,9 +1170,12 @@ class TestOpenCommand:
         assert self.g.code == ""
         assert self.g.cell(1, 1).val == 2.0
 
-    def test_shows_load_warnings(self, tmp_path):
+    def test_shows_load_warnings(self, tmp_path, monkeypatch):
         openpyxl = pytest.importorskip("openpyxl")
+        from gridcalc import engine
         from gridcalc.tui import cmdexec
+
+        monkeypatch.setattr(engine, "NCOL", 256)  # an xlsx cannot pass Excel's grid
 
         wb = openpyxl.Workbook()
         wb.active["A1"] = 1
@@ -4558,7 +4561,7 @@ class TestXlsxOverwriteWarning:
         assert cmdexec(self.stdscr, g, UndoManager(), command.format(f=f)) is False
         assert f.read_bytes() == before
         [question] = self._asked()
-        assert "merged cells" in question
+        assert "comments" in question
         assert len(question) <= curses.COLS - 1
 
     def test_accepting_saves(self, tmp_path):

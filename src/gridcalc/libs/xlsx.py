@@ -30,15 +30,20 @@ from typing import Any
 from ..dates import EXCEL_EPOCH as _EPOCH
 from ..dates import (
     LEAP_BUG_SERIAL,
-    format_serial,
     from_serial,
-    is_date_format,
     parse_date,
     to_serial,
 )
-from ..engine import Vec, _is_ndarray, _scalar_or_error, _vec_per_elem
-from ..formula.errors import ExcelError, explain, first_error
-from ..formula.evaluator import Reference, _to_string, number_text, sig15
+from ..engine import Vec, _is_ndarray, _is_num, _scalar_or_error, _vec_per_elem
+from ..formula.errors import ExcelError, explain, first_error, parse_error_literal
+from ..formula.evaluator import (
+    MAX_ARRAY_CELLS,
+    Reference,
+    _to_number,
+    _to_string,
+    number_text,
+    sig15,
+)
 from ..formula.lexer import parse_number
 
 # -- Criteria parsing --
@@ -79,20 +84,29 @@ def _parse_criteria(criteria: Any) -> Any:
     if isinstance(criteria, bool):
         cb = criteria
         return lambda x, v=cb: isinstance(x, bool) and x == v
+    if criteria is None:
+        criteria = 0.0  # a blank criterion cell means 0
     if isinstance(criteria, (int, float)):
         return _NumCriterion(operator.eq, criteria)
+    if isinstance(criteria, ExcelError):
+        return lambda x, e=criteria: x is e  # only that error, not its text
 
     s = str(criteria).strip()
     if s == "":
         return lambda x: x is None or x == ""
     # Blank / non-blank forms. Excel: "=" (and "") match empty cells,
-    # "<>" matches any non-empty cell. Handle here so an empty operand
-    # does not fall through to the ``^$`` wildcard path, which wrongly
-    # treats a blank (None) cell as non-empty.
+    # "<>" matches any cell that is not empty, an `=""` result included.
+    # Handle here so an empty operand does not fall through to the ``^$``
+    # wildcard path, which wrongly treats a blank (None) cell as non-empty.
     if s == "=":
         return lambda x: x is None or x == ""
     if s == "<>":
-        return lambda x: not (x is None or x == "")
+        return lambda x: x is not None
+    if s in (">", ">=", "<", "<="):
+        return lambda x: False  # an empty comparison operand matches nothing
+    special = _special_criterion(s)
+    if special is not None:
+        return special
 
     ops: list[tuple[str, Any]] = [
         (">=", operator.ge),
@@ -135,6 +149,32 @@ def _parse_criteria(criteria: Any) -> Any:
             return _NumCriterion(operator.eq, day)
         regex = _wildcard_regex(s)
         return lambda x, r=regex: bool(r.match(str(x))) if x is not None else False
+
+
+def _special_criterion(s: str) -> Any:
+    """An error (`"#N/A"`, `"<>#DIV/0!"`) or logical (`"TRUE"`, `"<>false"`)
+    criterion, or None. As in Excel, it compares with error or logical values
+    only; the text "#N/A" or "TRUE" in a cell is a different value."""
+    op, raw = "=", s
+    for prefix in ("<>", "="):
+        if s.startswith(prefix):
+            op, raw = prefix, s[len(prefix) :]
+            break
+    raw = raw.strip()
+    err = parse_error_literal(raw)
+    if err is not None:
+        target: Any = err
+    elif raw.upper() in ("TRUE", "FALSE"):
+        target = raw.upper() == "TRUE"
+    else:
+        return None
+
+    def same(x: Any) -> bool:
+        if isinstance(target, bool):
+            return isinstance(x, bool) and x == target
+        return x is target
+
+    return same if op == "=" else (lambda x: not same(x))
 
 
 class _NumCriterion:
@@ -401,10 +441,16 @@ def SUMIF(rng: Vec, criteria: str, sum_rng: Vec | None = None) -> float | ExcelE
     return matches if isinstance(matches, ExcelError) else sum(matches)
 
 
+def _matches_blank(pred: Any) -> bool:
+    return any(_hits(pred, Vec([None])))
+
+
 def COUNTIF(rng: Vec, criteria: str) -> int:
     """=COUNTIF(A1:A10, ">5")"""
     pred = _parse_criteria(criteria)
-    return sum(1 for hit in _hits(pred, _as_vec(rng)) if hit)
+    rng = _as_vec(rng)
+    n = sum(1 for hit in _hits(pred, rng) if hit)
+    return n + rng.tail if rng.tail and _matches_blank(pred) else n
 
 
 def AVERAGEIF(rng: Vec, criteria: str, avg_rng: Vec | None = None) -> float | ExcelError:
@@ -543,6 +589,9 @@ def INDEX(rng: Vec, row: int, col: int | None = None) -> Any:
             return ExcelError.REF
         return data[idx - 1]
     n_rows = n // cols if cols else 0
+    in_full = rng.full and 0 < r <= rng.full[0] and (0 < c <= rng.full[1] or c == 0 == cols - 1)
+    if in_full and (r > n_rows or c > cols):
+        return None  # a blank cell trimmed off the range
     if r < 0 or r > n_rows or c < 0 or c > cols:
         return ExcelError.REF
     if r == 0 and c == 0:
@@ -737,6 +786,10 @@ def CODE(text: str) -> int:
 
 def VALUE(text: Any) -> float | ExcelError:
     """=VALUE("$1,000") -> 1000; VALUE("50%") -> 0.5."""
+    if text is None:
+        return 0.0
+    if isinstance(text, bool):
+        return ExcelError.VALUE
     if isinstance(text, (int, float)):
         return float(text)
     s = str(text).strip().replace(",", "")
@@ -753,47 +806,41 @@ def VALUE(text: Any) -> float | ExcelError:
     return v / 100 if pct else v
 
 
-def TEXT(value: Any, fmt: str) -> str:
-    """=TEXT(1234.5, "$#,##0.00") -> "$1,234.50". Subset of Excel format codes:
-    date codes, ``0``/``#`` digits, grouping, percent, a negative section, and
-    literal text around the digits."""
+def TEXT(value: Any, fmt: str) -> str | ExcelError:
+    """=TEXT(1234.5, "$#,##0.00") -> "$1,234.50". The format code is Excel's;
+    see `gridcalc.numfmt`."""
+    from ..numfmt import format_value
+
     f = _text(fmt)
-    try:
-        n = float(value)
-    except (TypeError, ValueError):
+    if value is None:
+        value = 0.0  # a blank cell formats as 0
+    if isinstance(value, bool):
         return _text(value)
-    if is_date_format(f):
-        out = format_serial(n, f)
-        if out is not None:
-            return out
-    sections = f.split(";")
-    sign = "-" if n < 0 else ""
-    if n < 0 and len(sections) > 1:
-        sign, f = "", sections[1]
+    n = _to_number(value) if isinstance(value, str) else value
+    if isinstance(n, ExcelError) or not isinstance(n, (int, float)):
+        out = format_value(_text(value), f).text
     else:
-        f = sections[0]
+        out = format_value(float(n), f, general=_general_text).text
+    return ExcelError.VALUE if out is None else out
 
-    def literal(part: str) -> str:
-        return re.sub(r"\\(.)", r"\1", part.replace('"', ""))
 
-    m = re.search(r"[0#?,.]*[0#?][0#?,.]*", f)
-    if m is None:
-        # A code with no digit placeholder is all literal: `TEXT(3,1)` is "1".
-        if f.strip() == "" or f.strip().lower() == "general" or "@" in f:
-            return _text(value)
-        return ("" if n == 0 else sign) + literal(f)
-
-    digits = m.group()
-    int_part, point, dec_part = digits.partition(".")
-    max_dec = sum(ch in "0#?" for ch in dec_part)
-    v = _round_dec(abs(n) * (100 if "%" in f else 1), max_dec, ROUND_HALF_UP)
-    whole, _, frac = f"{v:{',' if ',' in int_part else ''}.{max_dec}f}".partition(".")
-    zeros = int_part.count("0")
-    whole = "" if v < 1 and zeros == 0 else whole.rjust(zeros, "0")
-    frac = frac.rstrip("0").ljust(dec_part.count("0"), "0")
-    if v == 0:
-        sign = ""
-    return sign + literal(f[: m.start()]) + whole + point + frac + literal(f[m.end() :])
+def _general_text(v: float) -> str:
+    """A number in Excel's General format: at most 11 characters, sign aside;
+    a longer one is rounded, or written as `1.23457E+11`."""
+    s = _text(v)
+    if len(s.lstrip("-")) <= 11:
+        return s
+    a = abs(v)
+    mant = f"{v:.5E}"
+    head, _, exp = mant.partition("E")
+    sci = f"{head.rstrip('0').rstrip('.')}E{exp[0]}{int(exp[1:]):02d}"
+    if a >= 1e11:
+        return sci
+    plain = round(v, max(0, 11 - len(str(int(a))) - 1))
+    # The form that keeps more of the value: `-2.5E-09`, but `0.333333333`.
+    if abs(float(sci) - v) < abs(plain - v):
+        return sci
+    return _text(plain)
 
 
 # -- Date and time --
@@ -1083,12 +1130,15 @@ def _multi_criteria(
     if len(args) % 2 != 0:
         raise ValueError("criteria args must come in (range, criteria) pairs")
     pairs: list[tuple[Vec, Any]] = [
-        (_as_vec(args[i]), _parse_criteria(str(args[i + 1]))) for i in range(0, len(args), 2)
+        (_as_vec(args[i]), _parse_criteria(args[i + 1])) for i in range(0, len(args), 2)
     ]
     # One row per position, as long as the shortest range.
     rows = zip(*[_hits(pred, rng) for rng, pred in pairs], strict=False)
     if count_only:
         matched = [1.0 for row in rows if all(row)]
+        tail = min(rng.tail for rng, _ in pairs)
+        if tail and all(_matches_blank(pred) for _, pred in pairs):
+            matched += [1.0] * tail
         return matched, len(matched)
     if sum_rng is None:
         return [], 0
@@ -1636,6 +1686,11 @@ def _to_multiple(x: float, sig: float, mode: str) -> float | ExcelError:
         return 0.0
     if x > 0 and sig < 0:
         return ExcelError.NUM
+    ratio = x / sig
+    if not math.isfinite(ratio):
+        return ExcelError.NUM  # as Excel, when the quotient overflows
+    if abs(ratio) >= 1e15:
+        return x  # at 15 significant digits x is already a multiple
     q = float(_snap(x / sig).quantize(Decimal(1), rounding=mode))
     return float(_snap(q * sig))
 
@@ -1645,6 +1700,8 @@ def CEILING(x: float, significance: float = 1.0) -> float | ExcelError:
 
 
 def FLOOR(x: float, significance: float = 1.0) -> float | ExcelError:
+    if float(significance) == 0 and float(x) != 0:
+        return ExcelError.DIV0  # CEILING gives 0 here; FLOOR does not
     return _to_multiple(x, significance, ROUND_FLOOR)
 
 
@@ -1868,6 +1925,304 @@ def OFFSET(env: Any, *args: Any) -> Any:
     return Reference(c1, r1, c2, r2, base.sheet)
 
 
+# `R2C3`, `R[1]C[-1]`, `RC`: an R1C1 cell, each part absolute, relative or omitted.
+_R1C1_RE = re.compile(r"R(?:(\d+)|\[(-?\d+)\])?C(?:(\d+)|\[(-?\d+)\])?", re.IGNORECASE)
+
+
+def _r1c1_cell(text: str, here: tuple[int, int]) -> tuple[int, int] | None:
+    m = _R1C1_RE.fullmatch(text)
+    if m is None:
+        return None
+    r_abs, r_rel, c_abs, c_rel = m.groups()
+    r = int(r_abs) - 1 if r_abs else here[1] + int(r_rel or 0)
+    c = int(c_abs) - 1 if c_abs else here[0] + int(c_rel or 0)
+    return c, r
+
+
+def INDIRECT(env: Any, *args: Any) -> Any:
+    """=INDIRECT(ref_text, [a1]) -> the reference named by the text, A1 style
+    (`"Sheet2!B3"`, `"A:A"`, a defined name) or R1C1 style when ``a1`` is FALSE.
+    The cell is volatile (`deps.DYNAMIC_REF_FUNCS`), so it reads current values."""
+    from ..engine import NCOL, NROW
+    from ..formula.ast_nodes import CellRef, Name, RangeRef
+    from ..formula.errors import FormulaError
+    from ..formula.evaluator import Reference, _deref
+    from ..formula.parser import parse
+
+    if not 1 <= len(args) <= 2:
+        return ExcelError.VALUE
+    text = _deref(env.eval_node(args[0]), env)
+    a1 = _deref(env.eval_node(args[1]), env) if len(args) == 2 else True
+    if isinstance(text, ExcelError):
+        return text
+    if isinstance(a1, ExcelError):
+        return a1
+    if not isinstance(text, str) or not text.strip():
+        return ExcelError.REF
+    text = text.strip()
+    if a1:
+        try:
+            node = parse(text)
+        except FormulaError:
+            return ExcelError.REF
+        ref = env.resolve_ref(node) if isinstance(node, (CellRef, RangeRef, Name)) else None
+    else:
+        sheet, _, body = text.rpartition("!")
+        if len(sheet) >= 2 and sheet[0] == sheet[-1] == "'":
+            sheet = sheet[1:-1].replace("''", "'")
+        here = env.current_cell or (0, 0)
+        ends = [_r1c1_cell(part, here) for part in body.split(":")]
+        if not 1 <= len(ends) <= 2 or any(e is None for e in ends):
+            return ExcelError.REF
+        (c1, r1), (c2, r2) = ends[0], ends[-1]  # type: ignore[misc]
+        ref = Reference(min(c1, c2), min(r1, r2), max(c1, c2), max(r1, r2), sheet or None)
+    if ref is None or min(ref.c1, ref.r1) < 0 or ref.c2 >= NCOL or ref.r2 >= NROW:
+        return ExcelError.REF
+    return ref
+
+
+def _sheet_number(env: Any, name: str | None) -> int | ExcelError:
+    """1-based position of sheet ``name`` (the formula's own for None), or #N/A."""
+    names = [n.casefold() for n in env.sheet_names()]
+    target = (name if name is not None else env.current_sheet or "").casefold()
+    return names.index(target) + 1 if target in names else ExcelError.NA
+
+
+def SHEET(env: Any, *args: Any) -> int | ExcelError:
+    """=SHEET([value]) -> the sheet number of a reference, of a sheet named
+    by text, or of the formula's own sheet."""
+    from ..formula.ast_nodes import Ref3D
+    from ..formula.evaluator import Reference
+
+    if len(args) > 1:
+        return ExcelError.VALUE
+    if not args:
+        return _sheet_number(env, None)
+    if isinstance(args[0], Ref3D):
+        return _sheet_number(env, args[0].first)
+    v = env.ref_or_value(args[0])
+    if isinstance(v, Reference):
+        return _sheet_number(env, v.sheet)
+    if isinstance(v, ExcelError):
+        return v
+    return _sheet_number(env, v) if isinstance(v, str) else ExcelError.NA
+
+
+def SHEETS(env: Any, *args: Any) -> int | ExcelError:
+    """=SHEETS([reference]) -> sheets a 3D reference spans, 1 for any other
+    reference, or every sheet in the workbook."""
+    from ..formula.ast_nodes import Ref3D
+
+    if len(args) > 1:
+        return ExcelError.VALUE
+    if not args:
+        return len(env.sheet_names())
+    node = args[0]
+    if isinstance(node, Ref3D):
+        span = env.sheet_span(node.first, node.last)
+        return ExcelError.REF if span is None else len(span)
+    ref = env.resolve_ref(node)
+    if ref is None:
+        return ExcelError.VALUE
+    return 1 if isinstance(_sheet_number(env, ref.sheet), int) else ExcelError.REF
+
+
+def _clamp_ref(env: Any, ref: Any) -> Any:
+    """``ref`` cut at the workbook's used extent; past it every cell is blank."""
+    from ..formula.evaluator import Reference
+
+    ext = env.extent()
+    if ext is None:
+        return ref
+    c2, r2 = min(ref.c2, max(ref.c1, ext[0])), min(ref.r2, max(ref.r1, ext[1]))
+    return Reference(ref.c1, ref.r1, c2, r2, ref.sheet)
+
+
+# SUBTOTAL function numbers: 1-11, and 101-111 for the same ignoring hidden
+# rows, which gridcalc does not have.
+_SUBTOTAL_FUNCS = {
+    1: "AVERAGE",
+    2: "COUNT",
+    3: "COUNTA",
+    4: "MAX",
+    5: "MIN",
+    6: "PRODUCT",
+    7: "STDEV",
+    8: "STDEVP",
+    9: "SUM",
+    10: "VAR",
+    11: "VARP",
+}
+
+
+def SUBTOTAL(env: Any, *args: Any) -> Any:
+    """=SUBTOTAL(function_num, ref1, ...): an aggregate of the references that
+    leaves out cells which are themselves SUBTOTAL or AGGREGATE formulas."""
+    from ..formula.evaluator import Reference, _deref
+
+    if len(args) < 2:
+        return ExcelError.VALUE
+    num = _deref(env.eval_node(args[0]), env)
+    if isinstance(num, ExcelError):
+        return num
+    try:
+        code = int(float(num))
+    except (TypeError, ValueError):
+        return ExcelError.VALUE
+    name = _SUBTOTAL_FUNCS.get(code - 100 if code > 100 else code)
+    if name is None:
+        return ExcelError.VALUE
+    values: list[Any] = []
+    for node in args[1:]:
+        v = env.ref_or_value(node)
+        if not isinstance(v, Reference):
+            v = _deref(v, env)
+            values.extend(v.data if isinstance(v, Vec) else [v])
+            continue
+        ref = _clamp_ref(env, v)
+        for r in range(ref.r1, ref.r2 + 1):
+            for c in range(ref.c1, ref.c2 + 1):
+                text = env.cell_formula_text(c, r, ref.sheet)
+                if isinstance(text, str) and re.search(r"(?i)\b(SUBTOTAL|AGGREGATE)\(", text):
+                    continue
+                values.append(env.get_cell(c, r, ref.sheet))
+    fn = env.lookup_func(name)
+    return fn(Vec(values)) if fn is not None else ExcelError.NAME
+
+
+def CELL(env: Any, *args: Any) -> Any:
+    """=CELL(info_type, [reference]) for "address", "col", "row", "contents"
+    and "type"; other info types are #VALUE!."""
+    from ..formula.evaluator import Reference, _deref
+
+    if not 1 <= len(args) <= 2:
+        return ExcelError.VALUE
+    info = _deref(env.eval_node(args[0]), env)
+    if isinstance(info, ExcelError):
+        return info
+    if len(args) == 2:
+        ref = env.resolve_ref(args[1])
+        if ref is None:
+            return ExcelError.VALUE
+    elif env.current_cell is not None:
+        c, r = env.current_cell
+        ref = Reference(c, r, c, r, None)
+    else:
+        return ExcelError.VALUE
+    key = str(info).strip().lower()
+    if key == "address":
+        from ..engine import col_name
+
+        return f"${col_name(ref.c1)}${ref.r1 + 1}"
+    if key == "col":
+        return float(ref.c1 + 1)
+    if key == "row":
+        return float(ref.r1 + 1)
+    v = env.get_cell(ref.c1, ref.r1, ref.sheet)
+    if key == "contents":
+        return 0.0 if v is None else v
+    if key == "type":
+        return "b" if v is None else "l" if isinstance(v, str) else "v"
+    return ExcelError.VALUE
+
+
+def SINGLE(env: Any, *args: Any) -> Any:
+    """=SINGLE(value), Excel's `@`: implicit intersection. A one-column range
+    gives its cell on the formula's row, a one-row range the one in its
+    column; an array gives its first element."""
+    from ..formula.evaluator import Reference, _deref
+
+    if len(args) != 1:
+        return ExcelError.VALUE
+    v = env.ref_or_value(args[0])
+    if isinstance(v, Reference):
+        if (v.c1, v.r1) == (v.c2, v.r2):
+            return env.get_cell(v.c1, v.r1, v.sheet)
+        here = env.current_cell
+        if here is None:
+            return ExcelError.VALUE
+        c, r = here
+        if v.c1 == v.c2 and v.r1 <= r <= v.r2:
+            return env.get_cell(v.c1, r, v.sheet)
+        if v.r1 == v.r2 and v.c1 <= c <= v.c2:
+            return env.get_cell(c, v.r1, v.sheet)
+        return ExcelError.VALUE
+    v = _deref(v, env)
+    if isinstance(v, Vec):
+        return v.data[0] if v.data else ExcelError.CALC
+    return v
+
+
+def TRIMRANGE(env: Any, *args: Any) -> Any:
+    """=TRIMRANGE(range, [trim_rows], [trim_cols]) -> the reference without its
+    blank outer rows and columns. 0 trims nothing, 1 leading, 2 trailing,
+    3 both (the default)."""
+    from ..formula.evaluator import Reference, _deref
+
+    if not 1 <= len(args) <= 3:
+        return ExcelError.VALUE
+    ref = env.resolve_ref(args[0])
+    if ref is None:
+        return ExcelError.VALUE
+    modes = []
+    for node in args[1:3]:
+        m = _deref(env.eval_node(node), env)
+        if m is None:
+            m = 3
+        if isinstance(m, ExcelError):
+            return m
+        if int(float(m)) not in (0, 1, 2, 3):
+            return ExcelError.VALUE
+        modes.append(int(float(m)))
+    rows_mode, cols_mode = (modes + [3, 3])[:2]
+    ref = _clamp_ref(env, ref)
+    used = [
+        (c, r)
+        for r in range(ref.r1, ref.r2 + 1)
+        for c in range(ref.c1, ref.c2 + 1)
+        if env.get_cell(c, r, ref.sheet) not in (None, "")
+    ]
+    if not used:
+        return ExcelError.REF
+    c1, c2 = ref.c1, ref.c2
+    r1, r2 = ref.r1, ref.r2
+    if rows_mode & 1:
+        r1 = min(r for _, r in used)
+    if rows_mode & 2:
+        r2 = max(r for _, r in used)
+    if cols_mode & 1:
+        c1 = min(c for c, _ in used)
+    if cols_mode & 2:
+        c2 = max(c for c, _ in used)
+    return Reference(c1, r1, c2, r2, ref.sheet)
+
+
+def ISOMITTED(env: Any, *args: Any) -> bool | ExcelError:
+    """=ISOMITTED(param): TRUE when a LAMBDA call left that argument out."""
+    from ..formula.ast_nodes import Missing, Name
+    from ..formula.evaluator import OMITTED
+
+    if len(args) != 1:
+        return ExcelError.VALUE
+    node = args[0]
+    if isinstance(node, Missing):
+        return True
+    if not isinstance(node, Name):
+        return False
+    found, value = env.lookup_local(node.name)
+    return found and value is OMITTED
+
+
+def ANCHORARRAY(env: Any, *args: Any) -> Any:
+    """=ANCHORARRAY(ref), how Excel stores `A1#`: the array spilled from ref."""
+    if len(args) != 1:
+        return ExcelError.VALUE
+    ref = env.resolve_ref(args[0])
+    if ref is None:
+        return ExcelError.REF
+    return env.get_spill(ref.c1, ref.r1, ref.sheet)
+
+
 def FORMULATEXT(env: Any, *args: Any) -> str | ExcelError:
     """=FORMULATEXT(reference) -> the formula text of the (top-left) cell of
     the reference, or #N/A if it holds no formula."""
@@ -2002,7 +2357,7 @@ def COUNTA(*args: Any) -> int:
 
 
 def COUNTBLANK(*args: Any) -> int:
-    n = 0
+    n = sum(a.tail for a in args if isinstance(a, Vec))
     for v in _flatten(args):
         if v is None or (isinstance(v, str) and v == ""):
             n += 1
@@ -2492,7 +2847,7 @@ _LOG_DBL_MAX = math.log(sys.float_info.max)
 
 # Largest array a function may build: Excel's row count. Excel reports a larger
 # one as #NUM!; without a cap, `SEQUENCE(1e5, 1e5)` exhausts memory.
-_MAX_ARRAY_CELLS = 1 << 20
+_MAX_ARRAY_CELLS = MAX_ARRAY_CELLS
 
 # Longest text Excel holds in a cell.
 _MAX_TEXT = 32767
@@ -2570,25 +2925,17 @@ def QUOTIENT(numerator: float, denominator: float) -> int | ExcelError:
     return int(float(numerator) / d)
 
 
-def CEILING_MATH(x: float, significance: float = 1.0, mode: int = 0) -> float:
+def CEILING_MATH(x: float, significance: float = 1.0, mode: int = 0) -> float | ExcelError:
     """mode=0: round toward +inf; mode!=0: round away from zero (negatives down)."""
-    sig = abs(float(significance))
-    if sig == 0:
-        return 0.0
     n = float(x)
-    if int(mode) == 0 or n >= 0:
-        return math.ceil(n / sig) * sig
-    return math.floor(n / sig) * sig
+    up = float(mode) == 0 or n >= 0
+    return _to_multiple(n, abs(float(significance)), ROUND_CEILING if up else ROUND_FLOOR)
 
 
-def FLOOR_MATH(x: float, significance: float = 1.0, mode: int = 0) -> float:
-    sig = abs(float(significance))
-    if sig == 0:
-        return 0.0
+def FLOOR_MATH(x: float, significance: float = 1.0, mode: int = 0) -> float | ExcelError:
     n = float(x)
-    if int(mode) == 0 or n >= 0:
-        return math.floor(n / sig) * sig
-    return math.ceil(n / sig) * sig
+    down = float(mode) == 0 or n >= 0
+    return _to_multiple(n, abs(float(significance)), ROUND_FLOOR if down else ROUND_CEILING)
 
 
 def RADIANS(x: float) -> float:
@@ -3348,8 +3695,23 @@ def BINOM_DIST(num_s: int, trials: int, prob_s: float, cumulative: Any) -> float
     if n < 0 or k < 0 or k > n or not 0.0 <= p <= 1.0:
         return ExcelError.NUM
     if bool(cumulative):
-        return sum(_binom_pmf(i, n, p) for i in range(k + 1))
+        return _binom_cdf(k, n, p)
     return _binom_pmf(k, n, p)
+
+
+# Past this many terms a CDF uses its closed form, not a sum of PMFs.
+_CDF_TERMS = 1000
+
+
+def _binom_cdf(k: int, n: int, p: float) -> float:
+    """P(X <= k) for X ~ Binomial(n, p)."""
+    if k >= n or p == 0.0:
+        return 1.0
+    if k < 0 or p == 1.0:
+        return 0.0
+    if k < _CDF_TERMS:
+        return sum(_binom_pmf(i, n, p) for i in range(k + 1))
+    return _incbeta(n - k, k + 1, 1.0 - p)
 
 
 def POISSON_DIST(x: int, mean: float, cumulative: Any) -> float | ExcelError:
@@ -3358,7 +3720,9 @@ def POISSON_DIST(x: int, mean: float, cumulative: Any) -> float | ExcelError:
     if k < 0 or lam < 0:
         return ExcelError.NUM
     if bool(cumulative):
-        return sum(_pois_pmf(i, lam) for i in range(k + 1))
+        if k < _CDF_TERMS or lam == 0:
+            return sum(_pois_pmf(i, lam) for i in range(k + 1))
+        return 1.0 - _incgamma(k + 1, lam)
     return _pois_pmf(k, lam)
 
 
@@ -3612,18 +3976,24 @@ def CHISQ_INV_RT(p: float, df: int) -> float | ExcelError:
 
 
 def CHISQ_TEST(actual: Vec, expected: Vec) -> float | ExcelError:
-    """=CHISQ.TEST(actual, expected). 1D arrays: df = n - 1.
-
-    Returns the right-tail p-value for the chi-square statistic.
-    """
-    a = _vec_data(actual)
-    e = _vec_data(expected)
-    if len(a) != len(e) or len(a) < 2:
-        return ExcelError.NUM
+    """=CHISQ.TEST(actual, expected) -> the right-tail p-value of the
+    chi-square statistic. df is (rows-1)(cols-1) for a table, n-1 for one
+    row or column. Ranges of different sizes are #N/A, as in Excel."""
+    av, ev_ = _as_vec(actual), _as_vec(expected)
+    if av.shape != ev_.shape:
+        return ExcelError.NA
+    rows, cols = av.shape
+    df = (rows - 1) * (cols - 1) if rows > 1 and cols > 1 else rows * cols - 1
+    if df < 1:
+        return ExcelError.NA
+    # Pairs where either side is not a number are left out, position by position.
+    pairs = [(x, y) for x, y in zip(av.data, ev_.data, strict=True) if _is_num(x) and _is_num(y)]
+    a = [float(x) for x, _ in pairs]
+    e = [float(y) for _, y in pairs]
     if any(ev <= 0 for ev in e):
         return ExcelError.NUM
     chi2 = sum((ai - ei) ** 2 / ei for ai, ei in zip(a, e, strict=True))
-    return 1.0 - _chi2_cdf(chi2, len(a) - 1)
+    return 1.0 - _chi2_cdf(chi2, df)
 
 
 # -- Gamma distribution --
@@ -5110,39 +5480,52 @@ def GESTEP(number: float, step: float = 0.0) -> int:
 
 _BASE_DIGITS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
-_ROMAN_PAIRS: list[tuple[int, str]] = [
-    (1000, "M"),
-    (900, "CM"),
-    (500, "D"),
-    (400, "CD"),
-    (100, "C"),
-    (90, "XC"),
-    (50, "L"),
-    (40, "XL"),
-    (10, "X"),
-    (9, "IX"),
-    (5, "V"),
-    (4, "IV"),
-    (1, "I"),
-]
-
 _ROMAN_VALUE = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
 
 
-def ROMAN(number: int, form: int = 0) -> str | ExcelError:
-    """=ROMAN(number, [form]) -> classic Roman numeral for 0..3999.
+_ROMAN_CHARS = "MDCLXVI"
+_ROMAN_VALUES = (1000, 500, 100, 50, 10, 5, 1)
 
-    Only the classic form (form 0 / omitted / TRUE) is produced; the
-    concise forms 1..4 are accepted but return the classic representation.
+
+def ROMAN(number: int, form: Any = 0) -> str | ExcelError:
+    """=ROMAN(number, [form]) -> a Roman numeral for 0..3999. ``form`` 0
+    (or TRUE) is classic; 1 to 4 are ever more concise (4, or FALSE, is
+    simplified): 499 is CDXCIX, LDVLIV, XDIX, VDIV, ID.
+
+    Ported from LibreOffice's `ScRoman`, written to match Excel.
     """
-    n = int(number)
-    if n < 0 or n > 3999:
+    n = int(float(number))
+    if isinstance(form, bool):
+        mode = 0 if form else 4
+    elif form is None:
+        mode = 0
+    elif isinstance(form, str) and parse_number(form) is None:
+        return ExcelError.VALUE
+    else:
+        mode = int(float(form))
+    if not 0 <= n <= 3999 or not 0 <= mode <= 4:
         return ExcelError.VALUE
     out: list[str] = []
-    for val, sym in _ROMAN_PAIRS:
-        while n >= val:
-            out.append(sym)
-            n -= val
+    last = len(_ROMAN_VALUES) - 1
+    for i in range(last // 2 + 1):
+        idx = 2 * i
+        digit = n // _ROMAN_VALUES[idx]
+        if digit % 5 == 4:
+            idx2 = idx - 1 if digit == 4 else idx - 2
+            steps = 0
+            while steps < mode and idx < last:
+                steps += 1
+                if _ROMAN_VALUES[idx2] - _ROMAN_VALUES[idx + 1] <= n:
+                    idx += 1
+                else:
+                    steps = mode
+            out.append(_ROMAN_CHARS[idx] + _ROMAN_CHARS[idx2])
+            n += _ROMAN_VALUES[idx] - _ROMAN_VALUES[idx2]
+        else:
+            if digit > 4:
+                out.append(_ROMAN_CHARS[idx - 1])
+            out.append(_ROMAN_CHARS[idx] * (digit % 5))
+            n %= _ROMAN_VALUES[idx]
     return "".join(out)
 
 
@@ -5483,6 +5866,10 @@ _WEEKEND_CODES: dict[int, set[int]] = {
 }
 
 
+# 9999-12-31, Excel's last date. A day count past it is #NUM!.
+_LAST_SERIAL = 2958465
+
+
 def _weekend_set(weekend: Any) -> set[int] | ExcelError:
     """Resolve a NETWORKDAYS.INTL/WORKDAY.INTL weekend spec to a set of
     Python weekday indices (Mon=0..Sun=6) that are non-working."""
@@ -5519,7 +5906,7 @@ def NETWORKDAYS_INTL(
     if isinstance(ws, ExcelError):
         return ws
     s, e = int(float(start)), int(float(end))
-    if s < 0 or e < 0:
+    if not (0 <= s <= _LAST_SERIAL and 0 <= e <= _LAST_SERIAL):
         return ExcelError.NUM
     sign = 1
     if e < s:
@@ -5546,7 +5933,7 @@ def WORKDAY_INTL(
     step = 1 if remaining >= 0 else -1
     while remaining != 0:
         cur += step
-        if cur < 0:
+        if not 0 <= cur <= _LAST_SERIAL:
             return ExcelError.NUM
         if _serial_weekday(cur) not in ws and cur not in hol:
             remaining -= step
@@ -5758,6 +6145,99 @@ def _price(
     return float((redemption + coupon) / (1 + (yld / freq) * (dsc / e)) - coupon * a / e)
 
 
+def _quasi_dates(anchor: _dt.date, months: int, step: int, until: Any) -> list[_dt.date]:
+    """Coupon dates from ``anchor`` in steps of ``months`` (``step`` -1 goes
+    back), up to the first date for which ``until(date)`` holds."""
+    eom = anchor.day == _last_day(anchor.year, anchor.month)
+    out = [anchor]
+    k = 0
+    while not until(out[-1]):
+        k += 1
+        out.append(_coupon_date(anchor, -step * k, months, eom))
+    return out
+
+
+def ODDFPRICE(
+    settlement: float,
+    maturity: float,
+    issue: float,
+    first_coupon: float,
+    rate: float,
+    yld: float,
+    redemption: float,
+    frequency: int,
+    basis: int = 0,
+) -> float | ExcelError:
+    """=ODDFPRICE(...) -> price per $100 of a security with an odd first period.
+
+    Microsoft's long-period formula; a short first period is its case with one
+    quasi-coupon period.
+    """
+    if not _valid_basis(basis) or not _valid_freq(frequency):
+        return ExcelError.NUM
+    r, y, red = float(rate), float(yld), float(redemption)
+    if r < 0 or y < 0 or red <= 0:
+        return ExcelError.NUM
+    sd, md, iss, fc = _date(settlement), _date(maturity), _date(issue), _date(first_coupon)
+    if not iss < sd < fc < md:
+        return ExcelError.NUM
+    f, b = int(frequency), int(basis)
+    months = 12 // f
+    # Quasi-coupon dates back from the first coupon, past the issue date.
+    back = _quasi_dates(fc, months, -1, lambda d: d <= iss)
+    dc = a = 0.0
+    for hi, lo in zip(back, back[1:], strict=False):
+        nl = _coup_days(lo, hi, f, b)
+        dc += _daycount(max(lo, iss), hi, b) / nl
+        if sd > lo:
+            a += _daycount(max(lo, iss), min(hi, sd), b) / nl
+    # The quasi-coupon period holding settlement, and whole periods after it.
+    nxt = next(i for i in range(len(back) - 1, -1, -1) if back[i] > sd)
+    ncd, pcd = back[nxt], back[nxt + 1]
+    e = _coup_days(pcd, ncd, f, b)
+    dsc = _daycount(sd, ncd, b) / e
+    nq = nxt  # quasi periods from ncd to the first coupon
+    n = len(_quasi_dates(fc, months, 1, lambda d: d >= md)) - 1  # coupons after the first
+    coupon = 100.0 * r / f
+    v = 1 + y / f
+    total = red / v ** (n + nq + dsc) + coupon * dc / v ** (nq + dsc)
+    total += sum(coupon / v ** (k + nq + dsc) for k in range(1, n + 1))
+    return float(total - coupon * a)
+
+
+def ODDLPRICE(
+    settlement: float,
+    maturity: float,
+    last_interest: float,
+    rate: float,
+    yld: float,
+    redemption: float,
+    frequency: int,
+    basis: int = 0,
+) -> float | ExcelError:
+    """=ODDLPRICE(...) -> price per $100 of a security with an odd last period."""
+    if not _valid_basis(basis) or not _valid_freq(frequency):
+        return ExcelError.NUM
+    r, y, red = float(rate), float(yld), float(redemption)
+    if r < 0 or y < 0 or red <= 0:
+        return ExcelError.NUM
+    sd, md, li = _date(settlement), _date(maturity), _date(last_interest)
+    if not li < sd < md:
+        return ExcelError.NUM
+    f, b = int(frequency), int(basis)
+    fwd = _quasi_dates(li, 12 // f, 1, lambda d: d >= md)
+    dc = dsc = a = 0.0
+    for lo, hi in zip(fwd, fwd[1:], strict=False):
+        nl = _coup_days(lo, hi, f, b)
+        dc += _daycount(lo, min(hi, md), b) / nl
+        if sd > lo:
+            a += _daycount(lo, min(hi, sd), b) / nl
+        if sd < hi:
+            dsc += _daycount(max(lo, sd), min(hi, md), b) / nl
+    coupon = 100.0 * r / f
+    return (red + dc * coupon) / (1 + dsc * y / f) - a * coupon
+
+
 def PRICE(
     settlement: float,
     maturity: float,
@@ -5926,12 +6406,89 @@ def ACCRINTM(
 ) -> float | ExcelError:
     """=ACCRINTM(issue, settlement, rate, [par], [basis]) -> accrued interest
     for a security that pays interest at maturity."""
-    if not _valid_basis(basis):
+    if not _valid_basis(basis) or float(rate) <= 0 or float(par) <= 0:
         return ExcelError.NUM
     iss, sd = _date(issue), _date(settlement)
     if iss >= sd:
         return ExcelError.NUM
     return float(par) * float(rate) * _yf(iss, sd, int(basis))
+
+
+# -- ACCRINT --
+#
+# Ported from IronCalc's `base/src/functions/financial/accrint.rs`
+# (Apache-2.0), itself a port of the ExcelFinancialFunctions library
+# (bonds.fs, daycountbasis.fs). IronCalc's own test workbooks hold Excel's
+# answers for it; see THIRD-PARTY-NOTICES.md.
+
+
+def _acc_last_day(d: _dt.date) -> bool:
+    return d.day == _last_day(d.year, d.month)
+
+
+def _acc_change_month(d: _dt.date, n: int, last_day: bool) -> _dt.date:
+    """``d`` moved ``n`` months, the day clamped to the month (.NET
+    AddMonths); then the month's last day when ``last_day``."""
+    y, m = _add_months(d.year, d.month, n)
+    return _dt.date(y, m, _last_day(y, m) if last_day else min(d.day, _last_day(y, m)))
+
+
+def _acc_360(start: _dt.date, end: _dt.date, modify_both: bool) -> float:
+    """US (NASD) 30/360, with ExcelFinancialFunctions' `ModifyBothDates` option."""
+    sd, ed = start.day, end.day
+    end_feb = end.month == 2 and _acc_last_day(end)
+    start_feb = start.month == 2 and _acc_last_day(start)
+    if end_feb and (start_feb or modify_both):
+        ed = 30
+    if ed == 31 and (sd >= 30 or modify_both):
+        ed = 30
+    if sd == 31 or start_feb:
+        sd = 30
+    return float((end.year - start.year) * 360 + (end.month - start.month) * 30 + (ed - sd))
+
+
+def _acc_360_eu(start: _dt.date, end: _dt.date) -> float:
+    sd, ed = min(start.day, 30), min(end.day, 30)
+    return float((end.year - start.year) * 360 + (end.month - start.month) * 30 + (ed - sd))
+
+
+def _acc_365(start: _dt.date, end: _dt.date) -> float:
+    """Excel's Actual/365 denominator: February past the 28th counts as the 28th."""
+    s = start.replace(day=28) if start.month == 2 and start.day > 28 else start
+    e = end.replace(day=28) if end.month == 2 and end.day > 28 else end
+    return float((end.year - start.year) * 365 + (e - s).days)
+
+
+def _acc_days(start: _dt.date, end: _dt.date, numerator: bool, basis: int) -> float:
+    if basis == 0:
+        return _acc_360(start, end, False)
+    if basis == 4:
+        return _acc_360_eu(start, end)
+    if basis == 2 and not numerator:
+        return _acc_360(start, end, False)
+    if basis == 3 and not numerator:
+        return _acc_365(start, end)
+    return float((end - start).days)
+
+
+def _acc_find_pcd_ncd(
+    start: _dt.date, end: _dt.date, months: int, last_day: bool
+) -> tuple[_dt.date, _dt.date]:
+    """Step from ``start`` by ``months`` until ``end`` is reached: (front, trailing)."""
+    front, trailing = start, end
+    while not (front >= end if months > 0 else front <= end):
+        trailing = front
+        front = _acc_change_month(front, months, last_day)
+    return front, trailing
+
+
+def _acc_coup_days(settl: _dt.date, mat: _dt.date, freq: int, basis: int) -> float:
+    if basis in (0, 2, 4):
+        return 360.0 / freq
+    if basis == 3:
+        return 365.0 / freq
+    pcd, ncd = _acc_find_pcd_ncd(mat, settl, -(12 // freq), _acc_last_day(mat))
+    return float((ncd - pcd).days)
 
 
 def ACCRINT(
@@ -5945,21 +6502,42 @@ def ACCRINT(
     calc_method: bool = True,
 ) -> float | ExcelError:
     """=ACCRINT(issue, first_interest, settlement, rate, [par], [frequency],
-    [basis], [calc_method]) -> accrued interest for a periodic-coupon security.
-
-    Accrues from issue (calc_method TRUE, default) or from first_interest
-    (FALSE) when settlement is later than first_interest. Uses YEARFRAC per
-    basis; the actual/actual quasi-coupon refinement is not modelled.
+    [basis], [calc_method]) -> accrued interest for a periodic-coupon security:
+    par * rate / frequency, times the accrued share of each quasi-coupon
+    period, as Excel computes it. ``calc_method`` FALSE counts no full period
+    before the one holding settlement.
     """
     if not _valid_basis(basis) or not _valid_freq(frequency):
         return ExcelError.NUM
-    iss = _date(issue)
-    fi = _date(first_interest)
-    sd = _date(settlement)
+    r, p = float(rate), float(par)
+    if r <= 0 or p <= 0:
+        return ExcelError.NUM
+    iss, fi, sd = _date(issue), _date(first_interest), _date(settlement)
     if iss >= sd:
         return ExcelError.NUM
-    start = iss if (calc_method or sd <= fi) else fi
-    return float(par) * float(rate) * _yf(start, sd, int(basis))
+    f, b = int(frequency), int(basis)
+    months = 12 // f
+    eom = _acc_last_day(fi)
+    calc = 1.0 if calc_method else 0.0
+    reg_pcd = _acc_change_month(fi, -months, eom)
+    pcd = _acc_find_pcd_ncd(fi, sd, months, eom)[1] if sd > fi and calc_method else reg_pcd
+    acc = _acc_days(max(iss, pcd), sd, True, b) / _acc_coup_days(reg_pcd, fi, f, b)
+    front = pcd
+    while front > iss:
+        period_end = front
+        front = _acc_change_month(front, -months, eom)
+        if iss <= front:
+            acc += calc  # a whole period inside the accrual span
+            continue
+        num = _acc_360(iss, period_end, False) if b == 0 else _acc_days(iss, period_end, True, b)
+        if b == 0:
+            den = _acc_360(front, period_end, True)
+        elif b == 3:
+            den = 365.0 / f
+        else:
+            den = _acc_days(front, period_end, False, b)
+        acc += num / den
+    return p * r / f * acc
 
 
 def PRICEMAT(
@@ -6519,9 +7097,868 @@ def MAKEARRAY(rows: int, cols: int, func: Any) -> Vec | ExcelError:
     return Vec(out, cols=c)
 
 
+# -- Functions the 2026-10-24 corpus run found missing --
+#
+# Each was a #NAME? in Excel-saved test workbooks (`docs/dev/excel-corpus.md`).
+
+# Excel refuses a trigonometric argument at or past 2^27 radians.
+_TRIG_LIMIT = 2.0**27
+
+
+def _trig_arg(x: float) -> float | ExcelError:
+    v = float(x)
+    return ExcelError.NUM if abs(v) >= _TRIG_LIMIT else v
+
+
+def COT(x: float) -> float | ExcelError:
+    v = _trig_arg(x)
+    if isinstance(v, ExcelError):
+        return v
+    t = math.tan(v)
+    return ExcelError.DIV0 if v == 0 else 1.0 / t
+
+
+def CSC(x: float) -> float | ExcelError:
+    v = _trig_arg(x)
+    if isinstance(v, ExcelError):
+        return v
+    return ExcelError.DIV0 if v == 0 else 1.0 / math.sin(v)
+
+
+def SEC(x: float) -> float | ExcelError:
+    v = _trig_arg(x)
+    return v if isinstance(v, ExcelError) else 1.0 / math.cos(v)
+
+
+def COTH(x: float) -> float | ExcelError:
+    v = _trig_arg(x)
+    if isinstance(v, ExcelError):
+        return v
+    return ExcelError.DIV0 if v == 0 else 1.0 / math.tanh(v)
+
+
+def CSCH(x: float) -> float | ExcelError:
+    v = _trig_arg(x)
+    if isinstance(v, ExcelError):
+        return v
+    if v == 0:
+        return ExcelError.DIV0
+    return 0.0 if abs(v) > 710 else 1.0 / math.sinh(v)
+
+
+def SECH(x: float) -> float | ExcelError:
+    v = _trig_arg(x)
+    if isinstance(v, ExcelError):
+        return v
+    return 0.0 if abs(v) > 710 else 1.0 / math.cosh(v)
+
+
+def ACOT(x: float) -> float:
+    return math.pi / 2 - math.atan(float(x))
+
+
+def ACOTH(x: float) -> float | ExcelError:
+    v = float(x)
+    if abs(v) <= 1:
+        return ExcelError.NUM
+    return 0.5 * math.log((v + 1) / (v - 1))
+
+
+def SQRTPI(x: float) -> float | ExcelError:
+    v = float(x)
+    return ExcelError.NUM if v < 0 else math.sqrt(v * math.pi)
+
+
+def FACTDOUBLE(n: int) -> float | ExcelError:
+    k = int(float(n))
+    if k < -1:
+        return ExcelError.NUM
+    out = 1.0
+    while k > 1:
+        out *= k
+        k -= 2
+        if math.isinf(out):
+            return ExcelError.NUM
+    return out
+
+
+def SERIESSUM(x: float, n: float, m: float, coefficients: Any) -> float | ExcelError:
+    """=SERIESSUM(x, n, m, coefficients) -> sum of a_i * x^(n + i*m)."""
+    coeffs = _as_vec(coefficients).data
+    if any(isinstance(a, ExcelError) for a in coeffs):
+        return next(a for a in coeffs if isinstance(a, ExcelError))
+    if any(not _is_num(a) for a in coeffs):
+        return ExcelError.VALUE
+    if isinstance(x, bool):
+        return ExcelError.VALUE
+    xv, nv, mv = float(x), float(n), float(m)
+    powers = [nv + i * mv for i in range(len(coeffs))]
+    if xv == 0 and any(p <= 0 for p in powers):
+        return ExcelError.NUM  # 0^0, as POWER
+    return float(sum(float(a) * xv**p for a, p in zip(coeffs, powers, strict=True)))
+
+
+def GAUSS(z: float) -> float:
+    """=GAUSS(z) -> probability a standard normal lies between the mean and z."""
+    return NORM_S_DIST(z, True) - 0.5
+
+
+def ERF_PRECISE(x: float) -> float:
+    return math.erf(float(x))
+
+
+def ERFC_PRECISE(x: float) -> float:
+    return math.erfc(float(x))
+
+
+def _precise(x: float, significance: float, mode: str) -> float | ExcelError:
+    """CEILING.PRECISE/FLOOR.PRECISE: the sign of ``significance`` is ignored."""
+    return _to_multiple(x, abs(float(significance)), mode)
+
+
+def CEILING_PRECISE(x: float, significance: float = 1.0) -> float | ExcelError:
+    return _precise(x, significance, ROUND_CEILING)
+
+
+def FLOOR_PRECISE(x: float, significance: float = 1.0) -> float | ExcelError:
+    return _precise(x, significance, ROUND_FLOOR)
+
+
+# -- matrices --
+
+
+def _matrix(v: Any) -> list[list[float]] | ExcelError:
+    """A numeric 2D array as rows; text, blanks or logicals are #VALUE!."""
+    vec = _as_vec(v)
+    rows, cols = vec.shape
+    for x in vec.data:
+        if isinstance(x, ExcelError):
+            return x
+        if not _is_num(x):
+            return ExcelError.VALUE
+    return [[float(vec.data[r * cols + c]) for c in range(cols)] for r in range(rows)]
+
+
+def MMULT(array1: Any, array2: Any) -> Vec | ExcelError:
+    a, b = _matrix(array1), _matrix(array2)
+    if isinstance(a, ExcelError):
+        return a
+    if isinstance(b, ExcelError):
+        return b
+    if len(a[0]) != len(b):
+        return ExcelError.VALUE
+    if _array_too_big(len(a), len(b[0])):
+        return ExcelError.NUM
+    out = [
+        math.fsum(a[i][k] * b[k][j] for k in range(len(b)))
+        for i in range(len(a))
+        for j in range(len(b[0]))
+    ]
+    if not all(math.isfinite(v) for v in out):
+        return ExcelError.NUM
+    return Vec(out, cols=len(b[0]))
+
+
+def _lu(m: list[list[float]]) -> tuple[list[list[float]], list[int], int] | None:
+    """LU decomposition with partial pivoting: (LU, row order, sign), or
+    None for a singular matrix."""
+    n = len(m)
+    a = [row[:] for row in m]
+    perm = list(range(n))
+    sign = 1
+    for k in range(n):
+        p = max(range(k, n), key=lambda i: abs(a[i][k]))
+        if a[p][k] == 0:
+            return None
+        if p != k:
+            a[k], a[p] = a[p], a[k]
+            perm[k], perm[p] = perm[p], perm[k]
+            sign = -sign
+        for i in range(k + 1, n):
+            a[i][k] /= a[k][k]
+            for j in range(k + 1, n):
+                a[i][j] -= a[i][k] * a[k][j]
+    return a, perm, sign
+
+
+def MDETERM(array: Any) -> float | ExcelError:
+    m = _matrix(array)
+    if isinstance(m, ExcelError):
+        return m
+    if len(m) != len(m[0]):
+        return ExcelError.VALUE
+    lu = _lu(m)
+    if lu is None:
+        return 0.0
+    a, _, sign = lu
+    det = float(sign)
+    for i in range(len(a)):
+        det *= a[i][i]
+    return det
+
+
+def MINVERSE(array: Any) -> Vec | ExcelError:
+    m = _matrix(array)
+    if isinstance(m, ExcelError):
+        return m
+    n = len(m)
+    if n != len(m[0]):
+        return ExcelError.VALUE
+    lu = _lu(m)
+    if lu is None:
+        return ExcelError.NUM
+    a, perm, _ = lu
+    out = [[0.0] * n for _ in range(n)]
+    for col in range(n):
+        y = [1.0 if perm[i] == col else 0.0 for i in range(n)]
+        for i in range(n):
+            y[i] -= sum(a[i][k] * y[k] for k in range(i))
+        for i in range(n - 1, -1, -1):
+            y[i] = (y[i] - sum(a[i][k] * y[k] for k in range(i + 1, n))) / a[i][i]
+        for i in range(n):
+            out[i][col] = y[i]
+    return Vec([v for row in out for v in row], cols=n)
+
+
+def MUNIT(dimension: int) -> Vec | ExcelError:
+    n = int(float(dimension))
+    if n < 1:
+        return ExcelError.VALUE
+    if _array_too_big(n, n):
+        return ExcelError.NUM
+    return Vec([1.0 if i == j else 0.0 for i in range(n) for j in range(n)], cols=n)
+
+
+# -- statistics --
+
+
+def BINOM_DIST_RANGE(
+    trials: int, probability_s: float, number_s: int, number_s2: float = math.nan
+) -> float | ExcelError:
+    # NaN marks number_s2 left out; a blank cell passed for it reads as 0.
+    n, p, s = int(float(trials)), float(probability_s), int(float(number_s))
+    s2 = s if math.isnan(number_s2) else int(float(number_s2))
+    if n < 0 or not 0 <= p <= 1 or not 0 <= s <= n or not s <= s2 <= n:
+        return ExcelError.NUM
+    if s2 - s < _CDF_TERMS:
+        return math.fsum(_binom_pmf(k, n, p) for k in range(s, s2 + 1))
+    return _binom_cdf(s2, n, p) - _binom_cdf(s - 1, n, p)
+
+
+def PERCENTRANK_INC(rng: Vec, x: float, significance: int = 3) -> float | ExcelError:
+    return PERCENTRANK(rng, x, significance)
+
+
+def PERCENTRANK_EXC(rng: Vec, x: float, significance: int = 3) -> float | ExcelError:
+    """=PERCENTRANK.EXC(array, x, [significance]): rank/(n+1), interpolated."""
+    data = sorted(_vec_data(rng))
+    n = len(data)
+    sig = int(float(significance))
+    if sig < 1:
+        return ExcelError.NUM
+    xv = float(x)
+    if n == 0 or xv < data[0] or xv > data[-1]:
+        return ExcelError.NA
+    lo = max(i for i, v in enumerate(data) if v <= xv)
+    if data[lo] == xv:
+        pos = float(lo + 1)
+    else:
+        a, b = data[lo], data[lo + 1]
+        pos = lo + 1 + (xv - a) / (b - a)
+    factor = 10.0**sig
+    return math.floor(pos / (n + 1) * factor + 1e-9) / factor
+
+
+def _a_values(args: tuple[Any, ...]) -> list[float] | ExcelError:
+    """VARA/STDEVA values: text in a reference is 0, a logical 0 or 1."""
+    vals: list[float] = []
+    for v in _flatten(args):
+        if isinstance(v, ExcelError):
+            return v
+        if v is not None:
+            vals.append(_coerce_a(v))
+    return vals
+
+
+def VARA(*args: Any) -> float | ExcelError:
+    vals = _a_values(args)
+    if isinstance(vals, ExcelError):
+        return vals
+    return ExcelError.DIV0 if len(vals) < 2 else statistics.variance(vals)
+
+
+def VARPA(*args: Any) -> float | ExcelError:
+    vals = _a_values(args)
+    if isinstance(vals, ExcelError):
+        return vals
+    return ExcelError.DIV0 if not vals else statistics.pvariance(vals)
+
+
+def STDEVA(*args: Any) -> float | ExcelError:
+    v = VARA(*args)
+    return v if isinstance(v, ExcelError) else math.sqrt(v)
+
+
+def STDEVPA(*args: Any) -> float | ExcelError:
+    v = VARPA(*args)
+    return v if isinstance(v, ExcelError) else math.sqrt(v)
+
+
+# -- finance --
+
+
+def FVSCHEDULE(principal: float, schedule: Any) -> float | ExcelError:
+    out = float(principal)
+    for r in _as_vec(schedule).data:
+        if isinstance(r, ExcelError):
+            return r
+        if r is None:
+            continue
+        if not _is_num(r):
+            return ExcelError.VALUE
+        out *= 1 + float(r)
+    return out
+
+
+# -- engineering: Bessel functions --
+#
+# Excel's values match the polynomial approximations of Numerical Recipes in C
+# (2nd ed., section 6.5): BESSELJ(0,0) is 57568490574/57568490411, not 1.
+
+
+def _bessj0(x: float) -> float:
+    ax = abs(x)
+    if ax < 8.0:
+        y = x * x
+        n = 57568490574.0 + y * (
+            -13362590354.0
+            + y * (651619640.7 + y * (-11214424.18 + y * (77392.33017 + y * (-184.9052456))))
+        )
+        d = 57568490411.0 + y * (
+            1029532985.0 + y * (9494680.718 + y * (59272.64853 + y * (267.8532712 + y)))
+        )
+        return n / d
+    z = 8.0 / ax
+    y = z * z
+    xx = ax - 0.785398164
+    p = 1.0 + y * (
+        -0.1098628627e-2 + y * (0.2734510407e-4 + y * (-0.2073370639e-5 + y * 0.2093887211e-6))
+    )
+    q = -0.1562499995e-1 + y * (
+        0.1430488765e-3 + y * (-0.6911147651e-5 + y * (0.7621095161e-6 - y * 0.934935152e-7))
+    )
+    return math.sqrt(0.636619772 / ax) * (math.cos(xx) * p - z * math.sin(xx) * q)
+
+
+def _bessj1(x: float) -> float:
+    ax = abs(x)
+    if ax < 8.0:
+        y = x * x
+        n = x * (
+            72362614232.0
+            + y
+            * (
+                -7895059235.0
+                + y * (242396853.1 + y * (-2972611.439 + y * (15704.48260 + y * (-30.16036606))))
+            )
+        )
+        d = 144725228442.0 + y * (
+            2300535178.0 + y * (18583304.74 + y * (99447.43394 + y * (376.9991397 + y)))
+        )
+        return n / d
+    z = 8.0 / ax
+    y = z * z
+    xx = ax - 2.356194491
+    p = 1.0 + y * (
+        0.183105e-2 + y * (-0.3516396496e-4 + y * (0.2457520174e-5 + y * (-0.240337019e-6)))
+    )
+    q = 0.04687499995 + y * (
+        -0.2002690873e-3 + y * (0.8449199096e-5 + y * (-0.88228987e-6 + y * 0.105787412e-6))
+    )
+    ans = math.sqrt(0.636619772 / ax) * (math.cos(xx) * p - z * math.sin(xx) * q)
+    return -ans if x < 0 else ans
+
+
+def _bessj(n: int, x: float) -> float:
+    if n == 0:
+        return _bessj0(x)
+    if n == 1:
+        return _bessj1(x)
+    ax = abs(x)
+    if ax == 0:
+        return 0.0
+    tox = 2.0 / ax
+    if ax > n:
+        bjm, bj = _bessj0(ax), _bessj1(ax)
+        for j in range(1, n):
+            bjm, bj = bj, j * tox * bj - bjm
+        ans = bj
+    else:
+        m = 2 * ((n + int(math.sqrt(40.0 * n))) // 2)
+        jsum = False
+        bjp = ans = total = 0.0
+        bj = 1.0
+        for j in range(m, 0, -1):
+            bjm = j * tox * bj - bjp
+            bjp, bj = bj, bjm
+            if abs(bj) > 1e10:
+                bj *= 1e-10
+                bjp *= 1e-10
+                ans *= 1e-10
+                total *= 1e-10
+            if jsum:
+                total += bj
+            jsum = not jsum
+            if j == n:
+                ans = bjp
+        total = 2.0 * total - bj
+        ans /= total
+    return -ans if x < 0 and n % 2 else ans
+
+
+def _bessy0(x: float) -> float:
+    if x < 8.0:
+        y = x * x
+        n = -2957821389.0 + y * (
+            7062834065.0
+            + y * (-512359803.6 + y * (10879881.29 + y * (-86327.92757 + y * 228.4622733)))
+        )
+        d = 40076544269.0 + y * (
+            745249964.8 + y * (7189466.438 + y * (47447.26470 + y * (226.1030244 + y)))
+        )
+        return n / d + 0.636619772 * _bessj0(x) * math.log(x)
+    z = 8.0 / x
+    y = z * z
+    xx = x - 0.785398164
+    p = 1.0 + y * (
+        -0.1098628627e-2 + y * (0.2734510407e-4 + y * (-0.2073370639e-5 + y * 0.2093887211e-6))
+    )
+    q = -0.1562499995e-1 + y * (
+        0.1430488765e-3 + y * (-0.6911147651e-5 + y * (0.7621095161e-6 + y * (-0.934945152e-7)))
+    )
+    return math.sqrt(0.636619772 / x) * (math.sin(xx) * p + z * math.cos(xx) * q)
+
+
+def _bessy1(x: float) -> float:
+    if x < 8.0:
+        y = x * x
+        n = x * (
+            -0.4900604943e13
+            + y
+            * (
+                0.1275274390e13
+                + y
+                * (
+                    -0.5153438139e11
+                    + y * (0.7349264551e9 + y * (-0.4237922726e7 + y * 0.8511937935e4))
+                )
+            )
+        )
+        d = 0.2499580570e14 + y * (
+            0.4244419664e12
+            + y
+            * (
+                0.3733650367e10
+                + y * (0.2245904002e8 + y * (0.1020426050e6 + y * (0.3549632885e3 + y)))
+            )
+        )
+        return n / d + 0.636619772 * (_bessj1(x) * math.log(x) - 1.0 / x)
+    z = 8.0 / x
+    y = z * z
+    xx = x - 2.356194491
+    p = 1.0 + y * (
+        0.183105e-2 + y * (-0.3516396496e-4 + y * (0.2457520174e-5 + y * (-0.240337019e-6)))
+    )
+    q = 0.04687499995 + y * (
+        -0.2002690873e-3 + y * (0.8449199096e-5 + y * (-0.88228987e-6 + y * 0.105787412e-6))
+    )
+    return math.sqrt(0.636619772 / x) * (math.sin(xx) * p + z * math.cos(xx) * q)
+
+
+def _bessy(n: int, x: float) -> float:
+    if n == 0:
+        return _bessy0(x)
+    by_m, by = _bessy0(x), _bessy1(x)
+    tox = 2.0 / x
+    for j in range(1, n):
+        by_m, by = by, j * tox * by - by_m
+    return by
+
+
+def _bessi0(x: float) -> float:
+    ax = abs(x)
+    if ax < 3.75:
+        y = (x / 3.75) ** 2
+        return 1.0 + y * (
+            3.5156229
+            + y
+            * (3.0899424 + y * (1.2067492 + y * (0.2659732 + y * (0.360768e-1 + y * 0.45813e-2))))
+        )
+    y = 3.75 / ax
+    return (math.exp(ax) / math.sqrt(ax)) * (
+        0.39894228
+        + y
+        * (
+            0.1328592e-1
+            + y
+            * (
+                0.225319e-2
+                + y
+                * (
+                    -0.157565e-2
+                    + y
+                    * (
+                        0.916281e-2
+                        + y
+                        * (
+                            -0.2057706e-1
+                            + y * (0.2635537e-1 + y * (-0.1647633e-1 + y * 0.392377e-2))
+                        )
+                    )
+                )
+            )
+        )
+    )
+
+
+def _bessi1(x: float) -> float:
+    ax = abs(x)
+    if ax < 3.75:
+        y = (x / 3.75) ** 2
+        ans = ax * (
+            0.5
+            + y
+            * (
+                0.87890594
+                + y
+                * (
+                    0.51498869
+                    + y * (0.15084934 + y * (0.2658733e-1 + y * (0.301532e-2 + y * 0.32411e-3)))
+                )
+            )
+        )
+    else:
+        y = 3.75 / ax
+        ans = 0.2282967e-1 + y * (-0.2895312e-1 + y * (0.1787654e-1 - y * 0.420059e-2))
+        ans = 0.39894228 + y * (
+            -0.3988024e-1 + y * (-0.362018e-2 + y * (0.163801e-2 + y * (-0.1031555e-1 + y * ans)))
+        )
+        ans *= math.exp(ax) / math.sqrt(ax)
+    return -ans if x < 0 else ans
+
+
+def _bessi(n: int, x: float) -> float:
+    if n == 0:
+        return _bessi0(x)
+    if n == 1:
+        return _bessi1(x)
+    if x == 0:
+        return 0.0
+    tox = 2.0 / abs(x)
+    bip = ans = 0.0
+    bi = 1.0
+    for j in range(2 * (n + int(math.sqrt(40.0 * n))), 0, -1):
+        bim = bip + j * tox * bi
+        bip, bi = bi, bim
+        if abs(bi) > 1e10:
+            ans *= 1e-10
+            bi *= 1e-10
+            bip *= 1e-10
+        if j == n:
+            ans = bip
+    ans *= _bessi0(x) / bi
+    return -ans if x < 0 and n % 2 else ans
+
+
+def _bessk0(x: float) -> float:
+    if x <= 2.0:
+        y = x * x / 4.0
+        return (-math.log(x / 2.0) * _bessi0(x)) + (
+            -0.57721566
+            + y
+            * (
+                0.42278420
+                + y
+                * (
+                    0.23069756
+                    + y * (0.3488590e-1 + y * (0.262698e-2 + y * (0.10750e-3 + y * 0.74e-5)))
+                )
+            )
+        )
+    y = 2.0 / x
+    return (math.exp(-x) / math.sqrt(x)) * (
+        1.25331414
+        + y
+        * (
+            -0.7832358e-1
+            + y
+            * (
+                0.2189568e-1
+                + y * (-0.1062446e-1 + y * (0.587872e-2 + y * (-0.251540e-2 + y * 0.53208e-3)))
+            )
+        )
+    )
+
+
+def _bessk1(x: float) -> float:
+    if x <= 2.0:
+        y = x * x / 4.0
+        return (math.log(x / 2.0) * _bessi1(x)) + (1.0 / x) * (
+            1.0
+            + y
+            * (
+                0.15443144
+                + y
+                * (
+                    -0.67278579
+                    + y
+                    * (-0.18156897 + y * (-0.1919402e-1 + y * (-0.110404e-2 + y * (-0.4686e-4))))
+                )
+            )
+        )
+    y = 2.0 / x
+    return (math.exp(-x) / math.sqrt(x)) * (
+        1.25331414
+        + y
+        * (
+            0.23498619
+            + y
+            * (
+                -0.3655620e-1
+                + y * (0.1504268e-1 + y * (-0.780353e-2 + y * (0.325614e-2 + y * (-0.68245e-3))))
+            )
+        )
+    )
+
+
+def _bessk(n: int, x: float) -> float:
+    if n == 0:
+        return _bessk0(x)
+    bkm, bk = _bessk0(x), _bessk1(x)
+    tox = 2.0 / x
+    for j in range(1, n):
+        bkm, bk = bk, bkm + j * tox * bk
+    return bk
+
+
+def _bessel(fn: Any, x: float, n: float, positive_x: bool) -> float | ExcelError:
+    xv, order = float(x), int(float(n))
+    if order < 0 or (positive_x and xv <= 0):
+        return ExcelError.NUM
+    try:
+        out = fn(order, xv)
+    except (OverflowError, ValueError, ZeroDivisionError):
+        return ExcelError.NUM
+    return ExcelError.NUM if not math.isfinite(out) else out
+
+
+def BESSELJ(x: float, n: float) -> float | ExcelError:
+    return _bessel(_bessj, x, n, False)
+
+
+def BESSELY(x: float, n: float) -> float | ExcelError:
+    return _bessel(_bessy, x, n, True)
+
+
+def BESSELI(x: float, n: float) -> float | ExcelError:
+    return _bessel(_bessi, x, n, False)
+
+
+def BESSELK(x: float, n: float) -> float | ExcelError:
+    return _bessel(_bessk, x, n, True)
+
+
+# -- text: regular expressions and value-to-text --
+
+
+def _regex(pattern: Any, case_sensitivity: Any) -> re.Pattern[str] | ExcelError:
+    flags = re.IGNORECASE if int(float(case_sensitivity or 0)) == 1 else 0
+    try:
+        return re.compile(_text(pattern), flags)
+    except re.error:
+        return ExcelError.VALUE
+
+
+def REGEXTEST(text: Any, pattern: Any, case_sensitivity: Any = 0) -> bool | ExcelError:
+    rx = _regex(pattern, case_sensitivity)
+    return rx if isinstance(rx, ExcelError) else rx.search(_text(text)) is not None
+
+
+def REGEXEXTRACT(text: Any, pattern: Any, return_mode: Any = 0, case_sensitivity: Any = 0) -> Any:
+    """0: the first match. 1: every match, as a column. 2: the first match's
+    capture groups, as a row. No match is #N/A."""
+    rx = _regex(pattern, case_sensitivity)
+    if isinstance(rx, ExcelError):
+        return rx
+    s, mode = _text(text), int(float(return_mode or 0))
+    if mode == 0:
+        m = rx.search(s)
+        return m.group(0) if m else ExcelError.NA
+    if mode == 1:
+        found = [m.group(0) for m in rx.finditer(s)]
+        return Vec(found, cols=1) if found else ExcelError.NA
+    if mode == 2:
+        m = rx.search(s)
+        if m is None:
+            return ExcelError.NA
+        groups = [g if g is not None else "" for g in m.groups()] or [m.group(0)]
+        return Vec(groups, cols=len(groups))
+    return ExcelError.VALUE
+
+
+def REGEXREPLACE(
+    text: Any, pattern: Any, replacement: Any, occurrence: Any = 0, case_sensitivity: Any = 0
+) -> str | ExcelError:
+    """Replace every match, or the ``occurrence``-th (negative counts from the end).
+    ``$1`` in the replacement is a capture group."""
+    rx = _regex(pattern, case_sensitivity)
+    if isinstance(rx, ExcelError):
+        return rx
+    s, k = _text(text), int(float(occurrence or 0))
+    repl = re.sub(r"\$(\d+)", r"\\g<\1>", _text(replacement).replace("\\", "\\\\"))
+    if k == 0:
+        return rx.sub(repl, s)
+    matches = list(rx.finditer(s))
+    idx = k - 1 if k > 0 else len(matches) + k
+    if not 0 <= idx < len(matches):
+        return s
+    m = matches[idx]
+    return s[: m.start()] + m.expand(repl) + s[m.end() :]
+
+
+def _strict_text(v: Any) -> str:
+    if isinstance(v, str):
+        return '"' + v.replace('"', '""') + '"'
+    return _text(v)
+
+
+def VALUETOTEXT(value: Any, format: Any = 0) -> str | ExcelError:  # noqa: A002 -- Excel's name
+    fmt = int(float(format or 0))
+    if fmt not in (0, 1):
+        return ExcelError.VALUE
+    if value is None:
+        return ""
+    return _strict_text(value) if fmt == 1 else _text(value)
+
+
+def ARRAYTOTEXT(array: Any, format: Any = 0) -> str | ExcelError:  # noqa: A002 -- Excel's name
+    fmt = int(float(format or 0))
+    if fmt not in (0, 1):
+        return ExcelError.VALUE
+    vec = _as_vec(array)
+
+    def show(v: Any) -> str:
+        if v is None:
+            return ""
+        return _strict_text(v) if fmt == 1 else _text(v)
+
+    if fmt == 0:
+        return ", ".join(show(v) for v in vec.data)
+    rows, cols = vec.shape
+    return (
+        "{"
+        + ";".join(",".join(show(vec.data[r * cols + c]) for c in range(cols)) for r in range(rows))
+        + "}"
+    )
+
+
+_NO_ARG = object()
+
+
+def HYPERLINK(link_location: Any, friendly_name: Any = _NO_ARG) -> Any:
+    """=HYPERLINK(link, [name]) -> the text the cell shows; no link is opened.
+    A blank cell for name shows 0, as in Excel."""
+    if friendly_name is _NO_ARG:
+        return link_location
+    return 0.0 if friendly_name is None else friendly_name
+
+
+# -- lookup: SORTBY --
+
+
+def SORTBY(array: Any, *by: Any) -> Vec | ExcelError:
+    """=SORTBY(array, by_array1, [order1], ...): sort rows by one or more
+    columns of keys, or columns by rows of keys."""
+    vec = _as_vec(array)
+    rows, cols = vec.shape
+    if not by:
+        return ExcelError.VALUE
+    keys: list[tuple[list[Any], bool]] = []
+    by_cols: bool | None = None
+    for i in range(0, len(by), 2):
+        k = _as_vec(by[i])
+        order = int(float(by[i + 1])) if i + 1 < len(by) and by[i + 1] is not None else 1
+        if order not in (1, -1):
+            return ExcelError.VALUE
+        kr, kc = k.shape
+        if kc == 1 and kr == rows:
+            this = False
+        elif kr == 1 and kc == cols:
+            this = True
+        else:
+            return ExcelError.VALUE
+        if by_cols is not None and this != by_cols:
+            return ExcelError.VALUE
+        by_cols = this
+        keys.append((k.data, order == -1))
+    n = cols if by_cols else rows
+    order_idx = list(range(n))
+    for data, desc in reversed(keys):  # stable sorts, last key first
+        ranked = _sort_order([data[i] for i in order_idx], desc)
+        order_idx = [order_idx[i] for i in ranked]
+    if by_cols:
+        out = [vec.data[r * cols + c] for r in range(rows) for c in order_idx]
+    else:
+        out = [vec.data[r * cols + c] for r in order_idx for c in range(cols)]
+    return Vec(out, cols=cols)
+
+
 # -- Builtins dict for registration --
 
 BUILTINS: dict[str, Any] = {
+    # Found missing by the 2026-10-24 corpus run.
+    "COT": COT,
+    "CSC": CSC,
+    "SEC": SEC,
+    "COTH": COTH,
+    "CSCH": CSCH,
+    "SECH": SECH,
+    "ACOT": ACOT,
+    "ACOTH": ACOTH,
+    "SQRTPI": SQRTPI,
+    "FACTDOUBLE": FACTDOUBLE,
+    "SERIESSUM": SERIESSUM,
+    "GAUSS": GAUSS,
+    "ERF.PRECISE": ERF_PRECISE,
+    "ERFC.PRECISE": ERFC_PRECISE,
+    "CEILING.PRECISE": CEILING_PRECISE,
+    "ISO.CEILING": CEILING_PRECISE,
+    "FLOOR.PRECISE": FLOOR_PRECISE,
+    "MMULT": MMULT,
+    "MDETERM": MDETERM,
+    "MINVERSE": MINVERSE,
+    "MUNIT": MUNIT,
+    "BINOM.DIST.RANGE": BINOM_DIST_RANGE,
+    "PERCENTRANK.INC": PERCENTRANK_INC,
+    "PERCENTRANK.EXC": PERCENTRANK_EXC,
+    "VARA": VARA,
+    "VARPA": VARPA,
+    "STDEVA": STDEVA,
+    "STDEVPA": STDEVPA,
+    "FVSCHEDULE": FVSCHEDULE,
+    "BESSELJ": BESSELJ,
+    "BESSELY": BESSELY,
+    "BESSELI": BESSELI,
+    "BESSELK": BESSELK,
+    "REGEXTEST": REGEXTEST,
+    "REGEXEXTRACT": REGEXEXTRACT,
+    "REGEXREPLACE": REGEXREPLACE,
+    "VALUETOTEXT": VALUETOTEXT,
+    "ARRAYTOTEXT": ARRAYTOTEXT,
+    "HYPERLINK": HYPERLINK,
+    "SORTBY": SORTBY,
+    "ODDFPRICE": ODDFPRICE,
+    "ODDLPRICE": ODDLPRICE,
     # Logical
     "IF": IF,
     "AND": AND,
@@ -6662,6 +8099,15 @@ BUILTINS: dict[str, Any] = {
     "COLUMNS": COLUMNS,
     # Reference functions (raw-args; OFFSET returns a Reference value)
     "OFFSET": OFFSET,
+    "INDIRECT": INDIRECT,
+    "SUBTOTAL": SUBTOTAL,
+    "CELL": CELL,
+    "SINGLE": SINGLE,
+    "TRIMRANGE": TRIMRANGE,
+    "ISOMITTED": ISOMITTED,
+    "ANCHORARRAY": ANCHORARRAY,
+    "SHEET": SHEET,
+    "SHEETS": SHEETS,
     "FORMULATEXT": FORMULATEXT,
     "AREAS": AREAS,
     "LOOKUP": LOOKUP,

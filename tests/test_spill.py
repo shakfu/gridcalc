@@ -12,7 +12,7 @@ import math
 import tempfile
 from pathlib import Path
 
-from gridcalc.engine import EMPTY, NUM, SPILL, Grid, Mode
+from gridcalc.engine import EMPTY, NROW, NUM, SPILL, Grid, Mode
 from gridcalc.formula.errors import ExcelError
 
 
@@ -172,8 +172,8 @@ class TestSpillBlockage:
 
     def test_off_sheet_spill_errors(self) -> None:
         g = _grid()
-        g.setcell(0, 1023, "=SEQUENCE(5)")  # would run past the last row
-        assert g.cells[0][1023].err is ExcelError.SPILL
+        g.setcell(0, NROW - 1, "=SEQUENCE(5)")  # would run past the last row
+        assert g.cells[0][NROW - 1].err is ExcelError.SPILL
 
 
 class TestSpillTeardown:
@@ -452,3 +452,9 @@ class TestSpillStyle:
         assert undo.undo(g)
         assert self._shown(g) == ["2000", "5000", "24690"]
         assert g.cell(1, 0).fmtstr == ""
+
+
+def test_an_array_whose_first_element_is_blank_shows_zero() -> None:
+    g = _grid()
+    g.setcells_bulk([(0, 1, "5"), (2, 0, "=A1:A2")])
+    assert g.cells[2][0].val == 0.0 and g.cells[2][0].err is None

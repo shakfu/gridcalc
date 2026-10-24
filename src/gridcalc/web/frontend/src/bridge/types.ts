@@ -98,6 +98,29 @@ export interface TrustPolicy {
 
 export type TrustQuery = ({ needs_trust: false } & Partial<TrustInfo>) | ({ needs_trust: true } & TrustInfo)
 
+export interface BorderSide {
+  style: string
+  color: string | null
+}
+
+// `gridcalc.cellstyle.XStyle.to_json`: only the fields a cell sets.
+export interface CellStyle {
+  font?: string
+  size?: number
+  color?: string
+  strike?: boolean
+  fill?: string
+  left?: BorderSide
+  right?: BorderSide
+  top?: BorderSide
+  bottom?: BorderSide
+  halign?: string
+  valign?: string
+  wrap?: boolean
+  indent?: number
+  rotation?: number
+}
+
 export interface ViewportCell {
   r: number
   c: number
@@ -106,6 +129,9 @@ export interface ViewportCell {
   bold?: boolean
   italic?: boolean
   underline?: boolean
+  style?: CellStyle
+  // The number format's colour (`[Red]`), as a CSS colour.
+  color?: string
 }
 
 export interface Viewport {
@@ -114,6 +140,8 @@ export interface Viewport {
   rows: number
   cols: number
   cells: ViewportCell[]
+  // Merged ranges meeting the window, as [r0, c0, r1, c1].
+  merges?: [number, number, number, number][]
 }
 
 // One search hit: zero-based coordinates plus the A1 form the client jumps to.

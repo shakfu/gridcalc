@@ -64,7 +64,7 @@ Refused, with the reason:
 
 Values:
 
-- Cell references `A1` to `IV1024`, after `$` is stripped.
+- Cell references `A1` to `XFD1048576`, after `$` is stripped.
 - Names in the file's `names` object.
 - `pi e inf nan True False`.
 
@@ -125,7 +125,7 @@ The 256-character cap bounds products of such powers. `9**64*9**64*...` fits abo
 
 - The allowlist is a security boundary. It holds only while it refuses by default and while no allowed function can reach object internals or run without bound.
 - It checks syntax. If an allowed function's behaviour changes, for example `fsum` accepting a generator, the allowlist does not notice. The namespace test covers new names, not changed ones.
-- `SUM` over a full-sheet range is bounded by the 256 x 1024 grid, not by the allowlist. I have not measured its cost at that size.
+- `SUM` over a full-sheet range reads only to the used extent (`TRIM_CELLS` in `formula/evaluator.py`), not by the allowlist. A cell placed at `XFD1048576` makes that 17 billion cells.
 
 ## Alternatives considered
 

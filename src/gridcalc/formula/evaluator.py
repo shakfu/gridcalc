@@ -4,9 +4,11 @@ import inspect
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from time import monotonic
 from types import ModuleType
 from typing import Any
 
+from ..dates import parse_date, parse_time
 from ..sandbox import ModuleFacade
 from .ast_nodes import (
     Apply,
@@ -29,10 +31,25 @@ from .ast_nodes import (
     UnaryOp,
 )
 from .deps import resize_sum_range
-from .errors import ExcelError, first_error
+from .errors import ExcelError, explain, first_error
 from .lexer import parse_number
 
 Value = Any
+
+
+class _Omitted:
+    """A LAMBDA argument the call left out. Reads as blank; `ISOMITTED` tells."""
+
+    def __repr__(self) -> str:
+        return "OMITTED"
+
+
+OMITTED = _Omitted()
+
+
+class TimeLimit(BaseException):  # noqa: N818
+    """The calculation ran past `Env.deadline`. A BaseException, so the
+    ``except Exception`` around a function call does not swallow it."""
 
 
 @dataclass(frozen=True)
@@ -63,6 +80,8 @@ class Env:
         cell_spill_value: Callable[..., object] | None = None,
         cell_formula_text: Callable[..., object] | None = None,
         sheet_span: Callable[[str, str], list[str] | None] | None = None,
+        used_extent: Callable[[], tuple[int, int]] | None = None,
+        sheet_names: Callable[[], list[str]] | None = None,
     ) -> None:
         # `cell_value` is `(c, r, sheet=None) -> object`; `cell_is_formula`
         # is `(c, r, sheet=None) -> bool`. The single-sheet case keeps
@@ -92,6 +111,12 @@ class Env:
         # `sheet_span(first, last)` names the sheets a 3D reference covers, in
         # workbook order, or None when either end does not exist.
         self.sheet_span = sheet_span or (lambda _a, _b: None)
+        # `used_extent()` is the last used (col, row) across the workbook.
+        # `_eval_range` trims a large range to it. None never trims.
+        self.used_extent = used_extent
+        # `sheet_names()` lists the workbook's sheets in order, for SHEET/SHEETS.
+        self.sheet_names = sheet_names or (lambda: [])
+        self._extent: tuple[int, int] | None = None
         # Set by recalc before evaluating each formula. Functions in
         # `RAW_ARG_FUNCS` (e.g. ROW(), COLUMN()) consult this when called
         # with no arguments.
@@ -108,9 +133,35 @@ class Env:
         # lowercased local name to an already-evaluated value. Searched
         # top-down so inner LETs shadow outer ones and named ranges.
         self._local_scopes: list[dict[str, Any]] = []
+        # Names being evaluated, so one defined in terms of itself stops.
+        self._names_active: set[str] = set()
+        # `time.monotonic()` past which `tick` stops the calculation; None
+        # never stops. Function calls and lambda applications tick.
+        self.deadline: float | None = None
+        self._ticks = 0
+        # True while evaluating a legacy formula: one an xlsx stored without
+        # the dynamic-array flag. Excel reads a range in a one-value position
+        # of such a formula as the cell on the formula's row or column (`@`).
+        # `array_depth` counts the array-typed arguments being evaluated,
+        # where it does not.
+        self.legacy = False
+        self.array_depth = 0
+
+    def tick(self) -> None:
+        """Count one call; every 4096th, raise `TimeLimit` past ``deadline``."""
+        self._ticks += 1
+        if self._ticks & 0xFFF == 0 and self.deadline is not None and monotonic() > self.deadline:
+            raise TimeLimit
 
     def clear_range_cache(self) -> None:
         self._range_cache.clear()
+        self._extent = None
+
+    def extent(self) -> tuple[int, int] | None:
+        """`used_extent()`, read once per range cache lifetime."""
+        if self._extent is None and self.used_extent is not None:
+            self._extent = self.used_extent()
+        return self._extent
 
     def push_scope(self) -> dict[str, Any]:
         """Push a fresh local scope and return it so a caller can add
@@ -166,7 +217,14 @@ class Env:
             )
         if isinstance(node, Name):
             target = self.lookup_name(node.name)
-            return self.resolve_ref(target) if target is not None else None
+            key = node.name.lower()
+            if target is None or key in self._names_active:
+                return None
+            self._names_active.add(key)
+            try:
+                return self.resolve_ref(target)
+            finally:
+                self._names_active.discard(key)
         if isinstance(node, (Call, Apply)):
             v = _eval(node, self)
             return v if isinstance(v, Reference) else None
@@ -203,9 +261,12 @@ class LambdaValue:
         self.captured = captured
 
     def __call__(self, *args: Any) -> Any:
-        if len(args) != len(self.params):
+        if len(args) > len(self.params):
             return ExcelError.VALUE
+        # As Excel, trailing arguments may be left out; `ISOMITTED` sees them.
+        args = args + (OMITTED,) * (len(self.params) - len(args))
         env = self.env
+        env.tick()
         saved = env._local_scopes
         env._local_scopes = list(self.captured)
         scope = env.push_scope()
@@ -222,14 +283,10 @@ def _materialize_ref(ref: Reference, env: Env) -> Any:
     otherwise a Vec carrying the rectangle's 2D shape."""
     if ref.c1 == ref.c2 and ref.r1 == ref.r2:
         return env.get_cell(ref.c1, ref.r1, ref.sheet)
-    from ..engine import Vec  # lazy import to break cycle
-
-    data: list[Any] = []
-    for r in range(ref.r1, ref.r2 + 1):
-        for c in range(ref.c1, ref.c2 + 1):
-            v = env.get_cell(c, r, ref.sheet)
-            data.append(v)
-    return Vec(data, cols=ref.c2 - ref.c1 + 1)
+    # Through `_eval_range`, so a large reference is trimmed and cached too.
+    start = CellRef(ref.c1, ref.r1, False, False, ref.sheet)
+    end = CellRef(ref.c2, ref.r2, False, False, ref.sheet)
+    return _eval_range(RangeRef(start, end), env)
 
 
 def _deref(v: Any, env: Env) -> Any:
@@ -250,7 +307,13 @@ def _to_number(v: object) -> float | ExcelError:
         return float(v)
     if isinstance(v, str):
         # Excel: `=""+1` is #VALUE!; an empty *cell* is None, handled above.
+        # Date or time text reads as its serial: `="2024-01-10"+1` is 45302.
+        # Spaces around a number are ignored; around a date they are not.
         n = parse_number(v.strip())
+        if n is None and v == v.strip():
+            n = parse_date(v)
+            if n is None:
+                n = parse_time(v)
         return ExcelError.VALUE if n is None else n
     return ExcelError.VALUE
 
@@ -602,6 +665,15 @@ def _eval_array(node: ArrayLit, env: Env) -> Any:
     return _make_vec([v for row in node.rows for v in row], cols=len(node.rows[0]))
 
 
+# The most cells an array a function builds may hold: `SEQUENCE`, `MAKEARRAY`,
+# a column lifted against a row. A range of data is not capped.
+MAX_ARRAY_CELLS = 1 << 20
+
+# A range of more cells than this is trimmed to the used extent. Excel's
+# `A:A` is 1048576 cells, nearly all blank.
+TRIM_CELLS = 1 << 16
+
+
 def _eval_range(node: RangeRef, env: Env) -> Any:
     """Evaluate a range to a ``Vec``. A cell error stays in its element;
     ``_eval_call`` decides whether a function sees it (see
@@ -614,6 +686,10 @@ def _eval_range(node: RangeRef, env: Env) -> Any:
     cached = env._range_cache.get(key)
     if cached is not None:
         return cached
+    full = (r2 - r1 + 1, c2 - c1 + 1)
+    if full[0] * full[1] > TRIM_CELLS and (ext := env.extent()) is not None:
+        # Past the used extent every cell is blank, so leave them out.
+        c2, r2 = min(c2, max(c1, ext[0])), min(r2, max(r1, ext[1]))
     data: list[Any] = []
     for r in range(r1, r2 + 1):
         for c in range(c1, c2 + 1):
@@ -627,6 +703,9 @@ def _eval_range(node: RangeRef, env: Env) -> Any:
     from ..engine import Vec  # lazy import to break cycle
 
     result = Vec(data, cols=c2 - c1 + 1)
+    result.origin = (key[0], c1, r1)
+    if (r2 - r1 + 1, c2 - c1 + 1) != full:
+        result.full = full
     env._range_cache[key] = result
     return result
 
@@ -688,11 +767,18 @@ def _eval_spill(node: SpillRef, env: Env) -> Any:
 def _eval_name(node: Name, env: Env) -> Any:
     found, value = env.lookup_local(node.name)
     if found:
-        return value
+        return None if value is OMITTED else value
     target = env.lookup_name(node.name)
     if target is None:
         return ExcelError.NAME
-    return _eval(target, env)
+    key = node.name.lower()
+    if key in env._names_active:  # `X = X+1` in the Name Manager
+        return ExcelError.CIRC
+    env._names_active.add(key)
+    try:
+        return _eval(target, env)
+    finally:
+        env._names_active.discard(key)
 
 
 # Functions that see an error argument instead of being short-circuited by it.
@@ -713,6 +799,8 @@ _ERROR_AWARE_FUNCS = frozenset(
         "istext",
         "error.type",
         "type",
+        "valuetotext",
+        "arraytotext",
     }
 )
 
@@ -744,6 +832,8 @@ _ARRAY_ERROR_TOLERANT_FUNCS = frozenset(
         "xmatch",
         "filter",
         "sort",
+        "sortby",
+        "arraytotext",
         "unique",
         "take",
         "drop",
@@ -941,26 +1031,28 @@ def _param_info(name: str, fn: Any) -> tuple[tuple[bool, ...], tuple[str, ...]]:
     return positions, numeric
 
 
-def _lift_call(name_lower: str, fn: Any, args: list[Any], lifted: list[int]) -> Any:
+def _lift_call(name_lower: str, fn: Any, args: list[Any], lifted: list[int], env: Env) -> Any:
     """Call ``fn`` per element over the array arguments at ``lifted``.
 
     Shapes broadcast as in Excel: a one-row or one-column array repeats along
     that dimension, and a position past a smaller array's edge is #N/A.
     """
     shapes = {i: _vec_shape(args[i]) for i in lifted}
+    datas = {i: _vec_data(args[i]) for i in lifted}
     n_rows = max(r for r, _ in shapes.values())
     n_cols = max(c for _, c in shapes.values())
+    if n_rows * n_cols > MAX_ARRAY_CELLS:  # a column against a row multiplies
+        return explain(ExcelError.NUM, f"result over {MAX_ARRAY_CELLS} cells")
     out: list[Any] = []
     for r in range(n_rows):
         for c in range(n_cols):
+            env.tick()
             call = list(args)
             for i in lifted:
                 rows, cols = shapes[i]
                 rr = 0 if rows == 1 else r
                 cc = 0 if cols == 1 else c
-                call[i] = (
-                    _vec_data(args[i])[rr * cols + cc] if rr < rows and cc < cols else ExcelError.NA
-                )
+                call[i] = datas[i][rr * cols + cc] if rr < rows and cc < cols else ExcelError.NA
             v = _call_value(name_lower, fn, call)
             out.append(ExcelError.CALC if _is_vec(v) else v)  # no nested arrays
     return _make_vec(out, cols=n_cols)
@@ -1101,6 +1193,15 @@ RAW_ARG_FUNCS = frozenset(
         "isref",
         "isformula",
         "offset",
+        "indirect",
+        "sheet",
+        "sheets",
+        "subtotal",
+        "cell",
+        "single",
+        "trimrange",
+        "isomitted",
+        "anchorarray",
         "formulatext",
         "areas",
     }
@@ -1165,7 +1266,8 @@ def _apply_named(fn: Any, node: Call | Apply, env: Env) -> Any:
     Errors in arguments are passed through to the body rather than
     short-circuited, so a lambda wrapping IFERROR can still see them.
     """
-    args = [_deref(_eval(a, env), env) for a in node.args]
+    # An empty argument slot, `f(1,)`, is omitted as much as a missing one.
+    args = [OMITTED if isinstance(a, Missing) else _deref(_eval(a, env), env) for a in node.args]
     return fn(*args)
 
 
@@ -1179,6 +1281,7 @@ def _eval_apply(node: Apply, env: Env) -> Any:
 
 
 def _eval_call(node: Call, env: Env) -> Any:
+    env.tick()
     name_lower = node.name.lower()
     if name_lower == "let":
         return _eval_let(node, env)
@@ -1222,6 +1325,16 @@ def _eval_call(node: Call, env: Env) -> Any:
             return ExcelError.VALUE
     if name_lower in ("sumif", "averageif"):
         node = resize_sum_range(node)
+    if env.legacy and name_lower in LEGACY_ARRAY_FUNCS:
+        env.array_depth += 1
+        try:
+            return _eval_value_call(name_lower, fn, node, env)
+        finally:
+            env.array_depth -= 1
+    return _eval_value_call(name_lower, fn, node, env)
+
+
+def _eval_value_call(name_lower: str, fn: Any, node: Call, env: Env) -> Any:
     has_3d = any(isinstance(a, Ref3D) for a in node.args)
     if has_3d and name_lower not in _3D_FUNCS:
         return ExcelError.VALUE
@@ -1240,23 +1353,35 @@ def _eval_call(node: Call, env: Env) -> Any:
     else:
         args = [_deref(_eval(a, env), env) for a in node.args]
     positions, _ = _param_info(name_lower, fn)
+    if _scalar_context(env):
+        args = [
+            _intersect(a, env) if i < len(positions) and positions[i] else a
+            for i, a in enumerate(args)
+        ]
     lifted = [i for i, a in enumerate(args[: len(positions)]) if positions[i] and _is_vec(a)]
     if lifted:
-        return _lift_call(name_lower, fn, args, lifted)
+        return _lift_call(name_lower, fn, args, lifted, env)
     return _call_value(name_lower, fn, args)
 
 
 def _call_value(name_lower: str, fn: Any, args: list[Any]) -> Any:
     """Apply a value function: error short-circuits, then the call itself."""
+    _, coerce = _param_info(name_lower, fn)
     if name_lower not in _ERROR_AWARE_FUNCS:
-        err = None if name_lower in _CRITERIA_FUNCS else first_error(*args)
-        if err:
-            return err
+        if name_lower not in _CRITERIA_FUNCS:
+            # Left to right, as Excel: `FLOOR("", 1/0)` fails on its "" first.
+            for i, a in enumerate(args):
+                if isinstance(a, ExcelError):
+                    return a
+                kind = coerce[i] if i < len(coerce) else None
+                if kind and isinstance(a, str):
+                    n = _to_bool(a) if kind == "bool" else _to_number(a)
+                    if isinstance(n, ExcelError):
+                        return n
         if name_lower not in _ARRAY_ERROR_TOLERANT_FUNCS:
             err = _first_array_error(args)
             if err:
                 return err
-    _, coerce = _param_info(name_lower, fn)
     for i, a in enumerate(args[: len(coerce)]):
         kind = coerce[i]
         if not kind:
@@ -1306,8 +1431,79 @@ def _eval_pycall(node: PyCall, env: Env) -> Any:
 
 
 def _eval_binop(node: BinOp, env: Env) -> Any:
-    a = _eval(node.left, env)
-    b = _eval(node.right, env)
+    # `A1+A2+...+A1000` nests 1000 deep on the left; walk that spine in a loop
+    # so its length costs no recursion. Operands still evaluate left to right.
+    spine = [node]
+    while type(spine[-1].left) is BinOp:
+        spine.append(spine[-1].left)
+    acc = _eval(spine[-1].left, env)
+    for n in reversed(spine):
+        acc = _binop_value(n, acc, _eval(n.right, env), env)
+    return acc
+
+
+def _intersect(v: Any, env: Env) -> Any:
+    """Excel's implicit intersection: the cell of range ``v`` on the formula's
+    row (one column) or column (one row); #VALUE! when there is none. Any
+    value not read from a range passes through."""
+    origin = getattr(v, "origin", None)
+    if origin is None or env.current_cell is None:
+        return v
+    rows, cols = v.full or v.shape
+    if rows == 1 and cols == 1:
+        return v.data[0]
+    c, r = env.current_cell
+    if cols == 1:
+        i = r - origin[2]
+    elif rows == 1:
+        i = c - origin[1]
+    else:
+        return ExcelError.VALUE
+    if not 0 <= i < rows * cols:
+        return ExcelError.VALUE
+    return v.data[i] if i < len(v.data) else None  # past the used extent: blank
+
+
+def _scalar_context(env: Env) -> bool:
+    return env.legacy and not env.array_depth
+
+
+def _legacy_result(v: Any, env: Env) -> Any:
+    """A legacy formula's result: one value, as Excel shows it."""
+    v = _deref(v, env)
+    if isinstance(v, (int, float, str)) or v is None:
+        return v
+    v = _intersect(v, env)
+    if _is_vec(v):
+        data = _vec_data(v)
+        return data[0] if data else ExcelError.CALC
+    return v
+
+
+# Functions whose arguments Excel evaluates as arrays even in a legacy
+# formula, so `SUMPRODUCT(A1:A3*B1:B3)` needs no Ctrl+Shift+Enter.
+LEGACY_ARRAY_FUNCS = frozenset(
+    {
+        "sumproduct",
+        "mmult",
+        "mdeterm",
+        "minverse",
+        "transpose",
+        "frequency",
+        "linest",
+        "logest",
+        "trend",
+        "growth",
+        "index",
+        "lookup",
+        "match",
+    }
+)
+
+
+def _binop_value(node: BinOp, a: Any, b: Any, env: Env) -> Any:
+    if _scalar_context(env):
+        a, b = _intersect(_deref(a, env), env), _intersect(_deref(b, env), env)
     op = _BINOP.get(node.op)  # None for a comparison
     # Two floats: no Reference to materialise and no array to broadcast over.
     if type(a) is float and type(b) is float:
@@ -1321,6 +1517,8 @@ def _eval_binop(node: BinOp, env: Env) -> Any:
 
 def _eval_unary(node: UnaryOp, env: Env) -> Any:
     v = _deref(_eval(node.operand, env), env)
+    if _scalar_context(env):
+        v = _intersect(v, env)
     if isinstance(v, ExcelError):
         return v
     if node.op == "+":
@@ -1336,6 +1534,8 @@ def _eval_unary(node: UnaryOp, env: Env) -> Any:
 
 def _eval_percent(node: Percent, env: Env) -> Any:
     v = _deref(_eval(node.operand, env), env)
+    if _scalar_context(env):
+        v = _intersect(v, env)
     if isinstance(v, ExcelError):
         return v
 

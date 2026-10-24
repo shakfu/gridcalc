@@ -12,6 +12,7 @@ import {
 } from 'react'
 import { bridge } from '../bridge/api'
 import type { Viewport } from '../bridge/types'
+import { cellCss } from '../lib/cellstyle'
 import {
   CH,
   CW,
@@ -748,7 +749,47 @@ export function Grid({
 
   const cellLayer = useMemo(() => {
     if (!view) return null
-    return view.cells.map((cell) => (
+    const merges = view.merges ?? []
+    // Merges by visible row, so a cell checks only the merges on its row.
+    const byRow = new Map<number, [number, number][]>()
+    for (const [r0, c0, r1, c1] of merges) {
+      for (let r = Math.max(r0, view.r0); r <= Math.min(r1, view.r0 + view.rows - 1); r++) {
+        const spans = byRow.get(r) ?? []
+        spans.push([c0, c1])
+        byRow.set(r, spans)
+      }
+    }
+    const inside = (r: number, c: number) =>
+      (byRow.get(r) ?? []).some(([c0, c1]) => c >= c0 && c <= c1) ||
+      merges.some(([r0, c0]) => r === r0 && c === c0) // an anchor outside the window
+    const byPos = new Map(view.cells.map((cell) => [`${cell.r},${cell.c}`, cell]))
+    // A merge is one box over its area: its anchor's content and style, on an
+    // opaque background so the gridlines inside it do not show.
+    const mergeBoxes = merges.map(([r0, c0, r1, c1]) => {
+      const cell = byPos.get(`${r0},${c0}`)
+      return (
+        <div
+          key={`m${r0},${c0}`}
+          className={
+            'cell merge' +
+            (cell?.align === 'r' ? ' num' : '') +
+            (cell?.bold ? ' b' : '') +
+            (cell?.italic ? ' i' : '') +
+            (cell?.underline ? ' u' : '')
+          }
+          style={{
+            ...cellCss(cell?.style, cell?.color, cell?.underline),
+            left: xs[c0],
+            top: CH + r0 * CH,
+            width: xs[c1 + 1] - xs[c0],
+            height: (r1 - r0 + 1) * CH,
+          }}
+        >
+          {cell?.text}
+        </div>
+      )
+    })
+    return mergeBoxes.concat(view.cells.filter((cell) => !inside(cell.r, cell.c)).map((cell) => (
       <div
         key={`${cell.r},${cell.c}`}
         className={
@@ -758,11 +799,16 @@ export function Grid({
           (cell.italic ? ' i' : '') +
           (cell.underline ? ' u' : '')
         }
-        style={{ left: xs[cell.c], top: CH + cell.r * CH, width: xs[cell.c + 1] - xs[cell.c] }}
+        style={{
+          ...cellCss(cell.style, cell.color, cell.underline),
+          left: xs[cell.c],
+          top: CH + cell.r * CH,
+          width: xs[cell.c + 1] - xs[cell.c],
+        }}
       >
         {cell.text}
       </div>
-    ))
+    )))
   }, [view, xs])
 
   const headerLayer = useMemo(() => {

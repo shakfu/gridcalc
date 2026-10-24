@@ -15,6 +15,7 @@ import pytest
 
 from gridcalc import commands as C
 from gridcalc.engine import FORMULA, NUM, Grid, Mode, NamedRange
+from gridcalc.formula.deps import RangeIndex
 from gridcalc.undo import UndoManager
 
 
@@ -45,22 +46,38 @@ def _workbook() -> Grid:
     return g
 
 
-def _graph(g: Grid) -> tuple[dict, dict, set]:
+def _graph(g: Grid) -> tuple[dict, dict, set, set]:
     return (
         {k: set(v) for k, v in g._dep_of.items() if v},
         {k: set(v) for k, v in g._subscribers.items() if v},
         set(g._volatile),
+        set(g._ranges),
     )
 
 
-def _fresh_graph(g: Grid) -> tuple[dict, dict, set]:
-    saved = (g._dep_of, g._subscribers, g._volatile, g._spill_blocked, g._dep_graph_built)
+def _fresh_graph(g: Grid) -> tuple[dict, dict, set, set]:
+    saved = (
+        g._dep_of,
+        g._subscribers,
+        g._volatile,
+        g._spill_blocked,
+        g._dep_graph_built,
+        g._ranges,
+    )
     g._dep_of, g._subscribers, g._volatile, g._spill_blocked = {}, {}, set(), set(saved[3])
+    g._ranges = RangeIndex()
     try:
         g._rebuild_dep_graph()
         return _graph(g)
     finally:
-        g._dep_of, g._subscribers, g._volatile, g._spill_blocked, g._dep_graph_built = saved
+        (
+            g._dep_of,
+            g._subscribers,
+            g._volatile,
+            g._spill_blocked,
+            g._dep_graph_built,
+            g._ranges,
+        ) = saved
 
 
 def _values(g: Grid) -> dict:

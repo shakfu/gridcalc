@@ -31,6 +31,9 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "gridcalc"
 CORE_MODULES = (
     "engine.py",
     "display.py",
+    "numfmt.py",
+    "cellstyle.py",
+    "xlsx_styles.py",
     "loader.py",
     "undo.py",
     "search.py",

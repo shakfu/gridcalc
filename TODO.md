@@ -6,6 +6,15 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ## High
 
+- [ ] **Corpus mismatches still open** (`docs/dev/excel-corpus.md`). Largest first:
+  - Date text without a year (`"1/2"`) should read as that day this year, as Excel does; it gives `#VALUE!`.
+  - A legacy formula keeps its rule only through copy and fill; pasting its text from the clipboard makes it dynamic. Excel keeps the `@` in the text instead.
+  - About 1,700 remain, none over 70 for one function: `INDEX` edge cases, `XLOOKUP` match modes, `CONVERT` units, `LCM`/`GCD`, `WEEKNUM`, `LINEST`, `IPMT`/`PPMT`, `XIRR`, `BINOM.INV` limits.
+  - `HYPGEOM.DIST`'s cumulative form sums one term per success and has no closed form here; a sample of a billion runs that long.
+  - `ODDFPRICE` basis 2 and `ODDLPRICE` bases 2 and 3 differ from Excel by up to 0.1 per 100; the other bases match.
+  - `BESSELJ` order 1 and up, for |x| >= 8, differs from Excel in the sixth digit. gridcalc's value is the more accurate one.
+  - `A1#` on a cell that does not spill should be `#REF!`.
+
 ## Medium
 
 ### Optimization
@@ -32,17 +41,30 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ### Performance
 
+- [ ] **Whole-column paths that still cost a million rows.** Each is correct but slow on Excel's grid:
+  - Fill down (`Api.fill`) over a header-selected column writes every row, as Excel does.
+  - The solver's `_precedents` (`opt.py`) expands a range through `extract_refs`, one key per cell.
+  - One cell near row 1048576 sets the used extent, so every range over `TRIM_CELLS` reads to it. A per-sheet extent would help only formulas that read one sheet.
+
 - [ ] **Undo memory is bounded by entry count, not size.** A structural entry copies every sheet's cells: 6.4 MB on a 3-sheet workbook with 25k cells, so 64 entries can hold about 400 MB. Cap the stack by bytes if real workbooks reach that.
 
 ### Refactoring & code quality
 
 - [ ] **Undo gaps.** `:e` code edits, `:opt def`/`:opt undef` and `:width` (web `set_col_width`) record no undo entry. A workbook-level undo also reverts any width change made after its snapshot.
 
-- [ ] **xlsx styles gridcalc has no model for.** Number formats in the `[,][.N][f|e|%]` grammar, bold, italic, underline and left/right alignment cross both ways (see CHANGELOG). Font sizes, colours and faces, fills, borders, other alignments, merged cells, and number formats outside that grammar (currency symbols, colours, sections) are neither read nor written. Saving over a file that has them asks first. Adding any of them needs a place in `Cell` and in the JSON format.
+- [ ] **xlsx styles: what is left.** Fonts, solid fills, borders, alignment, number formats, merged cells and row heights now round-trip (see CHANGELOG). Open:
+  - No command sets a font, fill, border, alignment or merge; they arrive only from a file.
+  - Neither view draws row heights, and the web view does not draw rotation. Variable row heights need the web grid's row positions as a prefix sum over 1M rows.
+  - Pattern and gradient fills, diagonal borders and font effects (superscript, outline, shadow) are not modelled; saving over a file with them still asks.
+  - Clearing a cell keeps its `xstyle` but drops bold, italic, underline and number format. Excel keeps all of them.
+  - Selecting or editing inside a merged area treats each cell separately.
+  - Not yet opened in Excel: run `scripts/style_check.py` (`docs/dev/excel-check.md`).
 
 ### Security
 
-- [ ] **No limit on formula size or run time.** `=SUM(SEQUENCE(100000000))` (EXCEL) hangs the load with no approval needed. `=sum(range(10**12))` (PYTHON) does too once the file is approved. Cap formula length and nesting depth, and bound evaluation.
+- [ ] **No run-time limit in PYTHON mode.** EXCEL and HYBRID formulas are capped at 8192 characters and 64 nesting levels, and a recalc stops after `RECALC_TIME_LIMIT` (see CHANGELOG). `=sum(range(10**12))` in an approved PYTHON-mode file still hangs: `eval` cannot be interrupted without a thread or a signal.
+
+- [ ] **Arrays do not broadcast to an outer product.** `=SEQUENCE(3)*TRANSPOSE(SEQUENCE(3))` is `#VALUE!`; Excel gives a 3x3 array. A column against a row should expand both to their combined shape.
 
 - [ ] **Unverified: the file can change between approval and load.** `inspect_file` and the later load read the file twice. Probe artefact exists; outcome not confirmed. (REVIEW.md unchecked lead.)
 

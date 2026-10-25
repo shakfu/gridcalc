@@ -21,7 +21,8 @@ env:
   # `requires-python = ">=3.10"`). The abi3 build lives in a separate
   # workflow (`build-abi3.yml`) for cp312+.
   CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-* cp315-*"
-  CIBW_SKIP: "*-musllinux_* pp*"
+  # cp315-win: windows-curses 2.4.2 has no cp315 wheel and no sdist (TODO.md).
+  CIBW_SKIP: "*-musllinux_* pp* cp315-win*"
   CIBW_TEST_REQUIRES: pytest
   CIBW_TEST_COMMAND: pytest {project}/tests -v
   CIBW_ENVIRONMENT: GRIDCALC_SANDBOX=1

@@ -12,7 +12,7 @@
 
 ### Added
 
-- **Python 3.15.** CI tests it, and per-version wheels are built for cp314 and cp315. Before, 3.14 users got the cp312-abi3 wheel, which CI tested only on 3.12. `decimal.SPEC_VERSION` joins the `decimal` facade. Tab completion no longer calls `os.path.commonprefix`, deprecated in 3.15.
+- **Python 3.15.** CI tests it, and per-version wheels are built for cp314 and cp315. Before, 3.14 users got the cp312-abi3 wheel, which CI tested only on 3.12. `decimal.SPEC_VERSION` joins the `decimal` facade. Tab completion no longer calls `os.path.commonprefix`, deprecated in 3.15. Windows is excluded on 3.15: `windows-curses` 2.4.2 has no cp315 wheel and no sdist, so the install fails.
 
 - **Excel tables and structured references.** `Sales[Qty]`, `Sales[[#This Row],[Qty]]`, `[@Qty]`, `Sales[#All]`, `[#Headers]`, `[#Totals]` and column ranges evaluate. An xlsx load reads each sheet's tables, and a save writes them back with their filters and sort state. JSON keeps them. Inserting or deleting rows and columns moves a table; undo restores it. In the survey of 2,000 real files, 42,182 cells used them and gave `#NAME?`.
 

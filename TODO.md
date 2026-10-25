@@ -87,6 +87,8 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 - [ ] **The wheel matrix stops at cp313 while the classifiers claim 3.14.** A 3.14 user installs the cp312-abi3 wheel, which CI tested only on 3.12. `build-abi3.yml` calls those wheels build-only, yet five were published with 0.6.0.
 
+- [ ] **Windows on 3.15 is excluded.** `windows-curses` 2.4.2 has no cp315 wheel and no sdist, so `pip install gridcalc` fails there ([PyPI](https://pypi.org/project/windows-curses/#files)). When a cp315 wheel ships, drop the `exclude` in `ci.yml` and `cp315-win*` from `CIBW_SKIP` in `build-publish.yml`.
+
 ## Low
 
 ### Optimization

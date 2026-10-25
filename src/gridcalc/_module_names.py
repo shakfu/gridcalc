@@ -5,7 +5,7 @@ lists public names reviewed and refused. A submodule is exposed only when it
 has its own entry. `tests/test_sandbox.py` fails when an installed module has
 a public name in neither table, so a new name is reviewed before it is exposed.
 
-Names cover numpy 1.26 to 2.4 and Python 3.10 to 3.14; a name the installed
+Names cover numpy 1.26 to 2.4 and Python 3.10 to 3.15; a name the installed
 version lacks is skipped."""
 
 from __future__ import annotations
@@ -728,6 +728,7 @@ NAMES: dict[str, frozenset[str]] = {
             "ROUND_HALF_UP",
             "ROUND_UP",
             "Rounded",
+            "SPEC_VERSION",
             "Subnormal",
             "Underflow",
             "getcontext",

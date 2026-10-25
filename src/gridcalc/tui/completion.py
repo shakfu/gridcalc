@@ -125,7 +125,12 @@ def complete(buf: str, g: Grid) -> tuple[str, list[str]]:
     if len(cands) == 1:
         end = "" if cands[0].endswith("/") else " "
         return before + sep + cands[0] + end, cands
-    common = os.path.commonprefix(cands) if cands else ""
+    # Character prefix; os.path.commonprefix is deprecated in 3.15, commonpath splits on "/".
+    common = ""
+    if cands:
+        lo, hi = min(cands), max(cands)
+        diff = (i for i, (a, b) in enumerate(zip(lo, hi, strict=False)) if a != b)
+        common = lo[: next(diff, len(lo))]
     if len(common) > len(token):
         return before + sep + common, cands
     return buf, cands

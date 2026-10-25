@@ -17,10 +17,10 @@ on:
         type: boolean
 
 env:
-  # Per-version wheels for cp310-cp313 (matches pyproject.toml
+  # Per-version wheels for cp310-cp315 (matches pyproject.toml
   # `requires-python = ">=3.10"`). The abi3 build lives in a separate
   # workflow (`build-abi3.yml`) for cp312+.
-  CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
+  CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-* cp315-*"
   CIBW_SKIP: "*-musllinux_* pp*"
   CIBW_TEST_REQUIRES: pytest
   CIBW_TEST_COMMAND: pytest {project}/tests -v

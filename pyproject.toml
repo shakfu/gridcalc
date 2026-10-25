@@ -40,6 +40,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Office/Business :: Financial :: Spreadsheet",
     "Topic :: Utilities",
     "Typing :: Typed",
@@ -182,6 +183,8 @@ ignore_missing_imports = true
 # Default test run excludes the slow PTY-driven curses integration tests.
 # Run them explicitly with `make test-tty` or `pytest -m tty tests/integration`.
 addopts = "-m 'not tty and not browser'"
+# A deprecation raised from gridcalc's own code fails the run; third-party ones stay warnings.
+filterwarnings = ["error::DeprecationWarning:gridcalc"]
 markers = [
     "tty: PTY-driven curses integration test (slow, requires pty + xterm-256color)",
     "browser: Playwright-driven web-frontend render test (slow, requires chromium)",

@@ -311,8 +311,8 @@ _AGG_CELLS = {
         ("=AGGREGATE(4,6,A1:A5)", 8.0),
         ("=AGGREGATE(12,6,A1:A5)", 4.0),
         ("=AGGREGATE(15,6,A1:A5,2)", 3.0),
-        ("=AGGREGATE(14,6,A1:A5/(B1:B5=\"x\"),1)", 8.0),
-        ("=AGGREGATE(15,6,ROW(A1:A5)/(B1:B5=\"x\"),2)", 3.0),
+        ('=AGGREGATE(14,6,A1:A5/(B1:B5="x"),1)', 8.0),
+        ('=AGGREGATE(15,6,ROW(A1:A5)/(B1:B5="x"),2)', 3.0),
         ("=AGGREGATE(9,6,A1:A5*2)", ExcelError.VALUE),  # 1-13 take references only
         ("=AGGREGATE(20,6,A1:A5)", ExcelError.VALUE),
         ("=AGGREGATE(9,8,A1:A5)", ExcelError.VALUE),

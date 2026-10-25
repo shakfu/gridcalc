@@ -241,9 +241,7 @@ def reads_range_as_array(
             return not whole_arg
         if type(n) is Call:
             flags = scalar(n.name.lower())
-            return any(
-                walk(a, not (i < len(flags) and flags[i])) for i, a in enumerate(n.args)
-            )
+            return any(walk(a, not (i < len(flags) and flags[i])) for i, a in enumerate(n.args))
         if type(n) is Apply:
             return walk(n.func, False) or any(walk(a, True) for a in n.args)
         if type(n) is BinOp:

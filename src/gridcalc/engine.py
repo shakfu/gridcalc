@@ -5480,6 +5480,7 @@ class Grid:
         def scalar_params(name: str) -> tuple[bool, ...]:
             fn = funcs.get(name)
             return _param_info(name, fn)[0] if fn is not None else ()
+
         payload: list[tuple[Any, ...]] = []
         arrays: dict[str, list[tuple[str, str]]] = {}
         errors: dict[str, list[tuple[str, str]]] = {}

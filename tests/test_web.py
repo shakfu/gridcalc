@@ -2084,7 +2084,7 @@ def test_add_sheet_reports_a_name_excel_rejects() -> None:
 
 
 def test_editing_an_imported_numeric_label_keeps_it_text(tmp_path) -> None:
-    import openpyxl
+    openpyxl = pytest.importorskip("openpyxl")
 
     wb = openpyxl.Workbook()
     wb.active["A1"] = "00123"

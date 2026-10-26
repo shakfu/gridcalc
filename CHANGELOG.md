@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.11.0]
+
 ### Security
 
 - **Formulas built to hang or crash a load are stopped.** No trust prompt guards EXCEL or HYBRID formulas. An xlsx could crash gridcalc through Python's recursion limit: 5000 nested parentheses, or a 1000-term sum. Nested `MAKEARRAY` lambdas could hang it. Formulas now have Excel's limits: 8192 characters and 64 nesting levels. Each refusal gives a reason. A long `+` chain no longer recurses. A recalc stops after 30 s (`RECALC_TIME_LIMIT`). Formulas it did not finish show `#CALC!` with the reason. A time limit is needed beside the array cap: one formula can be slow with only small arrays. Runaway `LAMBDA` recursion gives `#NUM!`. A function lifted over a column and a row is capped at 1M cells. `WORKDAY` and `NETWORKDAYS` stop at 9999-12-31. PYTHON mode is unchanged.

@@ -10,6 +10,7 @@ gridcalc plan.json --sweep 'D5 6:24 9'           # parametric right-hand side
 gridcalc book.json --goal 'B10 = 100 by A1'      # goal seek
 gridcalc book.json --eval '=SUM(A1:A10)'         # evaluate a formula
 gridcalc book.xlsx --convert book.json           # format conversion
+gridcalc loan.xlsx --set Rate=0.04 --get Payment # inputs and outputs by defined name
 ```
 
 The spec strings are the ones the terminal uses. `--solve 'max B4 vars A4:A5 st D4:D6'` is the argument of `:opt`, and `--goal 'B10 = 100 by A1'` the argument of `:goal`; both are parsed by the same module the interactive commands use, so a spec that works in one works in the other. See [Optimization](../guide/optimization.md) and [Goal seek](../guide/goal-seek.md) for what the grammar means.
@@ -23,6 +24,9 @@ The spec strings are the ones the terminal uses. `--solve 'max B4 vars A4:A5 st 
 | `--diagnose` | With `--solve`, explain a failure: the conflicting constraint set on `INFEASIBLE`, the runaway variables on `UNBOUNDED`. |
 | `--goal SPEC` | Goal seek: `<cell> = <target> by <cell> [in <lo>:<hi>]`. |
 | `--sweep SPEC` | Re-solve across a range of right-hand sides: `<cell> <lo>:<hi> [steps] [model]`. Never writes to the sheet. |
+| `--set NAME=VALUE` | Write a value to a defined name or a cell before anything else runs. Repeatable. See [Named inputs and outputs](#named-inputs-and-outputs). |
+| `--inputs FILE` | A JSON object of inputs, or a list of objects to run one after another. `-` reads stdin. |
+| `--get NAME` | Report a defined name or a cell. Repeatable. Bare with `--set` or `--inputs`, every defined name is reported. |
 | `--eval FORMULA` | Evaluate a formula against the workbook and report its value. Repeatable; never modifies the sheet. |
 | `--convert PATH` | Write the workbook out. The format follows the extension — `.xlsx`, `.csv`, otherwise JSON. |
 | `--apply` | Let `--solve` and `--goal` write their result into the grid. |
@@ -30,7 +34,43 @@ The spec strings are the ones the terminal uses. `--solve 'max B4 vars A4:A5 st 
 | `--trust` | Run the workbook's Python: its code block, required modules and PYTHON-mode formulas. Without it none of these run, and stderr says so. |
 | `--format json\|text` | Output shape. Defaults to `json`. |
 
-Operations run in a fixed order — eval, solve, goal, sweep, convert — regardless of the order the flags appear in, so `--convert` always sees the state the others left and a command line means the same thing however it is written. One run can answer several questions; each lands under its own key.
+Operations run in a fixed order — set, eval, solve, goal, sweep, get, convert — regardless of the order the flags appear in, so `--convert` always sees the state the others left and a command line means the same thing however it is written. One run can answer several questions; each lands under its own key.
+
+## Named inputs and outputs
+
+A workbook can be run as a function of its defined names, without opening it:
+
+```sh
+gridcalc loan.xlsx --set Rate=0.04 --set Years=15 --get Payment --get Schedule#
+gridcalc loan.xlsx --inputs cases.json --get Payment     # one run per case
+```
+
+- **Targets** are defined names (case-insensitive), sheet-qualified local names (`Inputs!Rate`), or cells and ranges (`B2`, `Out!D1:D3`). `Name#` reads the whole array the formula at `Name` spills. A name defined as a formula (`=0.2`) can be read but not set.
+- **Values** are JSON: `0.05`, `true`, `null` (a blank), `"12"` (text), or a list of rows for a range. A one-row or one-column range also takes a flat list (`[1,2,3]`). A `--set` value that is not valid JSON is text, so `--set Region=North` works without quoting. Text is never read as a formula.
+- **Outputs**: a scalar for one cell, a list of rows for a range or a spill, and `{"error": "#DIV/0!"}` for a cell holding an error.
+- **A list in `--inputs`** runs each case from the workbook as loaded: a case's inputs are put back before the next one. `--set` values apply to every case.
+- **Writing back**: `--set` with `--convert out.xlsx` saves the workbook with the inputs in place.
+
+```json
+{
+  "inputs": {"Rate": 0.04, "Years": 15},
+  "outputs": {"Payment": -2219.06, "Schedule#": [[1.0], [2.0]]}
+}
+```
+
+With a list in `--inputs`, the result is `{"runs": [{"inputs": {...}, "outputs": {...}}, ...]}`.
+
+From Python, `gridcalc.book.Book` does the same:
+
+```python
+from gridcalc.book import Book
+
+book = Book.open("loan.xlsx")
+book.run({"Rate": 0.04}, ["Payment"])   # inputs are restored afterwards
+book.set({"Rate": 0.04}); book.save("filled.xlsx")
+```
+
+An unknown name, a value of the wrong shape, or an input to a formula name exits 1 before anything is written.
 
 ## Nothing is written unless you ask
 
@@ -79,6 +119,9 @@ The top-level object carries one key per operation that ran:
   "goal": { ... },
   "sweep": { ... },
   "eval": [ ... ],
+  "inputs": { ... },
+  "outputs": { ... },
+  "runs": [ ... ],
   "convert": { ... }
 }
 ```

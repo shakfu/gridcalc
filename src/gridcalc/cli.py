@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any, TextIO, cast
 
 from . import goalseek, opt
+from .book import Book, BookError
 from .display import cell_text
 from .engine import EMPTY, NCOL, NROW, SPILL, Grid
 from .loader import load_workbook, needs_trust, save_workbook
@@ -67,7 +68,7 @@ EXIT_ERROR = 1
 EXIT_FAILED = 2
 
 # The actions that make this a headless run rather than an editor launch.
-HEADLESS_FLAGS = ("solve", "goal", "sweep", "eval", "convert")
+HEADLESS_FLAGS = ("solve", "goal", "sweep", "eval", "convert", "set_values", "inputs", "get_values")
 
 
 class CliError(Exception):
@@ -116,6 +117,28 @@ def add_headless_arguments(p: argparse.ArgumentParser) -> None:
         "--sweep",
         metavar="SPEC",
         help="parametric RHS sweep: '<cell> <lo>:<hi> [steps] [model]'",
+    )
+    g.add_argument(
+        "--set",
+        action="append",
+        dest="set_values",
+        metavar="NAME=VALUE",
+        help="write VALUE to a defined name or cell before anything else runs; "
+        'repeatable. VALUE is read as JSON (0.05, true, [1,2], "12"), else as text.',
+    )
+    g.add_argument(
+        "--inputs",
+        metavar="FILE",
+        help="a JSON object of NAME: VALUE inputs, or a list of them to run each "
+        "in turn ('-' reads stdin)",
+    )
+    g.add_argument(
+        "--get",
+        action="append",
+        dest="get_values",
+        metavar="NAME",
+        help="report a defined name or cell after the run; repeatable. 'NAME#' reads "
+        "a spill. Default with --set/--inputs: every defined name.",
     )
     g.add_argument(
         "--eval",
@@ -337,6 +360,33 @@ def run_eval(g: Grid, formulas: list[str]) -> list[dict[str, Any]]:
     return out
 
 
+def parse_set(items: list[str]) -> dict[str, Any]:
+    """``NAME=VALUE`` pairs: VALUE as JSON when it parses, else as text."""
+    out: dict[str, Any] = {}
+    for item in items:
+        name, sep, raw = item.partition("=")
+        if not sep or not name.strip():
+            raise CliError(f"--set needs NAME=VALUE, got {item!r}")
+        try:
+            out[name.strip()] = json.loads(raw)
+        except json.JSONDecodeError:
+            out[name.strip()] = raw
+    return out
+
+
+def read_inputs(path: str) -> dict[str, Any] | list[dict[str, Any]]:
+    """The ``--inputs`` file: one object of inputs, or a list of them."""
+    try:
+        text = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
+        data = json.loads(text)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CliError(f"--inputs: {exc}") from exc
+    cases = data if isinstance(data, list) else [data]
+    if not all(isinstance(c, dict) for c in cases):
+        raise CliError("--inputs must hold a JSON object or a list of objects")
+    return cast("dict[str, Any] | list[dict[str, Any]]", data)
+
+
 def run_convert(g: Grid, path: str) -> dict[str, Any]:
     try:
         fmt = save_workbook(g, path)
@@ -442,6 +492,14 @@ def render_text(result: dict[str, Any]) -> str:
             if lines:
                 lines.append("")
             lines += render(result[key])
+    runs = result.get("runs") or ([{"outputs": result["outputs"]}] if "outputs" in result else [])
+    for i, run_ in enumerate(runs):
+        if lines:
+            lines.append("")
+        if "inputs" in run_:
+            lines.append(f"run {i + 1}: " + json.dumps(run_["inputs"]))
+        width = max((len(k) for k in run_["outputs"]), default=0)
+        lines += [f"{k:<{width}}  {json.dumps(v)}" for k, v in run_["outputs"].items()]
     if "convert" in result:
         c = result["convert"]
         if lines:
@@ -456,8 +514,8 @@ def render_text(result: dict[str, Any]) -> str:
 def run(args: argparse.Namespace, out: TextIO | None = None, err: TextIO | None = None) -> int:
     """Execute the requested headless operations. Returns the exit code.
 
-    Operations run in a fixed order -- eval, solve, goal, sweep, convert --
-    rather than in the order the flags appear, so `--convert` always sees the
+    Operations run in a fixed order -- set, eval, solve, goal, sweep, get,
+    convert -- rather than in the order the flags appear, so `--convert` always sees the
     state the other operations left and the result of a given command line
     does not depend on argument order. Everything lands in one JSON object
     keyed by operation, so a single run can answer several questions.
@@ -471,6 +529,20 @@ def run(args: argparse.Namespace, out: TextIO | None = None, err: TextIO | None 
         for warning in g.load_warnings:
             print(f"gridcalc: warning: {warning}", file=err)
         _select_sheet(g, getattr(args, "sheet", None))
+
+        book = Book(g)
+        inputs = parse_set(getattr(args, "set_values", None) or [])
+        data = read_inputs(args.inputs) if getattr(args, "inputs", None) else {}
+        cases = data if isinstance(data, list) else None
+        if isinstance(data, dict):
+            inputs = {**data, **inputs}  # --set wins over the file
+        gets = getattr(args, "get_values", None)
+        try:
+            if inputs:
+                book.set(inputs)
+                result["inputs"] = inputs
+        except BookError as exc:
+            raise CliError(str(exc)) from exc
 
         if args.eval:
             result["eval"] = run_eval(g, args.eval)
@@ -492,6 +564,13 @@ def run(args: argparse.Namespace, out: TextIO | None = None, err: TextIO | None 
             except (ValueError, RuntimeError) as exc:
                 raise CliError(str(exc)) from exc
             result["sweep"] = run_sweep(g, spec_s)
+        try:
+            if cases is not None:
+                result["runs"] = [{"inputs": c, "outputs": book.run(c, gets)} for c in cases]
+            elif gets or inputs:
+                result["outputs"] = book.get(gets)
+        except BookError as exc:
+            raise CliError(str(exc)) from exc
         if args.convert:
             result["convert"] = run_convert(g, args.convert)
     except CliError as exc:

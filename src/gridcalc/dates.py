@@ -250,6 +250,8 @@ _PARSE_FORMATS = (
     "%Y-%m-%d %H:%M:%S.%f",
     "%Y-%m-%d %H:%M:%S",
     "%Y-%m-%d %H:%M",
+    "%Y-%m-%d %I:%M:%S %p",
+    "%Y-%m-%d %I:%M %p",
     "%Y-%m-%d",
     "%Y/%m/%d",
     "%m/%d/%Y",
@@ -314,7 +316,13 @@ def parse_date(text: str) -> float | None:
         return None
     for fmt in _PARSE_FORMATS:
         try:
-            return to_serial(_dt.datetime.strptime(s, fmt))
+            d = _dt.datetime.strptime(s, fmt)
         except ValueError:
             continue
+        if "%y" in fmt and d.year >= 2030:
+            d = d.replace(year=d.year - 100)  # Excel: two-digit years 30-99 are 19xx
+        return to_serial(d)
+    # Excel's phantom 1900-02-29: read it in a leap year to see if it is Feb 29.
+    if "1900" in s and parse_date(s.replace("1900", "1904")) == to_serial(_dt.date(1904, 2, 29)):
+        return float(LEAP_BUG_SERIAL)
     return None

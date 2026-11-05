@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Run a workbook as a function of its defined names.** `--set NAME=VALUE` writes an input, `--get NAME` reads an output, and `--inputs cases.json` runs a list of cases, each from the workbook as loaded. `gridcalc.book.Book` is the same from Python. Targets may also be cells, ranges or `Name#` for a spill. Values are JSON, and text inputs are never read as formulas, so an input cannot inject one. Batch cases restore their inputs and recalculate only what they changed; reloading per case would re-read the file each time. Schema: `docs/reference/cli.md`.
+
+  ```sh
+  gridcalc loan.xlsx --set Rate=0.04 --set Years=15 --get Payment
+  ```
+
+- **`ENCODEURL`.** It was listed with the out-of-scope web functions, but it only encodes text. Only letters, digits and `-_.~` stay as they are, as in Excel. A result past 32,766 characters is `#VALUE!`.
+
+- **`ODDFYIELD` and `ODDLYIELD`.** They gave `#NAME?` in 28 cells of IronCalc's `PRICE_YIELD.xlsx`.
+
+- **`scripts/engine_diff.py`** scores gridcalc and a second engine against Excel's saved values, cell by cell. The second engine is any CLI that accepts `gridcraft-cli`'s `run --cmd` interface. The first run, against GridCraft 0.5.0, found the fixes below (`docs/dev/excel-corpus.md`).
+
+### Fixed
+
+- **About 1,000 more cells match Excel's saved values.** On the 279 IronCalc and pycel test workbooks, agreement rose from 97.7% to 99.0% of 79,598 cells, and no file lost a match (`docs/dev/excel-corpus.md`). Each fix has a test in `tests/test_compat_*.py`, with Excel's saved value as the expected one.
+  - Financial: domain checks in `PMT`, `IPMT`, `PPMT`, `NOMINAL` and `EFFECT`; a fractional `per` and type-1 payments in `IPMT`/`PPMT`; `CUMPRINC` and `CUMIPMT` round their start and end periods. `PRICE` discounts by (E - A)/E, which differs from DSC/E for bases 2 and 3. `TBILLEQ` past 182 days uses Excel's quadratic. `IRR` and `XIRR` fall back to bisection when Newton misses a negative root. `MIRR` accepts rates at or below -1. `XNPV` and `XIRR` validate their dates. `DB` and `DDB` take a fractional life or period.
+  - Math and engineering: `GCD` and `LCM` reject text and logicals in ranges. The radix conversions had wrong limits: `DEC2OCT` used 8^9, `DEC2HEX` 16^9. `CONVERT` gains prefixed square, cubic and other units. `IMCONJUGATE` keeps a `j` suffix. `MROUND` with an omitted argument is `#N/A`.
+  - Statistics: `LINEST`, `TREND`, `LOGEST` and `GROWTH` drop a collinear or constant regressor, as Excel documents, instead of giving `#NUM!`. `T.DIST` truncates its degrees of freedom and computes tails without cancellation. The inverse distributions solve to full precision; they stopped once p was within 1e-12, which leaves a tail quantile far from exact.
+  - `COUNT` skips an error argument, and `COUNTA` counts errors and `=""`. Two tests asserted the opposite, against Excel's saved values in `COUNT.xlsx`; they are corrected.
+  - Dates: `DAYS360` follows the end-of-February rule; `DAYS` drops the time part first. Two-digit years 30-99 are 19xx, as in Excel; Python's `%y` read 30-68 as 20xx. `WORKDAY` and `NETWORKDAYS` validate their holidays. `DATE` below 0 is `#NUM!`. `DATEVALUE` accepts a time part and `29-Feb-1900`.
+  - Database functions: a plain text criterion matches as a prefix, as Excel does (`b` matches `balpha`). A numeric header matches its displayed text. `DPRODUCT` of no match is 0.
+  - Lookup and reference: `XLOOKUP` and `XMATCH` match modes -1 and 1 compare across types in Excel's order (numbers, text, FALSE, TRUE); search modes 2 and -2 binary-search as Excel does. An approximate lookup of a blank matches 0. `INDIRECT` reads relative R1C1 offsets with wrap-around, and whole rows and columns. `ROW` and `COLUMN` pass an argument's error through.
+  - Text: `TEXTBEFORE` and `TEXTAFTER` handle `match_end`, negative instances and `if_not_found` as Excel does. `TEXT` reads a last section holding `@` as the text section, and drops a comma after a digit placeholder.
+  - `SLN` with a life of 0 is `#DIV/0!`; it was `#NUM!`.
+
+- **`INDEX` of a whole row spills across, not down.** `INDEX({1,2;3,4},2,0)` returned a one-dimensional array, which spills as a column. Where cells below were filled, an array formula over a row gave `#SPILL!`.
+
+- **`INDEX` matches Excel on bad arguments.** A negative row or column is `#VALUE!`; it was `#REF!`. The fourth argument, `area_num`, is accepted: 1 selects the only area, any other value is `#REF!`.
+
+- **`COMPLEX` with a blank or `""` suffix uses `"i"`, as in Excel.** It gave `#VALUE!`. In IronCalc's `COMPLEXs.xlsx` that error reached 581 cells through the `IM*` functions.
+
 ## [0.11.0]
 
 ### Security

@@ -621,11 +621,19 @@ class TestCountFamilyIgnoresCellErrors:
         g.setcell(3, 0, formula)
         assert cell_text(g.cells[3][0]) == expected
 
-    def test_a_scalar_error_argument_still_short_circuits(self):
-        """Only the range read tolerates errors. `=COUNT(A2)` names the
-        errored cell itself, which is an error argument, not a range."""
+    def test_a_scalar_error_argument_is_skipped_by_count(self):
+        """Excel skips an error argument too: `COUNT(#N/A)` is 0 and
+        `COUNTA(#N/A)` is 1 (IronCalc `COUNT.xlsx`)."""
         g = self._grid()
         g.setcell(3, 0, "=COUNT(A2)")
+        assert g.cells[3][0].err is None and g.cells[3][0].val == 0
+        g.setcell(3, 0, "=COUNTA(A2)")
+        assert g.cells[3][0].val == 1
+
+    def test_a_scalar_error_argument_still_short_circuits(self):
+        """Outside the COUNT family a scalar error argument propagates."""
+        g = self._grid()
+        g.setcell(3, 0, "=SUM(A2)")
         assert g.cells[3][0].err is ExcelError.DIV0
 
 

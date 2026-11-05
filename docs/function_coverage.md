@@ -51,7 +51,7 @@ Measure, do not assume: `scripts/excel_corpus.py` lists any function a workbook 
 
 | Group | Missing | Notes |
 |---|---|---|
-| External | `IMAGE`, `WEBSERVICE`, `FILTERXML`, `ENCODEURL`, `RTD` | Out of scope for a local app. `HYPERLINK` shows its text and opens nothing. |
+| External | `IMAGE`, `WEBSERVICE`, `FILTERXML`, `RTD` | Out of scope for a local app. `HYPERLINK` shows its text and opens nothing. `ENCODEURL` does no I/O and is implemented. |
 
 ### Architectural blockers
 

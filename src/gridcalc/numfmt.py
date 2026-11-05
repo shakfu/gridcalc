@@ -130,14 +130,19 @@ def format_value(
     own number-to-text rule.
     """
     sections = [_section(s) for s in split_sections(code)]
+    # The text section is the fourth, or a shorter code's last one holding `@`.
+    has_at = [_has_at(s.body) for s in sections]
+    text_i = 3 if len(sections) >= 4 else (len(sections) - 1 if has_at[-1] else None)
+    for i, s in enumerate(sections):
+        if has_at[i] and (i != text_i or _DIGIT_RE.search(_NOISE_RE.sub("", s.body))):
+            return Formatted(None, None)  # `@` outside the text section, or beside digits
     if isinstance(value, str):
-        if len(sections) >= 4:
-            sec = sections[3]
-        elif "@" in sections[0].body:
-            sec = sections[0]
-        else:
+        if text_i is None:
             return Formatted(value, None)
+        sec = sections[text_i]
         return Formatted(_literal_render(sec.body, value), sec.color)
+    if text_i is not None and 1 < len(sections) < 4:
+        sections = sections[:text_i]  # `w;x@`: the numbers use only `w`
     sec, own_sign = _pick(sections, value)
     body = sec.body
     v = abs(value) if own_sign else value
@@ -158,6 +163,13 @@ def format_value(
 
 
 _NOISE_RE = re.compile(r'"[^"]*"|\\.|_.|\*.')
+_DIGIT_RE = re.compile(r"[0#?]")
+
+
+def _has_at(body: str) -> bool:
+    return "@" in _NOISE_RE.sub("", body)
+
+
 _ELAPSED_RE = re.compile(r"\[(h+|m+|s+)\]", re.IGNORECASE)
 # A digit placeholder in a date code, except the `.000` of fractional seconds.
 _DIGIT_IN_DATE_RE = re.compile(r"[#?]|(?<![.0])0")
@@ -297,10 +309,8 @@ def _render_number(v: float, body: str) -> str:
     v = abs(v)
     if any(k == "/" for k, _ in toks) and any(k == "d" for k, _ in toks):
         return ("-" if neg else "") + _render_fraction(v, toks)
-    # Commas right after the last digit placeholder scale by 1000 each; one
-    # between integer placeholders groups thousands.
+    # Commas right after the last digit placeholder scale by 1000 each.
     first_point = next((i for i, (k, _) in enumerate(toks) if k in (".", "E")), len(toks))
-    int_end = max((i for i, (k, _) in enumerate(toks[:first_point]) if k == "d"), default=-1)
     mant = next((i for i, (k, _) in enumerate(toks) if k == "E"), len(toks))
     last_d = max((i for i, (k, _) in enumerate(toks[:mant]) if k == "d"), default=-1)
     scale = 0
@@ -308,16 +318,23 @@ def _render_number(v: float, body: str) -> str:
     while j < len(toks) and toks[j][0] == ",":
         scale += 1
         j += 1
-    group = int_end >= 0 and any(k == "," for k, _ in toks[:int_end])
     v = v * 100 ** sum(k == "%" for k, _ in toks) / 1000**scale
     scaling = set(range(last_d + 1, j))
 
+    def after_digit(i: int) -> bool:
+        return i > 0 and toks[i - 1][0] == "d"
+
+    # A comma after a placeholder is dropped; between two integer placeholders
+    # it turns grouping on. A comma after anything else is literal text.
+    group = any(
+        k == "," and after_digit(i) and i + 1 < first_point and toks[i + 1][0] == "d"
+        for i, (k, _) in enumerate(toks[:first_point])
+    )
+
     def comma(i: int) -> tuple[str, str] | None:
-        if i < int_end and group:
-            return None  # grouping, applied to the integer digits
-        if i in scaling or i < first_point:
+        if i in scaling or after_digit(i):
             return None
-        return ("lit", ",")  # in the fraction: a literal comma
+        return ("lit", ",")
 
     kept = [t if t[0] != "," else comma(i) for i, t in enumerate(toks)]
     toks = [t for t in kept if t is not None]

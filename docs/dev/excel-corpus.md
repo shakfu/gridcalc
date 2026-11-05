@@ -79,3 +79,25 @@ Same corpus, same day: 71,154 of 79,104 agree (89.9%), and 6,983 root mismatches
 ### After the wrong-answer round
 
 76,211 of 78,836 agree (96.7%), 1,703 root mismatches. `ROMAN`, `FLOOR`/`CEILING`, `COUNTIF`/`COUNTIFS`, `ACCRINT`/`ACCRINTM` now agree in every case; `TEXT` misses 16. The largest remaining groups have under 70 each: `SUBTOTAL` (structured references), `INDEX`, `CHAR` (the harness), `XLOOKUP`, `CONVERT`, `LCM`, `GCD`, `INDIRECT`, `LINEST`, `WEEKNUM`. `BINOM.xlsx` was rerun after its CDF fix; the totals predate it.
+
+## Against a second engine
+
+`scripts/engine_diff.py` scores gridcalc and another engine on the same cells. The other engine is any CLI that accepts GridCraft's `gridcraft-cli run --cmd` interface. It recalculates on open: a saved value changed by hand in the XML is replaced.
+
+    uv run python scripts/engine_diff.py --engine path/to/gridcraft-cli --list files.txt
+
+Run 2026-11-05 against GridCraft 0.5.0 (closed source, Rust, macOS). Corpus: 279 files from IronCalc's `xlsx/tests` and pycel's `tests/fixtures`, re-cloned that day. 79,598 cells were compared.
+
+| | gridcalc 0.11.0 | after the fixes | GridCraft 0.5.0 |
+|-|-|-|-|
+| cells agreeing | 77,108 (96.9%) | 77,775 (97.7%) | 76,500 (96.1%) |
+| mean agreement per file | 89.8% | 90.4% | 93.5% |
+| files scoring higher than the other engine | 49 (GridCraft 91) | 51 (GridCraft 89) | - |
+
+After the function-family round: 78,795 cells (99.0%), 92.8% per file, and 76 files higher than GridCraft against its 61.
+
+GridCraft does better per file. gridcalc's lead in cells comes from `ARABIC_ROMAN.xlsx` (40,386 cells) and `FLOOR_CEILING.xlsx` (11,460), which earlier rounds fixed specifically. gridcalc was tuned on this corpus, so these rates overstate it relative to unseen files.
+
+- Fixed from this run (CHANGELOG): `COMPLEX` with a blank suffix, `ENCODEURL`, and `INDEX` on whole rows, negative indices and `area_num`.
+- The function-family round (CHANGELOG) fixed financial, math, statistics, date, database, lookup and text cases: gridcalc agrees on 99.0% of cells, and no file lost a match. GridCraft still scores 93.5% per file against gridcalc's 92.8%. What is left is in `TODO.md`; the largest groups are `SUBTOTAL` over hidden rows, `CHAR` (the harness) and `TODAY()` templates.
+- GridCraft's misses, where gridcalc agrees with Excel: the `FLOOR`/`CEILING` family, `ACCRINT`, `COUNTIF` over a whole column (it counts the used range only), `SINGLE` (`#NAME?`), the Bessel functions, `ROMAN` with `form`.

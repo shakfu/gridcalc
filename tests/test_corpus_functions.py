@@ -380,6 +380,9 @@ _NA = ExcelError.NA
         ("=BYROW({1;2},LAMBDA(z,{1,2}))", 2, 1, [[ExcelError.CALC], [ExcelError.CALC]]),
         ("=ROW(B2:B4)", 3, 1, [[2.0], [3.0], [4.0]]),
         ("=COLUMN(B2:D2)", 1, 3, [[2.0, 3.0, 4.0]]),
+        ("=INDEX({1,2;3,4},2,0)", 1, 2, [[3.0, 4.0]]),  # a whole row spills across
+        ("=INDEX({1,2,3,4},,)", 1, 4, [[1.0, 2.0, 3.0, 4.0]]),
+        ("=INDEX({1,2;3,4},0,2)", 2, 1, [[2.0], [4.0]]),
     ],
 )
 def test_array_shapes(formula, rows, cols, want) -> None:
@@ -423,3 +426,43 @@ def test_index_is_not_volatile_and_still_follows_its_range() -> None:
     assert (g.cell(2, 0).val, g.cell(3, 0).val) == (20.0, 21.0)
     g.setcell(1, 0, "3")
     assert (g.cell(2, 0).val, g.cell(3, 0).val) == (3.0, 24.0)
+
+
+# -- found by the 2026-11-05 run against a second engine (`scripts/engine_diff.py`)
+
+
+@pytest.mark.parametrize(
+    ("formula", "value"),
+    [
+        # A blank or empty suffix is "i" (IronCalc `COMPLEXs.xlsx`).
+        ("=COMPLEX(1.23,9.5121,Z99)", "1.23+9.5121i"),
+        ('=COMPLEX(1,2,"")', "1+2i"),
+        ("=COMPLEX(1,2,0)", ExcelError.VALUE),
+        ("=IMREAL(COMPLEX(1.23,9.5121,Z99))", 1.23),
+        # IronCalc `ENCODEURL.xlsx`.
+        (
+            '=ENCODEURL("http://contoso.sharepoint.com/Finance")',
+            "http%3A%2F%2Fcontoso.sharepoint.com%2FFinance",
+        ),
+        ('=ENCODEURL("!*\'()")', "%21%2A%27%28%29"),
+        ('=ENCODEURL("-_.~az09")', "-_.~az09"),
+        ('=ENCODEURL("über €")', "%C3%BCber%20%E2%82%AC"),
+        ("=ENCODEURL(1E+20)", "1E%2B20"),
+        ("=ENCODEURL(TRUE)", "TRUE"),
+        ("=ENCODEURL(1/0)", ExcelError.DIV0),
+        ('=LEN(ENCODEURL(REPT(" ",10922)))', 32766.0),
+        ('=ENCODEURL(REPT(" ",10923))', ExcelError.VALUE),  # past Excel's text limit
+        ('=LEN(ENCODEURL(REPT("a",32767)))', ExcelError.VALUE),
+        # IronCalc `INDEX.xlsx` and pycel `lookup.xlsx`.
+        ("=INDEX({1,2,3;4,5,6},-1,1)", ExcelError.VALUE),
+        ("=INDEX(A1:A3,-2)", ExcelError.VALUE),
+        ("=INDEX({1,2;3,4},2,1,1)", 3.0),
+        ("=INDEX({1,2;3,4},2,1,2)", ExcelError.REF),
+    ],
+)
+def test_second_engine_findings(formula, value) -> None:
+    got = _ev(formula, {(0, 0): "1", (0, 1): "2", (0, 2): "3"})
+    if isinstance(value, ExcelError):
+        assert got is value
+    else:
+        assert got == (pytest.approx(value) if isinstance(value, float) else value)

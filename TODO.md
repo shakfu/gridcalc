@@ -9,9 +9,16 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 - [ ] **Corpus mismatches still open** (`docs/dev/excel-corpus.md`). Largest first:
   - Date text without a year (`"1/2"`) should read as that day this year, as Excel does; it gives `#VALUE!`.
   - A legacy formula keeps its rule only through copy and fill; pasting its text from the clipboard makes it dynamic. Excel keeps the `@` in the text instead.
-  - About 1,700 remain, none over 70 for one function: `INDEX` edge cases, `XLOOKUP` match modes, `CONVERT` units, `LCM`/`GCD`, `WEEKNUM`, `LINEST`, `IPMT`/`PPMT`, `XIRR`.
+  - About 800 cells remain (99.0% agree, 2026-11-05). Open, each needs a decision beyond one function:
+    - `YEARFRAC` (20 cells) and `WEEKNUM` (5) check basis/return_type before an error argument; the evaluator propagates the first error argument before the function runs.
+    - `TIMEVALUE("24:00")` is 0 and `DATEVALUE` takes hours of 24 and above; `dates.parse_time` rejects them, and it is shared with arithmetic.
+    - Percent text (`"1600%"`) does not convert in `_to_number` (`BASE_DECIMAL.xlsx`, 4 cells).
+    - A CSE array formula saved over a fixed range spills its full result instead of keeping to that range (`stats.xlsx`, 2 cells).
+    - `ROW(B:B)` is the full column while `B:B<>""` is trimmed to the used extent, so the shapes differ (`ROW_COLUM.xlsx`).
+    - `INDEX(A1:A3,0.4)` (Excel `#VALUE!`), `MATCH(blank,...,-1)`, `XLOOKUP` with an omitted lookup value in binary mode, 4 `TEXT` format codes.
+    - Solver precision: `XIRR` (12 cells), `IRR` (12), `ODDFYIELD` (3), `CUMPRINC` (2) differ from Excel near 1e-9 relative; gridcalc's roots have the smaller residual.
+    - Not engine bugs: `CHAR` of a control character (openpyxl reads `_x0001_`), `TODAY()` in templates, a `week()` UDF.
   - `HYPGEOM.DIST`'s cumulative form sums one term per success and has no closed form here; a sample of a billion runs that long.
-  - `ODDFPRICE` basis 2 and `ODDLPRICE` bases 2 and 3 differ from Excel by up to 0.1 per 100; the other bases match.
   - `BESSELJ` order 1 and up, for |x| >= 8, differs from Excel in the sixth digit. gridcalc's value is the more accurate one.
   - `A1#` on a cell that does not spill should be `#REF!`.
   - `BINOM.DIST` with 1E30 trials is `#NUM!` in Excel; gridcalc gives 0. Excel saved no value for 1E10, so the limit is unknown.
@@ -51,7 +58,7 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 - [ ] **Whole-column paths that still cost a million rows.** Each is correct but slow on Excel's grid:
   - Fill down (`Api.fill`) over a header-selected column writes every row, as Excel does.
   - The solver's `_precedents` (`opt.py`) expands a range through `extract_refs`, one key per cell.
-  - One cell near row 1048576 sets the used extent, so every range over `TRIM_CELLS` reads to it. A per-sheet extent would help only formulas that read one sheet.
+  - One cell near row 1048576 sets the used extent, so every range over `TRIM_CELLS` reads to it. A per-sheet extent would help only formulas that read one sheet. IronCalc's `INDIRECT.xlsx` holds cells at row 1048576 and column XFD, so its 8 whole-row and whole-column reads take 20 s of its load. A per-sheet extent may break shape agreement between ranges on different sheets, which the workbook-wide extent keeps.
 
 - [ ] **Undo memory is bounded by entry count, not size.** A structural entry copies every sheet's cells: 6.4 MB on a 3-sheet workbook with 25k cells, so 64 entries can hold about 400 MB. Cap the stack by bytes if real workbooks reach that.
 

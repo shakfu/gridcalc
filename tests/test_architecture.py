@@ -47,6 +47,8 @@ CORE_MODULES = (
     # helpers are pure -- `optspec` parses the `:opt`/`:goal` grammar for both
     # frontends, `report` shapes results for both.
     "cli.py",
+    # A workbook driven by named inputs and outputs: the API behind `--set`/`--get`.
+    "book.py",
     "optspec.py",
     "report.py",
     "config.py",

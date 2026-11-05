@@ -756,7 +756,7 @@ class TestTier3Aggregates:
         from gridcalc.libs.xlsx import COUNTA, COUNTBLANK
 
         assert COUNTA(Vec([1.0, 2.0, 3.0])) == 3
-        assert COUNTA(1, "x", None, "", 5) == 3
+        assert COUNTA(1, "x", None, "", 5) == 4  # Excel counts "" (IronCalc COUNT.xlsx E12)
         assert COUNTBLANK(1, None, "", "x") == 2
 
     def test_product(self) -> None:
@@ -1944,7 +1944,7 @@ class TestFinancialTier4:
 
         assert SLN(10000, 1000, 5) == 1800.0
         assert SLN(0, 0, 5) == 0.0
-        assert SLN(10000, 1000, 0) is ExcelError.NUM
+        assert SLN(10000, 1000, 0) is ExcelError.DIV0  # as Excel saves it
 
     def test_syd(self) -> None:
         from gridcalc.libs.xlsx import SYD
@@ -3177,10 +3177,8 @@ class TestNetworkdaysIntl:
         from gridcalc.libs.xlsx import NETWORKDAYS_INTL
 
         assert NETWORKDAYS_INTL(self._d(2026, 5, 4), self._d(2026, 5, 10), 8) is ExcelError.NUM
-        assert (
-            NETWORKDAYS_INTL(self._d(2026, 5, 4), self._d(2026, 5, 10), "1111111")
-            is ExcelError.VALUE
-        )
+        # Excel: an all-weekend mask is 0 days, not #VALUE! (ironcalc NETWORKDAYS.INTL I31).
+        assert NETWORKDAYS_INTL(self._d(2026, 5, 4), self._d(2026, 5, 10), "1111111") == 0
 
     def test_workday_intl(self) -> None:
         from gridcalc.libs.xlsx import WORKDAY_INTL, _from_serial

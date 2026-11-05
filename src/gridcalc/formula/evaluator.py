@@ -884,6 +884,10 @@ def _eval_name(node: Name, env: Env) -> Any:
 # Excel propagates through those.
 _ERROR_AWARE_FUNCS = frozenset(
     {
+        # COUNT skips an error argument, COUNTA counts it, COUNTBLANK does not.
+        "count",
+        "counta",
+        "countblank",
         "iferror",
         "ifna",
         "iserror",
@@ -897,6 +901,8 @@ _ERROR_AWARE_FUNCS = frozenset(
         "type",
         "valuetotext",
         "arraytotext",
+        "textbefore",  # an if_not_found error counts only when returned
+        "textafter",
     }
 )
 
@@ -1016,11 +1022,21 @@ _DIRECT_ARG_COERCE_FUNCS = frozenset(
 
 _REF_NODES = (CellRef, RangeRef, SpillRef, Ref3D)
 
+# Excel: an omitted argument (`MROUND(,5)`) to these is #N/A, not a blank.
+_MISSING_NA_FUNCS = frozenset({"gcd", "lcm", "mround"})
+# An omitted trailing `places` (`DEC2BIN(5,)`) takes its default; a blank cell is 0 places.
+_MISSING_DEFAULT_FUNCS = frozenset(
+    f"{a}2{b}" for a in ("bin", "oct", "dec", "hex") for b in ("bin", "oct", "dec", "hex") if a != b
+)
+
 
 def _coerce_direct_args(name: str, nodes: tuple[Node, ...], env: Env) -> list[Any] | ExcelError:
     """Evaluate aggregate arguments, converting direct scalar values to numbers."""
     out: list[Any] = []
     for node in nodes:
+        if isinstance(node, Missing) and name in _MISSING_NA_FUNCS:
+            out.append(ExcelError.NA)
+            continue
         raw = _ref3d_values(node, env) if isinstance(node, Ref3D) else _eval(node, env)
         is_ref = isinstance(raw, Reference) or isinstance(node, _REF_NODES)
         if isinstance(node, Name) and not env.lookup_local(node.name)[0]:
@@ -1455,6 +1471,13 @@ def _eval_value_call(name_lower: str, fn: Any, node: Call, env: Env) -> Any:
     elif has_3d:
         args = [
             _ref3d_values(a, env) if isinstance(a, Ref3D) else _deref(_eval(a, env), env)
+            for a in node.args
+        ]
+    elif name_lower in _MISSING_DEFAULT_FUNCS and node.args and isinstance(node.args[-1], Missing):
+        args = [_deref(_eval(a, env), env) for a in node.args[:-1]]
+    elif name_lower in _MISSING_NA_FUNCS:
+        args = [
+            ExcelError.NA if isinstance(a, Missing) else _deref(_eval(a, env), env)
             for a in node.args
         ]
     else:

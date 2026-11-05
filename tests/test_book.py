@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import math
+from pathlib import Path
 
 import pytest
 
@@ -239,3 +240,165 @@ def test_cli_set_needs_name_equals_value(loan) -> None:
 @pytest.mark.parametrize("argv", [["--set", "Rate=1"], ["--get", "Rate"], ["--inputs", "x.json"]])
 def test_new_flags_are_headless(loan, argv) -> None:
     assert cli.is_headless(cli_parser().parse_args([loan, *argv]))
+
+
+# --- errors in outputs, and formula names without a recalc -------------------
+
+
+def test_cli_exits_2_when_a_requested_output_is_an_error(loan) -> None:
+    code, out, _ = _cli(loan, "--get", "Payment", "--get", "Spread")
+    assert code == cli.EXIT_FAILED
+    assert out["errors"] == ["Spread"]
+    assert out["outputs"]["Spread"] == {"error": "#DIV/0!"}
+
+
+def test_cli_exits_0_when_the_requested_outputs_are_clean(loan) -> None:
+    code, out, _ = _cli(loan, "--set", "Rate=0.06", "--get", "Spread")
+    assert code == cli.EXIT_OK
+    assert out["errors"] == []
+
+
+def test_cli_reports_but_does_not_fail_on_unrequested_names(loan) -> None:
+    """Without --get every name is reported; one the caller never asked
+    about must not turn the run into a failure."""
+    code, out, _ = _cli(loan, "--set", "Years=10")
+    assert code == cli.EXIT_OK
+    assert "Spread" in out["errors"]
+
+
+def test_cli_batch_exits_2_when_any_case_errs(loan, tmp_path) -> None:
+    cases = tmp_path / "cases.json"
+    cases.write_text(json.dumps([{"Rate": 0.06}, {"Rate": 0.05}]))
+    code, out, _ = _cli(loan, "--inputs", str(cases), "--get", "Spread")
+    assert code == cli.EXIT_FAILED
+    assert [r["errors"] for r in out["runs"]] == [[], ["Spread"]]
+
+
+def test_errors_finds_an_error_inside_a_range() -> None:
+    from gridcalc.book import errors
+
+    outs = {"a": 1.0, "b": [[1.0], [{"error": "#N/A"}]], "c": {"error": "#REF!"}}
+    assert errors(outs) == ["b", "c"]
+
+
+def test_a_formula_name_is_read_without_a_recalc(loan, monkeypatch) -> None:
+    book = Book.open(loan)
+    book.grid.names.append(NamedRange("Double", formula="=Out!E1*2"))
+    monkeypatch.setattr(book.grid, "recalc", lambda *a, **k: pytest.fail("recalc ran"))
+    assert book.get(["TaxRate", "Double"]) == {"TaxRate": 0.2, "Double": 12.0}
+
+
+def test_a_formula_name_follows_the_inputs(loan) -> None:
+    book = Book.open(loan)
+    book.grid.names.append(NamedRange("Double", formula="=Out!E1*2"))
+    assert book.run({"Weights": [1, 1, 1]}, ["Double"]) == {"Double": 6.0}
+
+
+def test_an_array_formula_name_reads_as_rows(loan) -> None:
+    book = Book.open(loan)
+    book.grid.names.append(NamedRange("Pair", formula="={1,2;3,4}"))
+    book.grid.names.append(NamedRange("Bad", formula="=1/0"))
+    assert book.get(["Pair", "Bad"]) == {
+        "Pair": [[1.0, 2.0], [3.0, 4.0]],
+        "Bad": {"error": "#DIV/0!"},
+    }
+
+
+def test_grid_evaluate_writes_no_cell() -> None:
+    from gridcalc.formula.errors import ExcelError
+
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    g.setcell(0, 0, "5")
+    g.add_sheet("Two")
+    before = {s.name: dict(s._cells) for s in g.sheets}
+    assert g.evaluate("=A1*2") == 10.0
+    assert g.evaluate("=Sheet1!A1+1", "Two") == 6.0
+    assert g.evaluate("=SUM(") is ExcelError.NAME
+    assert {s.name: dict(s._cells) for s in g.sheets} == before
+    assert g.active == 0
+
+
+# --- run_many ---------------------------------------------------------------
+
+
+def test_run_many_starts_each_case_from_the_workbook(loan) -> None:
+    """A case that leaves out an input a previous case set sees the original."""
+    book = Book.open(loan)
+    cases = [{"Rate": 0.03}, {"Years": 10}, {"Rate": 0.03, "Years": 10}, {}]
+    got = book.run_many(cases, ["Payment"])
+    assert got == [book.run(c, ["Payment"]) for c in cases]
+    assert got[1]["Payment"] == pytest.approx(_pmt(0.05, 10, 300000))
+    assert got[3]["Payment"] == pytest.approx(_pmt(0.05, 30, 300000))
+    assert book.get(["Rate", "Years"]) == {"Rate": 0.05, "Years": 30.0}
+
+
+def test_run_many_checks_every_case_before_writing(loan) -> None:
+    book = Book.open(loan)
+    before = book.get()
+    with pytest.raises(BookError, match="Nope"):
+        book.run_many([{"Rate": 0.01}, {"Nope": 1}], ["Payment"])
+    assert book.get() == before
+
+
+def test_run_many_writes_only_what_changes(loan, monkeypatch) -> None:
+    book = Book.open(loan)
+    calls = []
+    real = book.grid.recalc
+    monkeypatch.setattr(book.grid, "recalc", lambda *a, **k: (calls.append(a), real(*a, **k)))
+    book.run_many([{"Rate": 0.03}, {"Rate": 0.03}, {"Rate": 0.04}], ["Payment"])
+    assert len(calls) == 3  # case 1, case 3, and the restore; case 2 changes nothing
+
+
+def test_run_many_keeps_a_bool_distinct_from_one(loan) -> None:
+    book = Book.open(loan)
+    got = book.run_many([{"Region": 1.0}, {"Region": True}], ["Region"])
+    assert got == [{"Region": 1.0}, {"Region": True}]
+
+
+# --- the shipped example, as the README runs it -----------------------------
+
+EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+LOAN_XLSX = str(EXAMPLES / "example_loan.xlsx")
+
+
+def test_example_loan_xlsx_matches_its_json() -> None:
+    """The xlsx is `gridcalc example_loan.json --convert example_loan.xlsx`."""
+    a = Book.open(str(EXAMPLES / "example_loan.json"))
+    b = Book.open(LOAN_XLSX)
+    assert a.names() == b.names()
+    assert a.get() == b.get()
+
+
+def test_readme_cli_example() -> None:
+    code, out, _ = _cli(LOAN_XLSX, "--set", "Rate=0.04", "--set", "Years=15", "--get", "Payment")
+    assert code == cli.EXIT_OK
+    assert out == {
+        "inputs": {"Rate": 0.04, "Years": 15},
+        "outputs": {"Payment": pytest.approx(-2219.06, abs=0.005)},
+        "errors": [],
+    }
+
+
+def test_readme_batch_example(tmp_path) -> None:
+    cases = tmp_path / "cases.json"
+    cases.write_text('[{"Rate": 0.03}, {"Rate": 0.06, "Years": 20}]')
+    code, out, _ = _cli(LOAN_XLSX, "--inputs", str(cases), "--get", "Payment", "--get", "Schedule#")
+    assert code == cli.EXIT_OK
+    first, second = (r["outputs"] for r in out["runs"])
+    assert first["Payment"] == pytest.approx(_pmt(0.03, 30, 300000))
+    assert second["Payment"] == pytest.approx(_pmt(0.06, 20, 300000))
+    assert [row[0] for row in second["Schedule#"]] == [float(y) for y in range(1, 21)]
+    assert second["Schedule#"][-1][1] == pytest.approx(0.0, abs=1e-6)  # paid off
+
+
+def test_readme_python_example() -> None:
+    book = Book.open(LOAN_XLSX)
+    assert book.run({"Rate": 0.04, "Years": 15}, ["Payment"]) == {
+        "Payment": pytest.approx(-2219.06, abs=0.005)
+    }
+    pays = book.run_many([{"Rate": r / 100} for r in range(1, 10)], ["Payment"])
+    assert [p["Payment"] for p in pays] == [
+        pytest.approx(_pmt(r / 100, 30, 300000)) for r in range(1, 10)
+    ]

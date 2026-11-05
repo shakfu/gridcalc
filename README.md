@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/gridcalc)](https://pypi.org/project/gridcalc/) [![Python](https://img.shields.io/pypi/pyversions/gridcalc)](https://pypi.org/project/gridcalc/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A programmable spreadsheet for developers and technical users, with Excel-ish formulas, Python escape hatches, XLSX interop, goal seek, and LP/MIP solving. It ships **two frontends over one engine**: a curses terminal app, and a desktop window that renders the same workbook in a webview.
+A programmable spreadsheet for developers and technical users, with Excel-compatible formulas, Python escape hatches, XLSX interop, goal seek, and LP/MIP solving. It ships **two frontends over one engine**: a curses terminal app, and a desktop window that renders the same workbook in a webview. The same engine also **runs `.xlsx` models headlessly**: inputs and outputs go by defined name, with no Excel and no window.
 
 Inspired by Serge Zaitsev's [kalk](https://github.com/zserge/kalk).
 
@@ -24,6 +24,52 @@ gridcalc-web budget.json    # desktop window  (needs the [web] extra)
 
 ---
 
+## Run an Excel workbook as a function
+
+Give a `.xlsx` model its inputs by defined name, recalculate, and read its outputs by name. Excel is not needed, and nothing opens a window. [`examples/example_loan.xlsx`](examples/example_loan.xlsx) is a loan model with inputs `Rate`, `Years` and `Principal`, and outputs `Payment`, `TotalPaid` and `Schedule` (a spill of year and remaining balance):
+
+```sh
+gridcalc examples/example_loan.xlsx --set Rate=0.04 --set Years=15 --get Payment
+```
+
+```json
+{
+  "inputs":  {"Rate": 0.04, "Years": 15},
+  "outputs": {"Payment": -2219.06},
+  "errors":  []
+}
+```
+
+Run many cases against one load, from a JSON list of inputs:
+
+```sh
+echo '[{"Rate": 0.03}, {"Rate": 0.06, "Years": 20}]' > cases.json
+gridcalc examples/example_loan.xlsx --inputs cases.json --get Payment --get Schedule#
+```
+
+Or from Python:
+
+```python
+from gridcalc.book import Book
+
+book = Book.open("examples/example_loan.xlsx")
+book.run({"Rate": 0.04, "Years": 15}, ["Payment"])        # {'Payment': -2219.06}
+book.run_many([{"Rate": r / 100} for r in range(1, 10)], ["Payment"])
+```
+
+- **Targets** are the workbook's defined names, sheet-local names (`Inputs!Rate`), or cells and ranges (`Out!B2:D9`). `Name#` reads the whole array a formula spills.
+- **Values** are JSON: numbers, booleans, `null`, text, and lists of rows for a range. Text input is never read as a formula.
+- **Each case starts from the workbook as loaded.** A batch writes only the cells that change between cases, so a case costs one incremental recalculation. On a 20,000-formula sheet that is about 110 ms.
+- **Exit codes:** `0` means the run worked. `2` means an output you named holds an error, such as `#REF!`. `1` means bad input, such as an unknown name or a value of the wrong shape; it is reported before anything is written.
+- **Safe by default.** A workbook's Python (code blocks, PYTHON-mode cells) runs only with `--trust`. Excel formulas are capped at Excel's length and nesting limits, and a recalculation stops after 30 s.
+- **`--convert out.xlsx`** saves the workbook with the inputs written in.
+
+**How close to Excel?** On 279 workbooks that Excel saved, with 79,598 formula cells, gridcalc's result matches Excel's saved value in 99.0% of cells. The workbooks are IronCalc's and pycel's function test suites. They exercise functions at their edges, and gridcalc was fixed against them, so read 99.0% as an upper bound for files it has not seen. What still differs is listed in [`TODO.md`](TODO.md) and [`docs/dev/excel-corpus.md`](docs/dev/excel-corpus.md). Not supported: `.xls`, VBA macros, pivot-table refresh, external data connections, and hidden-row rules in `SUBTOTAL`/`AGGREGATE`.
+
+Full reference: <https://shakfu.github.io/gridcalc/reference/cli/#named-inputs-and-outputs>
+
+---
+
 ## What it gives you
 
 - **Excel-compatible formulas** (`=IF(A1>=B1, A1*0.05, 0)`) and arrays (`=SUM(A1:A10 * B1:B10)`) without leaving the terminal.
@@ -31,6 +77,8 @@ gridcalc-web budget.json    # desktop window  (needs the [web] extra)
 - **Multi-sheet workbooks** with cross-sheet refs (`=Sheet2!A1`) and a proper dep graph.
 
 - **Three formula modes** per file: strict Excel, Excel-plus-`py.*`, or full Python `eval` with numpy/pandas.
+
+- **Headless `.xlsx` runs** -- `--set`/`--get` by defined name, batches from JSON, a Python `Book` API ([above](#run-an-excel-workbook-as-a-function)).
 
 - **xlsx interop** via OpenXLSX C++ -- read every sheet's formulas + values; export with cached values.
 
@@ -52,7 +100,7 @@ pip install 'gridcalc[web]'     # adds the desktop window (gridcalc-web)
 
 Or with [uv](https://docs.astral.sh/uv/): `uv tool install 'gridcalc[extras]'`.
 
-The **core** install has **zero third-party runtime dependencies on Linux and macOS** -- the full 300+ Excel function library (statistical distributions, financial functions, `LINEST`/`TREND` regression, ...) works on stdlib alone. Details in the [install guide](https://shakfu.github.io/gridcalc/install/).
+The **core** install has **zero third-party runtime dependencies on Linux and macOS** -- the full Excel function library (465 functions: statistical distributions, financial functions, `LINEST`/`TREND` regression, ...) works on stdlib alone. Details in the [install guide](https://shakfu.github.io/gridcalc/install/).
 
 ## A taste
 
@@ -78,6 +126,7 @@ gridcalc example.json                # PYTHON: numpy/pandas, list-comprehensions
 gridcalc example_multisheet.json     # 3-sheet budget, cross-sheet formulas
 gridcalc example_lp.json             # LP/MIP demo -- type :opt to solve
 gridcalc example_goal.json           # goal-seek demo -- :goal B1 = 11 by A1
+gridcalc example_loan.xlsx           # loan model -- run it headless with --set/--get
 ```
 
 ## Scripting it
@@ -90,6 +139,7 @@ gridcalc plan.json --solve --sens                # ... with shadow prices
 gridcalc plan.json --sweep 'D5 6:24 9'           # parametric right-hand side
 gridcalc book.json --goal 'B10 = 100 by A1'      # goal seek
 gridcalc book.json --eval '=SUM(A1:A10)'         # evaluate a formula
+gridcalc book.xlsx --set Rate=0.04 --get Payment  # inputs and outputs by name
 gridcalc book.xlsx --convert book.json           # format conversion
 ```
 
@@ -104,7 +154,7 @@ Results go to stdout as JSON with a documented schema, and the exit code separat
 | Desktop app (web frontend) | <https://shakfu.github.io/gridcalc/desktop/> |
 | Formulas, functions, named ranges | <https://shakfu.github.io/gridcalc/guide/formulas/> |
 | Optimization (LP/MIP/QP, sensitivity, sweeps) | <https://shakfu.github.io/gridcalc/guide/optimization/> |
-| Headless CLI (solve/goal/sweep/eval/convert) | <https://shakfu.github.io/gridcalc/reference/cli/> |
+| Headless CLI (named inputs/outputs, solve, goal, sweep, eval, convert) | <https://shakfu.github.io/gridcalc/reference/cli/> |
 | File format | <https://shakfu.github.io/gridcalc/reference/file-format/> |
 | Python API | <https://shakfu.github.io/gridcalc/reference/api/> |
 | Design notes (recalc, security, web frontend) | <https://shakfu.github.io/gridcalc/topological/> |

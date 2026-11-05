@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Any, TextIO, cast
 
 from . import goalseek, opt
-from .book import Book, BookError
+from .book import Book, BookError, errors
 from .display import cell_text
 from .engine import EMPTY, NCOL, NROW, SPILL, Grid
 from .loader import load_workbook, needs_trust, save_workbook
@@ -138,7 +138,8 @@ def add_headless_arguments(p: argparse.ArgumentParser) -> None:
         dest="get_values",
         metavar="NAME",
         help="report a defined name or cell after the run; repeatable. 'NAME#' reads "
-        "a spill. Default with --set/--inputs: every defined name.",
+        "a spill. Default with --set/--inputs: every defined name. Exits 2 if one "
+        "named here holds an error.",
     )
     g.add_argument(
         "--eval",
@@ -566,11 +567,21 @@ def run(args: argparse.Namespace, out: TextIO | None = None, err: TextIO | None 
             result["sweep"] = run_sweep(g, spec_s)
         try:
             if cases is not None:
-                result["runs"] = [{"inputs": c, "outputs": book.run(c, gets)} for c in cases]
+                result["runs"] = [
+                    {"inputs": c, "outputs": outs, "errors": errors(outs)}
+                    for c, outs in zip(cases, book.run_many(cases, gets), strict=True)
+                ]
+                bad = any(r["errors"] for r in result["runs"])
             elif gets or inputs:
                 result["outputs"] = book.get(gets)
+                result["errors"] = errors(result["outputs"])
+                bad = bool(result["errors"])
+            else:
+                bad = False
         except BookError as exc:
             raise CliError(str(exc)) from exc
+        # An error in an output asked for by name is a result, like INFEASIBLE.
+        failed = failed or (bool(gets) and bad)
         if args.convert:
             result["convert"] = run_convert(g, args.convert)
     except CliError as exc:

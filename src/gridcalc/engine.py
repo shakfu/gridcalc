@@ -4091,6 +4091,54 @@ class Grid:
         anchor_cl.spill_shape = new_shape
         return changed
 
+    def _new_env(self) -> Any:
+        """An evaluation environment over the current workbook."""
+        from .formula import Env
+
+        return Env(
+            cell_value=self._cell_lookup_value,
+            sheet_span=self._sheet_span,
+            used_extent=self._used_extent,
+            sheet_names=lambda: [s.name for s in self.sheets],
+            builtins=self._eval_globals,
+            named_ranges=self._build_named_ranges(),
+            py_registry=self._build_py_registry(),
+            cell_is_formula=self._cell_is_formula,
+            cell_spill_value=self._cell_spill_value,
+            cell_formula_text=self._cell_formula_text,
+            table_ref=self._table_ref,
+        )
+
+    def evaluate(self, formula: str, sheet: str | None = None) -> Any:
+        """The value of ``formula`` read on ``sheet`` (default: active), writing no cell.
+
+        For EXCEL and HYBRID mode. A relative reference reads as from A1. Returns
+        a scalar, a ``Vec`` or an ``ExcelError``; text that does not parse is ``#NAME?``.
+        """
+        from .formula import evaluate, parse
+        from .formula.errors import ExcelError, FormulaError
+        from .formula.evaluator import TimeLimit
+
+        try:
+            node = parse(formula.removeprefix("="), pow_right=self._mode == Mode.HYBRID)
+        except FormulaError:
+            return ExcelError.NAME
+        active = self.active
+        try:
+            if sheet is not None:
+                self.set_active(sheet)
+            env = self._new_env()
+            env.current_sheet = self._active.name
+            env.current_cell = (0, 0)
+            env.deadline = time.monotonic() + RECALC_TIME_LIMIT
+            return evaluate(node, env)
+        except TimeLimit:
+            return ExcelError.CALC
+        except RecursionError:
+            return ExcelError.NUM
+        finally:
+            self.active = active
+
     def _recalc_topo(
         self, dirty3: set[tuple[str | None, int, int]] | None, deadline: float | None = None
     ) -> set[tuple[str | None, int, int]]:
@@ -4105,26 +4153,12 @@ class Grid:
         positions whose value changed this pass, so ``recalc`` can drive a
         follow-up pass over their consumers.
         """
-        from .formula import Env, evaluate, parse
+        from .formula import evaluate, parse
         from .formula.errors import ExcelError, FormulaError, explain, take_reason
         from .formula.evaluator import TimeLimit
         from .formula.evaluator import _legacy_result as legacy_result
 
-        py_registry = self._build_py_registry()
-        named = self._build_named_ranges()
-        env = Env(
-            cell_value=self._cell_lookup_value,
-            sheet_span=self._sheet_span,
-            used_extent=self._used_extent,
-            sheet_names=lambda: [s.name for s in self.sheets],
-            builtins=self._eval_globals,
-            named_ranges=named,
-            py_registry=py_registry,
-            cell_is_formula=self._cell_is_formula,
-            cell_spill_value=self._cell_spill_value,
-            cell_formula_text=self._cell_formula_text,
-            table_ref=self._table_ref,
-        )
+        env = self._new_env()
         env.deadline = deadline
 
         pow_right = self._mode == Mode.HYBRID

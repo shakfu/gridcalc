@@ -47,18 +47,20 @@ gridcalc loan.xlsx --inputs cases.json --get Payment     # one run per case
 
 - **Targets** are defined names (case-insensitive), sheet-qualified local names (`Inputs!Rate`), or cells and ranges (`B2`, `Out!D1:D3`). `Name#` reads the whole array the formula at `Name` spills. A name defined as a formula (`=0.2`) can be read but not set.
 - **Values** are JSON: `0.05`, `true`, `null` (a blank), `"12"` (text), or a list of rows for a range. A one-row or one-column range also takes a flat list (`[1,2,3]`). A `--set` value that is not valid JSON is text, so `--set Region=North` works without quoting. Text is never read as a formula.
-- **Outputs**: a scalar for one cell, a list of rows for a range or a spill, and `{"error": "#DIV/0!"}` for a cell holding an error.
-- **A list in `--inputs`** runs each case from the workbook as loaded: a case's inputs are put back before the next one. `--set` values apply to every case.
+- **Outputs**: a scalar for one cell, a list of rows for a range, a spill or an array-valued name, and `{"error": "#DIV/0!"}` for a cell holding an error. `errors` lists the outputs that are, or hold, an error.
+- **Exit 2** when an output named with `--get` holds an error, as for an `INFEASIBLE` solve: the run worked and the answer is bad. Names reported only because `--get` was omitted do not count.
+- **A list in `--inputs`** runs each case from the workbook as loaded. Every case is checked before the first runs. Between cases only the cells whose value changes are written, so a case costs one recalculation. `--set` values apply to every case.
 - **Writing back**: `--set` with `--convert out.xlsx` saves the workbook with the inputs in place.
 
 ```json
 {
   "inputs": {"Rate": 0.04, "Years": 15},
-  "outputs": {"Payment": -2219.06, "Schedule#": [[1.0], [2.0]]}
+  "outputs": {"Payment": -2219.06, "Schedule#": [[1.0], [2.0]]},
+  "errors": []
 }
 ```
 
-With a list in `--inputs`, the result is `{"runs": [{"inputs": {...}, "outputs": {...}}, ...]}`.
+With a list in `--inputs`, the result is `{"runs": [{"inputs": {...}, "outputs": {...}, "errors": [...]}, ...]}`.
 
 From Python, `gridcalc.book.Book` does the same:
 
@@ -67,6 +69,7 @@ from gridcalc.book import Book
 
 book = Book.open("loan.xlsx")
 book.run({"Rate": 0.04}, ["Payment"])   # inputs are restored afterwards
+book.run_many(cases, ["Payment"])       # a batch, one recalculation per case
 book.set({"Rate": 0.04}); book.save("filled.xlsx")
 ```
 

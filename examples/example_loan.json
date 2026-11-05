@@ -1,0 +1,75 @@
+{
+  "version": 2,
+  "mode": "EXCEL",
+  "libs": [
+    "xlsx"
+  ],
+  "names": {
+    "Rate": "Inputs!B2:B2",
+    "Years": "Inputs!B3:B3",
+    "Principal": "Inputs!B4:B4",
+    "Payment": "Out!B1:B1",
+    "TotalPaid": "Out!B2:B2",
+    "Schedule": "Out!A5:A5"
+  },
+  "format": {
+    "width": 8
+  },
+  "active": "Inputs",
+  "sheets": [
+    {
+      "name": "Inputs",
+      "cells": [
+        [
+          "Loan inputs",
+          null
+        ],
+        [
+          "Rate",
+          0.05
+        ],
+        [
+          "Years",
+          30
+        ],
+        [
+          "Principal",
+          300000
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          "Run headless: gridcalc example_loan.xlsx --set Rate=0.04 --set Years=15 --get Payment",
+          null
+        ]
+      ]
+    },
+    {
+      "name": "Out",
+      "cells": [
+        [
+          "Payment",
+          "=PMT(Rate/12,Years*12,Principal)"
+        ],
+        [
+          "TotalPaid",
+          "=-Payment*Years*12"
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          "Year",
+          "Balance"
+        ],
+        [
+          "=HSTACK(SEQUENCE(Years),-FV(Rate/12,SEQUENCE(Years)*12,Payment,Principal))",
+          null
+        ]
+      ]
+    }
+  ]
+}

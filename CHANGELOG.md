@@ -4,11 +4,13 @@
 
 ### Added
 
-- **Run a workbook as a function of its defined names.** `--set NAME=VALUE` writes an input, `--get NAME` reads an output, and `--inputs cases.json` runs a list of cases, each from the workbook as loaded. `gridcalc.book.Book` is the same from Python. Targets may also be cells, ranges or `Name#` for a spill. Values are JSON, and text inputs are never read as formulas, so an input cannot inject one. Batch cases restore their inputs and recalculate only what they changed; reloading per case would re-read the file each time. Schema: `docs/reference/cli.md`.
+- **Run a workbook as a function of its defined names.** `--set NAME=VALUE` writes an input, `--get NAME` reads an output, and `--inputs cases.json` runs a list of cases, each from the workbook as loaded. `gridcalc.book.Book` is the same from Python. Targets may also be cells, ranges or `Name#` for a spill. Values are JSON, and text inputs are never read as formulas, so an input cannot inject one. A batch writes only the cells that change from one case to the next, so a case costs one recalculation: 111 ms against 212 ms per case on 20,000 formulas. A name defined as a formula is evaluated without writing a scratch cell or recalculating, 9.5 ms against 177 ms. An output named with `--get` that holds an error exits 2, as an `INFEASIBLE` solve does. Without that, a model that broke would report `#REF!` as data and exit 0. Schema: `docs/reference/cli.md`.
 
   ```sh
-  gridcalc loan.xlsx --set Rate=0.04 --set Years=15 --get Payment
+  gridcalc examples/example_loan.xlsx --set Rate=0.04 --set Years=15 --get Payment
   ```
+
+  `examples/example_loan.xlsx` (from `example_loan.json` by `--convert`) is the README's model; `tests/test_book.py` runs the README's examples against it.
 
 - **`ENCODEURL`.** It was listed with the out-of-scope web functions, but it only encodes text. Only letters, digits and `-_.~` stay as they are, as in Excel. A result past 32,766 characters is `#VALUE!`.
 

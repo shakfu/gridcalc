@@ -26,7 +26,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .engine import Cell, Grid, cellname, ref
+from .engine import Cell, Grid, Mode, cellname, ref
 from .formula.errors import ExcelError
 from .loader import load_workbook, save_workbook
 from .sandbox import LoadPolicy, inspect_file
@@ -125,42 +125,47 @@ class Book:
 
     def set(self, inputs: Mapping[str, Any]) -> None:
         """Write each value to its target and recalculate once per sheet."""
-        writes: dict[str, dict[tuple[int, int], Any]] = {}
+        self._apply(self._plan(inputs))
+
+    def _plan(self, inputs: Mapping[str, Any]) -> dict[Key, Any]:
+        """Each cell ``inputs`` writes and its value. Raises before anything is written."""
+        plan: dict[Key, Any] = {}
         for name, value in inputs.items():
             t = self.resolve(name)
             if t.formula is not None or t.spill:
                 raise BookError(f"{name!r} is not a cell or range, so it cannot take input")
-            cells = t.cells()
-            for (c, r), v in zip(cells, _cells_of(name, value, t.shape), strict=True):
-                writes.setdefault(t.sheet, {})[(c, r)] = v
-        self._write(writes)
+            for (c, r), v in zip(t.cells(), _cells_of(name, value, t.shape), strict=True):
+                plan[(t.sheet, c, r)] = v
+        return plan
 
-    def _write(self, writes: Mapping[str, Mapping[tuple[int, int], Any]]) -> None:
+    def _apply(self, writes: Mapping[Key, Any]) -> None:
+        """Write values, or `_Orig` snapshots, then recalculate once per sheet."""
         g = self.grid
+        by_sheet: dict[str, list[tuple[int, int, Any]]] = {}
+        for (sheet, c, r), v in writes.items():
+            by_sheet.setdefault(sheet, []).append((c, r, v))
         active = g.active
         try:
-            for sheet, cells in writes.items():
+            for sheet, cells in by_sheet.items():
                 g.set_active(sheet)
                 dirty: set[tuple[int, int]] = set()
-                for (c, r), v in cells.items():
+                for c, r, v in cells:
                     dirty |= g._spill_predirty(c, r)
-                    _put(g, c, r, v)
+                    if isinstance(v, _Orig):
+                        _restore_cell(g, c, r, v.cell)
+                    else:
+                        _put(g, c, r, v)
                     dirty.add((c, r))
                 g.recalc(dirty | g._blocked_anchors_active())
         finally:
             g.active = active
 
-    def _snapshot(self, names: Iterable[str]) -> dict[str, dict[tuple[int, int], Cell | None]]:
-        snap: dict[str, dict[tuple[int, int], Cell | None]] = {}
-        for name in names:
-            t = self.resolve(name)
-            if t.formula is not None or t.spill:
-                continue  # `set` rejects it before anything is written
-            cells = self.grid._sheet_by_name(t.sheet)._cells  # type: ignore[union-attr]
-            for key in t.cells():
-                cl = cells.get(key)
-                snap.setdefault(t.sheet, {})[key] = cl.snapshot() if cl is not None else None
-        return snap
+    def _originals(self, keys: Iterable[Key]) -> dict[Key, _Orig]:
+        out: dict[Key, _Orig] = {}
+        for key in keys:
+            cl = self.grid._sheet_by_name(key[0])._cells.get(key[1:])  # type: ignore[union-attr]
+            out[key] = _Orig(cl.snapshot() if cl is not None else None)
+        return out
 
     # --- outputs ----------------------------------------------------------
 
@@ -175,14 +180,13 @@ class Book:
     def _read(self, t: Target) -> Any:
         g = self.grid
         if t.formula is not None:
-            return _json(_eval_on(g, t.sheet, "=" + t.formula.removeprefix("=")))
+            if g.mode == Mode.PYTHON:
+                return _eval_on(g, t.sheet, "=" + t.formula.removeprefix("="))
+            v = g.evaluate(t.formula, t.sheet)  # no cell write, no recalc
+            return _rows(v) if hasattr(v, "data") else _json(v)
         if t.spill:
             v = g._cell_spill_value(t.c1, t.r1, t.sheet)
-            if hasattr(v, "data"):
-                cols = getattr(v, "cols", None) or 1
-                data = [_json(x) for x in v.data]
-                return [data[i : i + cols] for i in range(0, len(data), cols)]
-            return [[_json(v)]]
+            return _rows(v) if hasattr(v, "data") else [[_json(v)]]
         rows, cols = t.shape
         vals = [_json(g._cell_lookup_value(c, r, t.sheet)) for c, r in t.cells()]
         if rows == cols == 1:
@@ -195,33 +199,35 @@ class Book:
         self, inputs: Mapping[str, Any], outputs: Iterable[str] | None = None
     ) -> dict[str, Any]:
         """Set ``inputs``, read ``outputs``, then put the inputs back as they were."""
-        snap = self._snapshot(inputs)
-        try:
-            self.set(inputs)
-            return self.get(outputs)
-        finally:
-            self._restore(snap)
+        return self.run_many([inputs], outputs)[0]
 
-    def _restore(self, snap: Mapping[str, Mapping[tuple[int, int], Cell | None]]) -> None:
-        g = self.grid
-        active = g.active
+    def run_many(
+        self, cases: Iterable[Mapping[str, Any]], outputs: Iterable[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """`run` each case in turn, each from the workbook as loaded.
+
+        Every case is checked before the first is written. Between cases only
+        the cells whose value changes are written, so a case costs one recalc;
+        the inputs are put back once, at the end.
+        """
+        plans = [self._plan(c) for c in cases]
+        outs = None if outputs is None else list(outputs)
+        orig = self._originals({k for p in plans for k in p})
+        live: dict[Key, Any] = dict(orig)
+        results = []
         try:
-            for sheet, cells in snap.items():
-                g.set_active(sheet)
-                dirty: set[tuple[int, int]] = set()
-                for (c, r), cl in cells.items():
-                    dirty |= g._spill_predirty(c, r)
-                    if cl is None:
-                        g._setcell_no_recalc(c, r, "")
-                    else:
-                        live = g._ensure_cell(c, r)
-                        live.copy_from(cl)
-                        if g._dep_graph_built:
-                            g._refresh_deps(c, r, live)
-                    dirty.add((c, r))
-                g.recalc(dirty | g._blocked_anchors_active())
+            for plan in plans:
+                want = {k: plan.get(k, o) for k, o in orig.items()}
+                diff = {k: v for k, v in want.items() if not _same(live[k], v)}
+                if diff:
+                    self._apply(diff)
+                    live.update(diff)
+                results.append(self.get(outs))
         finally:
-            g.active = active
+            back = {k: o for k, o in orig.items() if live[k] is not o}
+            if back:
+                self._apply(back)
+        return results
 
     def save(self, path: str) -> str:
         """Write the workbook; the format follows the extension. Returns it."""
@@ -229,6 +235,33 @@ class Book:
 
 
 # --- helpers ----------------------------------------------------------------
+
+
+Key = tuple[str, int, int]  # (sheet, col, row)
+
+
+@dataclass(frozen=True)
+class _Orig:
+    """A cell as loaded, to write back; None for one that was not stored."""
+
+    cell: Cell | None
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Whether writing ``b`` over ``a`` would change nothing (1.0 is not TRUE)."""
+    if isinstance(a, _Orig) or isinstance(b, _Orig):
+        return a is b
+    return type(a) is type(b) and a == b
+
+
+def _restore_cell(g: Grid, c: int, r: int, cl: Cell | None) -> None:
+    if cl is None:
+        g._setcell_no_recalc(c, r, "")
+        return
+    live = g._ensure_cell(c, r)
+    live.copy_from(cl)
+    if g._dep_graph_built:
+        g._refresh_deps(c, r, live)
 
 
 def _cells_of(name: str, value: Any, shape: tuple[int, int]) -> list[Any]:
@@ -285,6 +318,24 @@ def _json(v: Any) -> Any:
     return v
 
 
+def _rows(v: Any) -> list[list[Any]]:
+    """An array value as JSON rows."""
+    cols = getattr(v, "cols", None) or 1
+    data = [_json(x) for x in v.data]
+    return [data[i : i + cols] for i in range(0, len(data), cols)]
+
+
+def errors(outputs: Mapping[str, Any]) -> list[str]:
+    """The outputs whose value is, or holds, an error, in order."""
+
+    def bad(v: Any) -> bool:
+        if isinstance(v, list):
+            return any(bad(x) for x in v)
+        return isinstance(v, dict) and "error" in v
+
+    return [k for k, v in outputs.items() if bad(v)]
+
+
 def _eval_on(g: Grid, sheet: str, formula: str) -> Any:
     """The value of ``formula`` evaluated on ``sheet``; the workbook is left unchanged."""
     from .cli import run_eval
@@ -328,4 +379,4 @@ def _unquote(sheet: str) -> str:
     return s
 
 
-__all__ = ["Book", "BookError", "Target"]
+__all__ = ["Book", "BookError", "Target", "errors"]

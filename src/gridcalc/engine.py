@@ -4107,7 +4107,13 @@ class Grid:
             cell_spill_value=self._cell_spill_value,
             cell_formula_text=self._cell_formula_text,
             table_ref=self._table_ref,
+            stored_cells=self._stored_cells,
         )
+
+    def _stored_cells(self, sheet: str | None) -> dict[tuple[int, int], Cell] | None:
+        """The live cell store of ``sheet`` (active for None), or None if unknown."""
+        sh = self._sheet_by_name(sheet)
+        return None if sh is None else sh._cells
 
     def evaluate(self, formula: str, sheet: str | None = None) -> Any:
         """The value of ``formula`` read on ``sheet`` (default: active), writing no cell.
@@ -4409,6 +4415,9 @@ class Grid:
         """The sheet called ``name`` ignoring case, as Excel matches; active for None."""
         if name is None:
             return self._active
+        for s in self.sheets:  # most references spell the name exactly
+            if s.name == name:
+                return s
         key = name.casefold()
         for s in self.sheets:
             if s.name.casefold() == key:

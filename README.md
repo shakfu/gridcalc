@@ -176,11 +176,35 @@ The full target list is in the [development guide](https://shakfu.github.io/grid
 
 ## Prior Art
 
+Terminal spreadsheets:
+
 - [sc-im](https://github.com/andmarti1424/sc-im): A ncurses spreadsheet program for terminal
 
 - [sheets](https://github.com/maaslalani/sheets): A terminal based spreadsheet tool
 
 - [rustxl](https://rustxl.com): A fast, keyboard-driven spreadsheet with vim-style navigation and Excel-compatible formulas.
+
+Engines that calculate an xlsx file without Excel. formulas, pycel and GridCraft were measured against gridcalc on 279 workbooks, for agreement with Excel and for named-input runs: [`docs/dev/comparison.md`](docs/dev/comparison.md).
+
+- [formulas](https://github.com/vinci1it2000/formulas) (Python): `ExcelModel().loads(f).finish().compile(inputs, outputs)` returns a callable over the workbook. Defined names work as inputs and outputs, written `'[book.xlsx]'!NAME`.
+
+- [pycel](https://github.com/dgorissen/pycel) (Python): `ExcelCompiler.set_value` and `evaluate` take cell addresses only. A defined name must be resolved through `excel.defined_names` first. pycel 1.0b30 needs Python 3.11 or older and openpyxl 3.0.
+
+- GridCraft (closed source, Rust): a desktop app and `gridcraft-cli`, with a JSON command interface and an MCP server. `formulas.evaluate` reads a name; `cell.set` does not resolve one and writes the active cell instead.
+
+- [IronCalc](https://github.com/ironcalc/IronCalc) (Rust): 266 of the 279 corpus workbooks are its tests; pycel's fixtures are the rest. Not run as an engine.
+
+- [xlcalculator](https://github.com/bradbase/xlcalculator) and [koala](https://github.com/vallettea/koala) (Python): set/evaluate APIs like pycel's. Not tested.
+
+- [SpreadsheetGear](https://www.spreadsheetgear.com/), [Aspose.Cells](https://products.aspose.com/cells/) and [GcExcel](https://developer.mescius.com/document-solutions/dot-net-excel-api) (commercial, .NET and Java): headless calculation that resolves `Names["X"]`. The caller writes the input/output contract.
+
+- [Excel Services](https://learn.microsoft.com/en-us/sharepoint/dev/general-development/excel-services-rest-api) (SharePoint) published named cells as parameters of a REST API. The [Microsoft Graph Excel API](https://learn.microsoft.com/en-us/graph/api/resources/workbooknameditem?view=graph-rest-1.0) reads and writes named items, but calculates in Excel itself.
+
+- [Coherent Spark](https://www.coherent.global/) (commercial): runs a workbook as a web API, with named ranges as its inputs and outputs.
+
+- [HyperFormula](https://github.com/handsontable/hyperformula) (JavaScript): a headless engine with named expressions. It does not read xlsx files.
+
+- [LibreOffice](https://api.libreoffice.org/) headless, through the UNO API: opens and recalculates xlsx files, one stateful office process per run.
 
 ## License
 

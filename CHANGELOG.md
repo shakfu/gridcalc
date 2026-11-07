@@ -20,6 +20,8 @@
 
 ### Fixed
 
+- **A whole-column read in a workbook with a cell in the last row hit the 30 s recalc limit.** That cell sets the used extent to row 1048576, so `B:B` read a million positions, each resolving its sheet by name. IronCalc's `INDIRECT.xlsx` took 30-36 s and scored 5 of 104 cells when it stopped; it now takes 1.7 s and scores 104. A range over `TRIM_CELLS` now reads only the cells its sheet stores. A per-sheet extent was the alternative; it would not help a sheet that itself uses the last row.
+
 - **About 1,000 more cells match Excel's saved values.** On the 279 IronCalc and pycel test workbooks, agreement rose from 97.7% to 99.0% of 79,598 cells, and no file lost a match (`docs/dev/excel-corpus.md`). Each fix has a test in `tests/test_compat_*.py`, with Excel's saved value as the expected one.
   - Financial: domain checks in `PMT`, `IPMT`, `PPMT`, `NOMINAL` and `EFFECT`; a fractional `per` and type-1 payments in `IPMT`/`PPMT`; `CUMPRINC` and `CUMIPMT` round their start and end periods. `PRICE` discounts by (E - A)/E, which differs from DSC/E for bases 2 and 3. `TBILLEQ` past 182 days uses Excel's quadratic. `IRR` and `XIRR` fall back to bisection when Newton misses a negative root. `MIRR` accepts rates at or below -1. `XNPV` and `XIRR` validate their dates. `DB` and `DDB` take a fractional life or period.
   - Math and engineering: `GCD` and `LCM` reject text and logicals in ranges. The radix conversions had wrong limits: `DEC2OCT` used 8^9, `DEC2HEX` 16^9. `CONVERT` gains prefixed square, cubic and other units. `IMCONJUGATE` keeps a `j` suffix. `MROUND` with an omitted argument is `#N/A`.

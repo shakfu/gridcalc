@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from time import monotonic
 from types import ModuleType
@@ -85,6 +85,7 @@ class Env:
         used_extent: Callable[[], tuple[int, int]] | None = None,
         sheet_names: Callable[[], list[str]] | None = None,
         table_ref: Callable[..., Any] | None = None,
+        stored_cells: Callable[[str | None], Collection[tuple[int, int]] | None] | None = None,
     ) -> None:
         # `cell_value` is `(c, r, sheet=None) -> object`; `cell_is_formula`
         # is `(c, r, sheet=None) -> bool`. The single-sheet case keeps
@@ -117,6 +118,9 @@ class Env:
         # `used_extent()` is the last used (col, row) across the workbook.
         # `_eval_range` trims a large range to it. None never trims.
         self.used_extent = used_extent
+        # `stored_cells(sheet)` is the (c, r) positions a sheet stores, or None
+        # for an unknown sheet. `_eval_range` reads only these in a large range.
+        self.stored_cells = stored_cells
         # `sheet_names()` lists the workbook's sheets in order, for SHEET/SHEETS.
         self.sheet_names = sheet_names or (lambda: [])
         # `table_ref(node, sheet, cell)` resolves a `StructRef` read by the
@@ -770,6 +774,43 @@ MAX_ARRAY_CELLS = 1 << 20
 TRIM_CELLS = 1 << 16
 
 
+def _range_elem(v: Any) -> Any:
+    return float(v) if isinstance(v, int) and not isinstance(v, bool) else v
+
+
+def _read_sparse(
+    env: Env,
+    sheet: str | None,
+    stored: Collection[tuple[int, int]],
+    c1: int,
+    r1: int,
+    c2: int,
+    r2: int,
+) -> list[Any]:
+    """A range's elements, reading only the stored cells; the rest are blank.
+
+    Reads in row-major order, as the dense loop does. Reading a cell can run a
+    pending formula whose spill adds cells, so new positions are read until
+    none appear.
+    """
+    w = c2 - c1 + 1
+    data: list[Any] = [None] * ((r2 - r1 + 1) * w)
+    seen: set[tuple[int, int]] = set()
+    while True:
+        todo = sorted(
+            (
+                (r, c)
+                for c, r in list(stored)
+                if c1 <= c <= c2 and r1 <= r <= r2 and (c, r) not in seen
+            )
+        )
+        if not todo:
+            return data
+        for r, c in todo:
+            seen.add((c, r))
+            data[(r - r1) * w + c - c1] = _range_elem(env.get_cell(c, r, sheet))
+
+
 def _eval_range(node: RangeRef, env: Env) -> Any:
     """Evaluate a range to a ``Vec``. A cell error stays in its element;
     ``_eval_call`` decides whether a function sees it (see
@@ -786,16 +827,15 @@ def _eval_range(node: RangeRef, env: Env) -> Any:
     if full[0] * full[1] > TRIM_CELLS and (ext := env.extent()) is not None:
         # Past the used extent every cell is blank, so leave them out.
         c2, r2 = min(c2, max(c1, ext[0])), min(r2, max(r1, ext[1]))
-    data: list[Any] = []
-    for r in range(r1, r2 + 1):
-        for c in range(c1, c2 + 1):
-            v = env.get_cell(c, r, sheet)
-            if v is None or isinstance(v, bool):
-                data.append(v)
-            elif isinstance(v, (int, float)):
-                data.append(float(v))
-            else:
-                data.append(v)
+    area = (r2 - r1 + 1) * (c2 - c1 + 1)
+    stored = env.stored_cells(sheet) if env.stored_cells and area > TRIM_CELLS else None
+    if stored is not None and len(stored) < area:
+        data = _read_sparse(env, sheet, stored, c1, r1, c2, r2)
+    else:
+        data = []
+        for r in range(r1, r2 + 1):
+            for c in range(c1, c2 + 1):
+                data.append(_range_elem(env.get_cell(c, r, sheet)))
     from ..engine import Vec  # lazy import to break cycle
 
     result = Vec(data, cols=c2 - c1 + 1)

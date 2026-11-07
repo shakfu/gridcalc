@@ -101,3 +101,5 @@ GridCraft does better per file. gridcalc's lead in cells comes from `ARABIC_ROMA
 - Fixed from this run (CHANGELOG): `COMPLEX` with a blank suffix, `ENCODEURL`, and `INDEX` on whole rows, negative indices and `area_num`.
 - The function-family round (CHANGELOG) fixed financial, math, statistics, date, database, lookup and text cases: gridcalc agrees on 99.0% of cells, and no file lost a match. GridCraft still scores 93.5% per file against gridcalc's 92.8%. What is left is in `TODO.md`; the largest groups are `SUBTOTAL` over hidden rows, `CHAR` (the harness) and `TODAY()` templates.
 - GridCraft's misses, where gridcalc agrees with Excel: the `FLOOR`/`CEILING` family, `ACCRINT`, `COUNTIF` over a whole column (it counts the used range only), `SINGLE` (`#NAME?`), the Bessel functions, `ROMAN` with `form`.
+
+A four-engine comparison (gridcalc, GridCraft, pycel, formulas) and named-I/O timings: `comparison.md`.

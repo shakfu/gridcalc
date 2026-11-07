@@ -58,7 +58,7 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 - [ ] **Whole-column paths that still cost a million rows.** Each is correct but slow on Excel's grid:
   - Fill down (`Api.fill`) over a header-selected column writes every row, as Excel does.
   - The solver's `_precedents` (`opt.py`) expands a range through `extract_refs`, one key per cell.
-  - One cell near row 1048576 sets the used extent, so every range over `TRIM_CELLS` reads to it. A per-sheet extent would help only formulas that read one sheet. IronCalc's `INDIRECT.xlsx` holds cells at row 1048576 and column XFD, so its 8 whole-row and whole-column reads take 20 s of its load. A per-sheet extent may break shape agreement between ranges on different sheets, which the workbook-wide extent keeps.
+  - In PYTHON mode, one cell near row 1048576 sets the used extent, so a range over `TRIM_CELLS` (`_expand_ranges`, named-range injection) reads every position to it. EXCEL and HYBRID ranges read only stored cells.
 
 - [ ] **Undo memory is bounded by entry count, not size.** A structural entry copies every sheet's cells: 6.4 MB on a 3-sheet workbook with 25k cells, so 64 entries can hold about 400 MB. Cap the stack by bytes if real workbooks reach that.
 
@@ -87,6 +87,10 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 - [ ] **Unverified: `allowed_modules` from `./gridcalc.toml`.** If still honoured there, a directory can pre-approve `pandas`, which is handed over whole (see the trust-prompt entry under Low). Probe artefact exists; outcome not confirmed. (REVIEW.md unchecked lead.)
 
 ### Documentation & infrastructure
+
+- [ ] **Check the prior art for named-input/output runs before claiming the feature is distinctive.** SharePoint Excel Services published named cells as parameters, Coherent Spark marks I/O names by prefix (`Xi_`/`Xo_`, unverified), and `formulas` compiles a workbook into a callable with `compile(inputs, outputs)`. gridcraft-cli can script it with `run --cmd`, reading a name through `formulas.evaluate`. Its `cell.set` ignores a name and writes the active cell with exit 0. `--print` and `range.setValues` reject names, an error output exits 0, and text inputs starting with `=` become formulas. pycel takes addresses only; names must be resolved through `excel.defined_names`, which needs openpyxl < 3.1. Corpus and timing results, 2026-11-07: `docs/dev/comparison.md`. Open:
+  - Check the Spark convention against its documentation.
+  - Find out whether gridcraft-cli's `--script` can reset state between cases. If they pass, gridcalc's case rests on the CLI, exit codes and correctness, and the docs should say that.
 
 - [ ] **Build the docs site in CI.** The site itself is done (`mkdocs.yml`, 30+ pages under `docs/`, `make docs` / `docs-serve` / `docs-deploy`), and publishing stays a deliberate manual `make docs-deploy` -- the Makefile says why. The gap is that `ci.yml` never runs `mkdocs build --strict`, so a broken cross-reference between pages lands on `main` and is only found by whoever next deploys. Adding the `docs` group and one `make docs` step to CI is the whole fix; it does not commit or push anything.
 

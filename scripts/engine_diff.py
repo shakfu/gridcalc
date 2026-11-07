@@ -17,7 +17,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import time
 from collections import Counter
@@ -26,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from excel_corpus import _a1, application, excel_values, functions, gridcalc_value, same
+from proc_guard import run_guarded
 
 from gridcalc.engine import FORMULA
 from gridcalc.loader import load_workbook
@@ -66,16 +66,9 @@ def other_values(engine: str, path: Path, keys: list[Key]) -> tuple[dict[Key, An
     # A scratch working directory: the engine is not ours and should not
     # write beside the corpus or the repo.
     with tempfile.TemporaryDirectory() as cwd:
-        try:
-            proc = subprocess.run(  # noqa: S603 -- the user names the engine
-                [engine, "run", "--in", str(path), *cmds],
-                capture_output=True,
-                text=True,
-                timeout=_TIMEOUT,
-                cwd=cwd,
-            )
-        except subprocess.TimeoutExpired:
-            return {}, f"timed out after {_TIMEOUT} s"
+        proc = run_guarded([engine, "run", "--in", str(path), *cmds], timeout=_TIMEOUT, cwd=cwd)
+    if proc.killed:
+        return {}, proc.killed
     err = None if proc.returncode == 0 else (proc.stderr.strip()[:300] or f"exit {proc.returncode}")
     values: dict[Key, Any] = {}
     for line in proc.stdout.splitlines():

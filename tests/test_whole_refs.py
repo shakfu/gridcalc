@@ -181,3 +181,70 @@ def test_python_mode_reads_a_large_range_to_the_used_extent() -> None:
     g.setcell(1, 0, "=sum(A1:A1048576)")
     g.recalc()
     assert g.cells[1][0].val == 5.0
+
+
+def _counting_env(cells: dict, sparse: bool):
+    from gridcalc.formula import Env
+
+    reads: list[tuple[int, int]] = []
+
+    def get(c, r, s=None):
+        reads.append((c, r))
+        return cells.get((c, r))
+
+    env = Env(cell_value=get, builtins={}, stored_cells=(lambda s: cells) if sparse else None)
+    env.used_extent = lambda: (1, NROW - 1)  # a cell in the last row: nothing to trim
+    return env, reads
+
+
+def test_a_large_range_reads_only_stored_cells() -> None:
+    from gridcalc.formula import evaluate, parse
+
+    cells = {(0, 0): 1, (1, 5): "x", (0, NROW - 1): True, (3, 0): 9.0}  # D1 is outside A:B
+    sparse_env, reads = _counting_env(cells, sparse=True)
+    dense_env, _ = _counting_env(cells, sparse=False)
+    sparse, dense = evaluate(parse("A:B"), sparse_env), evaluate(parse("A:B"), dense_env)
+    assert sparse.data == dense.data and sparse.cols == dense.cols == 2
+    assert sparse.data[0] == 1.0 and type(sparse.data[0]) is float
+    assert sorted(reads) == [(0, 0), (0, NROW - 1), (1, 5)]
+
+
+def test_a_sparse_read_picks_up_cells_added_while_reading() -> None:
+    from gridcalc.formula import Env, evaluate, parse
+
+    cells: dict = {(0, 0): 1.0, (0, NROW - 1): 2.0}
+
+    def get(c, r, s=None):
+        if (c, r) == (0, 0):  # reading A1 runs a formula that spills into A2:A3
+            cells[(0, 1)], cells[(0, 2)] = 3.0, 4.0
+        return cells.get((c, r))
+
+    env = Env(cell_value=get, builtins={}, stored_cells=lambda s: cells)
+    env.used_extent = lambda: (0, NROW - 1)
+    assert [v for v in evaluate(parse("A:A"), env).data if v is not None] == [1.0, 3.0, 4.0, 2.0]
+
+
+@pytest.mark.parametrize(
+    ("formula", "value"),
+    [
+        ("=SUM(B:B)", 13.0),
+        ("=COUNTA(B:B)", 4.0),
+        ("=MATCH(7,B:B,0)", float(NROW)),
+        ("=SUM(Sheet1!B:B)", 13.0),
+    ],
+)
+def test_whole_columns_with_a_cell_in_the_last_row(formula, value) -> None:
+    g = _excel()
+    g.setcell(1, 0, "=SEQUENCE(3)")
+    g.setcell(1, NROW - 1, "7")
+    g.setcell(0, 0, formula)
+    g.recalc()
+    assert g.cells[0][0].val == value
+
+
+def test_a_whole_column_on_an_unknown_sheet_is_ref() -> None:
+    g = _excel()
+    g.setcell(1, NROW - 1, "7")
+    g.setcell(0, 0, "=SUM(Nope!B:B)")
+    g.recalc()
+    assert str(g.cells[0][0].err) == "#REF!"

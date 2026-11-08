@@ -63,6 +63,8 @@ jobs:
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v4.3.4
+        with:
+          extras: uv
         env:
           CIBW_ARCHS_LINUX: x86_64
 
@@ -87,6 +89,8 @@ jobs:
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v4.3.4
+        with:
+          extras: uv
         env:
           CIBW_ARCHS_LINUX: aarch64
 
@@ -108,6 +112,8 @@ jobs:
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v4.3.4
+        with:
+          extras: uv
         env:
           CIBW_ARCHS_MACOS: x86_64 arm64
           # cibuildwheel's default x86_64 target (10.9) is too old: nanobind
@@ -134,6 +140,8 @@ jobs:
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v4.3.4
+        with:
+          extras: uv
         env:
           CIBW_ARCHS_WINDOWS: AMD64
 

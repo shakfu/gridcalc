@@ -268,47 +268,38 @@ jobs:
           path: dist/
           retention-days: 30
 
-  publish-testpypi:
-    name: Publish to TestPyPI
+  # A tag publishes to the GitHub release only. PyPI needs a manual run
+  # with the "Publish to PyPI" toggle set (`publish-manual` below).
+  github-release:
+    name: Upload to GitHub release
     needs: collect-artifacts
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    environment:
-      name: testpypi
-      url: https://test.pypi.org/p/gridcalc
     permissions:
-      id-token: write
+      contents: write
     steps:
+      - uses: actions/checkout@v7
+
       - name: Download all artifacts
         uses: actions/download-artifact@v8
         with:
           name: all-dist
           path: dist/
 
-      - name: Publish to TestPyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
+      - name: Extract release notes
+        run: python3 scripts/release_notes.py "$GITHUB_REF_NAME" -o release-notes.md
 
-  publish-pypi:
-    name: Publish to PyPI
-    needs: [collect-artifacts, publish-testpypi]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    environment:
-      name: pypi
-      url: https://pypi.org/p/gridcalc
-    permissions:
-      id-token: write
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: all-dist
-          path: dist/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      # build-abi3.yml uploads to the same release; whichever workflow
+      # finishes first creates it.
+      - name: Create release if missing, then upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \
+              --notes-file release-notes.md --verify-tag ||
+            gh release view "$GITHUB_REF_NAME" >/dev/null
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
 
   publish-manual:
     name: Manual Publish to PyPI

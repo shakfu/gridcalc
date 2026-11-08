@@ -6,9 +6,9 @@ name: Build ABI3 wheels
 # which switches `nanobind_add_module` into STABLE_ABI mode in
 # CMakeLists.txt.
 #
-# A version tag also creates a GitHub release holding the abi3 wheels,
-# with notes from the matching CHANGELOG.md section. PyPI publishing stays
-# in the per-version `build-publish.yml`.
+# A version tag also uploads the abi3 wheels to the GitHub release, with
+# notes from the matching CHANGELOG.md section. PyPI needs a manual run of
+# `build-publish.yml` with its "Publish to PyPI" toggle set.
 
 on:
   push:
@@ -212,11 +212,14 @@ jobs:
       - name: Extract release notes
         run: python3 scripts/release_notes.py "$GITHUB_REF_NAME" -o release-notes.md
 
-      - name: Create release
+      # build-publish.yml uploads to the same release; whichever workflow
+      # finishes first creates it.
+      - name: Create release if missing, then upload
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.whl \
-            --title "$GITHUB_REF_NAME" \
-            --notes-file release-notes.md \
-            --verify-tag
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \
+              --notes-file release-notes.md --verify-tag ||
+            gh release view "$GITHUB_REF_NAME" >/dev/null
+          gh release upload "$GITHUB_REF_NAME" dist/*.whl --clobber

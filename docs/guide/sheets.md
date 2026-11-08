@@ -27,7 +27,7 @@ Reference cells on other sheets with `Sheet!cell`:
 
 Quote a name that is not a plain identifier -- one containing spaces or punctuation -- and double the apostrophe to include one:
 
-```
+```text
 ='My Sheet'!A1
 =SUM('Q1 Results'!A1:A10)
 ='It''s'!B2
@@ -48,6 +48,9 @@ Cross-sheet *ranges* (`Sheet1!A1:Sheet2!B5`) are not supported. Neither does Exc
 A 3D reference reads the same cells on a run of sheets: `=SUM(Jan:Mar!B2)` adds B2 on `Jan`, `Mar` and every sheet between them. Quote the span when a name needs it: `='Q1 a:Q4 b'!A1`.
 
 - The run is by sheet position. Moving a sheet into or out of it changes the result.
+
 - Only `SUM`, `AVERAGE`, `COUNT`, `COUNTA`, `MAX`, `MIN`, `PRODUCT`, the `STDEV` and `VAR` families and their `A` forms accept one, as in Excel. Elsewhere it gives `#VALUE!`.
+
 - Renaming an end rewrites the reference. Deleting an end moves it inward; deleting the only sheet gives `#REF!`.
+
 - Copying shifts it like any reference. Inserting or deleting rows on one sheet of the run does not.

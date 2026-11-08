@@ -58,10 +58,15 @@ book.run_many([{"Rate": r / 100} for r in range(1, 10)], ["Payment"])
 ```
 
 - **Targets** are the workbook's defined names, sheet-local names (`Inputs!Rate`), or cells and ranges (`Out!B2:D9`). `Name#` reads the whole array a formula spills.
+
 - **Values** are JSON: numbers, booleans, `null`, text, and lists of rows for a range. Text input is never read as a formula.
+
 - **Each case starts from the workbook as loaded.** A batch writes only the cells that change between cases, so a case costs one incremental recalculation. On a 20,000-formula sheet that is about 110 ms.
+
 - **Exit codes:** `0` means the run worked. `2` means an output you named holds an error, such as `#REF!`. `1` means bad input, such as an unknown name or a value of the wrong shape; it is reported before anything is written.
+
 - **Safe by default.** A workbook's Python (code blocks, PYTHON-mode cells) runs only with `--trust`. Excel formulas are capped at Excel's length and nesting limits, and a recalculation stops after 30 s.
+
 - **`--convert out.xlsx`** saves the workbook with the inputs written in.
 
 **How close to Excel?** On 279 workbooks that Excel saved, with 79,598 formula cells, gridcalc's result matches Excel's saved value in 99.0% of cells. The workbooks are IronCalc's and pycel's function test suites. They exercise functions at their edges, and gridcalc was fixed against them, so read 99.0% as an upper bound for files it has not seen. What still differs is listed in [`TODO.md`](TODO.md) and [`docs/dev/excel-corpus.md`](docs/dev/excel-corpus.md). Not supported: `.xls`, VBA macros, pivot-table refresh, external data connections, and hidden-row rules in `SUBTOTAL`/`AGGREGATE`.

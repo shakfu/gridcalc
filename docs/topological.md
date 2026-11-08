@@ -240,8 +240,7 @@ Keep using fixed-point recalc; the graph is built but not yet consulted. This sh
 
 ### Phase B: topo recalc, EXCEL only, full-sheet rebuild
 
-- Implement `_recalc_topo(dirty: set[(c,r)] | None = None)` that does
-  the closure + topo sort + evaluation.
+- Implement `_recalc_topo(dirty: set[(c,r)] | None = None)` that does the closure + topo sort + evaluation.
 
 - If `dirty is None`, treat all formula cells as dirty (matches current `recalc()` semantics for a freshly loaded grid).
 

@@ -7,8 +7,11 @@
 For each file the report gives:
 
 - **agree / compared:** formula cells whose gridcalc result matches the saved value. Numbers compare with relative tolerance `--rel` (default 1e-9); text and errors compare exactly.
+
 - **root / downstream:** a root mismatch reads no other mismatched cell. A downstream one does, so it is counted but not listed.
+
 - **imported as values:** formula cells gridcalc read as their saved value, such as a data table. These are not compared.
+
 - **without a saved value:** formula cells the file holds no result for. A file whose formulas all lack one was not last saved by Excel.
 
 Root mismatches are then counted by the functions their formulas call.
@@ -44,8 +47,11 @@ All 55 files with tables save and reload with the same tables and the same value
 What remains after round 1 is below; round 2 closed the structured references, `AGGREGATE` and frozen panes.
 
 - Unparseable: structured references (`Table1[col]`), 42,182 cells in 55 files; references into other workbooks, 3,408 cells in 25 files. Those now show Excel's saved value. About 470 more are typos, `;` separators, or a reference union (`(A1:B2,C1:D2)`).
+
 - Missing functions: `AGGREGATE` (5 files), `FILTERXML`, `GETPIVOTDATA`, and user-defined functions.
+
 - A save drops, by files: conditional formatting 178, frozen panes 139, data validation 118, font effects 109, tables 106, comments 50, pivot tables 33, hyperlinks 30, charts 28, pattern fills 20, diagonal borders 15.
+
 - Loads take up to 60 s; three files took over 25 s.
 
 Rerunning the corpus check after these fixes: 76,476 of 79,104 agree (96.7%), 1,706 root mismatches. `BINOM.xlsx` now finishes; its 13 are argument checks that should give `#NUM!` or `#VALUE!`.
@@ -55,6 +61,7 @@ GitHub code search finds no binary files: its `.xlsx` hits are CSV text. It cann
 ## Limits
 
 - Only `.xlsx` files are read. Many public spreadsheet corpora are `.xls`.
+
 - gridcalc writes no saved value for a text or error result, so its own xlsx output cannot test those cells.
 
 ## Results
@@ -62,10 +69,15 @@ GitHub code search finds no binary files: its `.xlsx` hits are CSV text. It cann
 Run 2026-10-24 on 276 test workbooks: IronCalc's `xlsx/tests` and pycel's `tests/fixtures`, cloned from GitHub. 270 were last saved by Excel. They test functions at their edges, so the rates are lower than a typical workbook would give.
 
 - 65,807 of 79,104 compared formula cells agree (83.2%).
+
 - 12,296 root mismatches. 6,095 of them are `#NAME?`: a function gridcalc lacks.
+
 - Missing, by mismatches: `FLOOR.PRECISE`, `ISO.CEILING`, `CEILING.PRECISE` (about 1,400 each), `REGEXTEST` (368), `BESSELJ`/`Y`/`I`/`K` (119 each), `SUBTOTAL` (68), `COTH`, `CSCH`, `SECH`, `ACOT`, `ACOTH`, `COT`, `CSC`, `SEC` (about 50 each), `BINOM.DIST.RANGE`, `MMULT`, `ERF.PRECISE`, `ERFC.PRECISE`, `ODDFPRICE`, `CELL`, `GAUSS`, and 20 more with under 15 each.
+
 - Wrong answers, by mismatches: `ROMAN` with a `form` argument (3,101, one file), `FLOOR`/`CEILING`/`.MATH` (about 800), `ACCRINT` (255), `COUNTIF`/`COUNTIFS` with `"<>"` criteria (276), `TEXT` with `General` (127), `INDEX` edge cases, `XLOOKUP` match modes, `CONVERT` units, `LCM`, `WEEKNUM`.
+
 - Structured table references (`Table1[col]`) are not parsed: 179 cells.
+
 - `CHAR` of a control character reads as `_x0001_` in openpyxl, so its 56 mismatches are the harness's.
 
 ### After adding the 48 missing functions
@@ -99,7 +111,9 @@ After the function-family round: 78,795 cells (99.0%), 92.8% per file, and 76 fi
 GridCraft does better per file. gridcalc's lead in cells comes from `ARABIC_ROMAN.xlsx` (40,386 cells) and `FLOOR_CEILING.xlsx` (11,460), which earlier rounds fixed specifically. gridcalc was tuned on this corpus, so these rates overstate it relative to unseen files.
 
 - Fixed from this run (CHANGELOG): `COMPLEX` with a blank suffix, `ENCODEURL`, and `INDEX` on whole rows, negative indices and `area_num`.
+
 - The function-family round (CHANGELOG) fixed financial, math, statistics, date, database, lookup and text cases: gridcalc agrees on 99.0% of cells, and no file lost a match. GridCraft still scores 93.5% per file against gridcalc's 92.8%. What is left is in `TODO.md`; the largest groups are `SUBTOTAL` over hidden rows, `CHAR` (the harness) and `TODAY()` templates.
+
 - GridCraft's misses, where gridcalc agrees with Excel: the `FLOOR`/`CEILING` family, `ACCRINT`, `COUNTIF` over a whole column (it counts the used range only), `SINGLE` (`#NAME?`), the Bessel functions, `ROMAN` with `form`.
 
 A four-engine comparison (gridcalc, GridCraft, pycel, formulas) and named-I/O timings: `comparison.md`.

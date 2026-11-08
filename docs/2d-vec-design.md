@@ -18,13 +18,11 @@ This work does **not** include spill semantics. Spill is a separate follow-up th
 
 ## What already exists
 
-- `Vec.data: list[Any]`, `Vec.cols: int | None`. Set by
-  `formula/evaluator.py:_eval_range` when materialising a `RangeRef`.
+- `Vec.data: list[Any]`, `Vec.cols: int | None`. Set by `formula/evaluator.py:_eval_range` when materialising a `RangeRef`.
 
 - A handful of consumers already use `cols` correctly: `INDEX`, `VLOOKUP`, `HLOOKUP`, `_d_collect` (D-functions), `RANDARRAY`, `SEQUENCE`, `TEXTSPLIT`. These build or destructure 2D Vecs row-major.
 
-- `Cell.arr: list[float] | None` is an **in-memory cache only** — it is
-  not in the JSON save format. So no on-disk schema migration is required.
+- `Cell.arr: list[float] | None` is an **in-memory cache only** — it is not in the JSON save format. So no on-disk schema migration is required.
 
 - ~23 `Vec(...)` construction sites in `libs/xlsx.py`, plus a few in `engine.py`. Finite audit surface.
 

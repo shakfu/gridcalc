@@ -3,6 +3,7 @@
 gridcalc against three other engines that calculate an xlsx file without Excel: GridCraft, pycel and formulas. Two questions:
 
 1. How often does each engine agree with the values Excel saved?
+
 2. Can each run a workbook as a function of its defined names, and how fast?
 
 Run 2026-11-07 on macOS arm64, 8 cores.
@@ -37,7 +38,9 @@ GridCraft's `cell.set` fails silently. Given `"cell": "Rate"` or `"cell": "Bogus
 Prior art outside these four, not tested here:
 
 - SharePoint Excel Services published named cells as parameters, set through its REST and SOAP APIs.
+
 - Coherent Spark exposes a workbook as an API and marks I/O names by prefix (`Xi_`, `Xo_`). This comes from memory, not from its documentation.
+
 - SpreadsheetGear, Aspose.Cells and GcExcel resolve `Names["X"]`. The caller writes the I/O contract.
 
 ## Agreement with Excel
@@ -53,8 +56,11 @@ The 279 IronCalc and pycel test workbooks (`excel-corpus.md`). The cell set is `
 | files failed | 0 | 0 | 1 timeout | 8 timeouts, 4 errors |
 
 - **pycel** returns a formula's cached value until an input changes. Setting every cached `<v>` to 12345 returned 12345 for every cell, so a naive run scores Excel against itself (98.8%). `foreign_engine.py` calls `ExcelCompiler.recalculate()`, and the same tamper test then returns no 12345. After that, 53,151 cells raise `UnknownFunction`, mostly `ROMAN` and `ARABIC`.
+
 - **formulas** times out on `FLOOR_CEILING.xlsx` (11,460 cells), `COUNTIF.xlsx` and 6 others. It scores 92.1% on the files it finishes.
+
 - **GridCraft** scores higher per file. gridcalc scores higher per cell, and higher still once the two large files are excluded. The functions behind each side's misses are printed by `engine_compare.py`; GridCraft's are listed in `excel-corpus.md`.
+
 - **gridcalc** scored 78,695 on one earlier run that day. `INDIRECT.xlsx` took 30-36 s and sometimes stopped at the 30 s recalc limit. The sparse-range fix (CHANGELOG) brought it to 1.7 s.
 
 ## Time per named-I/O case

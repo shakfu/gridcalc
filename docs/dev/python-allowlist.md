@@ -7,6 +7,7 @@ Status: **proposed, not implemented.**
 A PYTHON-mode workbook's formulas are passed to `eval()`. Opening an untrusted one runs Python with no code block involved:
 
 - `"{0.__globals__[os].environ[HOME]}".format(SUM)` read the environment. `validate_formula` now refuses it, but it rejects known patterns only.
+
 - `sum(1 for _ in range(10**100))` hangs the load.
 
 Both use only names gridcalc itself puts in the namespace. Neither needs a code block or `requires`.
@@ -30,8 +31,11 @@ The allowlist decides only whether to prompt. Evaluation is unchanged: an approv
 A formula passes when all of these hold:
 
 1. Its raw text is at most `MAXIN` (256) characters. The TUI already caps typed input at this length (`tui/__init__.py:281`). JSON-loaded formulas have no cap.
+
 2. After `_expand_ranges` (`engine.py:846`), it parses with `ast.parse(mode="eval")`.
+
 3. Every AST node is on the node list below.
+
 4. Every `Name` is on the name list below.
 
 Anything else prompts. The check refuses by default. It is not built on `validate_formula`, which rejects known-bad patterns and allows the rest.
@@ -55,9 +59,13 @@ Anything else prompts. The check refuses by default. It is not built on `validat
 Refused, with the reason:
 
 - `Attribute`, `Subscript`: the format-string read reaches `__globals__` through attribute access, and indexing walks what it reaches.
+
 - `ListComp`, `SetComp`, `DictComp`, `GeneratorExp`: the hang above.
+
 - `Lambda`, `Starred`, `Dict`, `Set`, `Tuple`, `JoinedStr`: no spreadsheet use.
+
 - `LShift RShift BitAnd BitOr BitXor Invert`: `1 << 10**8` builds a 100M-bit integer.
+
 - `MatMult`, `In`, `NotIn`, `Is`, `IsNot`: no spreadsheet use.
 
 ## Name list
@@ -65,14 +73,19 @@ Refused, with the reason:
 Values:
 
 - Cell references `A1` to `XFD1048576`, after `$` is stripped.
+
 - Names in the file's `names` object.
+
 - `pi e inf nan True False`.
 
 Callable, a subset of `_make_eval_globals` (`engine.py:418`):
 
 - `SUM AVG MIN MAX COUNT ABS SQRT INT`
+
 - `sin cos tan asin acos atan atan2 exp log log2 log10 floor ceil fabs fsum isnan isinf degrees radians`
+
 - `abs min max round int float len`
+
 - `Vec`, only in the form `Vec([...])` that `_expand_ranges` emits.
 
 Excluded from the namespace:
@@ -92,7 +105,9 @@ Derive the name list in code from `_make_eval_globals()` minus an explicit exclu
 Cell values are floats. I verified this for the paths that store results:
 
 - `parse_number("9")` returns `float`.
+
 - Scalar results are stored with `float(result)` (`engine.py:1865`, `:1883`).
+
 - With `A1 = 9`, `=A1:A1*1` stores `[9.0]` in `cl.arr`, and `=A1:A1**64` stores a `float` element. `Vec` arithmetic is element-wise.
 
 A chain across cells therefore overflows fast. `B1 = A1**64`, `C1 = B1**64` stops with `OverflowError` after a few cells.
@@ -114,22 +129,33 @@ The 256-character cap bounds products of such powers. `9**64*9**64*...` fits abo
 ## Tests
 
 - Each refused node type prompts. Use one minimal formula per type.
+
 - Each allowed node type loads silently and evaluates.
+
 - `Pow`: `A1**2` passes; `A1**B1`, `9**65` and `(9**2)**2` prompt.
+
 - A 257-character formula of allowed nodes prompts.
+
 - The namespace test above: every name from `_make_eval_globals()` is either allowed or excluded.
+
 - The two attacks prompt.
+
 - `example_goal.json` and `example_lp.json` load without a prompt, which removes the fixture change in `tests/integration/conftest.py`.
 
 ## Limits
 
 - The allowlist is a security boundary. It holds only while it refuses by default and while no allowed function can reach object internals or run without bound.
+
 - It checks syntax. If an allowed function's behaviour changes, for example `fsum` accepting a generator, the allowlist does not notice. The namespace test covers new names, not changed ones.
+
 - `SUM` over a full-sheet range reads only to the used extent (`TRIM_CELLS` in `formula/evaluator.py`), not by the allowlist. A cell placed at `XFD1048576` makes that 17 billion cells.
 
 ## Alternatives considered
 
 - **Prompt for every PYTHON-mode file with formulas.** Implemented now. Safe, but it prompts on the shipped examples.
+
 - **Prompt only for a code block or `requires`.** The behaviour before the fix. Both attacks load with no prompt.
+
 - **Default a missing `mode` to EXCEL.** EXCEL formulas use gridcalc's own evaluator, not `eval()`. It breaks v1 files, whose formulas are Python syntax. An explicit `"mode": "PYTHON"` still needs this allowlist or the prompt.
+
 - **Evaluate in a limited worker process.** See `sandbox-isolation.md`. It bounds the hang, but not the environment read.

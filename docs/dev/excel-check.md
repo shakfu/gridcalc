@@ -7,9 +7,13 @@ Status: **second run 2026-10-21 in Microsoft Excel for Mac**, `AppVersion` 16.03
 ## Run it
 
 1. Regenerate the workbook after any engine change: `uv run python scripts/excel_check.py build/excel-check.xlsx`.
+
 2. Open it in Excel 365. Several cases need dynamic-array functions, so older versions do not apply. The file has no cached values, so Excel calculates every formula on open.
+
 3. Check `setup` (row 2) is `TRUE`: the text, blank and error inputs are in place.
+
 4. Filter column M for `FALSE`. Each is a disagreement.
+
 5. Record the version (File > Account > About Excel) and each disagreement below. Move the confirmed item in `TODO.md` from "confirm against Excel" to a fix, or close it.
 
 ## Layout
@@ -32,7 +36,9 @@ Array results are joined with `TEXTJOIN`, so no case spills into the next row. T
 These change formula text, so check them by hand:
 
 - On a sheet `Tmp`, enter 1 in A2. On another sheet, enter `=Tmp!A2*2`. Delete `Tmp`. gridcalc rewrites the formula to `=#REF!*2`.
+
 - Enter 5 in Sheet1!A3 and `=sheet1!A3*2` on another sheet. Delete Sheet1 row 2. gridcalc rewrites the formula to `=sheet1!A2*2`, keeping the case as typed.
+
 - After recording the run, select `S3b` alone and insert a row above row 2. Then read `3d-1` on `check`. 40 with the formula unchanged means Excel leaves a 3D reference alone when one sheet of the run gains a row, as gridcalc does. 20 with the formula reading `S3a:S3c!B3` means Excel shifts it.
 
 ## Styles written by gridcalc
@@ -50,6 +56,7 @@ Run 2026-10-09, Microsoft Excel for Mac, `AppVersion` 16.0300 (from `docProps/ap
 The first run had two faults in column M, fixed in `scripts/excel_check.py` since:
 
 - `yf-1` read `FALSE` but agrees exactly. openpyxl writes floats with `%.16g`, so L held 0.16944444444444451 for 0.16944444444444445. L now holds such a value as a formula with all 17 digits.
+
 - `text-8` read `TRUE` but disagrees. `=` ignores case on text, so `1E+20` matched `1e+20`. M now compares text with `EXACT`.
 
 With both corrected, 27 cases disagree:

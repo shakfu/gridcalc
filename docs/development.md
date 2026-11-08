@@ -52,9 +52,13 @@ Tests are pytest, in `tests/`, roughly mirroring the source layout, and run with
 Some suites cross modules rather than mirror one:
 
 - `test_builtins_smoke.py` calls every `BUILTINS` function from EXCEL-mode formula text.
+
 - `test_excel_functions.py` checks Excel function results through `Grid` in EXCEL mode.
+
 - `test_dep_graph.py` compares the dependency graph with a fresh rebuild after each mutating operation, its undo and its redo.
+
 - `test_io_roundtrip.py` checks that values survive save and reload through JSON, CSV, xlsx and pandas.
+
 - `test_save_atomic.py` checks that a save failing part-way leaves the old file intact.
 
 The web frontend's automated layers run against substitutes -- vitest in happy-dom, and a Chromium suite against a mocked bridge -- so `scripts/drive_web.py` (`make web-drive`) exists to drive the shipped bundle against the shipped engine in the real webview, with screenshots. It needs a display and is excluded from `make qa`.

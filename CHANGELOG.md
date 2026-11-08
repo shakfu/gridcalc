@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.12.0]
+
 ### Added
 
 - **Run a workbook as a function of its defined names.** `--set NAME=VALUE` writes an input, `--get NAME` reads an output, and `--inputs cases.json` runs a list of cases, each from the workbook as loaded. `gridcalc.book.Book` is the same from Python. Targets may also be cells, ranges or `Name#` for a spill. Values are JSON, and text inputs are never read as formulas, so an input cannot inject one. A batch writes only the cells that change from one case to the next, so a case costs one recalculation: 111 ms against 212 ms per case on 20,000 formulas. A name defined as a formula is evaluated without writing a scratch cell or recalculating, 9.5 ms against 177 ms. An output named with `--get` that holds an error exits 2, as an `INFEASIBLE` solve does. Without that, a model that broke would report `#REF!` as data and exit 0. Schema: `docs/reference/cli.md`.
@@ -18,19 +20,31 @@
 
 - **`scripts/engine_diff.py`** scores gridcalc and a second engine against Excel's saved values, cell by cell. The second engine is any CLI that accepts `gridcraft-cli`'s `run --cmd` interface. The first run, against GridCraft 0.5.0, found the fixes below (`docs/dev/excel-corpus.md`).
 
+- **`scripts/engine_compare.py` and `scripts/named_io_bench.py`** score gridcalc, GridCraft, pycel and formulas against Excel and time named-input runs (`docs/dev/comparison.md`). Each engine runs under `scripts/proc_guard.py`, which kills its process group past 2 GB or the time limit. An uncapped pycel run exhausted memory and forced a reboot; a time limit alone does not stop that, and killing `uv run` left its Python running.
+
+- **A financial model checked against Excel's own values.** `tests/xlsx/date_model_excel.xlsx` has 2,201 formulas over dates, debt and cash flows, recalculated and saved by Excel for Mac. gridcalc matches all but `XIRR`, 7e-9 off. `scripts/build_date_model.py --excel` rebuilds it.
+
 ### Fixed
 
 - **A whole-column read in a workbook with a cell in the last row hit the 30 s recalc limit.** That cell sets the used extent to row 1048576, so `B:B` read a million positions, each resolving its sheet by name. IronCalc's `INDIRECT.xlsx` took 30-36 s and scored 5 of 104 cells when it stopped; it now takes 1.7 s and scores 104. A range over `TRIM_CELLS` now reads only the cells its sheet stores. A per-sheet extent was the alternative; it would not help a sheet that itself uses the last row.
 
 - **About 1,000 more cells match Excel's saved values.** On the 279 IronCalc and pycel test workbooks, agreement rose from 97.7% to 99.0% of 79,598 cells, and no file lost a match (`docs/dev/excel-corpus.md`). Each fix has a test in `tests/test_compat_*.py`, with Excel's saved value as the expected one.
   - Financial: domain checks in `PMT`, `IPMT`, `PPMT`, `NOMINAL` and `EFFECT`; a fractional `per` and type-1 payments in `IPMT`/`PPMT`; `CUMPRINC` and `CUMIPMT` round their start and end periods. `PRICE` discounts by (E - A)/E, which differs from DSC/E for bases 2 and 3. `TBILLEQ` past 182 days uses Excel's quadratic. `IRR` and `XIRR` fall back to bisection when Newton misses a negative root. `MIRR` accepts rates at or below -1. `XNPV` and `XIRR` validate their dates. `DB` and `DDB` take a fractional life or period.
+
   - Math and engineering: `GCD` and `LCM` reject text and logicals in ranges. The radix conversions had wrong limits: `DEC2OCT` used 8^9, `DEC2HEX` 16^9. `CONVERT` gains prefixed square, cubic and other units. `IMCONJUGATE` keeps a `j` suffix. `MROUND` with an omitted argument is `#N/A`.
+
   - Statistics: `LINEST`, `TREND`, `LOGEST` and `GROWTH` drop a collinear or constant regressor, as Excel documents, instead of giving `#NUM!`. `T.DIST` truncates its degrees of freedom and computes tails without cancellation. The inverse distributions solve to full precision; they stopped once p was within 1e-12, which leaves a tail quantile far from exact.
+
   - `COUNT` skips an error argument, and `COUNTA` counts errors and `=""`. Two tests asserted the opposite, against Excel's saved values in `COUNT.xlsx`; they are corrected.
+
   - Dates: `DAYS360` follows the end-of-February rule; `DAYS` drops the time part first. Two-digit years 30-99 are 19xx, as in Excel; Python's `%y` read 30-68 as 20xx. `WORKDAY` and `NETWORKDAYS` validate their holidays. `DATE` below 0 is `#NUM!`. `DATEVALUE` accepts a time part and `29-Feb-1900`.
+
   - Database functions: a plain text criterion matches as a prefix, as Excel does (`b` matches `balpha`). A numeric header matches its displayed text. `DPRODUCT` of no match is 0.
+
   - Lookup and reference: `XLOOKUP` and `XMATCH` match modes -1 and 1 compare across types in Excel's order (numbers, text, FALSE, TRUE); search modes 2 and -2 binary-search as Excel does. An approximate lookup of a blank matches 0. `INDIRECT` reads relative R1C1 offsets with wrap-around, and whole rows and columns. `ROW` and `COLUMN` pass an argument's error through.
+
   - Text: `TEXTBEFORE` and `TEXTAFTER` handle `match_end`, negative instances and `if_not_found` as Excel does. `TEXT` reads a last section holding `@` as the text section, and drops a comma after a digit placeholder.
+
   - `SLN` with a life of 0 is `#DIV/0!`; it was `#NUM!`.
 
 - **`INDEX` of a whole row spills across, not down.** `INDEX({1,2;3,4},2,0)` returned a one-dimensional array, which spills as a column. Where cells below were filled, an array formula over a row gave `#SPILL!`.
@@ -79,9 +93,13 @@
 
 - **An xlsx save and reload changes nothing in 2,000 real workbooks.** Before, 208 of them changed (`docs/dev/excel-corpus.md`, survey section). The causes:
   - A number format on a cell showing text, a logical or an error was dropped. `=IFERROR(x," ")` lost its `0.00`.
+
   - A name into another workbook (`[1]Data!$A$1`) or onto a missing sheet was dropped. It is kept now as a formula name.
+
   - Explicit black on a font with no colour of its own read as a change of colour.
+
   - An array formula with no saved value lost its style. OpenXLSX returns no value for it, so the reader skipped the cell.
+
   - `singleAccounting` and `doubleAccounting` underlines read as none. The vendored OpenXLSX is patched (`THIRD-PARTY-NOTICES.md`).
 
 - **The range operator takes any two references.** `A1:INDEX(A:A,4)`, `INDEX(...):INDEX(...)` and `A2:OFFSET(A1,6,0)` gave a syntax error, in about 100 cells of the survey. `INDEX` now returns a reference wherever one is read, as in Excel. A side that cannot be a reference, as in `"a":A1`, is still a syntax error.
@@ -96,11 +114,17 @@
 
 - **Functions match Excel's answers in its saved test workbooks.** Each was a mismatch in the corpus run (`docs/dev/excel-corpus.md`).
   - `ROMAN` writes the concise forms 1 to 4; TRUE is 0 and FALSE is 4. It was classic only. Ported from LibreOffice.
+
   - `FLOOR` with significance 0 is `#DIV/0!` for a non-zero number. A tiny significance gives the number, or `#NUM!` once the quotient overflows. `.MATH` takes any non-zero `mode` as set and snaps the quotient at 15 digits, so `FLOOR.MATH(7.1,0.1)` is 7.1.
+
   - Arguments fail left to right: `FLOOR("",1/0)` is `#VALUE!` from its `""`, not `#DIV/0!`.
+
   - Criteria: an error criterion matches that error only, not its text, and so does `"<>#N/A"`. `"TRUE"` matches the logical only. A blank criterion cell means 0. `"<>"` counts an `=""` result, and `">"` with no operand matches nothing.
+
   - `ACCRINT` follows Excel's per-period day counts for every basis, and `calc_method` FALSE before the first interest date is negative. Ported from IronCalc, credited in `THIRD-PARTY-NOTICES.md`. `ACCRINT` and `ACCRINTM` refuse a rate or par of 0 or below.
+
   - `TEXT`: `General` fits 11 characters (`1.23457E+11`, `-2.5E-09`). Elapsed-time codes (`[h]:mm:ss`) work. `mmmmm` is the month's initial. A date code over a serial with no date, or one mixing digit placeholders (`mm###`), is `#VALUE!`. A blank formats as 0.
+
   - Time text follows Excel's limits: `"23:99"` is 24:39 but `"24:99"` stays text, and `"59:9999.0"` is minutes and seconds. `VALUE` of a blank is 0 and of a logical `#VALUE!`.
 
 - **Legacy formulas use implicit intersection, as in Excel.** An xlsx formula saved without the dynamic-array flag reads a range in a one-value position as the one cell on its row or column, Excel's `@`. `=SIN(I:I)` in row 40 is `SIN(I40)`; gridcalc spilled the column. A range passed whole (`SUM(A1:A5)`) is unchanged, and so is an argument of `SUMPRODUCT`, `INDEX` and other array-typed functions. The import marks these cells, JSON keeps the mark, and editing the formula clears it. Export now flags a one-cell formula that evaluates arrays, such as `=SUM(A1:A3*2)`, as a dynamic array, as Excel 365 does. Without the flag, Excel would read it as legacy. `examples/example_excel.xlsx` is regenerated to match.
@@ -109,11 +133,17 @@
 
 - **48 Excel functions work.** A corpus of Excel-saved test workbooks found them missing (`docs/dev/excel-corpus.md`). They gave `#NAME?`.
   - Maths: `COT`, `CSC`, `SEC`, `COTH`, `CSCH`, `SECH`, `ACOT`, `ACOTH`, `SQRTPI`, `FACTDOUBLE`, `SERIESSUM`, `GAUSS`, `ERF.PRECISE`, `ERFC.PRECISE`, `CEILING.PRECISE`, `ISO.CEILING`, `FLOOR.PRECISE`.
+
   - Matrices: `MMULT`, `MDETERM`, `MINVERSE`, `MUNIT`.
+
   - Statistics: `BINOM.DIST.RANGE`, `PERCENTRANK.INC`, `PERCENTRANK.EXC`, `VARA`, `VARPA`, `STDEVA`, `STDEVPA`.
+
   - Finance: `FVSCHEDULE`, `ODDFPRICE`, `ODDLPRICE`.
+
   - Engineering: `BESSELJ`, `BESSELY`, `BESSELI`, `BESSELK`. They use the approximations Excel's values show, so `BESSELJ(0,0)` is 1.00000000283141.
+
   - Text: `REGEXTEST`, `REGEXEXTRACT`, `REGEXREPLACE`, `VALUETOTEXT`, `ARRAYTOTEXT`, `HYPERLINK` (its text only).
+
   - Reference: `SUBTOTAL`, `SORTBY`, `TRIMRANGE`, `CELL` (address, col, row, contents, type), `SINGLE` (Excel's `@`), `ANCHORARRAY`, `ISOMITTED`.
 
   A `LAMBDA` call may now leave out trailing arguments, as in Excel; `ISOMITTED` reports them. The import reads Excel's optional-parameter prefix `_xlop.`. An array whose first element is blank shows 0, not an error.
@@ -138,11 +168,17 @@
 
 - **Seven functions match Excel's answers from the 2026-10-21 `excel-check.xlsx` run.** Each was a disagreement in that run (`docs/dev/excel-check.md`).
   - `"<>3"` criteria count text and blanks. Only a number equal to 3 is excluded, so a text "3" counts too.
+
   - `DCOUNT` gives 0 for an error in a matched row instead of propagating it. `DSUM` still propagates it, as Excel does.
+
   - `AND`, `OR` and `XOR` skip a typed text argument: `=AND("a",TRUE)` is `TRUE`, not `#VALUE!`. Typed `"TRUE"` and `"FALSE"` count as logicals.
+
   - `FREQUENCY` with unsorted bins counts each interval of the sorted bins, and reports it at the bin's own position.
+
   - `TEXT` with a code that has no digit placeholder returns the code: `=TEXT(3,1)` is `"1"`.
+
   - `YEARFRAC` basis 0 has its own end-of-February rules, distinct from `DAYS360`'s. Basis 1 uses 365 or 366 for dates up to a year apart, and averages year lengths only past that. All 20 `yf-*` cases agree.
+
   - A typed number keeps 15 significant digits: `12345678901234567` becomes `12345678901234500` when entered in the TUI or the web view, and so does a number literal in a formula. Values loaded from a file keep every digit.
 
 - **Whole-column and whole-row references (`B:B`, `$A:$C`, `1:1`) work in EXCEL and HYBRID mode.** They gave `#NAME?`, so any xlsx formula such as `VLOOKUP(x,A:B,2,0)` failed on import. Copying, filling, shared formulas and inserting or deleting rows and columns shift them as in Excel; deleting every column of `C:C` gives `#REF!`. PYTHON mode leaves them alone, since `x[1:2]` and `lambda x:x` have the same shape.
@@ -1017,9 +1053,7 @@
 
   Saved models live on `Grid.models: dict[str, OptModel]`, parallel to `Grid.names` for named ranges. `OptModel` (in `src/gridcalc/opt.py`) stores the *spec strings* the user typed (`"A4:A5"`, `"D4:D6"`, `"A1=-inf:10"`) rather than pre-resolved cell coordinates, so range and list syntax round-trip through save/load verbatim and parse errors surface at `:opt run` time, not silently at load. Malformed `models` entries in a loaded JSON file are skipped (not raised) so one bad entry can't block opening the rest of the workbook.
 
-  The optimizer is built from four layers. (1) Vendored lp_solve 5.5 in `thirdparty/lp_solve_5.5/` with a hand-written `CMakeLists.txt` that mirrors the canonical source list from `lpsolve55/ccc`, picks the LUSOL inverse engine (`INVERSE_ACTIVE=INVERSE_LUSOL`), and suppresses lp_solve's own warnings (`-w`) so they don't drown the project's. The static archive `lpsolve_static` is `EXCLUDE_FROM_ALL` and only pulled into the wheel via `_opt`. (2) A minimal nanobind bridge `src/gridcalc/_opt.cpp` exposing one entry point `solve_lp(c, A, sense, rhs, lb, ub, maximize=False, integer_vars=[], binary_vars=[]) -> Solution` with dense matrices, plus the `LE`/`GE`/`EQ` and status constants (`OPTIMAL`, `INFEASIBLE`, `UNBOUNDED`, etc.). `set_int` and `set_binary` are applied after the bounds dispatch (binary clamps bounds to [0,1] so order matters); the bridge rejects a column appearing in both sets. Variable bounds dispatch on infinity-ness to four lp_solve calls (`set_bounds` / `set_lowbo` / `set_upbo` / `set_unbounded`) because `set_bounds(lp, j, -1e30, 1e30)` stores literal-1e30 finite bounds rather than treating them as ±inf, which produces feasible-but-huge optima on otherwise unbounded problems. A post-solve guard normalizes lp_solve's degenerate-presolve case (a free variable unreferenced in any constraint reported as `OPTIMAL` with the objective pinned at 1e30) to `UNBOUNDED`. (3) `src/gridcalc/opt.py` is the Python orchestrator. Its core is a linearity walker over gridcalc's formula AST: cell references that resolve to decision variables become coefficients, every other cell is folded into the constant term using its currently evaluated value, and the whitelisted node set (`Number`, `CellRef`, `BinOp` with `+ - * /`,
-  `UnaryOp`, `Percent`, `Call("SUM", RangeRef|expr)`) rejects
-  everything else with `NotLinear`. The walker is the safety boundary for the optimizer -- nodes that could be a sandbox concern (`Name`, `PyCall`, arbitrary `Call`, ranges outside SUM) never reach any eval path. Constraint extraction splits a comparison-rooted formula into LHS/RHS linear forms and rebalances them into `(coeffs, sense, rhs)`; `<>` is rejected explicitly. Cross-sheet references (`Sheet2!A1`) are rejected up-front via `_check_sheet` rather than silently treated as referring to the active sheet, which would produce wrong coefficients. `solve()` orchestrates the whole pipeline, refusing formula cells as decision variables so the operator never silently destroys live computation, and adding back the objective formula's constant term to the reported objective value. The walker parses cell formulas on-demand when `cell.ast` is `None` (which is the default in LEGACY mode, where the engine evaluates via Python `eval` of transformed text rather than through the AST). (4) The TUI integration in `cmd_opt` is a small dispatcher on subcommands (`def`/`run`/`list`/`undef`/inline); shared parsing lives in `_parse_opt_inline` and shared execution in `_execute_model` so the inline-and-store path and the def/run paths cannot drift apart. The inline form (`:opt max ...`) always stores the model under `default` before running, so the very first invocation captures the LP in the workbook -- a `:w` after that persists it and bare `:opt` re-runs it on reopen. Reference: `examples/example_lp.json` (ships with three pre-saved models -- `default`, `with_caps`, `integer_mip` -- so `:open ... :opt` works out of the box and `:opt run integer_mip` demonstrates an integer solution differing from the continuous relaxation).
+  The optimizer is built from four layers. (1) Vendored lp_solve 5.5 in `thirdparty/lp_solve_5.5/` with a hand-written `CMakeLists.txt` that mirrors the canonical source list from `lpsolve55/ccc`, picks the LUSOL inverse engine (`INVERSE_ACTIVE=INVERSE_LUSOL`), and suppresses lp_solve's own warnings (`-w`) so they don't drown the project's. The static archive `lpsolve_static` is `EXCLUDE_FROM_ALL` and only pulled into the wheel via `_opt`. (2) A minimal nanobind bridge `src/gridcalc/_opt.cpp` exposing one entry point `solve_lp(c, A, sense, rhs, lb, ub, maximize=False, integer_vars=[], binary_vars=[]) -> Solution` with dense matrices, plus the `LE`/`GE`/`EQ` and status constants (`OPTIMAL`, `INFEASIBLE`, `UNBOUNDED`, etc.). `set_int` and `set_binary` are applied after the bounds dispatch (binary clamps bounds to [0,1] so order matters); the bridge rejects a column appearing in both sets. Variable bounds dispatch on infinity-ness to four lp_solve calls (`set_bounds` / `set_lowbo` / `set_upbo` / `set_unbounded`) because `set_bounds(lp, j, -1e30, 1e30)` stores literal-1e30 finite bounds rather than treating them as ±inf, which produces feasible-but-huge optima on otherwise unbounded problems. A post-solve guard normalizes lp_solve's degenerate-presolve case (a free variable unreferenced in any constraint reported as `OPTIMAL` with the objective pinned at 1e30) to `UNBOUNDED`. (3) `src/gridcalc/opt.py` is the Python orchestrator. Its core is a linearity walker over gridcalc's formula AST: cell references that resolve to decision variables become coefficients, every other cell is folded into the constant term using its currently evaluated value, and the whitelisted node set (`Number`, `CellRef`, `BinOp` with `+ - * /`, `UnaryOp`, `Percent`, `Call("SUM", RangeRef|expr)`) rejects everything else with `NotLinear`. The walker is the safety boundary for the optimizer -- nodes that could be a sandbox concern (`Name`, `PyCall`, arbitrary `Call`, ranges outside SUM) never reach any eval path. Constraint extraction splits a comparison-rooted formula into LHS/RHS linear forms and rebalances them into `(coeffs, sense, rhs)`; `<>` is rejected explicitly. Cross-sheet references (`Sheet2!A1`) are rejected up-front via `_check_sheet` rather than silently treated as referring to the active sheet, which would produce wrong coefficients. `solve()` orchestrates the whole pipeline, refusing formula cells as decision variables so the operator never silently destroys live computation, and adding back the objective formula's constant term to the reported objective value. The walker parses cell formulas on-demand when `cell.ast` is `None` (which is the default in LEGACY mode, where the engine evaluates via Python `eval` of transformed text rather than through the AST). (4) The TUI integration in `cmd_opt` is a small dispatcher on subcommands (`def`/`run`/`list`/`undef`/inline); shared parsing lives in `_parse_opt_inline` and shared execution in `_execute_model` so the inline-and-store path and the def/run paths cannot drift apart. The inline form (`:opt max ...`) always stores the model under `default` before running, so the very first invocation captures the LP in the workbook -- a `:w` after that persists it and bare `:opt` re-runs it on reopen. Reference: `examples/example_lp.json` (ships with three pre-saved models -- `default`, `with_caps`, `integer_mip` -- so `:open ... :opt` works out of the box and `:opt run integer_mip` demonstrates an integer solution differing from the continuous relaxation).
 
 - **Headless PTY harness for the curses TUI.** New `tests/integration/` directory with a `TuiSession` fixture that spawns the real `gridcalc` binary attached to a `pty.openpty()` pair, drives it via keystroke bytes written to the master fd, and asserts on ANSI-stripped rendered output. This is the only test layer that exercises curses end-to-end -- input handling, rendering, redraw -- which `MockStdscr`-based unit tests cannot reach. The harness is gated behind a `tty` pytest marker and excluded from the default `make test` run via `addopts = "-m 'not tty'"` in `pyproject.toml`; it is invoked explicitly via the new `make test-tty` target. Auto-skips on platforms without `pty` (Windows) and when the built entry point is missing. Smoke tests currently cover the `:opt` command's OPTIMAL path against `example_lp.json`, bare `:opt` re-running a workbook-saved `default` model, the malformed-command and bad-constraint-cell error paths, and the `:goal` command's full flow against `example_goal.json`.
 
@@ -1045,14 +1079,7 @@
 
   - **Phase 1 — `Sheet` class.** New `Sheet` (`engine.py`) owns `_cells`, `_circular`, and the cursor (`cc`, `cr`). `Grid` gains `sheets: list[Sheet]`, `active: int`, and an `_active` shortcut. `Grid._cells` / `Grid.cells` / `Grid.cc` / `Grid.cr` / `Grid._circular` are now properties that delegate to the active sheet, so all existing single-sheet code keeps working unchanged. Sheet-management API: `add_sheet`, `remove_sheet`, `rename_sheet`, `set_active`, `sheet_names()`. Six obsolete `self.cells = _CellsProxy(self._cells)` rebinds in insert/delete/replicate paths removed (now redundant -- `cells` is a property returning a fresh proxy on each access). 14 new tests in `TestSheetClass`.
 
-  - **Phase 2a — sheet-qualified reference syntax.** Lexer adds `BANG = "!"` token; cellref-shaped tokens followed by `!` now defer to `IDENT` (so `Sheet1!A1` lexes as `IDENT BANG CELLREF`).
-    AST: `CellRef.sheet: str | None` (frozen-dataclass default
-    `None`; equality/hashing preserved). Parser handles
-    `IDENT BANG CELLREF` → sheeted `CellRef`, and
-    `IDENT BANG CELLREF COLON [IDENT BANG] CELLREF` → sheeted
-    `RangeRef`. Cross-sheet ranges (`Sheet1!A1:Sheet2!B5`) are
-    rejected at parse time with `ParseError("cross-sheet ranges are
-    not supported")` -- matches Excel.
+  - **Phase 2a — sheet-qualified reference syntax.** Lexer adds `BANG = "!"` token; cellref-shaped tokens followed by `!` now defer to `IDENT` (so `Sheet1!A1` lexes as `IDENT BANG CELLREF`). AST: `CellRef.sheet: str | None` (frozen-dataclass default `None`; equality/hashing preserved). Parser handles `IDENT BANG CELLREF` → sheeted `CellRef`, and `IDENT BANG CELLREF COLON [IDENT BANG] CELLREF` → sheeted `RangeRef`. Cross-sheet ranges (`Sheet1!A1:Sheet2!B5`) are rejected at parse time with `ParseError("cross-sheet ranges are not supported")` -- matches Excel.
 
   - **Phase 2b — cross-sheet evaluation and recalc.** `Env.get_cell` grows a `sheet` parameter; the engine callback `_cell_lookup_value(c, r, sheet=None)` dispatches via a new `_sheet_cells(sheet)` helper (active sheet when `sheet is None`, looked-up sheet otherwise; unknown sheet returns an empty store so unsheeted-cell semantics apply). `_eval_range` cache key becomes `(sheet, c1, r1, c2, r2)`. The dep graph (`_dep_of`/`_subscribers`/`_volatile`) is now workbook-wide with 3-tuple `(sheet, c, r)` keys; `extract_refs` takes `formula_sheet` and emits fully qualified refs (unsheeted refs inherit the formula's home sheet). `_rebuild_dep_graph`, `_refresh_deps`, `_clear_deps`, `_register_deps`, and `_recalc_topo` updated accordingly. `_recalc_topo` swaps `self.active` per formula during evaluation (then restores) so unsheeted refs in formulas on Sheet2 resolve against Sheet2. Cross-sheet subscriber edges now recalc the dependent formula when the source cell on another sheet changes. 6 new tests in `TestCrossSheet` end-to-end (read, recalc on source change, cross-sheet `SUM` over a range, sheet-keyed subscribers proving same-coord cells on different sheets don't collide).
 
@@ -1083,14 +1110,7 @@
     }
     ```
 
-    `jsonload` accepts both: a v1 file (no `sheets` key, top-level
-    `cells`) loads into the auto-created Sheet1; a v2 file replaces
-    the auto-created sheet with the saved set, restores the
-    `active` sheet by name (defaults to first sheet when missing or
-    unknown). Cell encoding/decoding extracted to
-    `_encode_sheet_rows` / `_load_cells_into_active` helpers shared
-    by both paths. Cross-sheet recalc survives a save/load cycle.
-    5 new tests in `TestJsonV2MultiSheet`.
+    `jsonload` accepts both: a v1 file (no `sheets` key, top-level `cells`) loads into the auto-created Sheet1; a v2 file replaces the auto-created sheet with the saved set, restores the `active` sheet by name (defaults to first sheet when missing or unknown). Cell encoding/decoding extracted to `_encode_sheet_rows` / `_load_cells_into_active` helpers shared by both paths. Cross-sheet recalc survives a save/load cycle. 5 new tests in `TestJsonV2MultiSheet`.
 
   - **`:sheet rename` now rewrites formula text.** Phase 3 left formulas referencing the old name returning empty; phase 4 adds `_rewrite_sheet_prefix` (engine.py) and wires it into `Grid.rename_sheet`. The rewriter walks every formula on every sheet, replaces `<old>!` prefixes with `<new>!`, and invalidates the cached AST so the next recalc re-parses. Skips matches inside double-quoted string literals (gridcalc's only string syntax) and requires a non-identifier boundary on the left so `=MyOther!A1` is unaffected when renaming `Other`. 5 new tests in `TestRewriteSheetPrefix`.
 
@@ -1102,13 +1122,9 @@
 
   - **Multi-sheet example**: ``examples/example_multisheet.json`` is a 3-sheet EXCEL-mode budget model (`Inputs`, `Metrics`, `Summary`) that demonstrates cross-sheet formulas (`=Inputs!B2-Inputs!C2`), cross-sheet aggregates (`=SUM(Inputs!B2:B5)`), and `INDEX`/`MATCH` on Metrics columns to pick the best/worst quarter. Loaded by `TestExampleMultiSheet::test_loads_and_computes` as a smoke test for the multi-sheet load path.
 
-- **Typed per-cell errors with `Cell.err` and `Cell.err_msg`.** New
-  `Cell.err: ExcelError | None` and `Cell.err_msg: str | None` slots
-  capture the Excel error code and a human-readable message for any failed formula. `_store_formula_result` records `ExcelError` returns from EXCEL/HYBRID; `_recalc_legacy` maps validation failures to `#NAME?` (with the validator's reason in `err_msg`) and `eval` exceptions to `#VALUE!` (with `TypeName: msg` in `err_msg`). An `ExcelError` returned through LEGACY's `eval()` (e.g. from a `VLOOKUP` returning `#N/A`) is now stored verbatim instead of being flattened to NaN. Errors propagate through `Cell.copy_from` / `snapshot()` so undo/redo preserves them. TUI rendering: `fmtcell` shows the error code (e.g. `#VALUE!`) right-aligned in the cell, and the status bar appends the `err_msg` when the cursor is on an error cell. New `ExcelError.CIRC = "#CIRC!"` distinguishes structural cycles from generic `#VALUE!`; all three cycle-flagging sites (`_recalc_legacy`, EXCEL/HYBRID fixed-point, `_recalc_topo` unresolved-closure path) now set `cl.err = ExcelError.CIRC`. 10 new tests across `TestCodeBlockError`, `TestCellError`, `TestCircularError`.
+- **Typed per-cell errors with `Cell.err` and `Cell.err_msg`.** New `Cell.err: ExcelError | None` and `Cell.err_msg: str | None` slots capture the Excel error code and a human-readable message for any failed formula. `_store_formula_result` records `ExcelError` returns from EXCEL/HYBRID; `_recalc_legacy` maps validation failures to `#NAME?` (with the validator's reason in `err_msg`) and `eval` exceptions to `#VALUE!` (with `TypeName: msg` in `err_msg`). An `ExcelError` returned through LEGACY's `eval()` (e.g. from a `VLOOKUP` returning `#N/A`) is now stored verbatim instead of being flattened to NaN. Errors propagate through `Cell.copy_from` / `snapshot()` so undo/redo preserves them. TUI rendering: `fmtcell` shows the error code (e.g. `#VALUE!`) right-aligned in the cell, and the status bar appends the `err_msg` when the cursor is on an error cell. New `ExcelError.CIRC = "#CIRC!"` distinguishes structural cycles from generic `#VALUE!`; all three cycle-flagging sites (`_recalc_legacy`, EXCEL/HYBRID fixed-point, `_recalc_topo` unresolved-closure path) now set `cl.err = ExcelError.CIRC`. 10 new tests across `TestCodeBlockError`, `TestCellError`, `TestCircularError`.
 
-- **Code-block exec failures surfaced via `Grid.code_error`.** New
-  `Grid.code_error: str | None` captures the exception type and
-  message when a user code block fails to load. Previously `contextlib.suppress(Exception)` silently dropped exec failures in both `_recalc_legacy` (engine.py:948) and `_build_py_registry` (engine.py:1109, HYBRID's `py.*` gateway), leaving the user with NaN cells and no diagnostic. Both sites now `try`/`except`, store the message, and clear it on success / no-code. The TUI status bar appends `[CODE ERR: <msg>]` whenever `g.code_error` is set, so the failure is visible until the user fixes the block. `contextlib` import dropped (no remaining uses).
+- **Code-block exec failures surfaced via `Grid.code_error`.** New `Grid.code_error: str | None` captures the exception type and message when a user code block fails to load. Previously `contextlib.suppress(Exception)` silently dropped exec failures in both `_recalc_legacy` (engine.py:948) and `_build_py_registry` (engine.py:1109, HYBRID's `py.*` gateway), leaving the user with NaN cells and no diagnostic. Both sites now `try`/`except`, store the message, and clear it on success / no-code. The TUI status bar appends `[CODE ERR: <msg>]` whenever `g.code_error` is set, so the failure is visible until the user fixes the block. `contextlib` import dropped (no remaining uses).
 
 - **Persistent "SANDBOX OFF" banner in the status row.** When the sandbox is disabled (`GRIDCALC_SANDBOX=0` or `sandbox = false` in config), the top status row renders a red-on-default reverse-bold `SANDBOX OFF` indicator right-aligned over the existing chrome. The user has continuous on-screen evidence that loaded code is running unrestricted; previously there was no indication after the trust prompt closed.
 
@@ -1120,8 +1136,7 @@
 
 - **`requires` field accepts version specifiers.** `load_modules` now parses each spec as `name`, `name==1.2.3`, `name>=1.0`, `name<=`, `name>`, `name<`, or `name~=`. Version is checked against `importlib.metadata.version(name)`; mismatches surface as `'name': installed X does not satisfy >=Y` errors. Bare names keep prior behavior. Stdlib modules with no distribution metadata report `metadata not found` when pinned. New `_parse_requirement`, `_version_tuple`, `_check_version` helpers in `sandbox.py`; sites that classified raw `requires` strings (`FileInfo` blocked / side-effect lists) now strip the spec first. 8 new tests across `TestLoadModules` and `TestParseRequirement`.
 
-- **CLI accepts `.xlsx` files directly.** `gridcalc model.xlsx` dispatches to `Grid.xlsxload` (the OpenXLSX-backed C++ path) instead of `jsonload`. Detection is by extension match. Sandbox trust prompt is skipped for xlsx (no code-block surface). Help
-  string updated to ``Usage: gridcalc <sheet.json | sheet.xlsx>``.
+- **CLI accepts `.xlsx` files directly.** `gridcalc model.xlsx` dispatches to `Grid.xlsxload` (the OpenXLSX-backed C++ path) instead of `jsonload`. Detection is by extension match. Sandbox trust prompt is skipped for xlsx (no code-block surface). Help string updated to ``Usage: gridcalc <sheet.json | sheet.xlsx>``.
 
 - **Per-recalc range materialisation cache.** `Env._range_cache` (evaluator.py) memoises the materialised `Vec` for each ``(c1, r1, c2, r2)`` range encountered during a single recalc pass. `_eval_range` checks the cache before walking cells; subsequent references to the same range reuse the result. Topological recalc evaluates in dep order so source cells finalise before any consumer reads them — cache liveness is bounded by the closure pass and remains sound. The legacy fixed-point `_recalc_formula` clears the cache between iterations because values can change across passes. Hit rate on range-heavy sheets is ~10×; on a 25K-cell range-heavy benchmark this cuts full recalc 871 ms → 259 ms (-70%) and surgical edits 23 ms → 10 ms (-57%).
 
@@ -1133,16 +1148,7 @@
 
   - **Phase 1 — shape API on `Vec`** (`engine.py`): new `is_2d`, `rows`, `shape`, `at(r, c)` (1-based), `row(i)`, `col(j)`, `iter_rows()`. `__repr__` now shows shape: `Vec[2x3]([...])`. `__iter__`/`__len__`/ `__getitem__` keep flat semantics so existing `SUM`/`AVG`/etc. consumers stay correct. A 1D `Vec` is a column vector (shape `(n, 1)`). 11 new tests in `TestVecShapeAPI`.
 
-  - **Phase 2 — shape preservation through arithmetic + persistence.** `Vec._binop`/`_rbinop`/`__neg__`/`__abs__` and the evaluator's `_vec_apply2`/`_vec_apply1` now forward `cols` whenever inputs share or imply a shape. Mismatched 2D shapes emit per-element `#VALUE!`
-    instead of silently zip-pairing. New `Cell.arr_cols: int | None`
-    slot; `_store_formula_result` stores `result.cols` alongside
-    `arr`, and `_cell_lookup_value` rebuilds `Vec(cl.arr, cols=cl.arr_cols)`.
-    All ~12 `cl.arr = ...` write sites updated to keep `arr_cols` in
-    lockstep. JSON format unchanged (saves cell *text*, not computed
-    arrays — recalc rebuilds shape from formulas on load).
-    Ship gate: `=INDEX(A1:B2 + 1, 2, 2)` now picks the bottom-right of
-    a 2D arithmetic result (was broken: `cols` dropped through `+`). 8
-    new tests in `TestVecShapePreservation`.
+  - **Phase 2 — shape preservation through arithmetic + persistence.** `Vec._binop`/`_rbinop`/`__neg__`/`__abs__` and the evaluator's `_vec_apply2`/`_vec_apply1` now forward `cols` whenever inputs share or imply a shape. Mismatched 2D shapes emit per-element `#VALUE!` instead of silently zip-pairing. New `Cell.arr_cols: int | None` slot; `_store_formula_result` stores `result.cols` alongside `arr`, and `_cell_lookup_value` rebuilds `Vec(cl.arr, cols=cl.arr_cols)`. All ~12 `cl.arr = ...` write sites updated to keep `arr_cols` in lockstep. JSON format unchanged (saves cell *text*, not computed arrays — recalc rebuilds shape from formulas on load). Ship gate: `=INDEX(A1:B2 + 1, 2, 2)` now picks the bottom-right of a 2D arithmetic result (was broken: `cols` dropped through `+`). 8 new tests in `TestVecShapePreservation`.
 
   - **Phase 3 — TRANSPOSE + reshape consumers (12 new functions).** `TRANSPOSE` (1D column → 1×n row, 2D row/col swap, round-trip correct), `CHOOSEROWS`/`CHOOSECOLS` (1-based index lists with negative-from-end, accept `Vec`/list of indices via `_normalize_indices`), `TOROW`/`TOCOL` (flatten with `ignore` flags for blanks/errors and `scan_by_column` order; `TOCOL` returns a 1D column vector), `WRAPROWS`/`WRAPCOLS` (reshape 1D into 2D with target row/col length; pad short final chunks `#N/A` by default), `EXPAND` (pad to target shape; smaller target → `#VALUE!`), `TAKE`/`DROP` (positive from start, negative from end, along rows + cols), `HSTACK`/`VSTACK` (proper row interleaving + concatenation, mismatched dims pad `#N/A` to the widest/tallest). 20 new tests in `TestReshape2D`. Ship gate: `=INDEX(TRANSPOSE(A1:C2), 1, 2) == 4` end-to-end.
 
@@ -1354,9 +1360,7 @@
 
 ### Added
 
-- **Three formula modes** (`EXCEL`, `HYBRID`, `LEGACY`): Each spreadsheet now carries an explicit mode controlling how formulas are evaluated. `EXCEL` uses a strict Excel-compatible grammar (no `eval()`, no Python). `HYBRID` layers a `py.<name>(...)` gateway on top of the Excel grammar so functions defined in the code block remain reachable while keeping the Python boundary visible in every formula that crosses it. `LEGACY` preserves the original Python-eval path with full numpy/pandas/list-comprehension
-  support. Mode is persisted in the JSON file as `"mode": "EXCEL"|"HYBRID"|
-  "LEGACY"`; files without the field load as `LEGACY` for back-compat.
+- **Three formula modes** (`EXCEL`, `HYBRID`, `LEGACY`): Each spreadsheet now carries an explicit mode controlling how formulas are evaluated. `EXCEL` uses a strict Excel-compatible grammar (no `eval()`, no Python). `HYBRID` layers a `py.<name>(...)` gateway on top of the Excel grammar so functions defined in the code block remain reachable while keeping the Python boundary visible in every formula that crosses it. `LEGACY` preserves the original Python-eval path with full numpy/pandas/list-comprehension support. Mode is persisted in the JSON file as `"mode": "EXCEL"|"HYBRID"| "LEGACY"`; files without the field load as `LEGACY` for back-compat.
 
 - **Excel formula evaluator** (`gridcalc.formula` package): New lexer, recursive-descent parser, and tree-walking evaluator implementing Excel-style grammar -- operators (`^` right-assoc, `&` concat, `<>`, `<=`, `>=`, `%` postfix), error literals (`#DIV/0!`, `#N/A`, `#NAME?`, `#REF!`, `#VALUE!`, `#NUM!`, `#NULL!`), error propagation through arithmetic, range broadcasting, named ranges, and the `py.*` gateway in `HYBRID`. Replaces `eval()` for `EXCEL` and `HYBRID` cells; `LEGACY` cells still use `eval()`.
 
@@ -1364,8 +1368,7 @@
 
 - **xlsx interop** (`:xlsx save [file]`, `:xlsx load [file]`): Read and write `.xlsx` files via openpyxl. `:xlsx load` translates Excel formulas into the gridcalc EXCEL grammar, switches the grid to `EXCEL` mode, and auto-loads the Excel function library. `:xlsx save` writes computed values to a single worksheet. Sheet-qualified refs (`Sheet1!A1`), `INDIRECT`, and multi-sheet workbooks are not supported.
 
-- **`:mode [excel|hybrid|legacy]`**: Show or set the current mode.
-  Switching validates every formula with the target evaluator first and refuses the change with a one-line error pointing at the first offender if anything fails. `EXCEL` also rejects switches that would leave a code block in place.
+- **`:mode [excel|hybrid|legacy]`**: Show or set the current mode. Switching validates every formula with the target evaluator first and refuses the change with a one-line error pointing at the first offender if anything fails. `EXCEL` also rejects switches that would leave a code block in place.
 
 - **Auto-loaded Excel function library**: When mode is `EXCEL` or `HYBRID`, the `xlsx` library (`IF`, `IFERROR`, `AND`, `OR`, `NOT`, `ROUND`, `AVERAGE`, `MEDIAN`, `SUMIF`, `COUNTIF`, `AVERAGEIF`, `VLOOKUP`, `HLOOKUP`, `INDEX`, `MATCH`, `LEFT`, `RIGHT`, `MID`, `LEN`, `TRIM`, `UPPER`, `LOWER`, `SUBSTITUTE`, etc.) is loaded automatically. Previously the library required a manual `g.load_lib("xlsx")`.
 
@@ -1397,9 +1400,7 @@
 
 ### Fixed
 
-- **String-returning formulas no longer display as `nan`.** Added
-  `Cell.sval: str | None` slot, populated by `_store_formula_result`
-  when a formula returns a string or bool. The TUI render path (`fmtcell`, status bar) prefers `sval` over `val` for FORMULA cells. Bool results also write `val=1/0` so aggregate functions still see a number. `IF(A1>0, "yes", "no")`, `="x" & "y"`, and `=1=1` all render correctly now.
+- **String-returning formulas no longer display as `nan`.** Added `Cell.sval: str | None` slot, populated by `_store_formula_result` when a formula returns a string or bool. The TUI render path (`fmtcell`, status bar) prefers `sval` over `val` for FORMULA cells. Bool results also write `val=1/0` so aggregate functions still see a number. `IF(A1>0, "yes", "no")`, `="x" & "y"`, and `=1=1` all render correctly now.
 
 - **`tui.py:1906`** pre-existing `assert headers is not None` replaced with an explicit None guard. Resolves the lone `S101` lint finding the repo had been carrying.
 

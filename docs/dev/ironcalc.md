@@ -11,8 +11,11 @@ l123 lists "not a compute-core reimplementation" as a non-goal. `l123-engine` wr
 gridcalc owns its engine:
 
 - `engine.py`: 3.9k lines, including topological recalc.
+
 - `formula/`: 2k lines of lexer, parser, evaluator.
+
 - `libs/xlsx.py`: 6.8k lines, ~426 Excel names (`docs/function_coverage.md`).
+
 - C++ only for xlsx I/O (`_core.cpp`, OpenXLSX) and HiGHS (`_opt.cpp`).
 
 ## Comparison
@@ -32,13 +35,17 @@ gridcalc owns its engine:
 ## Costs of gridcalc's approach
 
 1. Excel semantics are open-ended: coercion, error propagation, date-system quirks, locale parsing.
+
 2. Evaluation runs in Python: a scalar formula costs 6-8 us, against 0.4-0.8 us in IronCalc. See the benchmark below.
+
 3. xlsx passes through gridcalc's cell model. Features it lacks (styles, conditional formats) are likely lost on round-trip *(inference)*.
 
 ## Costs of l123's approach
 
 1. HYBRID and PYTHON modes need the engine to call into Python mid-evaluation. A closed Rust engine without custom-function hooks blocks this.
+
 2. Goal seek and sweeps re-evaluate many times. IronCalc's Python API offers only a full `evaluate()` per change, and returns formulas as text, not an AST.
+
 3. The Lotus-to-Excel rewrite loses information wherever Lotus and Excel semantics differ.
 
 ## Alternative framing
@@ -50,7 +57,9 @@ A hybrid is possible: IronCalc (`pip install ironcalc`) for EXCEL mode only, the
 ## Open questions
 
 - Is the engine the product, or a means to the solver and CLI?
+
 - Are conformance tests checked against Excel-computed values or hand-written expectations? The differential run found 16 semantic bugs the suite did not catch.
+
 - Does IronCalc's Rust API expose incremental recalc or the AST? The Python API (0.8.3) exposes neither. Custom functions: see below.
 
 ## User-defined functions
@@ -69,13 +78,17 @@ Named LAMBDAs also work as `MAP` arguments, bind through `LET`, and survive an x
 Not supported: a function written in Python, Rust or JavaScript.
 
 - Built-in functions are a closed `enum Function` (`base/src/functions/mod.rs`, 496 variants), dispatched by `evaluate_function`.
+
 - The parser turns an unknown name into `Node::NamedFunctionKind`. Evaluation (`base/src/model.rs:700`) resolves it against LET-bound variables, then defined-name LAMBDAs. Anything else is `#NAME?`. No other lookup exists.
+
 - No registration API exists in `base/` or `bindings/`.
+
 - The request is [#342](https://github.com/ironcalc/IronCalc/issues/342), "support for custom functions", open since 2025-05-09 with no replies. The broader [#65](https://github.com/ironcalc/IronCalc/issues/65), "Embedding and extending IronCalc", has been open since 2024-05-03 and is described as research.
 
 For gridcalc:
 
 - A LAMBDA library could cover formula-level helpers. It cannot cover `py.*`, which calls arbitrary Python such as numpy or pandas.
+
 - A fork could add a host callback where `NamedFunctionKind` falls through to `#NAME?`. Full re-evaluation means no dependency tracking is needed. Volatility, error mapping, and holding the GIL during `evaluate()` would need design *(inference; not prototyped)*.
 
 ## Differential testing
@@ -87,14 +100,19 @@ For gridcalc:
 EXCEL mode, IronCalc 0.8.3 Python bindings, CPython 3.14.7, x86_64 Linux (Ryzen 9 PRO 6950H), 2026-09-30. Best of 3 runs. `n` is the formula count. Reproduce with `uv run --with ironcalc python scripts/bench_recalc.py -e gridcalc -e ironcalc -r 3`. Both engines give the same values on every workload.
 
 - **chain**: cell k is `=<cell k-1>+1`. One dependency chain of depth n.
+
 - **flat**: n constants and n formulas `=X*2+1`, each reading one constant. Depth 1.
+
 - **ranges**: 1000 constants in `A1:A1000` and n formulas `=SUM(A1:A1000)+k`.
 
 Columns:
 
 - **load**: write every cell, then recalc. gridcalc: `setcells_bulk`. IronCalc: one `set_user_input` per cell, then `evaluate()`.
+
 - **full**: recalc with nothing changed.
+
 - **edit-root**: set the root constant. Every formula depends on it.
+
 - **edit-leaf**: set the last formula. Nothing depends on it.
 
 IronCalc's Python API has no incremental recalc, so each edit is `set_user_input` plus a full `evaluate()`.
@@ -117,7 +135,9 @@ IronCalc's Python API has no incremental recalc, so each edit is `set_user_input
 Findings:
 
 - Scalar full recalc: IronCalc is 10-15x faster, 0.4-0.8 us per formula against gridcalc's 6-8 us.
+
 - Range full recalc: gridcalc is about 3x faster. It evaluates a shared range once per pass; IronCalc appears to re-read it per formula *(inference from timings)*.
+
 - Edits: gridcalc recalcs only the dirty closure, so a leaf edit takes 0.05-0.11 ms against IronCalc's 4.4-4737 ms. A root edit on chain 100k is the one edit case IronCalc wins, 0.08 s against 0.44 s.
 
 ### gridcalc range workload, before and after
@@ -151,7 +171,9 @@ Full recalc of 20k `=X*2+1` formulas, microseconds per formula, best of 9. Same 
 What remains in that 7.3 us, from timers inside `_recalc_topo`:
 
 - Graph rebuild: about 2.9 us. A full `recalc()` always rebuilds, because undo, sort and the CLI write cells directly (`docs/topological.md`).
+
 - `evaluate()`: about 1.7 us. With a function call it is 4.5 us (`=ROUND(X/3,2)`).
+
 - Kahn ordering, the loop, the result store and spill check: about 2.5 us.
 
 Load parses each formula, which a recalc does not. Parsing costs 6-18 us per formula, about half of it in the tokenizer.
@@ -161,4 +183,5 @@ Evaluation is 13-41% of a full recalc across four workloads (`=A1+1`, `=X*2+1`, 
 ## Sources
 
 - [l123](https://github.com/duane1024/l123)
+
 - [IronCalc site](https://www.ironcalc.com), [repo](https://github.com/ironcalc/IronCalc), [blog](https://blog.ironcalc.com/), [roadmap](https://www.ironcalc.com/roadmap.html), [PR #1420](https://github.com/ironcalc/IronCalc/pull/1420)

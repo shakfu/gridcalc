@@ -7,6 +7,7 @@ Status: **triaged, 2026-09-28.** Crash and semantic fixes shipped (CHANGELOG, Un
 ## Corpus
 
 - **calls**: 431 gridcalc function names x 35 argument patterns over a fixed grid, 15,085 formulas. Numbers, text, fractions, date serials and signed integers in A:E.
+
 - **fixtures**: 48 formula cells from `tests/xlsx/*.xlsx` and `examples/*.xlsx`. The fixtures come from openpyxl, so no file carries Excel-computed values.
 
 Each formula runs in a worker subprocess. The parent kills it past 2 GB RSS or 30 s and records a crash. Both engines share one worker, so memory one engine leaves allocated counts against the other.
@@ -30,7 +31,9 @@ Excluding arity, `#N/IMPL!` and `#NAME?`, 1,472 disagreements across 296 functio
 ## gridcalc: fixed
 
 - `FACT`, `COMBINA`, `PERMUTATIONA`, `MULTINOMIAL` raised `OverflowError` out of `setcell`.
+
 - `SEQUENCE(45292, 45416)` exhausted memory.
+
 - `=VEC(A1:A10, 2)` crashed the spill code: formulas could call the `Vec` class.
 
 ## gridcalc: semantic fixes
@@ -50,8 +53,11 @@ All 16 items from the first triage are fixed (CHANGELOG, Unreleased). A third ru
 The fixes exposed four latent gridcalc bugs, also fixed:
 
 - `HEX2DEC(-4)` gave -4: `int("-4", 16)` accepts a sign. The old `"-4.0"` failed only by accident.
+
 - `FILTER` ignored an `include` of the wrong length and took text in it as TRUE.
+
 - `SORT` ignored an invalid `sort_order`, and a 1D `sort_index`.
+
 - `TOCOL`/`TOROW` accepted any `ignore`.
 
 ## gridcalc: still open
@@ -61,15 +67,25 @@ None.
 ## IronCalc: candidate upstream reports
 
 1. **Panics** (index out of bounds): `SUBSTITUTE` with 2 arguments (`base/src/functions/text/common.rs:1104`) and `XNPV` with 2 arguments (`base/src/functions/financial/mod.rs:936`).
+
 2. **1900 date system.** `DAY(3)` gives 2, and `EDATE` and `YEARFRAC` are one day off near the start of 1900. Excel serial 3 is 1900-01-03.
+
 3. **Typed logicals ignored** by `STDEV`, `VAR`, `AVEDEV`, `DEVSQ`, `SKEW.P`. Excel's documentation counts them.
+
 4. **`MINA` ignores text in references.** Excel counts it as 0.
+
 5. **`ISNUMBER(A1:A10)`** gives FALSE; no lifting.
+
 6. **`DATE(3, 1, 4)`** gives `#NUM!`. Excel adds 1900 to years below 1900.
+
 7. **`WEEKDAY`, `YEAR`, `MONTH`, `DAY` of a serial below 1** give `#NUM!`. Excel accepts serial 0.
+
 8. **`COUNTIF`/`SUMIF` over a one-cell range** give `#VALUE!`.
+
 9. **`LARGE(3, 1)`** gives `#NUM!`.
+
 10. **`IM*` functions** return `"inf"` and `"NaNNaNi"` as text.
+
 11. **`#N/IMPL!`** for 238 functions under some argument shape, including `ROUND`, `LEN`, `VLOOKUP`. No function gives it for every pattern, so it is an argument-shape gap *(inference)*.
 
 ## Unresolved

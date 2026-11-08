@@ -6,28 +6,49 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ## High
 
+- [ ] **Score gridcalc on real workbooks nobody tuned it on.** Excel for Mac is installed, so files can be given Excel's own values (`scripts/build_date_model.py` has the AppleScript). Excel can recalculate and save the Sheetpedia files, which lost their values when openpyxl re-saved them, and convert the Enron `.xls` files to `.xlsx`. Run 200-500 of them through `engine_compare.py`, which caps each engine's memory. This tests whether the 99.0% corpus rate carries over: on 7 Damodaran models gridcalc scored 81.0% to GridCraft's 95.8% (`docs/dev/comparison.md`). It also ranks the gaps below by how many real cells each costs.
+
+- [ ] **Iterative calculation.** Excel computes circular references when `<calcPr iterate="1">` is set: 100 iterations or a change under 0.001 by default (`iterateCount`, `iterateDelta`). gridcalc reads neither and gives `#CIRC!`. 6 of 7 Damodaran models set it, and it cost 1,515 of their 8,002 cells. Circular interest-and-cash links are common in financial models. Results depend on Excel's calculation order, so gridcalc can match the converged value but not every digit; decide how to score that. The survey above shows how common it is beyond one author.
+
 - [ ] **Corpus mismatches still open** (`docs/dev/excel-corpus.md`). Largest first:
   - Date text without a year (`"1/2"`) should read as that day this year, as Excel does; it gives `#VALUE!`.
+
   - A legacy formula keeps its rule only through copy and fill; pasting its text from the clipboard makes it dynamic. Excel keeps the `@` in the text instead.
+
   - About 800 cells remain (99.0% agree, 2026-11-05). Open, each needs a decision beyond one function:
     - `YEARFRAC` (20 cells) and `WEEKNUM` (5) check basis/return_type before an error argument; the evaluator propagates the first error argument before the function runs.
+
     - `TIMEVALUE("24:00")` is 0 and `DATEVALUE` takes hours of 24 and above; `dates.parse_time` rejects them, and it is shared with arithmetic.
+
     - Percent text (`"1600%"`) does not convert in `_to_number` (`BASE_DECIMAL.xlsx`, 4 cells).
+
     - A CSE array formula saved over a fixed range spills its full result instead of keeping to that range (`stats.xlsx`, 2 cells).
+
     - `ROW(B:B)` is the full column while `B:B<>""` is trimmed to the used extent, so the shapes differ (`ROW_COLUM.xlsx`).
+
     - `INDEX(A1:A3,0.4)` (Excel `#VALUE!`), `MATCH(blank,...,-1)`, `XLOOKUP` with an omitted lookup value in binary mode, 4 `TEXT` format codes.
-    - Solver precision: `XIRR` (12 cells), `IRR` (12), `ODDFYIELD` (3), `CUMPRINC` (2) differ from Excel near 1e-9 relative; gridcalc's roots have the smaller residual.
+
+    - Solver precision: `XIRR` (12 cells), `IRR` (12), `ODDFYIELD` (3), `CUMPRINC` (2) differ from Excel near 1e-9 relative; gridcalc's roots have the smaller residual. `tests/test_excel_saved_models.py` has a strict xfail for the `XIRR` case, 7e-9 off.
+
     - Not engine bugs: `CHAR` of a control character (openpyxl reads `_x0001_`), `TODAY()` in templates, a `week()` UDF.
+
   - `HYPGEOM.DIST`'s cumulative form sums one term per success and has no closed form here; a sample of a billion runs that long.
+
   - `BESSELJ` order 1 and up, for |x| >= 8, differs from Excel in the sixth digit. gridcalc's value is the more accurate one.
+
   - `A1#` on a cell that does not spill should be `#REF!`.
+
   - `BINOM.DIST` with 1E30 trials is `#NUM!` in Excel; gridcalc gives 0. Excel saved no value for 1E10, so the limit is unknown.
+
 - [ ] **Real-workbook survey gaps** (`docs/dev/excel-corpus.md`, survey section). By files: conditional formatting (178), data validation (118), comments (50), hyperlinks (30). The reference union `(A1:B2,C1:D2)` does not parse.
+
 - [ ] **Hidden and filtered rows.** `SUBTOTAL` 1-11 skips rows a filter hides, and 101-111 also those hidden by hand; `AGGREGATE` options 1, 3, 5 and 7 likewise. gridcalc reads neither, so IronCalc's `tables.xlsx` has 35 mismatches. Needs per-sheet state in xlsx, JSON, insert/delete and undo.
-- [ ] **Tables:** editing a header cell should rename the column and rewrite the formulas that name it, as Excel does. A bare `[Qty]` inside a table is not read; `[@Qty]` is.
+
+- [ ] **Tables:** editing a header cell should rename the column and rewrite the formulas that name it, as Excel does. A bare `[Qty]` inside a table is not read; `[@Qty]` is. `Table167[[#Totals],[ERP (T12m)]]` gives `#VALUE!` (Damodaran `ERPNov26.xlsx`, `ERPbymonth.xlsx`).
+
 - [ ] **Evaluator speed on large lambda formulas.** A `LET` over 12,516 rows with `BYROW`, `FILTER` and `MAP` per row (Sheetpedia `846882d...`) still reaches the 30 s limit. Element-wise operators and `IF` over Vecs dominate the profile.
+
 - [ ] **OpenXLSX reads about 7 us per cell**: a 1M-cell sheet takes 7 s before any Python runs.
-- [ ] **No Excel-saved real workbooks to check results against.** Sheetpedia lost its saved values when openpyxl re-saved it. The original Enron files are `.xls`, which gridcalc cannot read.
 
 ## Medium
 
@@ -55,9 +76,13 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ### Performance
 
+- [ ] **A named-input case recalculates 6.6x slower than GridCraft.** 173 ms against 26 ms on 18,033 formulas (`docs/dev/comparison.md`). A sweep of 100k cases would take about 4.8 h against 45 min. Worth it only for sweep-sized workloads; the cost breakdown is under Low > Performance.
+
 - [ ] **Whole-column paths that still cost a million rows.** Each is correct but slow on Excel's grid:
   - Fill down (`Api.fill`) over a header-selected column writes every row, as Excel does.
+
   - The solver's `_precedents` (`opt.py`) expands a range through `extract_refs`, one key per cell.
+
   - In PYTHON mode, one cell near row 1048576 sets the used extent, so a range over `TRIM_CELLS` (`_expand_ranges`, named-range injection) reads every position to it. EXCEL and HYBRID ranges read only stored cells.
 
 - [ ] **Undo memory is bounded by entry count, not size.** A structural entry copies every sheet's cells: 6.4 MB on a 3-sheet workbook with 25k cells, so 64 entries can hold about 400 MB. Cap the stack by bytes if real workbooks reach that.
@@ -68,10 +93,15 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 - [ ] **xlsx styles: what is left.** Fonts, solid fills, borders, alignment, number formats, merged cells and row heights now round-trip (see CHANGELOG). Open:
   - No command sets a font, fill, border, alignment or merge; they arrive only from a file.
+
   - Neither view draws row heights, and the web view does not draw rotation. Variable row heights need the web grid's row positions as a prefix sum over 1M rows.
+
   - Pattern and gradient fills, diagonal borders and font effects (superscript, outline, shadow) are not modelled; saving over a file with them still asks.
+
   - Clearing a cell keeps its `xstyle` but drops bold, italic, underline and number format. Excel keeps all of them.
+
   - Selecting or editing inside a merged area treats each cell separately.
+
   - Not yet opened in Excel: run `scripts/style_check.py` (`docs/dev/excel-check.md`).
 
 ### Security
@@ -90,6 +120,7 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 - [ ] **Check the prior art for named-input/output runs before claiming the feature is distinctive.** SharePoint Excel Services published named cells as parameters, Coherent Spark marks I/O names by prefix (`Xi_`/`Xo_`, unverified), and `formulas` compiles a workbook into a callable with `compile(inputs, outputs)`. gridcraft-cli can script it with `run --cmd`, reading a name through `formulas.evaluate`. Its `cell.set` ignores a name and writes the active cell with exit 0. `--print` and `range.setValues` reject names, an error output exits 0, and text inputs starting with `=` become formulas. pycel takes addresses only; names must be resolved through `excel.defined_names`, which needs openpyxl < 3.1. Corpus and timing results, 2026-11-07: `docs/dev/comparison.md`. Open:
   - Check the Spark convention against its documentation.
+
   - Find out whether gridcraft-cli's `--script` can reset state between cases. If they pass, gridcalc's case rests on the CLI, exit codes and correctness, and the docs should say that.
 
 - [ ] **Build the docs site in CI.** The site itself is done (`mkdocs.yml`, 30+ pages under `docs/`, `make docs` / `docs-serve` / `docs-deploy`), and publishing stays a deliberate manual `make docs-deploy` -- the Makefile says why. The gap is that `ci.yml` never runs `mkdocs build --strict`, so a broken cross-reference between pages lands on `main` and is only found by whoever next deploys. Adding the `docs` group and one `make docs` step to CI is the whole fix; it does not commit or push anything.
@@ -135,7 +166,6 @@ Measurements for this section: `docs/dev/ironcalc.md`. Per-formula figures are f
 ### Refactoring & code quality
 
 - [ ] **`Cell.ast` cache invalidates by text equality.** For very large sheets where many formulas share text, hashing the text would cut cache lookups; not a priority but worth measuring.
-
 
 - [ ] **Confirm whether a row insert on one sheet shifts a 3D reference.** gridcalc leaves `Jan:Mar!B2` unchanged. The `3d-1` hand check in `docs/dev/excel-check.md` settles it.
 

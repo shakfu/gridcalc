@@ -268,12 +268,15 @@ jobs:
           path: dist/
           retention-days: 30
 
-  # A tag publishes to the GitHub release only. PyPI needs a manual run
-  # with the "Publish to PyPI" toggle set (`publish-manual` below).
+  # A tag push, or a manual run on a tag ref, uploads to the GitHub release.
+  # PyPI needs a manual run with the "Publish to PyPI" toggle set
+  # (`publish-manual` below).
   github-release:
     name: Upload to GitHub release
     needs: collect-artifacts
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: >-
+      github.ref_type == 'tag' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       contents: write

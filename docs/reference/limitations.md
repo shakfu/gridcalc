@@ -12,6 +12,8 @@ Known gaps, each of them deliberate rather than pending:
 
 - **A range over 65536 cells is read only to the workbook's last used row and column.** The rest is blank. Results match Excel except where the result's shape shows: `=A:A` spills the used rows, not 1048576, and `=ROWS(A:A*1)` counts them. Counting blanks and indexing past the used rows still answer for the whole range. One cell far down the sheet makes every such range read to it, and recalculation slows to match.
 
+- **Iterative calculation** (`:iterate`) is ignored in PYTHON mode. Each sweep runs every cell that reads a cycle, as Excel does, so a large model downstream of a small cycle costs up to `count` times a normal recalc.
+
 - **Whole-column and whole-row references** (`A:A`, `1:1`) work in EXCEL and HYBRID mode only.
 
 - **Structured references** (`Sales[Qty]`) read tables from an xlsx. gridcalc cannot create or rename a table, and editing a header cell does not rename its column. A bare `[Qty]` without the table name is not read; `[@Qty]` is. A reference into another workbook (`[1]!Sales[Qty]`) is a syntax error.

@@ -494,3 +494,52 @@ def test_sort_orders_labels_by_value_not_marker() -> None:
     g.setcell(0, 1, "a")
     sort_rows(g, UndoManager(), 0, 0, 0, 1, 0, False)
     assert [g.cells[0][r].text for r in range(2)] == ["a", '"b']
+
+
+# -- :iterate -----------------------------------------------------------
+
+
+def _cycle_grid() -> Grid:
+    g = _grid()
+    g.setcell(0, 0, "=0.5*A1+1")
+    return g
+
+
+def test_iterate_reports_turns_on_and_off() -> None:
+    from gridcalc.formula.errors import ExcelError
+
+    g = _cycle_grid()
+    r = _run(g, "iterate")
+    assert r.ok and r.message == "iterate: off" and not r.changed
+    assert g._cells[(0, 0)].err is ExcelError.CIRC
+    r = _run(g, "iterate", "on")
+    assert r.changed and g.iterate == (100, 0.001)
+    assert abs(g._cells[(0, 0)].val - 2) < 0.002
+    assert _run(g, "iterate", "on").changed is False
+    _run(g, "iterate", "off")
+    assert g.iterate is None and g._cells[(0, 0)].err is ExcelError.CIRC
+
+
+def test_iterate_takes_a_count_and_delta() -> None:
+    g = _cycle_grid()
+    _run(g, "iterate", "3")
+    assert g.iterate == (3, 0.001) and g._cells[(0, 0)].val == 1.75
+    _run(g, "iterate", "40", "1e-9")
+    assert g.iterate == (40, 1e-9)
+
+
+@pytest.mark.parametrize("args", [("0",), ("40000",), ("5", "-1"), ("lots",), ("5", "x")])
+def test_iterate_rejects_bad_limits(args) -> None:
+    g = _cycle_grid()
+    r = _run(g, "iterate", *args)
+    assert r.ok is False and g.iterate is None
+
+
+def test_iterate_is_undoable() -> None:
+    from gridcalc.formula.errors import ExcelError
+
+    g, u = _cycle_grid(), UndoManager()
+    shared.run("iterate", g, u, ["on"])
+    assert u.undo(g) and g.iterate is None
+    assert g._cells[(0, 0)].err is ExcelError.CIRC
+    assert u.redo(g) and g.iterate == (100, 0.001)

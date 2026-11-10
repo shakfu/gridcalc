@@ -8,8 +8,6 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 - [ ] **Read the values cached for external links.** A formula with `[N]Sheet!A1` now shows the value Excel saved, so it stays fixed when a local input changes. Excel recalculates it from `xl/externalLinks/externalLinkN.xml`, which caches each linked cell. Reading those would make such cells live. 60 of 306 Sheetpedia files have links.
 
-- [ ] **Iterative calculation.** Excel computes circular references when `<calcPr iterate="1">` is set: 100 iterations or a change under 0.001 by default (`iterateCount`, `iterateDelta`). gridcalc reads neither and gives `#CIRC!`. 6 of 7 Damodaran models set it, and it cost 1,515 of their 8,002 cells. Only 11 of 306 untuned Sheetpedia files set it (`docs/dev/comparison.md`). Circular interest-and-cash links are common in financial models. Results depend on Excel's calculation order, so gridcalc can match the converged value but not every digit; decide how to score that.
-
 - [ ] **Corpus mismatches still open** (`docs/dev/excel-corpus.md`). Largest first:
   - Date text without a year (`"1/2"`) should read as that day this year, as Excel does; it gives `#VALUE!`.
 
@@ -55,6 +53,10 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 ### Optimization
 
 - [ ] **Sensitivity for quadratic models.** Withheld today: a QP's duals do not carry the shadow-price reading the report describes. HiGHS does return them, so this is a question of deciding what they mean to a spreadsheet user, not of plumbing.
+
+### Iterative calculation
+
+- [ ] **Re-run the Damodaran models.** They were the case for this (1,515 of 8,002 cells `#CIRC!`), but are not in the working tree. Compare with a tolerance near `iterateDelta`: Excel's saved values depend on how many recalculations it ran.
 
 ### Web frontend
 

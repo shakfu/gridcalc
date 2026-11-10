@@ -31,6 +31,8 @@ JSON, version 2. Version 1 files (single sheet, top-level `cells`) still load.
 
 - **models**: persisted LP/MIP definitions -- see [Optimization](../guide/optimization.md).
 
+- **iterate**: `{"count": 100, "delta": 0.001}` turns on iterative calculation for circular references, as Excel's option of that name: at most `count` sweeps, stopping when no cell changes by more than `delta`. Absent means off, and a cycle gives `#CIRC!`. EXCEL and HYBRID mode only.
+
 - **code**: the per-workbook Python module string, editable with `:e`.
 
 - **format**: `width`, the terminal column width in characters, and optional `fmt`, the workbook default number format set by `:gf` (one of `L R I G D $ % *`).

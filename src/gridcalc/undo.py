@@ -90,6 +90,7 @@ class UndoEntry:
         "sheet",
         "names",
         "mode",
+        "iterate",
         "book",
         "active",
         "tables",
@@ -112,6 +113,8 @@ class UndoEntry:
         # revert a later `:name` that has its own entry.
         self.names: list[NamedRange] | None = None
         self.mode: Mode | None = None
+        # Restored with `names`: None there means iteration is off.
+        self.iterate: tuple[int, float] | None = None
         # Whole-workbook snapshot (see the module docstring), or None.
         self.book: list[_SheetSnap] | None = None
         self.active: Sheet | None = None
@@ -134,6 +137,7 @@ def _capture(g: Grid, like: UndoEntry) -> UndoEntry:
     if like.names is not None:
         e.names = _copy_names(g.names)
         e.mode = g.mode
+        e.iterate = g.iterate
     if like.book is not None:
         e.book = _book(g)
         e.active = g._active
@@ -178,6 +182,7 @@ def _restore(g: Grid, e: UndoEntry) -> None:
         g.fmt = e.fmt
     if e.names is not None:
         g.names = _copy_names(e.names)
+        g.iterate = e.iterate
     if e.mode is not None:
         g.mode = e.mode
         g._apply_mode_libs()
@@ -210,11 +215,13 @@ class UndoManager:
     def save_global(self, g: Grid) -> None:
         """Snapshot workbook metadata only: default format, names and mode.
 
-        For edits that touch no cell (`:gformat`, `:name`, `:unname`, `:mode`).
+        For edits that touch no cell (`:gformat`, `:name`, `:unname`, `:mode`,
+        `:iterate`).
         """
         e = _new_entry(g, None)
         e.names = _copy_names(g.names)
         e.mode = g.mode
+        e.iterate = g.iterate
         self._push(e)
 
     def save_grid(self, g: Grid) -> None:
@@ -222,6 +229,7 @@ class UndoManager:
         e = _new_entry(g, None)
         e.names = _copy_names(g.names)
         e.mode = g.mode
+        e.iterate = g.iterate
         e.book = _book(g)
         e.active = g._active
         e.tables = _copy_tables(g.tables)

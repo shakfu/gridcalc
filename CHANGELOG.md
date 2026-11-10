@@ -4,6 +4,8 @@
 
 ### Added
 
+- **Iterative calculation.** A workbook that sets Excel's `iterate` option computes its circular references instead of giving `#CIRC!`. `:iterate on`, `:iterate off` or `:iterate COUNT [DELTA]` sets it, in either view and with undo. The limits are read from the xlsx `calcPr` and saved to xlsx and JSON (`"iterate": {"count": 100, "delta": 0.001}`). gridcalc follows Excel's rules as measured: one row-major sweep over every cell in or reading a cycle, a single stop for all cycles, a new round of sweeps on every recalc, and a start from each cell's current value (on load, the one Excel saved). On a fixture recalculated by Excel, all 24 formulas match exactly. On the 11 Sheetpedia files that set the option, agreement rose from 798 to 1,216 of 1,281 cells. Measurements: `docs/dev/iteration.md`. Sweeping by dependency order would converge in fewer sweeps but give different digits from Excel's.
+
 - **`scripts/sheetpedia_sample.py`, `scripts/excel_resave.py` and `scripts/excel_gaps.py`** repeat the untuned-workbook run: draw a seeded sample, have Excel for Mac recalculate and save it, and group gridcalc's root mismatches by cause (`docs/dev/remaining-gaps.md`).
 
 ### Fixed

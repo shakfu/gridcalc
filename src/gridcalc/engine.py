@@ -166,6 +166,23 @@ def _vec_elem_op(a: Any, b: Any, op: Callable[[float, float], Any]) -> Any:
 _UNSET: Any = object()
 
 
+def _iter_state(cl: Any) -> tuple[Any, ...] | None:
+    """What a cell's result is, for comparing one iteration with the next."""
+    return None if cl is None else (cl.val, cl.err, cl.sval, cl.arr)
+
+
+def _iter_change(a: tuple[Any, ...] | None, b: tuple[Any, ...] | None) -> float:
+    """How far a cell moved in one iteration: the numeric change, else 0 or infinity."""
+    if a == b:
+        return 0.0
+    if a is None or b is None:
+        return math.inf
+    x, y = a[0], b[0]
+    if a[1:] == b[1:] and type(x) is float and type(y) is float:
+        return 0.0 if x != x and y != y else abs(x - y)
+    return math.inf
+
+
 class Vec:
     # Memos for `numbers`, `first_error`, `rounded` and `exact_index`. A range
     # Vec is cached and shared by every formula reading that range in one
@@ -1747,6 +1764,31 @@ def _xlsx_date1904(root: Any) -> bool:
     return pr is not None and pr.get("date1904", "").lower() in ("1", "true")
 
 
+def iterate_setting(count: Any, delta: Any) -> tuple[int, float] | None:
+    """``(count, delta)`` within Excel's limits, or None if either is invalid."""
+    try:
+        n, d = int(count), float(delta)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return (n, d) if 1 <= n <= 32767 and math.isfinite(d) and d >= 0 else None
+
+
+def _xlsx_iterate(root: Any) -> tuple[int, float] | None:
+    """The workbook's iterative-calculation setting from ``calcPr``, or None if off."""
+    pr = None if root is None else root.find(f"{_XLSX_NS}calcPr")
+    if pr is None or pr.get("iterate", "").lower() not in ("1", "true"):
+        return None
+    return iterate_setting(pr.get("iterateCount", "100"), pr.get("iterateDelta", "0.001"))
+
+
+def _xlsx_iterate_patch(data: bytes, iterate: tuple[int, float]) -> bytes:
+    """Turn on iterative calculation in the ``calcPr`` of an ``xl/workbook.xml``."""
+    if data.count(b"<calcPr") != 1 or b"iterate" in data:
+        raise ValueError("unexpected xl/workbook.xml layout; iteration setting not written")
+    attrs = f' iterate="1" iterateCount="{iterate[0]}" iterateDelta="{iterate[1]!r}"'
+    return data.replace(b"<calcPr", b"<calcPr" + attrs.encode())
+
+
 def _xlsx_read_defined_names(
     root: Any, sheet_order: list[str]
 ) -> list[tuple[str, str | None, int, int, int, int]]:
@@ -2113,9 +2155,10 @@ def _xlsx_postprocess(
     layout: dict[str, tuple[list[tuple[int, int, int, int]], dict[int, float]]] | None = None,
     tables: dict[str, list[bytes]] | None = None,
     freeze: dict[str, tuple[int, int]] | None = None,
+    iterate: tuple[int, float] | None = None,
 ) -> None:
-    """Add defined names, column widths, dynamic arrays and `XStyle`s to the
-    xlsx at ``path``.
+    """Add defined names, column widths, dynamic arrays, `XStyle`s and the
+    iteration setting to the xlsx at ``path``.
 
     OpenXLSX has no API for a defined name, a sheet's default column width or
     an array formula. The schema places ``definedNames`` directly after
@@ -2162,10 +2205,13 @@ def _xlsx_postprocess(
     marker = b"</sheets>"
     with zipfile.ZipFile(path, "w") as z:
         for info, data in members:
-            if info.filename == "xl/workbook.xml" and names_xml:
-                if data.count(marker) != 1 or b"<definedNames" in data:
-                    raise ValueError("unexpected xl/workbook.xml layout; names not written")
-                data = data.replace(marker, marker + names_xml.encode("utf-8"))
+            if info.filename == "xl/workbook.xml" and (names_xml or iterate):
+                if names_xml:
+                    if data.count(marker) != 1 or b"<definedNames" in data:
+                        raise ValueError("unexpected xl/workbook.xml layout; names not written")
+                    data = data.replace(marker, marker + names_xml.encode("utf-8"))
+                if iterate:
+                    data = _xlsx_iterate_patch(data, iterate)
             elif info.filename in parts:
                 sheet = parts[info.filename]
                 data = _xlsx_widths_patch(data, cw, widths.get(sheet, {}))
@@ -2778,6 +2824,9 @@ class Grid:
         # The workbook's default font as (face, size), from an xlsx; None is
         # whatever the writer uses (OpenXLSX: Calibri 12).
         self.font: tuple[str, float] | None = None
+        # Iterative calculation as (max iterations, max change), from xlsx
+        # `calcPr`; None gives a circular reference `#CIRC!`.
+        self.iterate: tuple[int, float] | None = None
         self.filename: str | None = None
         self.names: list[NamedRange] = []
         self.tables: list[Table] = []
@@ -2823,6 +2872,8 @@ class Grid:
         # A scratch cell `_used_extent` ignores, such as `cli.run_eval`'s.
         self._extent_skip: tuple[str, int, int] | None = None
         self._volatile: set[tuple[str | None, int, int]] = set()
+        # Cells in or downstream of a cycle at the last recalc.
+        self._cycle_cells: set[tuple[str | None, int, int]] = set()
         # Anchors currently rejected with #SPILL!. A blocked anchor has no
         # dependency on the cell blocking it, so any edit re-attempts every
         # blocked anchor -- cheap, since the set is normally empty.
@@ -3379,6 +3430,8 @@ class Grid:
         dirty3: set[tuple[str | None, int, int]] | None = (
             None if dirty is None else {(active_name, c, r) for (c, r) in dirty}
         )
+        if dirty3 is not None and self.iterate is not None:
+            dirty3 |= self._cycle_cells
         deadline = time.monotonic() + RECALC_TIME_LIMIT
         for _ in range(_MAX_SPILL_PASSES):
             spill_changed = self._recalc_topo(dirty3, deadline)
@@ -4381,7 +4434,7 @@ class Grid:
             if cl is not None and cl.type == SPILL and cl.spill_parent is not None:
                 k = (k[0], *cl.spill_parent)
             if k in running:
-                return False
+                return self.iterate is not None  # iterating: read its last value
             if k in pending:
                 outer = (
                     self.active,
@@ -4406,10 +4459,14 @@ class Grid:
 
         env.cell_value = lookup
         env.cell_spill_value = spill_lookup
+        # Kahn leaves out each cycle and everything that reads one.
+        stuck = {k for k in closure.difference(order) if not isinstance(k, RangeKey)}
         try:
             for key in order:
                 if key in pending and not isinstance(key, RangeKey):
                     run(key)
+            if stuck and self.iterate is not None:
+                self._iterate_cycles(stuck, self.iterate, run, env, deadline)
         finally:
             self.active = saved_active
 
@@ -4419,7 +4476,9 @@ class Grid:
         closure_cells: set[tuple[str | None, int, int]] = {
             k for k in closure if not isinstance(k, RangeKey)
         }
-        unresolved = closure_cells.difference(order)
+        # Excel sweeps a cycle on every recalc, not only when its inputs change.
+        self._cycle_cells = (self._cycle_cells - closure_cells) | stuck
+        unresolved = set() if self.iterate is not None else stuck
         # Update each affected sheet's `_circular` set (per-sheet 2-tuples).
         affected_sheets: set[str | None] = {s for (s, _c, _r) in closure_cells}
         for s_name in affected_sheets:
@@ -4448,6 +4507,41 @@ class Grid:
                     circ_cl.err_msg = None
 
         return spill_changed
+
+    def _iterate_cycles(
+        self,
+        stuck: set[tuple[str | None, int, int]],
+        iterate: tuple[int, float],
+        run: Callable[[tuple[str | None, int, int]], None],
+        env: Any,
+        deadline: float | None,
+    ) -> None:
+        """Evaluate the cells in or downstream of a cycle as Excel's iteration does.
+
+        Each sweep runs every such cell once, in sheet, row, column order, each
+        reading the latest value of the others. Sweeps stop when no cell moved
+        by ``iterate[1]``, or after ``iterate[0]``. A cell starts from its
+        current value; one with none, or ``#CIRC!``, starts from 0. Measured in
+        Excel 16.114: `docs/dev/iteration.md`.
+        """
+        from .formula.errors import ExcelError
+
+        count, delta = iterate
+        pos: dict[str | None, int] = {s.name: i for i, s in enumerate(self.sheets)}
+        order = sorted(stuck, key=lambda k: (pos.get(k[0], -1), k[2], k[1]))
+        cells = [self._cell_at(k) for k in order]
+        for cl in cells:
+            if cl is not None and (cl.err is ExcelError.CIRC or cl.val != cl.val):
+                self._store_formula_result(cl, 0.0)
+        for _ in range(count):
+            change = 0.0
+            for k, cl in zip(order, cells, strict=True):
+                before = _iter_state(cl)
+                env.clear_range_cache()
+                run(k)
+                change = max(change, _iter_change(before, _iter_state(cl)))
+            if change < delta or (deadline is not None and time.monotonic() > deadline):
+                break
 
     def _cell_at(self, key: tuple[str | None, int, int]) -> Cell | None:
         """Resolve a workbook-level dep key to its Cell, if any."""
@@ -4978,6 +5072,7 @@ class Grid:
         self.names = []
         self.tables = []
         self.models = {}
+        self.iterate = None
         self.libs = []
         self.requires = []
         self.code = ""
@@ -5075,6 +5170,13 @@ class Grid:
                     f"name {nr.name} reads as a cell reference, since columns now reach XFD;"
                     " rename it"
                 )
+
+        it = d.get("iterate")
+        self.iterate = None
+        if isinstance(it, dict):
+            self.iterate = iterate_setting(it.get("count"), it.get("delta"))
+            if self.iterate is None:
+                self.load_warnings.append("iterate setting is invalid; cycles give #CIRC!")
 
         # LP model definitions (see `:opt def NAME ...`). Stored as a
         # mapping `name -> {sense, objective, vars, constraints, bounds?}`
@@ -5327,6 +5429,9 @@ class Grid:
         if self.models:
             out["models"] = {name: m.to_json() for name, m in self.models.items()}
 
+        if self.iterate is not None:
+            out["iterate"] = {"count": self.iterate[0], "delta": self.iterate[1]}
+
         out["format"] = {"width": self.cw}
         if self.font:
             out["format"]["font"] = {"name": self.font[0], "size": self.font[1]}
@@ -5433,6 +5538,7 @@ class Grid:
         # 1462 days separate the 1904 and 1900 epochs. A value under 1 is a
         # time of day, which has no epoch.
         date_shift = 1462.0 if _xlsx_date1904(root) else 0.0
+        self.iterate = _xlsx_iterate(root)
 
         # Each value is stored by its xlsx type, not re-parsed as input text:
         # the string "00123" stays text and "TRUE" the boolean stays a boolean.
@@ -5481,6 +5587,16 @@ class Grid:
         for (sname, c, r), saved in _xlsx_read_saved_values(filename, root, external).items():
             ext = self.sheets[sheet_index[sname]]._cells[(c, r)]
             ext.cached = saved
+        if self.iterate is not None:
+            # A cycle iterates from its current values, as in Excel: those it saved.
+            formulas = {
+                (s.name, c, r)
+                for s in self.sheets
+                for (c, r), cl in s._cells.items()
+                if cl.type == FORMULA
+            }
+            for (sname, c, r), saved in _xlsx_read_saved_values(filename, root, formulas).items():
+                self._store_formula_result(self.sheets[sheet_index[sname]]._cells[(c, r)], saved)
         self.font, xstyled, layouts = _xlsx_read_formatting(filename, root)
         for sname, (merges, heights) in layouts.items():
             if sname in sheet_index:
@@ -5688,6 +5804,7 @@ class Grid:
                 layout,
                 table_parts,
                 {sh.name: (sh.tc, sh.tr) for sh in self.sheets},
+                self.iterate,
             )
 
         return self._save_via(filename, write)

@@ -106,7 +106,7 @@ Root mismatches by cause:
 | `IF` without a false branch gives 0, not FALSE | 18 | 2 |
 | `RAND`, `NOW`; `CHAR` on Mac uses Mac Roman | 84 | 12 |
 
-11 files set `iterate="1"`. 61% of their 1,281 cells agree.
+11 files set `iterate="1"`. 61% of their 1,281 cells agree; with iterative calculation, 94.9% (`iteration.md`).
 
 Two harness bugs inflated the first count: openpyxl reads a `[h]:mm` value as a `timedelta`, and rounds every date and time to the millisecond (CHANGELOG).
 

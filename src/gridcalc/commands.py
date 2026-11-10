@@ -45,6 +45,7 @@ from .engine import (
     Mode,
     NamedRange,
     col_name,
+    iterate_setting,
     label_value,
     ref,
 )
@@ -458,6 +459,33 @@ def _mode(ctx: Context) -> Result:
     return ok(f"mode: {parsed.name.lower()}", changed=True)
 
 
+def _iterate(ctx: Context) -> Result:
+    """Set iterative calculation: `on`, `off` or COUNT [DELTA]; report it with no argument."""
+    g = ctx.grid
+    a, b = ctx.arg(0).strip().lower(), ctx.arg(1).strip()
+
+    def show(it: tuple[int, float] | None) -> str:
+        text = "off" if it is None else f"{it[0]} sweeps, stop under {it[1]:g}"
+        return f"iterate: {text}" + (" (python mode ignores it)" if g.mode == Mode.PYTHON else "")
+
+    if not a:
+        return ok(show(g.iterate))
+    if a == "off":
+        new = None
+    elif a == "on":
+        new = (100, 0.001)  # Excel's defaults
+    else:
+        new = iterate_setting(a, b or "0.001")
+        if new is None:
+            return fail("use on, off, or COUNT [DELTA]: COUNT 1-32767, DELTA >= 0")
+    if new == g.iterate:
+        return ok(show(new))
+    ctx.undo.save_global(g)
+    g.iterate = new
+    g.recalc()
+    return ok(show(new), changed=True)
+
+
 def _title(ctx: Context) -> Result:
     """Freeze rows/columns at the cursor (the TUI's `:tv`/`:th`/`:tb`/`:tn`)."""
     g = ctx.grid
@@ -620,6 +648,16 @@ COMMANDS: tuple[Command, ...] = (
             ),
         ),
         run=_mode,
+    ),
+    Command(
+        name="iterate",
+        title="Iterate circular references",
+        group="Data",
+        args=(
+            Arg("count", "on, off, or the most sweeps (1-32767)", required=False),
+            Arg("delta", "stop when no cell changes by more (default 0.001)", required=False),
+        ),
+        run=_iterate,
     ),
     Command(
         name="title",

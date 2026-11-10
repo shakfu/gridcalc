@@ -69,7 +69,7 @@ Engine support already exists for nearly all of this; the gap is `Api` surface
 | Column width | Yes, per-column pixels | diverges from `:width` (uniform chars) by design |
 | `:opt` LP/MIP, `:goal`, sensitivity, sweep | Yes | -- |
 | Bar chart from range | Yes (inline SVG) | depth only |
-| Shared registry (`:b :f :gf :ir :ic :dr :dc :name :names :unname :sort :mode :title :recalc`) | Yes, by name | enforced by test |
+| Shared registry (`:b :f :gf :ir :ic :dr :dc :name :names :unname :sort :mode :iterate :title :recalc`) | Yes, by name | enforced by test |
 | Replicate (`replicatecell`) beyond fill down/right | Partial (fill only) | `[A]` `[C]` |
 | Move row/column (`swaprow`/`swapcol`) | No | registry entry + drag gesture |
 | Object editor for Vec/ndarray/DataFrame cells (`tui/objedit.py`) | No | `[A]` `[C]` larger |

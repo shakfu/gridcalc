@@ -11,6 +11,7 @@ Search        /pattern   n   N
 Sheets        :sheets (picker)   :sheet [name|N|add|del|rename|move]
 Names         :name <n> [range]   :names   :unname <n>
 Modes         :mode [excel|hybrid|python]
+              :iterate [on|off|COUNT [DELTA]]  iterate circular references
 Import/export :csv save/load   :xlsx save/load   :pd save/load
 Optimization  :opt   :opt def   :opt run   :opt sens   :opt sweep
               :opt list   :opt undef
@@ -69,6 +70,6 @@ A failed save, in any format, leaves the existing file unchanged.
 
 ## Undo
 
-`u` undoes cell edits, formatting, structural commands (`:dr`, `:ic`, `:sort`, `:clear`), `:opt` and `:goal` results, sheet add/delete/rename/move, `:name`, `:unname` and `:mode`. Undoing a command that rewrote formulas on several sheets restores all of them.
+`u` undoes cell edits, formatting, structural commands (`:dr`, `:ic`, `:sort`, `:clear`), `:opt` and `:goal` results, sheet add/delete/rename/move, `:name`, `:unname`, `:mode` and `:iterate`. Undoing a command that rewrote formulas on several sheets restores all of them.
 
 Not undoable: `:e`, `:width`, `:opt def` and `:opt undef`.

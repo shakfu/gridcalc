@@ -6,9 +6,9 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ## High
 
-- [ ] **Score gridcalc on real workbooks nobody tuned it on.** Excel for Mac is installed, so files can be given Excel's own values (`scripts/build_date_model.py` has the AppleScript). Excel can recalculate and save the Sheetpedia files, which lost their values when openpyxl re-saved them, and convert the Enron `.xls` files to `.xlsx`. Run 200-500 of them through `engine_compare.py`, which caps each engine's memory. This tests whether the 99.0% corpus rate carries over: on 7 Damodaran models gridcalc scored 81.0% to GridCraft's 95.8% (`docs/dev/comparison.md`). It also ranks the gaps below by how many real cells each costs.
+- [ ] **Read the values cached for external links.** A formula with `[N]Sheet!A1` now shows the value Excel saved, so it stays fixed when a local input changes. Excel recalculates it from `xl/externalLinks/externalLinkN.xml`, which caches each linked cell. Reading those would make such cells live. 60 of 306 Sheetpedia files have links.
 
-- [ ] **Iterative calculation.** Excel computes circular references when `<calcPr iterate="1">` is set: 100 iterations or a change under 0.001 by default (`iterateCount`, `iterateDelta`). gridcalc reads neither and gives `#CIRC!`. 6 of 7 Damodaran models set it, and it cost 1,515 of their 8,002 cells. Circular interest-and-cash links are common in financial models. Results depend on Excel's calculation order, so gridcalc can match the converged value but not every digit; decide how to score that. The survey above shows how common it is beyond one author.
+- [ ] **Iterative calculation.** Excel computes circular references when `<calcPr iterate="1">` is set: 100 iterations or a change under 0.001 by default (`iterateCount`, `iterateDelta`). gridcalc reads neither and gives `#CIRC!`. 6 of 7 Damodaran models set it, and it cost 1,515 of their 8,002 cells. Only 11 of 306 untuned Sheetpedia files set it (`docs/dev/comparison.md`). Circular interest-and-cash links are common in financial models. Results depend on Excel's calculation order, so gridcalc can match the converged value but not every digit; decide how to score that.
 
 - [ ] **Corpus mismatches still open** (`docs/dev/excel-corpus.md`). Largest first:
   - Date text without a year (`"1/2"`) should read as that day this year, as Excel does; it gives `#VALUE!`.
@@ -21,8 +21,6 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
     - `TIMEVALUE("24:00")` is 0 and `DATEVALUE` takes hours of 24 and above; `dates.parse_time` rejects them, and it is shared with arithmetic.
 
     - Percent text (`"1600%"`) does not convert in `_to_number` (`BASE_DECIMAL.xlsx`, 4 cells).
-
-    - A CSE array formula saved over a fixed range spills its full result instead of keeping to that range (`stats.xlsx`, 2 cells).
 
     - `ROW(B:B)` is the full column while `B:B<>""` is trimmed to the used extent, so the shapes differ (`ROW_COLUM.xlsx`).
 
@@ -45,6 +43,8 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 - [ ] **Hidden and filtered rows.** `SUBTOTAL` 1-11 skips rows a filter hides, and 101-111 also those hidden by hand; `AGGREGATE` options 1, 3, 5 and 7 likewise. gridcalc reads neither, so IronCalc's `tables.xlsx` has 35 mismatches. Needs per-sheet state in xlsx, JSON, insert/delete and undo.
 
 - [ ] **Tables:** editing a header cell should rename the column and rewrite the formulas that name it, as Excel does. A bare `[Qty]` inside a table is not read; `[@Qty]` is. `Table167[[#Totals],[ERP (T12m)]]` gives `#VALUE!` (Damodaran `ERPNov26.xlsx`, `ERPbymonth.xlsx`).
+
+- [ ] **Evaluator speed on large array formulas.** Sheetpedia `802559d...` holds 7,676 copies of `AGGREGATE(15,6,ROW(H2:H10000)-ROW(H2)+1/(B2:B10000=Q$1)/...)`: about 380M element operations. A full recalc takes 232 s and matches Excel in every cell; under the 30 s limit most give `#CALC!`. At about 0.6 us per element no Python loop fits, so this needs native or vectorised element-wise operators. The C++ entry under Low weighs that.
 
 - [ ] **Evaluator speed on large lambda formulas.** A `LET` over 12,516 rows with `BYROW`, `FILTER` and `MAP` per row (Sheetpedia `846882d...`) still reaches the 30 s limit. Element-wise operators and `IF` over Vecs dominate the profile.
 

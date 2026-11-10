@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/sheetpedia_sample.py`, `scripts/excel_resave.py` and `scripts/excel_gaps.py`** repeat the untuned-workbook run: draw a seeded sample, have Excel for Mac recalculate and save it, and group gridcalc's root mismatches by cause (`docs/dev/remaining-gaps.md`).
+
+### Fixed
+
+- **`IF` with no false branch gives FALSE, not 0.** `IF(c,x,)`, with the branch present but empty, stays 0. `SMALL(IF(A2:A9=x,ROW(A2:A9)))` depends on this: `SMALL` skips FALSE but ranked the zeros, so it gave 0.
+
+- **Dates before 1900-03-01 format as Excel shows them.** Excel counts a 1900-02-29, so serial 1 is a Sunday; `TEXT(4,"ddd")` gave Thu for Excel's Wed. Serial 60 shows as 29-Feb-1900 and serial 0 as 00-Jan-1900. A format previously showed both as plain numbers, which also gave `TEXT(0.25,"hh")` `#VALUE!`, since every time without a date is on day 0.
+
+- **An exact `VLOOKUP`, `HLOOKUP` or `MATCH` of a blank cell is `#N/A`.** It matched the first blank cell in the range. Whether Excel matches a blank against 0 is untested; gridcalc still does not.
+
+  With the two fixes above, these add about 680 cells on 306 untuned Sheetpedia workbooks and 50 on the IronCalc and pycel corpus, with no file worse (`docs/dev/comparison.md`).
+
+- **A legacy array formula keeps to the range it was entered over.** Excel saves a Ctrl+Shift+Enter formula as `t="array"` with a `ref` and no dynamic-array flag (`cm`). gridcalc spilled its full result, so a one-cell `INDEX(A1:F1,,MAX(..))` gave `#SPILL!` and `stats.xlsx`'s `LINEST` over three cells spilled past them. Now the result fills the range as in Excel: a single value or a one-row or one-column array repeats, and cells past the array are `#N/A`. The range survives xlsx and JSON saves; editing the formula makes it dynamic.
+
+- **A formula that reads another workbook keeps Excel's saved value.** That was true only of one that did not parse; `VLOOKUP(B1,'[2]Data'!A1:B9,2)` parses, so it ran against a sheet gridcalc does not have and gave `#N/A` or `#REF!`. Reading the link caches in `xl/externalLinks` would let local edits recalculate; that is in TODO. On the Sheetpedia sample this adds 3,184 cells, of which about 2,066 are the link formulas themselves.
+
+- **Date-time text converts to a number.** `"06/24/2022 12:38"+0` and `"5-February-2024"*1` gave `#VALUE!`; a date or a time alone already converted. A date followed by a time, and a day, full month name and year with dashes, now read as Excel reads them. On the Sheetpedia sample this adds 821 cells.
+
+- **A crafted array range no longer exhausts memory at load.** The cells an array formula covers were listed one by one from its `ref`, so `A1:XFD1048576` meant 1.7e10 entries. A file now lists at most 2^20; past that, the formula gives `#NUM!`.
+
+- **Element-wise comparison and division over arrays are 1.7x faster.** A comparison rounded both operands to 15 digits by formatting them as text; two floats further apart than 2e-14 relative now compare directly, with the same answer. Arithmetic on logicals takes the fast path numbers already had. Measured on `AGGREGATE(15,6,ROW(..)/(B2:B10000=x)/..)`: 66 ms to 38 ms per formula.
+
+- **`scripts/excel_corpus.py` misread saved times.** openpyxl reads a `[h]:mm` value as a `timedelta`, which never compared equal, and rounds every date and time to the millisecond, which the 1e-9 tolerance rejected. Date and time values now compare within half a millisecond.
+
 ## [0.12.0]
 
 ### Added

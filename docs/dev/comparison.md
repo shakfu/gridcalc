@@ -79,3 +79,41 @@ The 279 IronCalc and pycel test workbooks (`excel-corpus.md`). The cell set is `
 Each GridCraft case sets every input, so it needs no reset between cases. Whether `--script` can reset is not checked. On `big`, GridCraft computes a case 6.6x faster than gridcalc, and pycel 1.4x faster. One process per case, with its own load, GridCraft is still 2.2x faster than gridcalc's in-process batch.
 
 The timings vary by run. A run under memory pressure was 4-8x slower for every engine. An earlier run the same day gave gridcalc 182 ms and GridCraft 32.6 ms per case on `big`.
+
+## Agreement on untuned workbooks
+
+Run 2026-11-09 on 306 Sheetpedia files (`tianzl66/Sheetpedia_xlsx`, CC-BY-SA-4.0) that no fix was tuned on. openpyxl had re-saved them without values, so Excel for Mac 16.114 recalculated and saved each one, with external links not updated. The sample is 400 random files with at least 10 formulas and under 3 MB, plus 100 Enron files (seed 1). Excel saved 307 of the first 327 before the run stopped. It refused to open 22, and 4 timed out. 275 of the 306 scored are forum attachments, 18 Enron files and 13 of unknown origin, so financial models are few.
+
+| | gridcalc | GridCraft |
+|-|-|-|
+| cells agreeing, 226,621 | 96.5% | 96.8% |
+| mean per file | 91.2% | 93.2% |
+| files higher | 23 | 42 |
+| files with every cell right | 236 | |
+
+gridcalc's total varies by about 2,000 cells between runs (96.2-97.1%). One file stops at the 30 s recalc limit, and how far it gets depends on load.
+
+Root mismatches by cause:
+
+| Cause | Root cells | Files |
+|-|-|-|
+| References into another workbook. Excel reads the values cached in `xl/externalLinks`; gridcalc does not. 60 of the 306 files have links. | 2,066 | 16 |
+| 30 s recalc limit: 7,676 `AGGREGATE` formulas over 10,000 rows (first guessed as `COUNTIFS`); 232 s without the limit | about 2,400 | 1 |
+| Single-cell legacy array formulas (`SMALL(IF(...))`) give `#SPILL!` or 0. 79 files hold array formulas. | 544 | 22 |
+| `#VALUE!` from date-time text (`"06/24/2022 00:00"`, `"2-5-2024"*1`), `LET`/`BYROW`/`SCAN` | 839 | 15 |
+| Exact `VLOOKUP` of a blank matches a blank cell; Excel gives `#N/A` | 60 | 1 |
+| `TEXT` of serials 1-60 and of `"hh"` | about 70 | 3 |
+| `IF` without a false branch gives 0, not FALSE | 18 | 2 |
+| `RAND`, `NOW`; `CHAR` on Mac uses Mac Roman | 84 | 12 |
+
+11 files set `iterate="1"`. 61% of their 1,281 cells agree.
+
+Two harness bugs inflated the first count: openpyxl reads a `[h]:mm` value as a `timedelta`, and rounds every date and time to the millisecond (CHANGELOG).
+
+The `IF`, `TEXT` and blank-lookup fixes (CHANGELOG) raised agreement from 97.15% to 97.64% of the 223,000 cells outside the time-limit file. About 395 of the 1,074-cell gain is `RANDBETWEEN` noise in one file. Part of the legacy-array count above was the `IF` bug: `SMALL(IF(..))` ranked the zeros an omitted false branch gave. The IronCalc and pycel corpus (282 files) went from 98.97% to 99.04%.
+
+After the `IF` fix, 78 root mismatches remain in array formulas, in 13 files. Most are not about array semantics: `OFFSET` with array arguments, `LET` and `FILTER`, external references. openpyxl drops the dynamic-array flag (`cm`), so Excel re-saved every Sheetpedia array formula as a legacy one. Fitting a legacy formula's result to its range (CHANGELOG) fixed 2 cells here and 4 in the IronCalc and pycel corpus.
+
+Using Excel's saved value for every formula that reads another workbook (CHANGELOG) raised agreement outside the time-limit file from 97.64% to 99.07%. About 2,066 of the 3,184 cells gained are the link formulas, which now match by construction; the rest read them.
+
+Reading date-time text (CHANGELOG) raised it to 99.44%.

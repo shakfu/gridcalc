@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import math
+import operator
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from time import monotonic
@@ -489,14 +490,18 @@ def _vec_apply1(op: Callable[[Any], Any], a: Any) -> Any:
     return op(a)
 
 
+# Operands arithmetic reads as numbers with no conversion: a logical is 1 or 0.
+_NUM_TYPES = frozenset({float, int, bool})
+
+
 def _finite(r: float) -> Any:
     """``r``, or ``#NUM!`` for an overflow: Excel has no infinity."""
     return ExcelError.NUM if math.isinf(r) else r
 
 
 def _add(a: Any, b: Any) -> Any:
-    if type(a) is float and type(b) is float:
-        return _finite(a + b)
+    if type(a) in _NUM_TYPES and type(b) in _NUM_TYPES:
+        return _finite(float(a + b))
     err = first_error(a, b)
     if err:
         return err
@@ -510,8 +515,8 @@ def _add(a: Any, b: Any) -> Any:
 
 
 def _sub(a: Any, b: Any) -> Any:
-    if type(a) is float and type(b) is float:
-        return _finite(a - b)
+    if type(a) in _NUM_TYPES and type(b) in _NUM_TYPES:
+        return _finite(float(a - b))
     err = first_error(a, b)
     if err:
         return err
@@ -525,8 +530,8 @@ def _sub(a: Any, b: Any) -> Any:
 
 
 def _mul(a: Any, b: Any) -> Any:
-    if type(a) is float and type(b) is float:
-        return _finite(a * b)
+    if type(a) in _NUM_TYPES and type(b) in _NUM_TYPES:
+        return _finite(float(a * b))
     err = first_error(a, b)
     if err:
         return err
@@ -540,7 +545,7 @@ def _mul(a: Any, b: Any) -> Any:
 
 
 def _div(a: Any, b: Any) -> Any:
-    if type(a) is float and type(b) is float and b != 0:
+    if type(a) in _NUM_TYPES and type(b) in _NUM_TYPES and b != 0:
         return _finite(a / b)
     err = first_error(a, b)
     if err:
@@ -606,12 +611,32 @@ def _empty_as(other: Any) -> Any:
     return None
 
 
+_COMPARE_OPS: dict[str, Callable[[Any, Any], bool]] = {
+    "=": operator.eq,
+    "<>": operator.ne,
+    "<": operator.lt,
+    ">": operator.gt,
+    "<=": operator.le,
+    ">=": operator.ge,
+}
+
+
 def sig15(v: float) -> float:
     """``v`` at Excel's 15 significant digits, so ``0.1+0.2`` compares equal to ``0.3``."""
     return float(f"{v:.15g}") if math.isfinite(v) else v
 
 
 def _compare(op: str, a: Any, b: Any) -> Any:
+    ta, tb = type(a), type(b)
+    if ta is float and tb is float:
+        # Rounding to 15 digits moves a value by under 1e-14 of it, so it can
+        # change the answer only for two floats closer than that.
+        x, y = a, b
+        if abs(a - b) <= 2e-14 * max(abs(a), abs(b)):
+            x, y = sig15(a), sig15(b)
+        return _COMPARE_OPS[op](x, y)
+    if ta is str and tb is str:
+        return _COMPARE_OPS[op](a.lower(), b.lower())
     err = first_error(a, b)
     if err:
         return err
@@ -1240,8 +1265,8 @@ def _eval_lazy(name: str, node: Call, env: Env) -> Any:
     if name == "if":
         if not 2 <= len(args) <= 3:
             return ExcelError.VALUE
-        # Two-argument IF answers 0, matching the library function's default.
-        return _choose(val(0), lambda: val(1), lambda: val(2) if len(args) == 3 else 0)
+        # An omitted false branch is FALSE; an empty one (`IF(c,1,)`) is 0.
+        return _choose(val(0), lambda: val(1), lambda: val(2) if len(args) == 3 else False)
 
     if name == "ifs":
         if not args or len(args) % 2 != 0:
@@ -1662,6 +1687,30 @@ def _legacy_result(v: Any, env: Env) -> Any:
         data = _vec_data(v)
         return data[0] if data else ExcelError.CALC
     return v
+
+
+def _cse_result(v: Any, env: Env, rows: int, cols: int) -> Any:
+    """A legacy array formula's result over its fixed ``rows`` x ``cols`` range.
+
+    As Excel fills one: a single value repeats, a one-row or one-column array
+    repeats along the other axis, and a cell past the array is #N/A.
+    """
+    if rows * cols > MAX_ARRAY_CELLS:
+        return explain(ExcelError.NUM, f"array range over {MAX_ARRAY_CELLS} cells")
+    v = _deref(v, env)
+    if _is_vec(v):
+        data = _vec_data(v)
+        if not data:
+            return ExcelError.CALC
+        vr, vc = _vec_shape(v)
+    else:
+        data, vr, vc = [v], 1, 1
+    out = []
+    for r in range(rows):
+        for c in range(cols):
+            i, j = (0 if vr == 1 else r), (0 if vc == 1 else c)
+            out.append(data[i * vc + j] if i < vr and j < vc else ExcelError.NA)
+    return out[0] if rows * cols == 1 else _make_vec(out, cols=cols)
 
 
 # Functions whose arguments Excel evaluates as arrays even in a legacy

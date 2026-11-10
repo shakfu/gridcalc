@@ -1083,6 +1083,12 @@ class TestComparisonAt15SignificantDigits:
             ("=0.1+0.2<0.3", "FALSE"),
             ("=1e-20=0", "FALSE"),  # relative, not absolute
             ("=1+1e-14=1", "FALSE"),
+            ("=1+1e-15=1", "TRUE"),
+            ("=1+1e-15>1", "FALSE"),
+            ("=SUMPRODUCT(--({0.3,0.31}=B1))", "1"),  # the array path rounds too
+            ("=SUMPRODUCT(--({0.3,0.31}>B1))", "1"),
+            ("=TRUE/2", "0.5"),
+            ("=TRUE+TRUE", "2"),
             ("=COUNTIF(B1:B2,0.3)", "1"),
         ],
     )

@@ -451,6 +451,11 @@ def test_serials_before_march_1900_match_excel(formula: str, expected: float) ->
     assert g.cells[0][0].val == expected
 
 
-def test_serial_60_has_no_date_to_show() -> None:
-    assert format_date(60.0, "yyyy-mm-dd") is None
+def test_serials_0_and_60_show_excels_dates() -> None:
+    assert format_date(60.0, "yyyy-mm-dd") == "1900-02-29"
+    assert format_date(0.0, "yyyy-mm-dd") == "1900-01-00"
     assert format_date(1.0, "yyyy-mm-dd") == "1900-01-01"
+
+
+def test_a_time_alone_has_day_0_and_still_formats() -> None:
+    assert format_date(0.25, "h:mm") == "6:00"

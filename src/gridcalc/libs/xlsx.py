@@ -234,7 +234,7 @@ def _hits(pred: Any, rng: Vec) -> Iterable[bool]:
 # -- Logical functions --
 
 
-def IF(condition: Any, true_val: Any, false_val: Any = 0) -> Any:
+def IF(condition: Any, true_val: Any, false_val: Any = False) -> Any:
     """=IF(A1>0, A1, 0)"""
     return true_val if condition else false_val
 
@@ -477,6 +477,10 @@ def AVERAGEIF(rng: Vec, criteria: str, avg_rng: Vec | None = None) -> float | Ex
 # -- Lookup functions --
 
 
+# VLOOKUP, HLOOKUP and MATCH exact: a blank lookup value matches no cell, not
+# even a blank one (Excel's saved values, Sheetpedia `266541d...`).
+
+
 def _exact_match(target: Any, candidate: Any, wildcards: bool = True) -> bool:
     """Exact match with Excel wildcard support when target is a string."""
     if wildcards and isinstance(target, str) and any(c in target for c in "*?~"):
@@ -530,7 +534,7 @@ def VLOOKUP(lookup: Any, table: Vec, col_idx: int, approx: Any = True) -> Any:
         if isinstance(best, ExcelError):
             return best
     else:
-        best = _exact_pos(lookup, table, cols)
+        best = -1 if lookup is None else _exact_pos(lookup, table, cols)
 
     if not 0 <= best < n_rows:
         return ExcelError.NA
@@ -559,7 +563,7 @@ def HLOOKUP(lookup: Any, table: Vec, row_idx: int, approx: Any = True) -> Any:
         if isinstance(found, ExcelError):
             return found
         best = found
-    else:
+    elif lookup is not None:
         for j in range(n_cols):
             if _exact_match(lookup, data[j]):
                 best = j
@@ -630,7 +634,7 @@ def MATCH(lookup: Any, rng: Vec, match_type: int = 1) -> int | ExcelError:
     mt = 1 if raw_mt > 0 else (-1 if raw_mt < 0 else 0)
     data = rng.data
     if mt == 0:
-        pos = _exact_pos(lookup, rng)
+        pos = -1 if lookup is None else _exact_pos(lookup, rng)
         return pos + 1 if pos >= 0 else ExcelError.NA
     best = _approx_pos(data, lookup, mt, "MATCH", "use match_type 0 or XMATCH")
     if isinstance(best, ExcelError):

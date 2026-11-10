@@ -75,3 +75,30 @@ def test_formula_text_in_a_text_cell_is_not_a_formula(tmp_path) -> None:
 
 def test_functions_drop_the_newer_function_prefix() -> None:
     assert excel_corpus.functions("=_xlfn.XLOOKUP(A1,B:B,C:C)+SUM(D1)") == {"XLOOKUP", "SUM"}
+
+
+def test_an_elapsed_time_saved_value_reads_as_a_serial(tmp_path) -> None:
+    """openpyxl reads a `[h]:mm` cell as a timedelta; it must compare as a number."""
+    from openpyxl import Workbook
+
+    path = tmp_path / "t.xlsx"
+    wb = Workbook()
+    wb.active["A1"] = "=1/4"
+    wb.active["A1"].number_format = "[h]:mm"
+    wb.save(path)
+    with zipfile.ZipFile(path) as z:
+        parts = {n: z.read(n) for n in z.namelist()}
+    name = "xl/worksheets/sheet1.xml"
+    parts[name] = re.sub(rb"</f>(<v\s*/>|<v></v>)?", b"</f><v>0.25</v>", parts[name], count=1)
+    with zipfile.ZipFile(path, "w") as z:
+        for k, v in parts.items():
+            z.writestr(k, v)
+    _, saved = excel_corpus.excel_values(path)
+    assert saved[("Sheet", 0, 0)] == 0.25
+
+
+def test_a_date_saved_value_allows_openpyxls_millisecond_rounding() -> None:
+    ms = excel_corpus._Ms(0.23958333333333334)  # 5:45, as openpyxl rounds it
+    assert excel_corpus.same(ms, 0.23958332999999998, 1e-9)
+    assert not excel_corpus.same(ms, 0.2395833, 1e-9)  # 0.3 s off
+    assert not excel_corpus.same(0.23958333333333334, 0.23958332999999998, 1e-9)

@@ -153,13 +153,17 @@ def format_serial(value: float, code: str) -> str | None:
     """
     if not code or value < 0 or value > 2_958_465:  # 9999-12-31
         return None
-    if int(value) in (0, LEAP_BUG_SERIAL):
-        return None  # Excel's 1900-01-00 and 1900-02-29 have no date
-
     try:
         dt = from_serial(value)
     except (OverflowError, ValueError):
         return None
+    # Excel's calendar: serial 0 is 1900-01-00 and 60 the phantom 1900-02-29,
+    # and weekdays count that day, so serial 1 is a Sunday.
+    year, month, day = {0: (1900, 1, 0), LEAP_BUG_SERIAL: (1900, 2, 29)}.get(
+        int(value), (dt.year, dt.month, dt.day)
+    )
+    weekday = _WEEKDAYS[int(value) % 7]
+    month_name = _MONTHS[month - 1]
 
     time_mode = False  # `m` means minutes once an hour token has been seen
     out: list[str] = []
@@ -191,7 +195,7 @@ def format_serial(value: float, code: str) -> str | None:
         run = _run_of(low, i)
         token = run.lower()
         if token.startswith("y"):
-            out.append(f"{dt.year:04d}" if len(run) > 2 else f"{dt.year % 100:02d}")
+            out.append(f"{year:04d}" if len(run) > 2 else f"{year % 100:02d}")
         elif token.startswith("h"):
             time_mode = True
             hour = dt.hour
@@ -205,28 +209,45 @@ def format_serial(value: float, code: str) -> str | None:
             if time_mode and len(run) <= 2:
                 out.append(f"{dt.minute:02d}" if len(run) > 1 else str(dt.minute))
             elif len(run) >= 5:
-                out.append(dt.strftime("%B")[0])  # `mmmmm`: the month's initial
+                out.append(month_name[0])  # `mmmmm`: the month's initial
             elif len(run) == 4:
-                out.append(dt.strftime("%B"))
+                out.append(month_name)
             elif len(run) == 3:
-                out.append(dt.strftime("%b"))
+                out.append(month_name[:3])
             elif len(run) == 2:
-                out.append(f"{dt.month:02d}")
+                out.append(f"{month:02d}")
             else:
-                out.append(str(dt.month))
+                out.append(str(month))
         elif token.startswith("d"):
             if len(run) >= 4:
-                out.append(dt.strftime("%A"))
+                out.append(weekday)
             elif len(run) == 3:
-                out.append(dt.strftime("%a"))
+                out.append(weekday[:3])
             elif len(run) == 2:
-                out.append(f"{dt.day:02d}")
+                out.append(f"{day:02d}")
             else:
-                out.append(str(dt.day))
+                out.append(str(day))
         else:
             out.append(run)
         i += len(run)
     return "".join(out)
+
+
+_WEEKDAYS = ("Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
+_MONTHS = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
 
 
 def _run_of(s: str, i: int) -> str:
@@ -258,6 +279,8 @@ _PARSE_FORMATS = (
     "%m/%d/%y",
     "%d-%b-%Y",
     "%d-%b-%y",
+    "%d-%B-%Y",
+    "%d-%B-%y",
     "%b %d, %Y",
     "%d %B %Y",
 )
@@ -302,6 +325,9 @@ def parse_time(text: str) -> float | None:
     return (h * 3600 + mi * 60 + sec) / 86400.0
 
 
+_DATE_TIME_RE = re.compile(r"(.+?)\s+(\d{1,2}:.*)")
+
+
 @functools.lru_cache(maxsize=4096)  # criteria re-parse each cell's text; strptime is slow
 def parse_date(text: str) -> float | None:
     """Parse a date string to an Excel serial, or ``None`` if it is not one.
@@ -322,6 +348,12 @@ def parse_date(text: str) -> float | None:
         if "%y" in fmt and d.year >= 2030:
             d = d.replace(year=d.year - 100)  # Excel: two-digit years 30-99 are 19xx
         return to_serial(d)
+    # A date, then a time: `06/24/2022 12:38`.
+    m = _DATE_TIME_RE.fullmatch(s)
+    if m is not None:
+        day, t = parse_date(m.group(1)), parse_time(m.group(2))
+        if day is not None and t is not None and day == int(day):
+            return day + t
     # Excel's phantom 1900-02-29: read it in a leap year to see if it is Feb 29.
     if "1900" in s and parse_date(s.replace("1900", "1904")) == to_serial(_dt.date(1904, 2, 29)):
         return float(LEAP_BUG_SERIAL)

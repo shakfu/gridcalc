@@ -67,7 +67,9 @@ def excel_values(path: Path) -> tuple[dict[Key, str], dict[Key, Any]]:
             if cell.data_type == "e":
                 v = ("error", str(v))
             elif isinstance(v, (dt.datetime, dt.date, dt.time)):
-                v = float(to_excel(v))
+                v = _Ms(to_excel(v))
+            elif isinstance(v, dt.timedelta):  # openpyxl's reading of `[h]:mm` formats
+                v = _Ms(v.total_seconds() / 86400)
             saved[key] = v
     return formulas, saved
 
@@ -89,11 +91,19 @@ def gridcalc_value(g: Grid, key: Key) -> Any:
     return cl.val
 
 
+class _Ms(float):
+    """A saved date or time serial, which openpyxl rounds to the millisecond."""
+
+
+_HALF_MS = 0.5e-3 / 86400
+
+
 def same(a: Any, b: Any, rel: float) -> bool:
     if isinstance(a, bool) or isinstance(b, bool):
         return a is b
     if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-        return math.isclose(a, b, rel_tol=rel, abs_tol=1e-12)
+        tol = _HALF_MS if isinstance(a, _Ms) or isinstance(b, _Ms) else 1e-12
+        return math.isclose(a, b, rel_tol=rel, abs_tol=tol)
     return bool(a == b)
 
 

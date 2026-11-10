@@ -1112,3 +1112,32 @@ def test_a_frozen_pane_from_excel_reads(tmp_path):
     g = Grid()
     assert g.xlsxload(str(src)) == 0
     assert (g.tc, g.tr) == (2, 3)
+
+
+def test_a_parseable_external_link_keeps_excels_value(tmp_path):
+    """`'[1]Data'!A1:B5` parses, but gridcalc cannot read that workbook."""
+    import re
+    import zipfile
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws["A1"] = "k"
+    ws["B1"] = "=VLOOKUP(A1,'[1]Data'!$A$1:$B$5,2,FALSE)"
+    ws["C1"] = "=B1*2"
+    src = tmp_path / "ext.xlsx"
+    wb.save(str(src))
+    with zipfile.ZipFile(src) as z:
+        parts = {n: z.read(n) for n in z.namelist()}
+    name = "xl/worksheets/sheet1.xml"
+    parts[name] = re.sub(
+        rb'(<c r="B1"[^>]*>\s*<f>[^<]*</f>)\s*(<v\s*/>|<v></v>)?', rb"\1<v>42</v>", parts[name]
+    )
+    with zipfile.ZipFile(src, "w") as z:
+        for k, v in parts.items():
+            z.writestr(k, v)
+    g = Grid()
+    assert g.xlsxload(str(src)) == 0
+    assert (g.cell(1, 0).err, g.cell(1, 0).val) == (None, 42.0)
+    assert g.cell(2, 0).val == 84.0
+    g.setcell(1, 0, "=VLOOKUP(A1,'[1]Data'!$A$1:$B$5,2,FALSE)")  # an edit drops the saved value
+    assert g.cell(1, 0).err is not None

@@ -31,6 +31,7 @@ from .formula.deps import (
 )
 from .formula.errors import ExcelError as ExcelErrorType
 from .formula.errors import FormulaError, parse_error_literal
+from .formula.evaluator import MAX_ARRAY_CELLS
 from .formula.lexer import _ERROR_LIT_RE, COLRANGE, bare_span_ok, parse_number, whole_range
 from .formula.parser import parse
 from .sandbox import load_modules, validate_code, validate_formula
@@ -602,6 +603,7 @@ class Cell:
         "spill_shape",
         "xstyle",
         "legacy",
+        "cse",
         "cached",
     )
 
@@ -639,6 +641,9 @@ class Cell:
         # range in a one-value position by implicit intersection, as Excel's
         # `@`. Cleared when the formula is edited.
         self.legacy: bool = False
+        # A legacy (Ctrl+Shift+Enter) array formula's fixed range, ``(rows,
+        # cols)``: its result is fitted to that range and never spills past it.
+        self.cse: tuple[int, int] | None = None
         # The value Excel saved for a formula gridcalc cannot compute, one
         # linking to another workbook (`[1]Data!A1`); None otherwise.
         self.cached: Any = None
@@ -664,6 +669,7 @@ class Cell:
         self.spill_shape = None
         self.xstyle = None
         self.legacy = False
+        self.cse = None
         self.cached = None
 
     def copy_from(self, src: Cell) -> None:
@@ -687,6 +693,7 @@ class Cell:
         self.spill_shape = src.spill_shape
         self.xstyle = src.xstyle
         self.legacy = src.legacy
+        self.cse = src.cse
         self.cached = src.cached
 
     def snapshot(self) -> Cell:
@@ -1335,13 +1342,16 @@ def _write_atomic(filename: str, write: Callable[[str], object]) -> None:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def _xlsx_read_cells(filename: str) -> tuple[list[str], list[tuple[Any, ...]], int]:
+def _xlsx_read_cells(
+    filename: str,
+) -> tuple[list[str], list[tuple[Any, ...]], int, dict[tuple[str, int, int], tuple[int, int]]]:
     """Read xlsx via the OpenXLSX-backed `_core.xlsx_read`.
 
-    Returns ``(worksheet_names, cells, fallbacks)``: every worksheet in
+    Returns ``(worksheet_names, cells, fallbacks, cse)``: every worksheet in
     workbook order, ``(sheet_name, col0, row0, kind, value, numfmt_code,
-    numfmt_id, style)`` tuples, and the count of shared or array formulas read as
-    their cached value. Raises if the file cannot be read.
+    numfmt_id, style)`` tuples, the count of shared or array formulas read as
+    their cached value, and each legacy array formula's ``(rows, cols)``.
+    Raises if the file cannot be read.
 
     The number format rides along because xlsx has no date type: a date is a
     serial wearing a date format, so the format is the only thing that says
@@ -1352,7 +1362,7 @@ def _xlsx_read_cells(filename: str) -> tuple[list[str], list[tuple[Any, ...]], i
     names, raw, fallbacks = _core.xlsx_read(filename)
     cells = [(*t[:4], _strip_xl_prefixes(t[4]), *t[5:]) if t[3] == "f" else t for t in raw]
     if not fallbacks:
-        return list(names), cells, 0
+        return list(names), cells, 0, {}
     formulas, covered, arrays = _xlsx_read_formula_xml(filename)
     out: list[tuple[Any, ...]] = []
     for t in cells:
@@ -1371,7 +1381,8 @@ def _xlsx_read_cells(filename: str) -> tuple[list[str], list[tuple[Any, ...]], i
         (s, c, r, "F" if (s, c, r) in arrays else "f", text, "", 0, 0)
         for (s, c, r), text in formulas.items()
     ]
-    return list(names), out, max(0, int(fallbacks) - len(formulas))
+    cse = {k: v for k, v in arrays.items() if v is not None}
+    return list(names), out, max(0, int(fallbacks) - len(formulas)), cse
 
 
 # Excel stores a function newer than Excel 2007 as `_xlfn.NAME`, a few as
@@ -1515,21 +1526,24 @@ def _add_xl_prefixes(text: str) -> str:
 
 def _xlsx_read_formula_xml(
     filename: str,
-) -> tuple[dict[tuple[str, int, int], str], set[Any], set[Any]]:
+) -> tuple[dict[tuple[str, int, int], str], set[Any], dict[Any, tuple[int, int] | None]]:
     """Shared and array formulas, read from the sheet XML. Never raises.
 
     OpenXLSX gives such a cell only its saved value. A shared formula's text
     is stored once, on its first cell; each other cell holds that text with
     relative references shifted by the offset. Returns ``{(sheet, col, row):
     text}``, the cells inside a multi-cell array formula other than its
-    top-left, where the formula spills, and the cells holding an array formula.
+    top-left, where the formula spills, and the cells holding an array formula,
+    each mapped to its ``(rows, cols)`` when it is a legacy array formula: one
+    without the dynamic-array flag `cm`.
     """
     import xml.etree.ElementTree as ET
     import zipfile
 
     formulas: dict[tuple[str, int, int], str] = {}
     covered: set[tuple[str, int, int]] = set()
-    arrays: set[tuple[str, int, int]] = set()
+    arrays: dict[tuple[str, int, int], tuple[int, int] | None] = {}
+    budget = MAX_ARRAY_CELLS  # covered cells across the file
     root = _xlsx_workbook_xml(filename)
     if root is None:
         return formulas, covered, arrays
@@ -1552,9 +1566,21 @@ def _xlsx_read_formula_xml(
                         text = _strip_xl_prefixes(fe.text or "")
                         if kind == "array":
                             formulas[(name, c, r)] = "=" + text
-                            arrays.add((name, c, r))
                             span = _parse_defined_ref(f"x!{fe.get('ref', '')}")
-                            if span is not None:
+                            arrays[(name, c, r)] = (
+                                (span[4] - span[2] + 1, span[3] - span[1] + 1)
+                                if span is not None and el.get("cm") is None
+                                else None
+                            )
+                            n = (
+                                0
+                                if span is None
+                                else (span[3] - span[1] + 1) * (span[4] - span[2] + 1)
+                            )
+                            # A crafted `ref` could name billions of cells; past the
+                            # budget the formula keeps no range and gives #NUM!.
+                            if span is not None and n <= budget:
+                                budget -= n
                                 _, c1, r1, c2, r2 = span
                                 covered |= {
                                     (name, cc, rr)
@@ -1573,7 +1599,7 @@ def _xlsx_read_formula_xml(
                         mc, mr, text = masters[si]
                         formulas[(name, c, r)] = adjust_refs("=" + text, c - mc, r - mr, True)
     except (KeyError, zipfile.BadZipFile, OSError, ET.ParseError):
-        return {}, set(), set()
+        return {}, set(), {}
     return formulas, covered, arrays
 
 
@@ -2080,7 +2106,7 @@ def _xlsx_postprocess(
     names_xml: str,
     cw: int,
     widths: dict[str, dict[int, int]],
-    arrays: dict[str, list[tuple[str, str]]],
+    arrays: dict[str, list[tuple[str, str, bool]]],
     errors: dict[str, list[tuple[str, str]]],
     xstyles: dict[str, dict[tuple[int, int], XStyle]] | None = None,
     font: tuple[str, float] | None = None,
@@ -2209,14 +2235,16 @@ def _xlsx_errors_patch(data: bytes, cells: list[tuple[str, str]]) -> bytes:
     return data
 
 
-def _xlsx_arrays_patch(data: bytes, cells: list[tuple[str, str]]) -> bytes:
-    """Mark each ``(cell, span)`` formula in one worksheet part as a dynamic array."""
-    for cell, span in cells:
+def _xlsx_arrays_patch(data: bytes, cells: list[tuple[str, str, bool]]) -> bytes:
+    """Mark each ``(cell, span, dynamic)`` formula in one worksheet part as an
+    array formula; a dynamic one also carries the dynamic-array flag."""
+    for cell, span, dynamic in cells:
         head = b'<c r="' + cell.encode() + b'"'
-        new = head + rb'\1 cm="1"><f t="array" ref="' + span.encode() + b'">'
+        cm = b' cm="1"' if dynamic else b""
+        new = head + rb"\1" + cm + b'><f t="array" ref="' + span.encode() + b'">'
         data, n = re.subn(re.escape(head) + rb'((?: [\w:]+="[^"]*")*)><f>', new, data)
         if n != 1:
-            raise ValueError(f"unexpected worksheet layout at {cell}; dynamic array not written")
+            raise ValueError(f"unexpected worksheet layout at {cell}; array formula not written")
     return data
 
 
@@ -2636,6 +2664,19 @@ def _json_cached(v: Any) -> Any:
     return None
 
 
+def _json_cse(v: Any) -> tuple[int, int] | None:
+    """A legacy array formula's ``[rows, cols]`` from JSON, or None if not a valid range."""
+    if (
+        isinstance(v, list)
+        and len(v) == 2
+        and all(type(n) is int for n in v)
+        and 1 <= v[0] <= NROW
+        and 1 <= v[1] <= NCOL
+    ):
+        return (v[0], v[1])
+    return None
+
+
 def _decode_layout(
     merges: Any, heights: Any
 ) -> tuple[list[tuple[int, int, int, int]], dict[int, float]]:
@@ -2675,6 +2716,7 @@ def _copy_style(src: Cell, dst: Cell) -> None:
     dst.xstyle = src.xstyle
     if src.type == FORMULA and dst.type == FORMULA:
         dst.legacy = src.legacy  # a copied formula keeps its evaluation rule
+        dst.cse = src.cse
 
 
 class Sheet:
@@ -3251,6 +3293,7 @@ class Grid:
         cl.err_msg = None
         cl.text = text
         cl.legacy = False
+        cl.cse = None
         cl.cached = None
         self.dirty = 1
 
@@ -4162,6 +4205,7 @@ class Grid:
         from .formula import evaluate, parse
         from .formula.errors import ExcelError, FormulaError, explain, take_reason
         from .formula.evaluator import TimeLimit
+        from .formula.evaluator import _cse_result as cse_result
         from .formula.evaluator import _legacy_result as legacy_result
 
         env = self._new_env()
@@ -4271,7 +4315,8 @@ class Grid:
                     fcl.ast = parse(text, pow_right=pow_right)
                 except FormulaError:
                     fcl.ast = None
-            if fcl.ast is None and fcl.cached is not None:
+            # gridcalc cannot read another workbook, so a link keeps Excel's value.
+            if fcl.cached is not None:
                 self._store_formula_result(fcl, fcl.cached)
                 fcl.err_msg = "links to another workbook: the value Excel saved"
                 return
@@ -4304,6 +4349,8 @@ class Grid:
                 result = evaluate(fcl.ast, env)
                 if fcl.legacy:
                     result = legacy_result(result, env)
+                elif fcl.cse is not None:
+                    result = cse_result(result, env, *fcl.cse)
             except TimeLimit:
                 stopped = True
                 result = explain(
@@ -4822,6 +4869,7 @@ class Grid:
         cell_fmtstr = ""
         xstyle: XStyle | None = None
         legacy = False
+        cse: tuple[int, int] | None = None
         cached: Any = None
         label = False
         if isinstance(v, dict):
@@ -4837,6 +4885,7 @@ class Grid:
             cell_fmtstr = cell_fmtstr[:255]
             xstyle = XStyle.from_json(v.get("style"))
             legacy = v.get("legacy") is True
+            cse = _json_cse(v.get("cse"))
             cached = _json_cached(v.get("cached"))
             v = v.get("v", None)
         if v is None or (isinstance(v, str) and v == ""):
@@ -4870,6 +4919,7 @@ class Grid:
         cl.fmtstr = cell_fmtstr
         cl.xstyle = xstyle
         cl.legacy = legacy and cl.type == FORMULA
+        cl.cse = cse if cl.type == FORMULA else None
         cl.cached = cached if cl.type == FORMULA else None
 
     def jsonload(self, filename: str, policy: Any = None) -> int:
@@ -5203,6 +5253,7 @@ class Grid:
             or label
             or sc.xstyle
             or sc.legacy
+            or sc.cse is not None
             or sc.cached is not None
         )
         if not has_style:
@@ -5224,6 +5275,8 @@ class Grid:
             styled["style"] = sc.xstyle.to_json()
         if sc.legacy:
             styled["legacy"] = True
+        if sc.cse is not None:
+            styled["cse"] = list(sc.cse)
         if sc.cached is not None:
             styled["cached"] = (
                 str(sc.cached) if isinstance(sc.cached, ExcelErrorType) else sc.cached
@@ -5319,16 +5372,21 @@ class Grid:
     def xlsxload(self, filename: str) -> int:
         self.io_error = None
         try:
-            sheet_order, cells, fallbacks = _xlsx_read_cells(filename)
+            sheet_order, cells, fallbacks, cse = _xlsx_read_cells(filename)
         except Exception as exc:  # noqa: BLE001
             self.io_error = str(exc) or type(exc).__name__
             return -1
         return self._load_or_restore(
-            lambda: self._xlsxload_into(filename, sheet_order, cells, fallbacks)
+            lambda: self._xlsxload_into(filename, sheet_order, cells, fallbacks, cse)
         )
 
     def _xlsxload_into(
-        self, filename: str, sheet_order: list[str], cells: list[tuple[Any, ...]], fallbacks: int
+        self,
+        filename: str,
+        sheet_order: list[str],
+        cells: list[tuple[Any, ...]],
+        fallbacks: int,
+        cse: dict[tuple[str, int, int], tuple[int, int]],
     ) -> None:
         """Replace the workbook with the cells ``_xlsx_read_cells`` returned."""
         self._reset_workbook()
@@ -5409,6 +5467,7 @@ class Grid:
                 continue
             # Any formula Excel did not store as an array formula is legacy.
             cl.legacy = kind == "f" and cl.type == FORMULA
+            cl.cse = cse.get((sname, c, r)) if cl.type == FORMULA else None
             cl.bold, cl.italic, cl.underline = style & 1, (style >> 1) & 1, (style >> 2) & 1
             cl.fmtstr = datefmt or _fmtstr_for_xlsx_code(numfmt_code, numfmt_id)
             if cl.type in (NUM, FORMULA):
@@ -5525,7 +5584,7 @@ class Grid:
             return _param_info(name, fn)[0] if fn is not None else ()
 
         payload: list[tuple[Any, ...]] = []
-        arrays: dict[str, list[tuple[str, str]]] = {}
+        arrays: dict[str, list[tuple[str, str, bool]]] = {}
         errors: dict[str, list[tuple[str, str]]] = {}
         for s in self.sheets:
             for (c, r), cl in s._cells.items():
@@ -5569,16 +5628,24 @@ class Grid:
                             and cl.ast is not None
                             and reads_range_as_array(cl.ast, dep_names, scalar_params)
                         )
-                        if one_cell_array:  # array evaluation in one cell: as Excel saves it
-                            arrays.setdefault(s.name, []).append((cellname(c, r),) * 2)
-                        if cl.arr:
+                        if cl.cse is not None:  # a legacy array formula keeps its range
+                            rows, cols = cl.cse
+                            span = cellname(c, r)
+                            if (rows, cols) != (1, 1):
+                                span += ":" + cellname(c + cols - 1, r + rows - 1)
+                            arrays.setdefault(s.name, []).append((cellname(c, r), span, False))
+                        elif one_cell_array:  # array evaluation in one cell: as Excel saves it
+                            arrays.setdefault(s.name, []).append(
+                                (cellname(c, r), cellname(c, r), True)
+                            )
+                        elif cl.arr:
                             # Without the dynamic-array flag Excel reads it as
                             # `=@...` and keeps one value.
                             rows, cols = cl.spill_shape or (1, 1)
                             span = cellname(c, r)
                             if (rows, cols) != (1, 1):
                                 span += ":" + cellname(c + cols - 1, r + rows - 1)
-                            arrays.setdefault(s.name, []).append((cellname(c, r), span))
+                            arrays.setdefault(s.name, []).append((cellname(c, r), span, True))
                     elif result is not None:
                         payload.append((s.name, c, r, "s", result, numfmt, style))
                     elif isinstance(cached, bool):

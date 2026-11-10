@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`run_many` and `--inputs` run cases in parallel.** `Book.run_many(cases, outputs, workers=4)`, or `--workers 4` on the CLI, splits the cases across forked processes, each starting from the workbook as it is. On 400 cases of the 18,033-formula model, 4 workers took 4.9 s against 16.8 s for 1, and 8 took 4.3 s. Fork copies the in-memory workbook as is; reloading the file in each worker would lose `--set` values and cost a load per worker. Windows has no fork, so cases run in one process there, as they do when the workbook iterates.
+
 ### Fixed
 
 - **Array `IF`, `IFERROR` and `IFNA` take linear time.** Each element of the condition copied the whole branch array, so `SUM(IF(B1:B40000>3,B1:B40000,0))` took 3.7 s; it now takes 34 ms.
@@ -9,6 +13,8 @@
 ### Changed
 
 - **A recalc of the same dirty cells reuses its evaluation order.** Finding the cells to recalculate and ordering them took 32-38 ms of a 90-95 ms case on the 18,033-formula named-input model; a case now takes 63 ms. A sweep or a repeated edit of one input dirties the same cells each time. Any change to the dependency graph discards the cached orders. Measurements: `docs/dev/261110-perf.md`.
+
+- **A formula costs about 0.9 us less to recalculate.** A named-input case on the same model fell from 57 to 41 ms. The largest part, about 9 ms, was an import run on every stored result. The rest comes from skipping work for float operands, scalar results and cell reads while no volatile formula runs.
 
 ## [0.13.0]
 

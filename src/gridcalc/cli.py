@@ -133,6 +133,13 @@ def add_headless_arguments(p: argparse.ArgumentParser) -> None:
         "in turn ('-' reads stdin)",
     )
     g.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        metavar="N",
+        help="with a list in --inputs, run the cases in N forked processes",
+    )
+    g.add_argument(
         "--get",
         action="append",
         dest="get_values",
@@ -569,7 +576,11 @@ def run(args: argparse.Namespace, out: TextIO | None = None, err: TextIO | None 
             if cases is not None:
                 result["runs"] = [
                     {"inputs": c, "outputs": outs, "errors": errors(outs)}
-                    for c, outs in zip(cases, book.run_many(cases, gets), strict=True)
+                    for c, outs in zip(
+                        cases,
+                        book.run_many(cases, gets, workers=getattr(args, "workers", 1)),
+                        strict=True,
+                    )
                 ]
                 bad = any(r["errors"] for r in result["runs"])
             elif gets or inputs:

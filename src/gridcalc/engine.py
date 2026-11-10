@@ -3986,12 +3986,12 @@ class Grid:
         return cl.val
 
     def _store_formula_result(self, cl: Cell, result: Any) -> None:
-        from .formula.errors import ExcelError
-
         if type(result) is float and not math.isinf(result):
             cl.sval = cl.err = cl.err_msg = cl.matrix = cl.arr = cl.arr_cols = None
             cl.val = result
             return
+        from .formula.errors import ExcelError
+
         result = _as_double(result)
         if isinstance(result, Vec) and not result.data:
             result = ExcelError.CALC
@@ -4216,6 +4216,9 @@ class Grid:
         created, removed, or updated -- so the caller can recompute their
         consumers in a follow-up pass.
         """
+        if not anchor_cl.arr and anchor_cl.spill_shape is None:
+            self._spill_blocked.discard((sheet, ac, ar))
+            return set()
         changed: set[tuple[str | None, int, int]] = set()
         self._spill_blocked.discard((sheet, ac, ar))
         arr = anchor_cl.arr
@@ -4511,6 +4514,8 @@ class Grid:
             nonlocal volatile_running
             running.append(key)
             vol = key in self._volatile
+            if vol and not volatile_running:
+                env.cell_value, env.cell_spill_value = lookup, spill_lookup
             volatile_running += vol
             stopped = False
             try:
@@ -4533,6 +4538,9 @@ class Grid:
             finally:
                 running.pop()
                 volatile_running -= vol
+                if vol and not volatile_running:
+                    env.cell_value = self._cell_lookup_value
+                    env.cell_spill_value = self._cell_spill_value
             self._store_formula_result(fcl, result)
             reason = take_reason()
             # An error the formula caught leaves a stale reason; match it.
@@ -4574,8 +4582,9 @@ class Grid:
         def spill_lookup(c: int, r: int, sheet: str | None = None) -> object:
             return self._cell_spill_value(c, r, sheet) if demand(c, r, sheet) else ExcelError.CIRC
 
-        env.cell_value = lookup
-        env.cell_spill_value = spill_lookup
+        # `demand` does nothing while no volatile formula runs; skip it then.
+        env.cell_value = self._cell_lookup_value
+        env.cell_spill_value = self._cell_spill_value
         try:
             for key in order:
                 if key in pending and not isinstance(key, RangeKey):

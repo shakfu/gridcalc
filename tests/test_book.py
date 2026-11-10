@@ -357,6 +357,57 @@ def test_run_many_keeps_a_bool_distinct_from_one(loan) -> None:
     assert got == [{"Region": 1.0}, {"Region": True}]
 
 
+_FORK = pytest.mark.skipif(
+    "fork" not in __import__("multiprocessing").get_all_start_methods(), reason="no fork"
+)
+
+
+@_FORK
+def test_run_many_in_workers_matches_one_process(loan, monkeypatch) -> None:
+    """Each worker starts from the book as it is, after `set`, not as loaded."""
+    forked, real = [], Book._run_forked
+    monkeypatch.setattr(Book, "_run_forked", lambda *a: forked.append(a[3]) or real(*a))
+    book = Book.open(loan)
+    book.set({"Principal": 200000})
+    cases = [{"Rate": r / 100} for r in range(1, 8)] + [{"Years": 3}, {"Rate": 0.05}]
+    outs = ["Payment", "Seq#", "Spread", "Principal"]
+    serial = book.run_many(cases, outs)
+    assert book.run_many(cases, outs, workers=3) == serial
+    assert forked == [3]
+    assert serial[-1]["Spread"] == {"error": "#DIV/0!"}
+    assert serial[0]["Principal"] == 200000.0
+    assert book.get(["Rate", "Principal"]) == {"Rate": 0.05, "Principal": 200000.0}
+
+
+def test_run_many_checks_its_worker_count(loan) -> None:
+    with pytest.raises(BookError, match="workers"):
+        Book.open(loan).run_many([{"Rate": 0.01}], ["Payment"], workers=0)
+
+
+def test_run_many_checks_every_case_before_starting_workers(loan, monkeypatch) -> None:
+    book = Book.open(loan)
+    monkeypatch.setattr(Book, "_run_forked", lambda *a: pytest.fail("forked"))
+    with pytest.raises(BookError, match="Nope"):
+        book.run_many([{"Rate": 0.01}, {"Nope": 1}], ["Payment"], workers=2)
+
+
+def test_an_iterating_book_runs_its_cases_in_one_process(loan, monkeypatch) -> None:
+    """An iterated case starts from the previous case's values, so order matters."""
+    book = Book.open(loan)
+    book.grid.iterate = (100, 0.001)
+    monkeypatch.setattr(Book, "_run_forked", lambda *a: pytest.fail("forked"))
+    assert len(book.run_many([{"Rate": 0.01}, {"Rate": 0.02}], ["Payment"], workers=2)) == 2
+
+
+@_FORK
+def test_cli_workers_gives_the_same_runs(loan, tmp_path) -> None:
+    cases = tmp_path / "cases.json"
+    cases.write_text(json.dumps([{"Rate": r / 100} for r in range(1, 6)]))
+    one = _cli(loan, "--inputs", str(cases), "--get", "Payment")
+    four = _cli(loan, "--inputs", str(cases), "--get", "Payment", "--workers", "4")
+    assert four == one and one[0] == cli.EXIT_OK
+
+
 # --- the shipped example, as the README runs it -----------------------------
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"

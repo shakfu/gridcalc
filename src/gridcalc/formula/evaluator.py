@@ -786,7 +786,7 @@ def _eval_value(node: Any, env: Env) -> Any:
 
 
 def _eval_cell(node: CellRef, env: Env) -> Any:
-    return env.get_cell(node.col, node.row, node.sheet)
+    return env.cell_value(node.col, node.row, node.sheet)
 
 
 def _eval_array(node: ArrayLit, env: Env) -> Any:
@@ -1738,6 +1738,9 @@ LEGACY_ARRAY_FUNCS = frozenset(
 
 
 def _binop_value(node: BinOp, a: Any, b: Any, env: Env) -> Any:
+    if type(a) is float and type(b) is float:
+        op = _BINOP.get(node.op)
+        return _compare(node.op, a, b) if op is None else op(a, b)
     if _scalar_context(env):
         a, b = _intersect(_deref(a, env), env), _intersect(_deref(b, env), env)
     op = _BINOP.get(node.op)  # None for a comparison

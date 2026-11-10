@@ -76,9 +76,10 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ### Performance
 
-- [ ] **A named-input case recalculates about 2.4x slower than GridCraft.** 63 ms against 26 ms on 18,033 formulas, measured on different days (`docs/dev/comparison.md`, `docs/dev/261110-perf.md`). A sweep of 100k cases would take about 1.75 h against 45 min. Worth it only for sweep-sized workloads; the cost breakdown is under Low > Performance.
+- [ ] **A named-input case recalculates about 1.6x slower than GridCraft.** 41 ms against 26 ms on 18,033 formulas, measured on different days (`docs/dev/comparison.md`, `docs/dev/261110-perf.md`). A sweep of 100k cases would take about 1.1 h against 45 min. Worth it only for sweep-sized workloads; the cost breakdown is under Low > Performance.
 
-  - Next, about 6% by cProfile: `_store_formula_result` imports on every call, and each cell read takes 4 Python calls where 1 would do with no volatile cell in the closure (`docs/dev/261110-perf.md` item 3).
+  - With `workers=4` a sweep runs 3.4x as many cases per second: 12.3 ms per case of throughput, against GridCraft's 26 ms in one process. One case is still 41 ms.
+  - Next for one case: compile each AST to closures (15-20%, estimated). Trimming `run` and `_recalc_topo` further measured within noise (`docs/dev/261110-perf.md`).
 
 - [ ] **Whole-column paths that still cost a million rows.** Each is correct but slow on Excel's grid:
   - Fill down (`Api.fill`) over a header-selected column writes every row, as Excel does.

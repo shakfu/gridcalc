@@ -22,6 +22,7 @@ also takes a flat list. A result cell holding an error reads as
 from __future__ import annotations
 
 import math
+import multiprocessing as mp
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -202,16 +203,49 @@ class Book:
         return self.run_many([inputs], outputs)[0]
 
     def run_many(
-        self, cases: Iterable[Mapping[str, Any]], outputs: Iterable[str] | None = None
+        self,
+        cases: Iterable[Mapping[str, Any]],
+        outputs: Iterable[str] | None = None,
+        *,
+        workers: int = 1,
     ) -> list[dict[str, Any]]:
         """`run` each case in turn, each from the workbook as loaded.
 
         Every case is checked before the first is written. Between cases only
         the cells whose value changes are written, so a case costs one recalc;
         the inputs are put back once, at the end.
+
+        ``workers`` above 1 splits the cases across that many forked processes,
+        each starting from the workbook as it is now. The cases run in this
+        process instead where fork is unavailable (Windows), and when the
+        workbook iterates, since an iterated case starts from the last one's values.
         """
+        if workers < 1:
+            raise BookError(f"workers must be 1 or more, not {workers}")
         plans = [self._plan(c) for c in cases]
         outs = None if outputs is None else list(outputs)
+        n = min(workers, len(plans))
+        if n > 1 and self.grid.iterate is None and "fork" in mp.get_all_start_methods():
+            return self._run_forked(plans, outs, n)
+        return self._run_plans(plans, outs)
+
+    def _run_forked(
+        self, plans: list[dict[Key, Any]], outs: list[str] | None, n: int
+    ) -> list[dict[str, Any]]:
+        global _FORKED
+        size = -(-len(plans) // n)
+        chunks = [plans[i : i + size] for i in range(0, len(plans), size)]
+        _FORKED = self
+        try:
+            with mp.get_context("fork").Pool(len(chunks)) as pool:
+                parts = pool.map(_run_chunk, [(chunk, outs) for chunk in chunks])
+        finally:
+            _FORKED = None
+        return [r for part in parts for r in part]
+
+    def _run_plans(
+        self, plans: list[dict[Key, Any]], outs: list[str] | None
+    ) -> list[dict[str, Any]]:
         orig = self._originals({k for p in plans for k in p})
         live: dict[Key, Any] = dict(orig)
         results = []
@@ -238,6 +272,15 @@ class Book:
 
 
 Key = tuple[str, int, int]  # (sheet, col, row)
+
+# The book a forked worker runs; set only while `Book._run_forked` runs.
+_FORKED: Book | None = None
+
+
+def _run_chunk(job: tuple[list[dict[Key, Any]], list[str] | None]) -> list[dict[str, Any]]:
+    if _FORKED is None:
+        raise RuntimeError("no workbook in this worker")
+    return _FORKED._run_plans(*job)
 
 
 @dataclass(frozen=True)

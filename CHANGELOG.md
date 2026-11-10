@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Array `IF`, `IFERROR` and `IFNA` take linear time.** Each element of the condition copied the whole branch array, so `SUM(IF(B1:B40000>3,B1:B40000,0))` took 3.7 s; it now takes 34 ms.
+
+### Changed
+
+- **A recalc of the same dirty cells reuses its evaluation order.** Finding the cells to recalculate and ordering them took 32-38 ms of a 90-95 ms case on the 18,033-formula named-input model; a case now takes 63 ms. A sweep or a repeated edit of one input dirties the same cells each time. Any change to the dependency graph discards the cached orders. Measurements: `docs/dev/261110-perf.md`.
+
 ## [0.13.0]
 
 ### Added

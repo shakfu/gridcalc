@@ -1439,3 +1439,33 @@ def test_array_function_arguments_are_validated(formula, expected):
     g.setcells_bulk([(0, 0, "3"), (0, 1, "1"), (0, 2, "4")])
     g.setcell(5, 0, formula)
     assert g._cell_lookup_value(5, 0) == expected
+
+
+class _CountingList(list):
+    """A list that counts full passes over it."""
+
+    passes = 0
+
+    def __iter__(self):
+        type(self).passes += 1
+        return super().__iter__()
+
+
+@pytest.mark.parametrize("kind", ["if", "iferror"])
+def test_an_array_branch_is_read_once_not_once_per_element(kind):
+    """A copy of the branch per element made IF and IFERROR over 40k rows take 3.7 s."""
+    from gridcalc.engine import Vec
+    from gridcalc.formula.evaluator import _choose, _replace_where
+
+    _CountingList.passes = 0
+    n = 1000
+    branch = Vec([])
+    branch.data = _CountingList(range(n))  # Vec() copies to a plain list
+    if kind == "if":
+        got = _choose(Vec([i % 2 == 0 for i in range(n)]), lambda: branch, lambda: -1)
+        assert got.data[:4] == [0, -1, 2, -1]
+    else:
+        v = Vec([ExcelError.DIV0 if i % 2 else i for i in range(n)])
+        got = _replace_where(v, lambda x: isinstance(x, ExcelError), lambda: branch)
+        assert got.data[:4] == [0, 1, 2, 3]
+    assert _CountingList.passes <= 1

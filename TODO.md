@@ -42,7 +42,7 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 - [ ] **Evaluator speed on large array formulas.** Sheetpedia `802559d...` holds 7,676 copies of `AGGREGATE(15,6,ROW(H2:H10000)-ROW(H2)+1/(B2:B10000=Q$1)/...)`: about 380M element operations. A full recalc takes 232 s and matches Excel in every cell; under the 30 s limit most give `#CALC!`. At about 0.6 us per element no Python loop fits, so this needs native or vectorised element-wise operators. The C++ entry under Low weighs that.
 
-- [ ] **Evaluator speed on large lambda formulas.** A `LET` over 12,516 rows with `BYROW`, `FILTER` and `MAP` per row (Sheetpedia `846882d...`) still reaches the 30 s limit. Element-wise operators and `IF` over Vecs dominate the profile.
+- [ ] **Evaluator speed on large lambda formulas.** A `LET` over 12,516 rows with `BYROW`, `FILTER` and `MAP` per row (Sheetpedia `846882d...`) loads in 17.1 s, 21.3 s before the linear array `IF` (2026-11-10, no `#CALC!`). It reached the 30 s limit in earlier runs, so a loaded machine can still stop it. Element-wise operators dominated the profile.
 
 - [ ] **OpenXLSX reads about 7 us per cell**: a 1M-cell sheet takes 7 s before any Python runs.
 
@@ -76,7 +76,9 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ### Performance
 
-- [ ] **A named-input case recalculates 6.6x slower than GridCraft.** 173 ms against 26 ms on 18,033 formulas (`docs/dev/comparison.md`). A sweep of 100k cases would take about 4.8 h against 45 min. Worth it only for sweep-sized workloads; the cost breakdown is under Low > Performance.
+- [ ] **A named-input case recalculates about 2.4x slower than GridCraft.** 63 ms against 26 ms on 18,033 formulas, measured on different days (`docs/dev/comparison.md`, `docs/dev/261110-perf.md`). A sweep of 100k cases would take about 1.75 h against 45 min. Worth it only for sweep-sized workloads; the cost breakdown is under Low > Performance.
+
+  - Next, about 6% by cProfile: `_store_formula_result` imports on every call, and each cell read takes 4 Python calls where 1 would do with no volatile cell in the closure (`docs/dev/261110-perf.md` item 3).
 
 - [ ] **Whole-column paths that still cost a million rows.** Each is correct but slow on Excel's grid:
   - Fill down (`Api.fill`) over a header-selected column writes every row, as Excel does.

@@ -1326,13 +1326,14 @@ def _eval_lazy(name: str, node: Call, env: Env) -> Any:
     raise AssertionError(f"unhandled lazy function {name}")
 
 
-def _element(v: Any, i: int) -> Any:
+def _elements(v: Any) -> Callable[[int], Any]:
     """Element ``i`` of an array branch, or the scalar itself. An array shorter
     than the condition gives #N/A past its end, as in Excel."""
     if not _is_vec(v):
-        return v
-    data = _vec_data(v)
-    return data[i] if i < len(data) else ExcelError.NA
+        return lambda i: v
+    data = v.data
+    n = len(data)
+    return lambda i: data[i] if i < n else ExcelError.NA
 
 
 def _choose(cond: Any, then: Callable[[], Any], other: Callable[[], Any]) -> Any:
@@ -1343,11 +1344,11 @@ def _choose(cond: Any, then: Callable[[], Any], other: Callable[[], Any]) -> Any
         if isinstance(b, ExcelError):
             return b
         return then() if b else other()
-    t, f = then(), other()
+    t, f = _elements(then()), _elements(other())
     out = []
     for i, c in enumerate(_vec_data(cond)):
         b = _to_bool(c)
-        out.append(b if isinstance(b, ExcelError) else _element(t if b else f, i))
+        out.append(b if isinstance(b, ExcelError) else (t if b else f)(i))
     return _make_vec(out, cols=_vec_cols(cond))
 
 
@@ -1358,10 +1359,8 @@ def _replace_where(v: Any, test: Callable[[Any], bool], fallback: Callable[[], A
     data = _vec_data(v)
     if not any(test(x) for x in data):
         return v
-    fb = fallback()
-    return _make_vec(
-        [_element(fb, i) if test(x) else x for i, x in enumerate(data)], cols=_vec_cols(v)
-    )
+    fb = _elements(fallback())
+    return _make_vec([fb(i) if test(x) else x for i, x in enumerate(data)], cols=_vec_cols(v))
 
 
 RAW_ARG_FUNCS = frozenset(

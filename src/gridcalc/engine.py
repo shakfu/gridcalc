@@ -2960,6 +2960,9 @@ class Grid:
         # A scratch cell `_used_extent` ignores, such as `cli.run_eval`'s.
         self._extent_skip: tuple[str, int, int] | None = None
         self._volatile: set[tuple[str | None, int, int]] = set()
+        # `_recalc_topo`'s closure, order and cycle cells per dirty set; emptied
+        # by every graph change. A sweep recalcs the same inputs per case.
+        self._topo_cache: dict[Any, Any] = {}
         # Cells in or downstream of a cycle at the last recalc.
         self._cycle_cells: set[tuple[str | None, int, int]] = set()
         # Anchors currently rejected with #SPILL!. A blocked anchor has no
@@ -3293,6 +3296,8 @@ class Grid:
     def _clear_deps(self, key: DepKey) -> None:
         """Drop `key` from forward + reverse indexes and the volatile set."""
         old = self._dep_of.pop(key, None)
+        if old is not None or key in self._volatile:
+            self._topo_cache.clear()
         if old is not None:
             for d in old:
                 subs = self._subscribers.get(d)
@@ -3324,6 +3329,8 @@ class Grid:
                 else (canon[d[0]], d[1], d[2])
                 for d in deps
             }
+        if deps or volatile:
+            self._topo_cache.clear()
         if deps:
             self._dep_of[key] = deps
             for d in deps:
@@ -3347,6 +3354,7 @@ class Grid:
         self._subscribers.clear()
         self._ranges.clear()
         self._volatile.clear()
+        self._topo_cache.clear()
         self._spill_blocked.clear()
         named = self._dep_named_ranges()
         for s in self.sheets:
@@ -4366,22 +4374,30 @@ class Grid:
         # If dirty is None, the closure is every formula cell across every
         # sheet, and the graph is rebuilt: callers such as undo and sort
         # write cells directly and rely on a full recalc to catch up.
-        if dirty3 is None:
+        cache_key = None
+        closure: set[DepKey]
+        order: list[DepKey]
+        if dirty3 is not None:
+            # A formula without references adds no edge but joins the closure.
+            formulas = frozenset(
+                k for k in dirty3 if (fc := self._cell_at(k)) is not None and fc.type == FORMULA
+            )
+            cache_key = (frozenset(dirty3), formulas)
+        cached = self._topo_cache.get(cache_key) if cache_key is not None else None
+        if cached is not None:
+            closure, order, stuck = cached
+        elif dirty3 is None:
             self._rebuild_dep_graph()
             for s in self.sheets:
                 s._circular = set()  # rebuilt below; a moved cell's old entry must go
             # Range nodes too: Kahn orders only by in-closure edges.
-            closure: set[DepKey] = set(self._ranges)
+            closure = set(self._ranges)
             for s in self.sheets:
                 for (c, r), cl in s._cells.items():
                     if cl.type == FORMULA:
                         closure.add((s.name, c, r))
         else:
-            closure = set(self._volatile)
-            for dk in dirty3:
-                cl_dirty = self._cell_at(dk)
-                if cl_dirty is not None and cl_dirty.type == FORMULA:
-                    closure.add(dk)
+            closure = {*self._volatile, *formulas}
             stack: list[DepKey] = list(dirty3 | self._volatile)
             while stack:
                 node = stack.pop()
@@ -4393,33 +4409,40 @@ class Grid:
                         closure.add(sub)
                         stack.append(sub)
 
-        # Topological order via Kahn's algorithm. In-edges restricted to
-        # cells inside the closure -- deps outside the closure are already
-        # up to date and don't gate evaluation order.
-        in_count: dict[DepKey, int] = {}
-        children: dict[DepKey, list[DepKey]] = {}
-        for k in closure:
-            deps = self._dep_of.get(k, set())
-            in_closure = deps & closure
-            in_count[k] = in_count.get(k, 0) + len(in_closure)
-            for d in in_closure:
-                children.setdefault(d, []).append(k)
-            if not isinstance(k, RangeKey):
-                # A range's in-edges: the closure cells it contains.
-                for rk in self._ranges.containing(*k):
-                    if rk in closure:
-                        in_count[rk] = in_count.get(rk, 0) + 1
-                        children.setdefault(k, []).append(rk)
+        if cached is None:
+            # Topological order via Kahn's algorithm. In-edges restricted to
+            # cells inside the closure -- deps outside the closure are already
+            # up to date and don't gate evaluation order.
+            in_count: dict[DepKey, int] = {}
+            children: dict[DepKey, list[DepKey]] = {}
+            for k in closure:
+                deps = self._dep_of.get(k, set())
+                in_closure = deps & closure
+                in_count[k] = in_count.get(k, 0) + len(in_closure)
+                for d in in_closure:
+                    children.setdefault(d, []).append(k)
+                if not isinstance(k, RangeKey):
+                    # A range's in-edges: the closure cells it contains.
+                    for rk in self._ranges.containing(*k):
+                        if rk in closure:
+                            in_count[rk] = in_count.get(rk, 0) + 1
+                            children.setdefault(k, []).append(rk)
 
-        ready = [k for k, n in in_count.items() if n == 0]
-        order: list[DepKey] = []
-        while ready:
-            k = ready.pop()
-            order.append(k)
-            for child in children.get(k, ()):
-                in_count[child] -= 1
-                if in_count[child] == 0:
-                    ready.append(child)
+            ready = [k for k, n in in_count.items() if n == 0]
+            order = []
+            while ready:
+                k = ready.pop()
+                order.append(k)
+                for child in children.get(k, ()):
+                    in_count[child] -= 1
+                    if in_count[child] == 0:
+                        ready.append(child)
+            # Kahn leaves out each cycle and everything that reads one.
+            stuck = {k for k in closure.difference(order) if not isinstance(k, RangeKey)}
+            if cache_key is not None:
+                if len(self._topo_cache) >= 8:
+                    self._topo_cache.clear()
+                self._topo_cache[cache_key] = (closure, order, stuck)
 
         # Evaluate in dependency order. Switch the active sheet for
         # each formula so `current_cell` and the active-sheet cell
@@ -4553,8 +4576,6 @@ class Grid:
 
         env.cell_value = lookup
         env.cell_spill_value = spill_lookup
-        # Kahn leaves out each cycle and everything that reads one.
-        stuck = {k for k in closure.difference(order) if not isinstance(k, RangeKey)}
         try:
             for key in order:
                 if key in pending and not isinstance(key, RangeKey):

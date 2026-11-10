@@ -87,6 +87,7 @@ class Env:
         sheet_names: Callable[[], list[str]] | None = None,
         table_ref: Callable[..., Any] | None = None,
         stored_cells: Callable[[str | None], Collection[tuple[int, int]] | None] | None = None,
+        hidden_rows: Callable[[str | None], tuple[set[int], set[int]]] | None = None,
     ) -> None:
         # `cell_value` is `(c, r, sheet=None) -> object`; `cell_is_formula`
         # is `(c, r, sheet=None) -> bool`. The single-sheet case keeps
@@ -122,6 +123,9 @@ class Env:
         # `stored_cells(sheet)` is the (c, r) positions a sheet stores, or None
         # for an unknown sheet. `_eval_range` reads only these in a large range.
         self.stored_cells = stored_cells
+        # `hidden_rows(sheet)` is (rows hidden, the subset a filter hid), for
+        # SUBTOTAL and AGGREGATE.
+        self.hidden_rows = hidden_rows or (lambda _s: (set(), set()))
         # `sheet_names()` lists the workbook's sheets in order, for SHEET/SHEETS.
         self.sheet_names = sheet_names or (lambda: [])
         # `table_ref(node, sheet, cell)` resolves a `StructRef` read by the
@@ -654,8 +658,7 @@ def _compare(op: str, a: Any, b: Any) -> Any:
     a_is_num = isinstance(a, (int, float)) and not isinstance(a, bool)
     b_is_num = isinstance(b, (int, float)) and not isinstance(b, bool)
     if a_is_num and b_is_num:
-        x: Any = sig15(a)
-        y: Any = sig15(b)
+        x, y = sig15(a), sig15(b)
     elif isinstance(a, str) and isinstance(b, str):
         x, y = a.lower(), b.lower()  # Excel compares text case-insensitively
     elif isinstance(a, bool) and isinstance(b, bool):

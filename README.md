@@ -69,7 +69,7 @@ book.run_many([{"Rate": r / 100} for r in range(1, 10)], ["Payment"])
 
 - **`--convert out.xlsx`** saves the workbook with the inputs written in.
 
-**How close to Excel?** On 279 workbooks that Excel saved, with 79,598 formula cells, gridcalc's result matches Excel's saved value in 99.0% of cells. The workbooks are IronCalc's and pycel's function test suites. They exercise functions at their edges, and gridcalc was fixed against them, so read 99.0% as an upper bound for files it has not seen. What still differs is listed in [`TODO.md`](TODO.md) and [`docs/dev/excel-corpus.md`](docs/dev/excel-corpus.md). Not supported: `.xls`, VBA macros, pivot-table refresh, external data connections, and hidden-row rules in `SUBTOTAL`/`AGGREGATE`.
+**How close to Excel?** On 279 workbooks that Excel saved, with 79,598 formula cells, gridcalc's result matches Excel's saved value in 99.0% of cells. The workbooks are IronCalc's and pycel's function test suites. They exercise functions at their edges, and gridcalc was fixed against them, so read 99.0% as an upper bound for files it has not seen. What still differs is listed in [`TODO.md`](TODO.md) and [`docs/dev/excel-corpus.md`](docs/dev/excel-corpus.md). Not supported: `.xls`, VBA macros, pivot-table refresh, and external data connections.
 
 Full reference: <https://shakfu.github.io/gridcalc/reference/cli/#named-inputs-and-outputs>
 

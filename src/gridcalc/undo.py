@@ -37,6 +37,7 @@ _SheetSnap = tuple[
     int,
     list[tuple[int, int, int, int]],
     dict[int, float],
+    tuple[set[int], set[int], str | None],
 ]
 
 
@@ -75,6 +76,7 @@ def _book(g: Grid) -> list[_SheetSnap]:
             s.cr,
             list(s.merges),
             dict(s.heights),
+            (set(s.hidden_rows), set(s.filtered_rows), s.autofilter),
         )
         for s in g.sheets
     ]
@@ -155,9 +157,10 @@ def _snap_region(g: Grid, e: UndoEntry, c1: int, r1: int, c2: int, r2: int) -> N
 def _restore(g: Grid, e: UndoEntry) -> None:
     if e.book is not None and e.active is not None:
         g.sheets = [snap[0] for snap in e.book]
-        for s, name, cells, widths, cc, cr, merges, heights in e.book:
+        for s, name, cells, widths, cc, cr, merges, heights, hidden in e.book:
             s.name, s.widths, s.cc, s.cr = name, dict(widths), cc, cr
             s.merges, s.heights = list(merges), dict(heights)
+            s.hidden_rows, s.filtered_rows, s.autofilter = set(hidden[0]), set(hidden[1]), hidden[2]
             s._cells = {(c, r): snap.snapshot() for c, r, snap in cells}
             s._circular = set()
         g.active = g.sheets.index(e.active)

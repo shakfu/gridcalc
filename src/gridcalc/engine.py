@@ -1694,7 +1694,7 @@ def _xlsx_read_saved_values(
     return out
 
 
-_Layout = tuple[list[tuple[int, int, int, int]], dict[int, float]]
+_Layout = tuple[list[tuple[int, int, int, int]], dict[int, float], set[int], str | None]
 
 
 def _xlsx_read_formatting(
@@ -1723,7 +1723,7 @@ def _xlsx_read_formatting(
                 if part not in names:
                     continue
                 data = z.read(part)
-                layout[sheet] = xlsx_styles.read_layout(data)
+                layout[sheet] = (*xlsx_styles.read_layout(data), *xlsx_styles.read_hidden(data))
                 if not any(styles):
                     continue
                 found = styled[sheet] = {}
@@ -2156,6 +2156,7 @@ def _xlsx_postprocess(
     tables: dict[str, list[bytes]] | None = None,
     freeze: dict[str, tuple[int, int]] | None = None,
     iterate: tuple[int, float] | None = None,
+    hidden: dict[str, tuple[set[int], str | None]] | None = None,
 ) -> None:
     """Add defined names, column widths, dynamic arrays, `XStyle`s and the
     iteration setting to the xlsx at ``path``.
@@ -2225,6 +2226,9 @@ def _xlsx_postprocess(
                 merges, heights = (layout or {}).get(sheet, ([], {}))
                 if merges or heights:
                     data = xlsx_styles.patch_layout(data, merges, heights)
+                rows, autofilter = (hidden or {}).get(sheet, (set(), None))
+                if rows or autofilter:
+                    data = xlsx_styles.patch_hidden(data, rows, autofilter)
             elif arrays and info.filename == "[Content_Types].xml":
                 data = _insert_once(data, b"</Types>", _XLSX_METADATA_TYPE)
             elif arrays and info.filename == "xl/_rels/workbook.xml.rels":
@@ -2745,6 +2749,81 @@ def _decode_layout(
     return out_m, out_h
 
 
+def _decode_rows(rows: Any) -> set[int]:
+    """A JSON list of row indexes, dropping any off the grid."""
+    items = rows if isinstance(rows, list) else []
+    return {r for r in items if type(r) is int and 0 <= r < NROW}
+
+
+def _filter_rows(sh: Sheet, tables: list[Table]) -> set[int]:
+    """The rows under a filter with a criterion: the sheet's or a table's.
+
+    Excel counts a hidden row there as filtered out, and any other as hidden
+    by hand (`docs/dev/hidden-rows.md`).
+    """
+    spans: list[tuple[int, int]] = []
+    af = sh.autofilter
+    if af is not None and "<filterColumn" in af:
+        m = re.search(r'\sref="([^"]+)"', af)
+        box = _a1_box(m.group(1)) if m else None
+        if box is not None:
+            spans.append((box[1] + 1, box[3]))
+    for t in tables:
+        if t.sheet == sh.name and t.xml is not None and "<filterColumn" in t.xml:
+            spans.append(t.data_rows())
+    return {r for lo, hi in spans for r in range(lo, hi + 1)}
+
+
+def _a1_box(text: str) -> tuple[int, int, int, int] | None:
+    """``A1:D9`` (or ``A1``) as ``(c1, r1, c2, r2)``, or None."""
+    a, _, b = text.partition(":")
+    ra, rb = ref(a), ref(b or a)
+    if ra is None or rb is None or ra[0] != len(a) or rb[0] != len(b or a):
+        return None
+    return (min(ra[1], rb[1]), min(ra[2], rb[2]), max(ra[1], rb[1]), max(ra[2], rb[2]))
+
+
+def _shift_autofilter(xml: str, axis: str, pos: int, direction: int) -> str | None:
+    """``<autoFilter>`` moved across a row or column insert/delete, or None
+    once its header row or every column is gone. A filtered column keeps its
+    criterion; a deleted one loses it. The sort state is dropped."""
+    m = re.search(r'\sref="([^"]+)"', xml)
+    box = _a1_box(m.group(1)) if m else None
+    if m is None or box is None:
+        return xml
+    c1, r1, c2, r2 = box
+    lo, hi = (r1, r2) if axis == "R" else (c1, c2)
+    if direction > 0:
+        nlo, nhi = lo + (lo >= pos), hi + (hi >= pos)
+    else:
+        if lo == hi == pos or (axis == "R" and pos == lo):
+            return None
+        nlo, nhi = lo - (lo > pos), hi - (hi >= pos)
+    if (nlo, nhi) == (lo, hi):
+        return xml
+    xml = re.sub(r"<sortState\b.*?(?:/>|</sortState>)", "", xml, flags=re.S)
+    if axis == "R":
+        box = (c1, nlo, c2, nhi)
+    else:
+        box = (nlo, r1, nhi, r2)
+
+        def column(fm: re.Match[str]) -> str:
+            at = c1 + int(fm.group(2))
+            if direction < 0 and at == pos:
+                return ""
+            at += direction if (at >= pos if direction > 0 else at > pos) else 0
+            return fm.group(0).replace(fm.group(1), f'colId="{at - nlo}"', 1)
+
+        xml = re.sub(
+            r'<filterColumn\b[^>]*?(colId="(\d+)").*?(?:/>|</filterColumn>)',
+            column,
+            xml,
+            flags=re.S,
+        )
+    span = f"{cellname(box[0], box[1])}:{cellname(box[2], box[3])}"
+    return xml[: m.start(1)] + span + xml[m.end(1) :]
+
+
 def _drop_spill_cell(cells: dict[tuple[int, int], Cell], pos: tuple[int, int]) -> None:
     """Remove a spill cell, leaving a styled blank when it has its own style."""
     own = cells[pos].xstyle
@@ -2786,6 +2865,9 @@ class Sheet:
         "widths",
         "merges",
         "heights",
+        "hidden_rows",
+        "filtered_rows",
+        "autofilter",
     )
 
     def __init__(self, name: str = "Sheet1") -> None:
@@ -2810,6 +2892,12 @@ class Sheet:
         # Kept for xlsx and JSON; neither view draws row heights.
         self.merges: list[tuple[int, int, int, int]] = []
         self.heights: dict[int, float] = {}
+        # Hidden rows, and the subset a filter hid; SUBTOTAL 1-11 skips only
+        # those. Neither view hides them. `autofilter` is the sheet's xlsx
+        # `<autoFilter>` element, written back as read.
+        self.hidden_rows: set[int] = set()
+        self.filtered_rows: set[int] = set()
+        self.autofilter: str | None = None
 
 
 class Grid:
@@ -4204,7 +4292,13 @@ class Grid:
             cell_formula_text=self._cell_formula_text,
             table_ref=self._table_ref,
             stored_cells=self._stored_cells,
+            hidden_rows=self._hidden_rows,
         )
+
+    def _hidden_rows(self, sheet: str | None) -> tuple[set[int], set[int]]:
+        """``sheet``'s hidden rows and the subset a filter hid."""
+        sh = self._sheet_by_name(sheet)
+        return (set(), set()) if sh is None else (sh.hidden_rows, sh.filtered_rows)
 
     def _stored_cells(self, sheet: str | None) -> dict[tuple[int, int], Cell] | None:
         """The live cell store of ``sheet`` (active for None), or None if unknown."""
@@ -4748,6 +4842,16 @@ class Grid:
                 if 0 <= nr < NROW:
                     moved[nr] = h
             sh.heights = moved
+        if axis == "R":
+            for name in ("hidden_rows", "filtered_rows"):
+                rows: set[int] = getattr(sh, name)
+                if rows:
+                    shifted = {
+                        r + direction if r >= pos else r for r in rows if r != pos or direction > 0
+                    }
+                    setattr(sh, name, {r for r in shifted if 0 <= r < NROW})
+        if sh.autofilter is not None:
+            sh.autofilter = _shift_autofilter(sh.autofilter, axis, pos, direction)
 
     def _shift_widths(self, pos: int, direction: int) -> None:
         """Move per-column widths across a column insert/delete.
@@ -5247,6 +5351,8 @@ class Grid:
                 sh = Sheet(name=final_name)
                 sh.widths = _decode_widths(entry.get("widths"))
                 sh.merges, sh.heights = _decode_layout(entry.get("merges"), entry.get("heights"))
+                sh.hidden_rows = _decode_rows(entry.get("hidden_rows"))
+                sh.filtered_rows = sh.hidden_rows & _decode_rows(entry.get("filtered_rows"))
                 freeze = entry.get("freeze")
                 if (
                     isinstance(freeze, list)
@@ -5449,6 +5555,10 @@ class Grid:
                 entry["merges"] = [f"{cellname(a, b)}:{cellname(c, d)}" for a, b, c, d in s.merges]
             if s.heights:
                 entry["heights"] = {str(r): h for r, h in sorted(s.heights.items())}
+            if s.hidden_rows:
+                entry["hidden_rows"] = sorted(s.hidden_rows)
+            if s.filtered_rows:
+                entry["filtered_rows"] = sorted(s.filtered_rows)
             if s.widths:
                 # Omitted when empty, so a workbook never touched by a
                 # graphical frontend serializes exactly as it did before.
@@ -5598,11 +5708,14 @@ class Grid:
             for (sname, c, r), saved in _xlsx_read_saved_values(filename, root, formulas).items():
                 self._store_formula_result(self.sheets[sheet_index[sname]]._cells[(c, r)], saved)
         self.font, xstyled, layouts = _xlsx_read_formatting(filename, root)
-        for sname, (merges, heights) in layouts.items():
+        for sname, (merges, heights, hidden, autofilter) in layouts.items():
             if sname in sheet_index:
                 sh = self.sheets[sheet_index[sname]]
                 sh.merges = [m for m in merges if _on_grid(*m)]
                 sh.heights = {r: h for r, h in heights.items() if 0 <= r < NROW}
+                sh.hidden_rows = {r for r in hidden if 0 <= r < NROW}
+                sh.autofilter = autofilter
+                sh.filtered_rows = sh.hidden_rows & _filter_rows(sh, self.tables)
         for sname, positions in xstyled.items():
             if sname not in sheet_index:
                 continue
@@ -5788,6 +5901,7 @@ class Grid:
             for sh in self.sheets
         }
         layout = {sh.name: (sh.merges, sh.heights) for sh in self.sheets}
+        hidden = {sh.name: (sh.hidden_rows, sh.autofilter) for sh in self.sheets}
         table_parts = self._xlsx_table_parts()
 
         def write(path: str) -> None:
@@ -5805,6 +5919,7 @@ class Grid:
                 table_parts,
                 {sh.name: (sh.tc, sh.tr) for sh in self.sheets},
                 self.iterate,
+                hidden,
             )
 
         return self._save_via(filename, write)

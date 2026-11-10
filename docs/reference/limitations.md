@@ -14,6 +14,8 @@ Known gaps, each of them deliberate rather than pending:
 
 - **Iterative calculation** (`:iterate`) is ignored in PYTHON mode. Each sweep runs every cell that reads a cycle, as Excel does, so a large model downstream of a small cycle costs up to `count` times a normal recalc.
 
+- **Hidden rows** are read from xlsx and used in calculation, but neither view hides them and no command hides or filters a row. JSON keeps which rows a filter hid, but not the filter itself, so an xlsx saved from JSON has none.
+
 - **Whole-column and whole-row references** (`A:A`, `1:1`) work in EXCEL and HYBRID mode only.
 
 - **Structured references** (`Sales[Qty]`) read tables from an xlsx. gridcalc cannot create or rename a table, and editing a header cell does not rename its column. A bare `[Qty]` without the table name is not read; `[@Qty]` is. A reference into another workbook (`[1]!Sales[Qty]`) is a syntax error.

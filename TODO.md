@@ -38,8 +38,6 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 - [ ] **Real-workbook survey gaps** (`docs/dev/excel-corpus.md`, survey section). By files: conditional formatting (178), data validation (118), comments (50), hyperlinks (30). The reference union `(A1:B2,C1:D2)` does not parse.
 
-- [ ] **Hidden and filtered rows.** `SUBTOTAL` 1-11 skips rows a filter hides, and 101-111 also those hidden by hand; `AGGREGATE` options 1, 3, 5 and 7 likewise. gridcalc reads neither, so IronCalc's `tables.xlsx` has 35 mismatches. Needs per-sheet state in xlsx, JSON, insert/delete and undo.
-
 - [ ] **Tables:** editing a header cell should rename the column and rewrite the formulas that name it, as Excel does. A bare `[Qty]` inside a table is not read; `[@Qty]` is. `Table167[[#Totals],[ERP (T12m)]]` gives `#VALUE!` (Damodaran `ERPNov26.xlsx`, `ERPbymonth.xlsx`).
 
 - [ ] **Evaluator speed on large array formulas.** Sheetpedia `802559d...` holds 7,676 copies of `AGGREGATE(15,6,ROW(H2:H10000)-ROW(H2)+1/(B2:B10000=Q$1)/...)`: about 380M element operations. A full recalc takes 232 s and matches Excel in every cell; under the 30 s limit most give `#CALC!`. At about 0.6 us per element no Python loop fits, so this needs native or vectorised element-wise operators. The C++ entry under Low weighs that.
@@ -95,6 +93,8 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 - [ ] **xlsx styles: what is left.** Fonts, solid fills, borders, alignment, number formats, merged cells and row heights now round-trip (see CHANGELOG). Open:
   - No command sets a font, fill, border, alignment or merge; they arrive only from a file.
+
+  - Neither view hides hidden rows, and no command hides or filters one. `SUBTOTAL` and `AGGREGATE` already read them (`docs/dev/hidden-rows.md`).
 
   - Neither view draws row heights, and the web view does not draw rotation. Variable row heights need the web grid's row positions as a prefix sum over 1M rows.
 

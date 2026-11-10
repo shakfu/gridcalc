@@ -2278,8 +2278,8 @@ def _clamp_ref(env: Any, ref: Any) -> Any:
     return Reference(ref.c1, ref.r1, c2, r2, ref.sheet)
 
 
-# SUBTOTAL function numbers: 1-11, and 101-111 for the same ignoring hidden
-# rows, which gridcalc does not have.
+# SUBTOTAL function numbers: 1-11, which skip rows a filter hid, and 101-111,
+# which skip every hidden row.
 _SUBTOTAL_FUNCS = {
     1: "AVERAGE",
     2: "COUNT",
@@ -2312,7 +2312,7 @@ def SUBTOTAL(env: Any, *args: Any) -> Any:
     name = _SUBTOTAL_FUNCS.get(code - 100 if code > 100 else code)
     if name is None:
         return ExcelError.VALUE
-    values = _total_values(env, args[1:], skip_totals=True)
+    values = _total_values(env, args[1:], skip_totals=True, skip=1 if code > 100 else 2)
     err = _total_error(name, values)
     if err is not None:
         return err
@@ -2327,9 +2327,11 @@ def _total_error(name: str, values: list[Any]) -> ExcelError | None:
     return next((v for v in values if isinstance(v, ExcelError)), None)
 
 
-def _total_values(env: Any, nodes: Any, *, skip_totals: bool) -> list[Any]:
-    """The values of SUBTOTAL's or AGGREGATE's reference arguments, leaving out
-    cells that are themselves such totals when ``skip_totals``."""
+def _total_values(env: Any, nodes: Any, *, skip_totals: bool, skip: int = 0) -> list[Any]:
+    """The values of SUBTOTAL's or AGGREGATE's arguments, leaving out cells
+    that are themselves such totals when ``skip_totals``. A reference's
+    hidden rows are left out too when ``skip`` is 1, and only the rows a
+    filter hid when it is 2. Columns are never left out, as in Excel."""
     from ..formula.evaluator import Reference, _deref
 
     values: list[Any] = []
@@ -2340,7 +2342,10 @@ def _total_values(env: Any, nodes: Any, *, skip_totals: bool) -> list[Any]:
             values.extend(v.data if isinstance(v, Vec) else [v])
             continue
         ref = _clamp_ref(env, v)
+        gone = env.hidden_rows(ref.sheet)[skip - 1] if skip else ()
         for r in range(ref.r1, ref.r2 + 1):
+            if r in gone:
+                continue
             for c in range(ref.c1, ref.c2 + 1):
                 text = env.cell_formula_text(c, r, ref.sheet)
                 if skip_totals and isinstance(text, str) and _TOTAL_RE.search(text):
@@ -2371,8 +2376,8 @@ _AGGREGATE_FUNCS = {
 def AGGREGATE(env: Any, *args: Any) -> Any:
     """=AGGREGATE(function_num, options, ref1, ...) or, for function_num 14 to
     19, AGGREGATE(function_num, options, array, k). Options 2, 3, 6 and 7 skip
-    errors; 4 to 7 keep nested totals. gridcalc has no hidden rows, so the
-    options that skip them change nothing."""
+    errors; 4 to 7 keep nested totals; 1, 3, 5 and 7 skip hidden rows of a
+    reference, whatever hid them."""
     from ..formula.evaluator import Reference, _deref
 
     if len(args) < 3:
@@ -2405,7 +2410,7 @@ def AGGREGATE(env: Any, *args: Any) -> Any:
         if any(not isinstance(env.ref_or_value(n), Reference) for n in args[2:]):
             return ExcelError.VALUE
         data_nodes = args[2:]
-    values = _total_values(env, data_nodes, skip_totals=opt < 4)
+    values = _total_values(env, data_nodes, skip_totals=opt < 4, skip=opt % 2)
     if opt in (2, 3, 6, 7):
         values = [v for v in values if not isinstance(v, ExcelError)]
     elif (err := _total_error(name, values)) is not None:

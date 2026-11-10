@@ -577,3 +577,43 @@ def patch_layout(
         xml = f'<mergeCells count="{len(merges)}">{refs}</mergeCells>'.encode()
         data = data.replace(b"</sheetData>", b"</sheetData>" + xml)
     return data
+
+
+# -- hidden rows and the sheet's filter -----------------------------------------
+
+_AUTOFILTER = re.compile(rb"<autoFilter\b[^>]*/>|<autoFilter\b.*?</autoFilter>", re.S)
+
+
+def read_hidden(sheet_xml: bytes) -> tuple[set[int], str | None]:
+    """A worksheet part's hidden rows, and its sheet-level ``<autoFilter>`` element."""
+    rows: set[int] = set()
+    for m in _ROW_HEAD.finditer(sheet_xml):
+        attrs = dict(_ATTR.findall(m.group(1)))
+        if attrs.get(b"hidden") in (b"1", b"true") and attrs.get(b"r", b"").isdigit():
+            rows.add(int(attrs[b"r"]) - 1)
+    af = _AUTOFILTER.search(sheet_xml)
+    return rows, af.group(0).decode("utf-8") if af else None
+
+
+def patch_hidden(sheet_xml: bytes, rows: set[int], autofilter: str | None) -> bytes:
+    """Mark ``rows`` hidden in one worksheet part and add its ``<autoFilter>``.
+
+    Call after `patch_layout`: the schema puts ``autoFilter`` before ``mergeCells``.
+    """
+    data = sheet_xml
+    if rows:
+        data = _add_blank_cells(data, {r: [] for r in rows}, lambda c, r: 0)
+
+        def hide(m: re.Match[bytes]) -> bytes:
+            rm = re.search(rb' r="(\d+)"', m.group(1))
+            if rm is None or int(rm.group(1)) - 1 not in rows:
+                return m.group(0)
+            attrs = re.sub(rb' hidden="[^"]*"', b"", m.group(1))
+            return b"<row" + attrs + b' hidden="1"' + m.group(2) + b">"
+
+        data = _ROW_HEAD.sub(hide, data)
+    if autofilter:
+        if data.count(b"</sheetData>") != 1 or b"<autoFilter" in data:
+            raise ValueError("unexpected worksheet layout; filter not written")
+        data = data.replace(b"</sheetData>", b"</sheetData>" + autofilter.encode("utf-8"))
+    return data

@@ -86,6 +86,8 @@ _NUMBER_RE = re.compile(r"\d+(\.\d*)?([eE][+-]?\d+)?|\.\d+([eE][+-]?\d+)?", re.A
 _SIGNED_NUMBER_RE = re.compile(r"[+-]?(?:" + _NUMBER_RE.pattern + ")", re.ASCII)
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _SEGMENT_RE = re.compile(r"[A-Za-z0-9_]+")
+# An unquoted sheet in another workbook, `[1]Data` in `[1]Data!A1`.
+_EXTSHEET_RE = re.compile(r"\[\d+\][A-Za-z_][A-Za-z0-9_.]*(?=!)")
 _ERROR_LIT_RE = re.compile(r"#(?:DIV/0!|N/A|NAME\?|REF!|VALUE!|NUM!|NULL!)", re.IGNORECASE)
 
 
@@ -331,6 +333,10 @@ def tokenize(text: str) -> list[Token]:
                 continue
             tokens.append(Token(IDENT, quoted, pos))
             i = j + 1
+            continue
+        if ch == "[" and (m := _EXTSHEET_RE.match(s, i)):
+            tokens.append(Token(IDENT, m.group(0), pos))  # as its quoted form
+            i = m.end()
             continue
         # `[@Amount]`: a structured reference into the formula's own table.
         # A bare `[Amount]` is not one here: `[x for x in xs]` is Python, and

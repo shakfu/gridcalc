@@ -8,6 +8,8 @@ Known gaps, each of them deliberate rather than pending:
 
 - **3D references** (`Jan:Mar!B2`) do not shift when rows or columns are inserted or deleted on one sheet of the run. Excel's rule for that case is unverified.
 
+- **Links to other workbooks** (`[1]Data!A1`) read only the values the xlsx cached for them; gridcalc never opens the linked file. A link the cache cannot answer keeps the value Excel saved: a sheet Excel cached nothing for, a name defined in the linked book, or a reference computed at run time. An xlsx save keeps the links in EXCEL mode, unless the workbook came from JSON.
+
 - **Cross-sheet ranges** (`Sheet1!A1:Sheet2!B5`) are rejected at parse time. Excel does not support them either.
 
 - **A range over 65536 cells is read only to the workbook's last used row and column.** The rest is blank. Results match Excel except where the result's shape shows: `=A:A` spills the used rows, not 1048576, and `=ROWS(A:A*1)` counts them. Counting blanks and indexing past the used rows still answer for the whole range. One cell far down the sheet makes every such range read to it, and recalculation slows to match.

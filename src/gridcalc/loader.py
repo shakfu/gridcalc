@@ -90,7 +90,8 @@ def save_losses(g: Grid, path: str | Path) -> list[str]:
     """What :func:`save_workbook` would not write for ``g`` at ``path``.
 
     Empty for JSON. xlsx keeps every sheet and named range but not the code
-    block or saved models, and keeps formulas only in EXCEL mode. Saving over
+    block or saved models, and keeps formulas and the links read from an
+    xlsx only in EXCEL mode. Saving over
     an existing xlsx also drops what :func:`xlsx_extras` finds in it. csv keeps the
     active sheet's values only.
     """
@@ -113,7 +114,8 @@ def save_losses(g: Grid, path: str | Path) -> list[str]:
     if g.code or g.withheld_code:
         lost.append("code")
     if not csv and Path(path).is_file():
-        lost += xlsx_extras(path)
+        kept = {"links to other workbooks"} if g.link_parts and g.mode == Mode.EXCEL else set()
+        lost += [x for x in xlsx_extras(path) if x not in kept]
     return lost
 
 
@@ -128,6 +130,7 @@ _PART_PREFIXES = (
     ("xl/comments", "comments"),
     ("xl/threadedComments/", "comments"),
     ("xl/charts/", "charts"),
+    ("xl/externalLinks/", "links to other workbooks"),
     ("xl/media/", "images"),
     ("xl/pivotTables/", "pivot tables"),
     ("xl/vbaProject.bin", "macros"),

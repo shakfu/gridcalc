@@ -661,8 +661,8 @@ class Cell:
         # A legacy (Ctrl+Shift+Enter) array formula's fixed range, ``(rows,
         # cols)``: its result is fitted to that range and never spills past it.
         self.cse: tuple[int, int] | None = None
-        # The value Excel saved for a formula gridcalc cannot compute, one
-        # linking to another workbook (`[1]Data!A1`); None otherwise.
+        # The value Excel saved for a formula reading another workbook
+        # (`[1]Data!A1`) beyond what `Grid.links` cached; None otherwise.
         self.cached: Any = None
 
     def clear(self) -> None:
@@ -1652,14 +1652,100 @@ def _parse_defined_ref(text: str) -> tuple[str, int, int, int, int] | None:
 _EXTERNAL_RE = re.compile(r"\[\d+\]")
 
 
+def _xlsx_value(kind: str, text: str) -> Any:
+    """A saved `<v>` of cell type ``kind`` as its value; None if unreadable."""
+    if kind == "e":
+        return parse_error_literal(text)
+    if kind == "b":
+        return text == "1"
+    if kind in ("str", "s", "inlineStr"):
+        return text
+    return parse_number(text)
+
+
+_LinkPart = tuple[bytes, bytes | None]  # an externalLink part and its relationships
+
+
+def _xlsx_read_links(
+    filename: str, root: Any
+) -> tuple[dict[str, dict[tuple[int, int], Any]], list[_LinkPart]]:
+    """The cells Excel cached from each linked workbook, keyed by sheet as a
+    formula names it (`[1]Data`), and the link parts in `[N]` order to write
+    back. A sheet with no cached cell is left out, so its formulas keep the
+    values Excel saved. The parts are empty when one is missing, since `[N]`
+    could then not be kept. Never raises."""
+    import posixpath
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    out: dict[str, dict[tuple[int, int], Any]] = {}
+    raw: list[_LinkPart] = []
+    refs = None if root is None else root.find(f"{_XLSX_NS}externalReferences")
+    if refs is None:
+        return out, raw
+    try:
+        with zipfile.ZipFile(filename) as z:
+            rels = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))  # noqa: S314
+            targets = {
+                rel.get("Id"): rel.get("Target", "")
+                for rel in rels.findall(f"{_XLSX_PKG_REL_NS}Relationship")
+            }
+            # `[N]` is the link's 1-based place in `<externalReferences>`.
+            for n, el in enumerate(refs.findall(f"{_XLSX_NS}externalReference"), 1):
+                target = targets.get(el.get(f"{_XLSX_REL_NS}id"), "")
+                part = target[1:] if target.startswith("/") else "xl/" + target
+                if not target or part not in z.namelist():
+                    continue
+                head, tail = posixpath.split(part)
+                rels_part = f"{head}/_rels/{tail}.rels"
+                xml = z.read(part)
+                raw.append((xml, z.read(rels_part) if rels_part in z.namelist() else None))
+                book = ET.fromstring(xml).find(f"{_XLSX_NS}externalBook")  # noqa: S314
+                if book is None:
+                    continue
+                names = [sn.get("val", "") for sn in book.iter(f"{_XLSX_NS}sheetName")]
+                for data in book.iter(f"{_XLSX_NS}sheetData"):
+                    sid = int(data.get("sheetId", "-1"))
+                    cells: dict[tuple[int, int], Any] = {}
+                    for cell in data.iter(f"{_XLSX_NS}cell"):
+                        at, v = ref(cell.get("r", "")), cell.find(f"{_XLSX_NS}v")
+                        if at is not None and v is not None:
+                            val = _xlsx_value(cell.get("t", "n"), v.text or "")
+                            if val is not None:
+                                cells[(at[1], at[2])] = val
+                    if cells and 0 <= sid < len(names):
+                        out[f"[{n}]{names[sid]}"] = cells
+    except (KeyError, OSError, ValueError, ET.ParseError, zipfile.BadZipFile):
+        return {}, []
+    if len(raw) != len(refs.findall(f"{_XLSX_NS}externalReference")):
+        raw = []
+    return out, raw
+
+
+def _link_cell(v: Any) -> Cell:
+    """A read-only cell holding a value cached from another workbook."""
+    cl = Cell()
+    if isinstance(v, str):
+        cl.type, cl.text = LABEL, '"' + v
+        return cl
+    cl.type = NUM
+    if isinstance(v, ExcelErrorType):
+        cl.text, cl.val, cl.err = str(v), math.nan, v
+    elif isinstance(v, bool):
+        cl.text = cl.sval = "TRUE" if v else "FALSE"
+        cl.val = v
+    else:
+        cl.val = float(v)
+        cl.text = _number_text(cl.val)
+    return cl
+
+
 def _xlsx_read_saved_values(
     filename: str, root: Any, keys: set[tuple[str, int, int]]
 ) -> dict[tuple[str, int, int], Any]:
     """The values Excel saved for the formula cells ``keys``. Never raises."""
     import xml.etree.ElementTree as ET
     import zipfile
-
-    from .formula.errors import parse_error_literal
 
     out: dict[tuple[str, int, int], Any] = {}
     if not keys or root is None:
@@ -1677,15 +1763,7 @@ def _xlsx_read_saved_values(
                         at = ref(el.get("r", ""))
                         v = el.find(f"{_XLSX_NS}v")
                         if at is not None and v is not None and (sheet, at[1], at[2]) in keys:
-                            kind, text = el.get("t", "n"), v.text or ""
-                            if kind == "e":
-                                val: Any = parse_error_literal(text)
-                            elif kind == "b":
-                                val = text == "1"
-                            elif kind in ("str", "s", "inlineStr"):
-                                val = text
-                            else:
-                                val = parse_number(text)
+                            val = _xlsx_value(el.get("t", "n"), v.text or "")
                             if val is not None:
                                 out[(sheet, at[1], at[2])] = val
                         el.clear()
@@ -1972,6 +2050,45 @@ def _xlsx_table_xml(t: Table, tid: int, names: list[str]) -> bytes:
     ).encode("utf-8")
 
 
+_XLSX_ABSPATH_RE = re.compile(
+    rb"<mc:AlternateContent\b(?:(?!</mc:AlternateContent>).)*?absPath.*?</mc:AlternateContent>",
+    re.DOTALL,
+)
+_XLSX_LINK_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/externalLink"
+_XLSX_LINK_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.externalLink+xml"
+
+
+def _xlsx_links_patch(
+    members: list[tuple[Any, bytes]], links: list[_LinkPart]
+) -> tuple[list[tuple[Any, bytes]], bytes]:
+    """``members`` with the externalLink parts ``links`` added, numbered in
+    order so `[N]` still names the same link, and the workbook's
+    `<externalReferences>` element for them."""
+    import zipfile
+
+    out = list(members)
+    by_name = {info.filename: i for i, (info, _) in enumerate(out)}
+    rels_at, types_at = by_name["xl/_rels/workbook.xml.rels"], by_name["[Content_Types].xml"]
+    rels, types = out[rels_at][1], out[types_at][1]
+    rid = max((int(m) for m in re.findall(rb'Id="rId(\d+)"', rels)), default=0)
+    refs = b""
+    for n, (xml, part_rels) in enumerate(links, 1):
+        rid += 1
+        target = f"externalLinks/externalLink{n}.xml"
+        out.append((zipfile.ZipInfo(f"xl/{target}"), xml))
+        if part_rels is not None:
+            rels_path = f"xl/externalLinks/_rels/externalLink{n}.xml.rels"
+            out.append((zipfile.ZipInfo(rels_path), part_rels))
+        rel = f'<Relationship Id="rId{rid}" Type="{_XLSX_LINK_REL}" Target="{target}"/>'
+        rels = _insert_once(rels, b"</Relationships>", rel.encode())
+        override = f'<Override PartName="/xl/{target}" ContentType="{_XLSX_LINK_TYPE}"/>'
+        types = _insert_once(types, b"</Types>", override.encode())
+        refs += f'<externalReference r:id="rId{rid}"/>'.encode()
+    out[rels_at] = (out[rels_at][0], rels)
+    out[types_at] = (out[types_at][0], types)
+    return out, b"<externalReferences>" + refs + b"</externalReferences>"
+
+
 def _xlsx_tables_patch(
     members: list[tuple[Any, bytes]], parts: dict[str, str], tables: dict[str, list[bytes]]
 ) -> list[tuple[Any, bytes]]:
@@ -2157,9 +2274,10 @@ def _xlsx_postprocess(
     freeze: dict[str, tuple[int, int]] | None = None,
     iterate: tuple[int, float] | None = None,
     hidden: dict[str, tuple[set[int], str | None]] | None = None,
+    links: list[_LinkPart] | None = None,
 ) -> None:
-    """Add defined names, column widths, dynamic arrays, `XStyle`s and the
-    iteration setting to the xlsx at ``path``.
+    """Add defined names, column widths, dynamic arrays, `XStyle`s, the
+    iteration setting and links to other workbooks to the xlsx at ``path``.
 
     OpenXLSX has no API for a defined name, a sheet's default column width or
     an array formula. The schema places ``definedNames`` directly after
@@ -2203,14 +2321,24 @@ def _xlsx_postprocess(
         ]
     if tables:
         members = _xlsx_tables_patch(members, parts, tables)
+    ext_refs = b""
+    if links:
+        members, ext_refs = _xlsx_links_patch(members, links)
     marker = b"</sheets>"
     with zipfile.ZipFile(path, "w") as z:
         for info, data in members:
-            if info.filename == "xl/workbook.xml" and (names_xml or iterate):
-                if names_xml:
-                    if data.count(marker) != 1 or b"<definedNames" in data:
+            if info.filename == "xl/workbook.xml" and (names_xml or iterate or ext_refs):
+                if names_xml or ext_refs:
+                    if data.count(marker) != 1 or re.search(
+                        rb"<definedNames|<externalReferences", data
+                    ):
                         raise ValueError("unexpected xl/workbook.xml layout; names not written")
-                    data = data.replace(marker, marker + names_xml.encode("utf-8"))
+                    # The schema orders `externalReferences` before `definedNames`.
+                    data = data.replace(marker, marker + ext_refs + names_xml.encode("utf-8"))
+                if ext_refs:
+                    # Excel resolves a relative link against `absPath`; OpenXLSX's
+                    # template names its author's folder there.
+                    data = _XLSX_ABSPATH_RE.sub(b"", data, count=1)
                 if iterate:
                     data = _xlsx_iterate_patch(data, iterate)
             elif info.filename in parts:
@@ -2714,6 +2842,35 @@ def _json_cached(v: Any) -> Any:
     return None
 
 
+_LINK_SHEET_RE = re.compile(r"\[\d+\].+")
+
+
+def _json_links(v: Any) -> dict[str, dict[tuple[int, int], Any]]:
+    """Cached link sheets from JSON, ``{"[1]Data": {"A1": value}}``, less malformed entries."""
+    out: dict[str, dict[tuple[int, int], Any]] = {}
+    if not isinstance(v, dict):
+        return out
+    for name, cells in v.items():
+        if not (
+            isinstance(name, str) and _LINK_SHEET_RE.fullmatch(name) and isinstance(cells, dict)
+        ):
+            continue
+        got = {}
+        for a, val in cells.items():
+            at = ref(a) if isinstance(a, str) else None
+            val = _json_cached(val)
+            if at is not None and val is not None:
+                got[(at[1], at[2])] = val
+        if got:
+            out[name] = got
+    return out
+
+
+def _link_value(cl: Cell) -> Any:
+    """The value a `_link_cell` holds."""
+    return label_value(cl.text) if cl.type == LABEL else cl.val
+
+
 def _json_cse(v: Any) -> tuple[int, int] | None:
     """A legacy array formula's ``[rows, cols]`` from JSON, or None if not a valid range."""
     if (
@@ -2918,6 +3075,11 @@ class Grid:
         self.filename: str | None = None
         self.names: list[NamedRange] = []
         self.tables: list[Table] = []
+        # The sheets an xlsx cached from the workbooks it links to, keyed by
+        # `[N]Sheet` casefolded. Read-only; formulas reach them by name.
+        self.links: dict[str, Sheet] = {}
+        # The xlsx's externalLink parts, in `[N]` order, written back on save.
+        self.link_parts: list[_LinkPart] = []
         # Named ranges bound into the PYTHON-mode eval globals on the last
         # recalc, so a name that disappears can be unbound again.
         # Workbook-persistent LP model definitions. Maps a user-chosen
@@ -3926,7 +4088,7 @@ class Grid:
         """The largest column and row holding a cell, on any sheet, except
         `_extent_skip`."""
         mc = mr = 0
-        for s in self.sheets:
+        for s in [*self.sheets, *self.links.values()]:
             for (c, r), cl in s._cells.items():
                 # A styled blank reads as blank, so it does not extend the data.
                 if cl.type != EMPTY and (s.name, c, r) != self._extent_skip:
@@ -4488,7 +4650,7 @@ class Grid:
                     fcl.ast = parse(text, pow_right=pow_right)
                 except FormulaError:
                     fcl.ast = None
-            # gridcalc cannot read another workbook, so a link keeps Excel's value.
+            # A link the file's cache cannot answer keeps Excel's value.
             if fcl.cached is not None:
                 self._store_formula_result(fcl, fcl.cached)
                 fcl.err_msg = "links to another workbook: the value Excel saved"
@@ -4687,7 +4849,7 @@ class Grid:
         for s in self.sheets:
             if s.name.casefold() == key:
                 return s
-        return None
+        return self.links.get(key)
 
     def _rewrite_all_sheets(self, move: _RefMove) -> None:
         """Apply ``move`` to every reference in the workbook that resolves
@@ -5205,6 +5367,8 @@ class Grid:
         self.clear_all()  # also drops the workbook-wide dep graph
         self.names = []
         self.tables = []
+        self.links = {}
+        self.link_parts = []
         self.models = {}
         self.iterate = None
         self.libs = []
@@ -5420,6 +5584,10 @@ class Grid:
                 self._load_cells_into_active(rows)
 
         self.tables = _json_tables(d.get("tables"), {s.name for s in self.sheets})
+        self.links = {
+            name.casefold(): self._link_sheet(name, cached)
+            for name, cached in _json_links(d.get("links")).items()
+        }
 
         # Single recalc at the end. Per-cell `_refresh_deps` already
         # populated the dep graph during the load loop, so flag it as
@@ -5567,6 +5735,15 @@ class Grid:
 
         if self.iterate is not None:
             out["iterate"] = {"count": self.iterate[0], "delta": self.iterate[1]}
+
+        if self.links:
+            out["links"] = {
+                sh.name: {
+                    cellname(c, r): str(cl.err) if cl.err is not None else _link_value(cl)
+                    for (c, r), cl in sorted(sh._cells.items(), key=lambda kv: kv[0][::-1])
+                }
+                for sh in self.links.values()
+            }
 
         out["format"] = {"width": self.cw}
         if self.font:
@@ -5724,9 +5901,15 @@ class Grid:
             for (c, r), cl in s._cells.items()
             if cl.type == FORMULA and _EXTERNAL_RE.search(cl.text)
         }
+        link_cells, self.link_parts = _xlsx_read_links(filename, root)
+        self.links = {
+            name.casefold(): self._link_sheet(name, cached) for name, cached in link_cells.items()
+        }
+        named = self._dep_named_ranges()
         for (sname, c, r), saved in _xlsx_read_saved_values(filename, root, external).items():
             ext = self.sheets[sheet_index[sname]]._cells[(c, r)]
-            ext.cached = saved
+            if not self._reads_cached_links(ext, sname, named):
+                ext.cached = saved
         if self.iterate is not None:
             # A cycle iterates from its current values, as in Excel: those it saved.
             formulas = {
@@ -5776,6 +5959,30 @@ class Grid:
         self.recalc()
         self.dirty = 0
         self.filename = filename
+
+    @staticmethod
+    def _link_sheet(name: str, cached: dict[tuple[int, int], Any]) -> Sheet:
+        sh = Sheet(name=name)
+        sh._cells = {at: _link_cell(v) for at, v in cached.items() if _on_grid(*at, *at)}
+        return sh
+
+    def _reads_cached_links(self, cl: Cell, sheet: str, named: dict[str, Any]) -> bool:
+        """Whether formula ``cl`` reads other workbooks only through cells
+        this file cached, so it can recalculate instead of keeping Excel's
+        value. `INDIRECT` and `OFFSET` can reach cells outside the cache."""
+        from .formula import parse
+
+        try:
+            ast = parse(cl.text.removeprefix("="))
+        except FormulaError:
+            return False
+        if has_dynamic_refs(ast, named):
+            return False
+        for k in extract_deps(ast, named, formula_sheet=sheet):
+            name = k.sheet if isinstance(k, RangeKey) else k[0]
+            if name and name.startswith("[") and name.casefold() not in self.links:
+                return False
+        return True
 
     def _put_constant(self, c: int, r: int, text: str) -> None:
         """Store a logical or error constant on the active sheet, in any mode."""
@@ -5950,6 +6157,7 @@ class Grid:
                 {sh.name: (sh.tc, sh.tr) for sh in self.sheets},
                 self.iterate,
                 hidden,
+                self.link_parts if preserve_formulas else None,
             )
 
         return self._save_via(filename, write)

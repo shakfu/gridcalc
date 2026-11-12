@@ -6,6 +6,8 @@
 
 - **`run_many` and `--inputs` run cases in parallel.** `Book.run_many(cases, outputs, workers=4)`, or `--workers 4` on the CLI, splits the cases across forked processes, each starting from the workbook as it is. On 400 cases of the 18,033-formula model, 4 workers took 4.9 s against 16.8 s for 1, and 8 took 4.3 s. Fork copies the in-memory workbook as is; reloading the file in each worker would lose `--set` values and cost a load per worker. Windows has no fork, so cases run in one process there, as they do when the workbook iterates.
 
+- **A formula that reads another workbook recalculates from the values the xlsx cached for it.** Excel stores each linked sheet's referenced cells in `xl/externalLinks`, and opening a file without updating links reads those. gridcalc now does the same, so `=[1]Data!A1*B2` follows `B2`. Before, it kept the value Excel saved. A formula keeps that saved value when the cache cannot answer it: the sheet has no cached cells (`refreshError`), or it uses `INDIRECT` or `OFFSET`. JSON saves the cache, and an xlsx save in EXCEL mode writes the link parts back as read. A gridcalc xlsx no longer names OpenXLSX's template folder in `absPath`; Excel resolved a relative link path against that folder. On the 62 Excel-saved Sheetpedia files with links, 15,138 of 19,233 link formulas now recalculate, and 2 differ from Excel, both in `TEXT` minutes.
+
 ### Fixed
 
 - **Array `IF`, `IFERROR` and `IFNA` take linear time.** Each element of the condition copied the whole branch array, so `SUM(IF(B1:B40000>3,B1:B40000,0))` took 3.7 s; it now takes 34 ms.

@@ -50,6 +50,7 @@ from ..loader import load_into, needs_trust
 from ..opt import parse_bounds as _parse_bounds
 from ..opt import parse_cells as _parse_cells
 from ..sandbox import (
+    WHOLE_MODULE_WARNING,
     FileInfo,
     LoadPolicy,
     _parse_requirement,
@@ -630,6 +631,8 @@ def startup_trust_prompt(filename: str, info: FileInfo) -> LoadPolicy | None:
                 "" if cls == "safe" else " [unrestricted]" if cls == "side_effect" else f" [{cls}]"
             )
             print(f"  Requires: {_printable(mod)}{tag}")
+        if info.side_effect_modules:
+            print(f"  [unrestricted] {WHOLE_MODULE_WARNING}")
     if info.has_code:
         print(f"\n--- Code ({info.code_lines} lines) ---\n")
         print(_highlight_code(_printable(info.code_preview)))
@@ -648,7 +651,7 @@ def startup_trust_prompt(filename: str, info: FileInfo) -> LoadPolicy | None:
             approved = [
                 m for m in info.requires if classify_module(_parse_requirement(m)[0]) != "blocked"
             ]
-            return LoadPolicy(load_code=True, approved_modules=approved)
+            return LoadPolicy(load_code=True, approved_modules=approved, digest=info.digest)
         elif resp == "s":
             return LoadPolicy.formulas_only()
         elif resp == "q":

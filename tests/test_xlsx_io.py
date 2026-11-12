@@ -1141,3 +1141,17 @@ def test_a_parseable_external_link_keeps_excels_value(tmp_path):
     assert g.cell(2, 0).val == 84.0
     g.setcell(1, 0, "=VLOOKUP(A1,'[1]Data'!$A$1:$B$5,2,FALSE)")  # an edit drops the saved value
     assert g.cell(1, 0).err is not None
+
+
+@pytest.mark.parametrize("mode", [Mode.EXCEL, Mode.HYBRID])
+def test_an_xlsx_save_names_no_template_folder(tmp_path, mode):
+    import zipfile
+
+    g = Grid()
+    g.mode = mode
+    g.setcell(0, 0, "1")
+    out = tmp_path / "plain.xlsx"
+    assert g.xlsxsave(str(out)) == 0
+    with zipfile.ZipFile(out) as z:
+        assert b"absPath" not in z.read("xl/workbook.xml")  # OpenXLSX's author's folder
+    assert openpyxl.load_workbook(str(out)).active["A1"].value == 1

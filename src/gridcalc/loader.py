@@ -206,7 +206,7 @@ def _default_policy(path: str) -> LoadPolicy:
     info = inspect_file(path)
     if sandbox.SANDBOX_ENABLED and (info is None or info.trust_needed):
         return LoadPolicy.formulas_only()
-    return LoadPolicy.trust_all(info.requires if info else None)
+    return LoadPolicy.trust_all(info.requires, info.digest) if info else LoadPolicy.trust_all()
 
 
 def needs_trust(path: str | Path) -> FileInfo | None:

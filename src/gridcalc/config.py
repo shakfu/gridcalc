@@ -34,8 +34,9 @@ CONFIG_FILENAME = "gridcalc.toml"
 FORMATS = "LRIGD$%*"
 
 # `sandbox = false` disables the trust prompt; `editor` is a command `:e` runs;
-# `module_facades = false` hands a workbook whole modules.
-USER_ONLY_KEYS = ("sandbox", "editor", "module_facades")
+# `module_facades = false` hands a workbook whole modules; `allowed_modules`
+# imports modules, pandas whole, into a new workbook.
+USER_ONLY_KEYS = ("sandbox", "editor", "module_facades", "allowed_modules")
 
 _KNOWN_KEYS = frozenset(
     {"editor", "sandbox", "module_facades", "width", "format", "libs", "allowed_modules", "keys"}

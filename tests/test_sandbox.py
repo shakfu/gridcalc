@@ -1108,6 +1108,63 @@ class TestJsonLoadPolicy:
         assert len(g._module_errors) == 1
 
 
+class TestApprovalBindsTheFile:
+    """The trust prompt reads the file, then the load reads it again."""
+
+    @staticmethod
+    def _approve(f, code="x = 1", formula="=1+1"):
+        doc = {"version": 2, "mode": "PYTHON", "code": code}
+        doc["sheets"] = [{"name": "S", "cells": [[formula]]}]
+        f.write_text(json.dumps(doc))
+        info = inspect_file(str(f))
+        return LoadPolicy.trust_all(info.requires, info.digest)
+
+    def test_the_approved_file_loads(self, tmp_path):
+        f = tmp_path / "wb.json"
+        policy = self._approve(f)
+        g = Grid()
+        assert g.jsonload(str(f), policy=policy) == 0
+        assert (g.code, g.cells[0][0].val) == ("x = 1", 2.0)
+
+    @pytest.mark.parametrize("swap", [{"code": "evil = 1"}, {"formula": "=2+2"}])
+    def test_a_file_changed_after_approval_is_refused(self, tmp_path, swap):
+        f = tmp_path / "wb.json"
+        policy = self._approve(f)
+        self._approve(f, **swap)  # rewritten while the prompt waited
+        g = Grid()
+        g.setcell(0, 0, "7")
+        assert g.jsonload(str(f), policy=policy) == -1
+        assert g.io_error == "the file changed after it was approved"
+        assert (g.code, g.cells[0][0].val) == ("", 7.0)  # the open workbook is untouched
+
+    def test_load_into_reports_the_change(self, tmp_path):
+        from gridcalc.loader import load_into
+
+        f = tmp_path / "wb.json"
+        policy = self._approve(f)
+        self._approve(f, code="evil = 1")
+        with pytest.raises(OSError, match="changed after it was approved"):
+            load_into(Grid(), f, policy)
+
+    def test_without_a_prompt_the_load_binds_its_own_inspection(self, tmp_path, monkeypatch):
+        import gridcalc.loader as loader
+        from gridcalc import sandbox
+
+        f = tmp_path / "wb.json"
+        self._approve(f)
+        real = loader.inspect_file
+
+        def inspect_then_swap(path):
+            info = real(path)
+            self._approve(f, code="evil = 1")
+            return info
+
+        monkeypatch.setattr(loader, "inspect_file", inspect_then_swap)
+        monkeypatch.setattr(sandbox, "SANDBOX_ENABLED", False)  # trusted without asking
+        with pytest.raises(OSError, match="changed after it was approved"):
+            loader.load_into(Grid(), f)
+
+
 # -- requires roundtrip --
 
 

@@ -41,6 +41,7 @@ test('modules are split by how much is known about them', () => {
   show()
   expect(screen.getByText('numpy')).toBeInTheDocument() // classified safe
   expect(screen.getByText('requests')).toBeInTheDocument() // Unrestricted
+  expect(screen.getByText(/lets the file run any code/)).toBeInTheDocument()
   expect(screen.getByText('mystery')).toBeInTheDocument() // unclassified
   expect(screen.getByText(/socket .* never imported/)).toBeInTheDocument()
 })

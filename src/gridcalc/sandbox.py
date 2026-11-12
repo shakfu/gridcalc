@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib
 import importlib.metadata
 import json
@@ -53,6 +54,8 @@ SAFE_MODULES: frozenset[str] = frozenset(NAMES)
 
 # Handed over whole, and flagged at the trust prompt. A module object reaches
 # every module it imported, so these are unrestricted.
+# Every trust prompt shows this under such modules; TrustDialog.tsx repeats it.
+WHOLE_MODULE_WARNING = "Approving these lets the file run any code (e.g. pd.read_pickle)"
 SIDE_EFFECT_MODULES: frozenset[str] = frozenset(
     {
         "matplotlib",
@@ -517,6 +520,8 @@ class FileInfo:
     unknown_modules: list[str] = field(default_factory=list)
     # PYTHON mode (declared, missing or unparseable) with at least one formula.
     python_formulas: bool = False
+    # SHA-256 of the bytes inspected; a policy carries it to the load.
+    digest: str = ""
 
     @property
     def trust_needed(self) -> bool:
@@ -534,11 +539,16 @@ class LoadPolicy:
     # `approved_modules` because approval is per-file but this is a judgement
     # about a whole class of module, and the default has to be "no".
     allow_unknown: bool = False
+    # `FileInfo.digest` of the file approved. The load refuses other bytes:
+    # the file is read again after the prompt, and may have changed. "" binds nothing.
+    digest: str = ""
 
     @staticmethod
-    def trust_all(requires: list[str] | None = None) -> LoadPolicy:
+    def trust_all(requires: list[str] | None = None, digest: str = "") -> LoadPolicy:
         """Approve everything -- code block and all requested modules."""
-        return LoadPolicy(load_code=True, approved_modules=list(requires or []), allow_unknown=True)
+        return LoadPolicy(
+            load_code=True, approved_modules=list(requires or []), allow_unknown=True, digest=digest
+        )
 
     @staticmethod
     def formulas_only() -> LoadPolicy:
@@ -557,8 +567,9 @@ def inspect_file(filename: str) -> FileInfo | None:
     """
     # ValueError covers bad JSON, bad UTF-8 and an int over 4300 digits.
     try:
-        with open(filename, encoding="utf-8") as f:
-            d = json.load(f)
+        with open(filename, "rb") as f:
+            raw = f.read()
+        d = json.loads(raw.decode("utf-8"))
     except (OSError, ValueError, RecursionError):
         return None
 
@@ -571,7 +582,7 @@ def inspect_file(filename: str) -> FileInfo | None:
     if not isinstance(d, dict):
         return None
 
-    info = FileInfo()
+    info = FileInfo(digest=hashlib.sha256(raw).hexdigest())
 
     code = d.get("code", "")
     if not isinstance(code, str):

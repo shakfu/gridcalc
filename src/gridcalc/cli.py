@@ -201,7 +201,9 @@ def _load(path: str | None, trust: bool = False, err: TextIO | None = None) -> G
     policy = None
     if trust:
         info = inspect_file(path)
-        policy = LoadPolicy.trust_all(info.requires if info else None)
+        policy = (
+            LoadPolicy.trust_all(info.requires, info.digest) if info else LoadPolicy.trust_all()
+        )
     elif needs_trust(path) is not None:
         print(f"gridcalc: warning: {path} carries Python; pass --trust to run it", file=err)
     try:

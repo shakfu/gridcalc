@@ -1626,6 +1626,20 @@ def test_policy_never_approves_a_blocked_module() -> None:
     assert policy.allow_unknown is True
 
 
+def test_the_dialog_shows_the_whole_module_warning() -> None:
+    from gridcalc.sandbox import WHOLE_MODULE_WARNING
+
+    tsx = Path(__file__).parents[1] / "src/gridcalc/web/frontend/src/components/TrustDialog.tsx"
+    assert WHOLE_MODULE_WARNING in tsx.read_text()
+
+
+def test_policy_binds_the_inspected_file() -> None:
+    from gridcalc.sandbox import FileInfo
+
+    info = FileInfo(digest="ab" * 32)
+    assert Api._policy_from(info, {"load_code": True}).digest == info.digest
+
+
 def test_unknown_modules_need_their_own_answer() -> None:
     """Approving the file vouches for what the lists know about; an
     unclassified module is a second answer, as it is at the curses prompt."""

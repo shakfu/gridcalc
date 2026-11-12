@@ -69,7 +69,9 @@ class Book:
         policy = None
         if trust:
             info = inspect_file(path)
-            policy = LoadPolicy.trust_all(info.requires if info else None)
+            policy = (
+                LoadPolicy.trust_all(info.requires, info.digest) if info else LoadPolicy.trust_all()
+            )
         return cls(load_workbook(path, policy))
 
     def names(self) -> dict[str, str]:

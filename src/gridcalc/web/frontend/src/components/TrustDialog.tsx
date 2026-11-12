@@ -77,10 +77,19 @@ export function TrustDialog({
               </div>
             )}
             {info.side_effect.length > 0 && (
-              <div className="trust-row">
-                <span className="trust-key">Unrestricted</span>
-                <span className="trust-warn">{info.side_effect.join(', ')}</span>
-              </div>
+              <>
+                <div className="trust-row">
+                  <span className="trust-key">Unrestricted</span>
+                  <span className="trust-warn">{info.side_effect.join(', ')}</span>
+                </div>
+                <div className="trust-row">
+                  <span className="trust-key" />
+                  {/* WHOLE_MODULE_WARNING in sandbox.py */}
+                  <span className="trust-warn">
+                    Approving these lets the file run any code (e.g. pd.read_pickle)
+                  </span>
+                </div>
+              </>
             )}
             {info.unknown.length > 0 && (
               <div className="trust-row">

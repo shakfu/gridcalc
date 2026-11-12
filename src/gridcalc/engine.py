@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import csv
 import functools
+import hashlib
 import json
 import math
 import os
@@ -2327,7 +2328,10 @@ def _xlsx_postprocess(
     marker = b"</sheets>"
     with zipfile.ZipFile(path, "w") as z:
         for info, data in members:
-            if info.filename == "xl/workbook.xml" and (names_xml or iterate or ext_refs):
+            if info.filename == "xl/workbook.xml":
+                # OpenXLSX's template names its author's folder in `absPath`, and
+                # Excel resolves a relative link against it.
+                data = _XLSX_ABSPATH_RE.sub(b"", data, count=1)
                 if names_xml or ext_refs:
                     if data.count(marker) != 1 or re.search(
                         rb"<definedNames|<externalReferences", data
@@ -2335,10 +2339,6 @@ def _xlsx_postprocess(
                         raise ValueError("unexpected xl/workbook.xml layout; names not written")
                     # The schema orders `externalReferences` before `definedNames`.
                     data = data.replace(marker, marker + ext_refs + names_xml.encode("utf-8"))
-                if ext_refs:
-                    # Excel resolves a relative link against `absPath`; OpenXLSX's
-                    # template names its author's folder there.
-                    data = _XLSX_ABSPATH_RE.sub(b"", data, count=1)
                 if iterate:
                     data = _xlsx_iterate_patch(data, iterate)
             elif info.filename in parts:
@@ -5315,8 +5315,13 @@ class Grid:
     def jsonload(self, filename: str, policy: Any = None) -> int:
         self.io_error = None
         try:
-            with open(filename, encoding="utf-8") as f:
-                d = json.load(f)
+            with open(filename, "rb") as f:
+                raw = f.read()
+            digest = policy.digest if policy is not None else ""
+            if digest and hashlib.sha256(raw).hexdigest() != digest:
+                self.io_error = "the file changed after it was approved"
+                return -1
+            d = json.loads(raw.decode("utf-8"))
         except (OSError, ValueError, RecursionError) as exc:
             self.io_error = str(exc)
             return -1

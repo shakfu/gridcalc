@@ -21,7 +21,8 @@ sandbox = false
 # Default number format: D=default, I=integer, L=left, G=general, $=dollar, %=percent, *=bar
 # format = "D"
 
-# Pre-approved modules available in formulas.
+# Modules imported into a new workbook; opening a file replaces them with its
+# approved `requires`. Read only from the user config.
 # Safe (reviewed names only): numpy, decimal, fractions, statistics, etc.
 # Unrestricted (whole module): matplotlib, pandas, scipy, sympy, xlsxwriter
 # Blocked (always): os, sys, subprocess, shutil, pathlib, socket, pickle, etc.

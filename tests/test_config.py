@@ -340,3 +340,13 @@ class TestCwdConfigSecurityKeys:
     def test_user_config_can_turn_facades_off(self, tmp_path, monkeypatch):
         self._setup(tmp_path, monkeypatch, None, "module_facades = false\n")
         assert load_config().module_facades is False
+
+    def test_cwd_config_cannot_pick_modules(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch, 'allowed_modules = ["pandas"]\n')
+        cfg = load_config()
+        assert cfg.allowed_modules == []
+        assert any(w.startswith("allowed_modules: ignored") for w in cfg.warnings)
+
+    def test_user_config_keeps_allowed_modules(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch, None, 'allowed_modules = ["pandas"]\n')
+        assert load_config().allowed_modules == ["pandas"]

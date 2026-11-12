@@ -32,6 +32,7 @@ from ..engine import (
 )
 from ..loader import load_into, needs_trust, save_losses, save_workbook
 from ..sandbox import (
+    WHOLE_MODULE_WARNING,
     FileInfo,
     LoadPolicy,
     _parse_requirement,
@@ -405,6 +406,8 @@ def trust_prompt(stdscr: curses.window, filename: str, info: FileInfo) -> LoadPo
                 # Handed over whole: a module object reaches every module it imported.
                 io_mods = f"  Unrestricted: {', '.join(info.side_effect_modules)}"
                 stdscr.addnstr(y, 0, io_mods, curses.COLS - 1)
+                y += 1
+                stdscr.addnstr(y, 0, f"                {WHOLE_MODULE_WARNING}", curses.COLS - 1)
                 stdscr.attroff(curses.color_pair(CP_LOCKED))
                 y += 1
             if info.unknown_modules:
@@ -448,7 +451,10 @@ def trust_prompt(stdscr: curses.window, filename: str, info: FileInfo) -> LoadPo
                 m for m in info.requires if classify_module(_parse_requirement(m)[0]) != "blocked"
             ]
             return LoadPolicy(
-                load_code=True, approved_modules=approved, allow_unknown=allow_unknown
+                load_code=True,
+                approved_modules=approved,
+                allow_unknown=allow_unknown,
+                digest=info.digest,
             )
         elif ch == ord("f"):
             return LoadPolicy.formulas_only()

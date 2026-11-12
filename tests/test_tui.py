@@ -4374,6 +4374,43 @@ class TestStartupTrustPrompt:
         assert "numpy>=1 [unknown]" not in out
         assert "os>=1.0 [blocked]" in out
         assert policy.approved_modules == ["numpy>=1"]
+        assert policy.digest == info.digest != ""
+
+    def test_both_prompts_say_what_a_whole_module_allows(self, tmp_path, monkeypatch, capsys):
+        import builtins
+
+        from gridcalc.sandbox import WHOLE_MODULE_WARNING
+        from gridcalc.tui import startup_trust_prompt
+        from gridcalc.tui.commands import trust_prompt
+
+        path, info = self._info(tmp_path, ["pandas"])
+        monkeypatch.setattr(builtins, "input", lambda prompt="": "q")
+        startup_trust_prompt(path, info)
+        assert WHOLE_MODULE_WARNING in capsys.readouterr().out
+
+        _setup_curses_constants()
+        monkeypatch.setattr(curses, "color_pair", lambda n: 0)
+        lines = []
+        scr = MockStdscr()
+        scr.addnstr = lambda y, x, s, n, *a: lines.append(s)
+        scr.queue_getch(ord("c"))
+        trust_prompt(scr, path, info)
+        assert any(WHOLE_MODULE_WARNING in s for s in lines)
+
+        path, info = self._info(tmp_path, ["numpy"])  # a facade: no warning
+        startup_trust_prompt(path, info)
+        assert WHOLE_MODULE_WARNING not in capsys.readouterr().out
+
+    @pytest.mark.parametrize("key", ["a", "u"])
+    def test_curses_prompt_binds_the_file(self, tmp_path, key):
+        from gridcalc.tui.commands import trust_prompt
+
+        _setup_curses_constants()
+        path, info = self._info(tmp_path, ["mystery"])
+        scr = MockStdscr()
+        scr.queue_getch(ord(key))
+        policy = trust_prompt(scr, path, info)
+        assert policy.load_code and policy.digest == info.digest != ""
 
     def test_no_tty_declines_code(self, tmp_path, monkeypatch):
         import builtins

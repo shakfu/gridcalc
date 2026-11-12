@@ -738,6 +738,7 @@ class Api:
             load_code=True,
             approved_modules=approved,
             allow_unknown=bool(choice.get("allow_unknown")),
+            digest=info.digest,
         )
 
     def inspect(self, path: str) -> dict[str, Any]:

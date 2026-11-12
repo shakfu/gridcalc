@@ -17,9 +17,9 @@ This plan takes a layered approach: no single layer is sufficient, but together 
 | User loads untrusted .json file | Malicious formulas + code blocks    | Yes   |
 | User shares a spreadsheet       | Accidental code exposure            | Low   |
 | User loads a .json with no or unknown `mode` | Loads as PYTHON mode; formulas are `eval()`ed | Yes; gated by the trust prompt |
-| User starts gridcalc in a directory holding a `gridcalc.toml` | `sandbox = false` or `editor` there | No; both keys are ignored in a CWD config |
+| User starts gridcalc in a directory holding a `gridcalc.toml` | `sandbox = false`, `editor` or `allowed_modules` there | No; these keys are ignored in a CWD config |
 
-The only real threat is **loading a file from an untrusted source**. The user sitting at the keyboard is the trust boundary. A config file in the working directory is untrusted content too, so it cannot set `sandbox` or `editor`.
+The only real threat is **loading a file from an untrusted source**. The user sitting at the keyboard is the trust boundary. A config file in the working directory is untrusted content too, so it cannot set `sandbox`, `editor` or `allowed_modules`.
 
 ## Architecture: Four Layers
 

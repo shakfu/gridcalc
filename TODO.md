@@ -79,7 +79,7 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 - [ ] **A named-input case recalculates about 1.6x slower than GridCraft.** 41 ms against 26 ms on 18,033 formulas, measured on different days (`docs/dev/comparison.md`, `docs/dev/261110-perf.md`). A sweep of 100k cases would take about 1.1 h against 45 min. Worth it only for sweep-sized workloads; the cost breakdown is under Low > Performance.
 
   - With `workers=4` a sweep runs 3.4x as many cases per second: 12.3 ms per case of throughput, against GridCraft's 26 ms in one process. One case is still 41 ms.
-  - Next for one case: compile each AST to closures (15-20%, estimated). Trimming `run` and `_recalc_topo` further measured within noise (`docs/dev/261110-perf.md`).
+  - Compiling each AST to closures measured within noise: 38.2-38.8 ms against 37.8-39.0 ms, with 99.9% of nodes compiled (`docs/dev/261110-perf.md`). Trimming `run` and `_recalc_topo` also measured within noise. Running repeated formulas as one numpy pass would reach 20% of this model: the other 80% is a row-to-row recurrence. One case has no known next step.
 
 - [ ] **Whole-column paths that still cost a million rows.** Each is correct but slow on Excel's grid:
   - Fill down (`Api.fill`) over a header-selected column writes every row, as Excel does.
@@ -114,12 +114,6 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 - [ ] **No run-time limit in PYTHON mode.** EXCEL and HYBRID formulas are capped at 8192 characters and 64 nesting levels, and a recalc stops after `RECALC_TIME_LIMIT` (see CHANGELOG). `=sum(range(10**12))` in an approved PYTHON-mode file still hangs: `eval` cannot be interrupted without a thread or a signal.
 
 - [ ] **Arrays do not broadcast to an outer product.** `=SEQUENCE(3)*TRANSPOSE(SEQUENCE(3))` is `#VALUE!`; Excel gives a 3x3 array. A column against a row should expand both to their combined shape.
-
-- [ ] **Unverified: the file can change between approval and load.** `inspect_file` and the later load read the file twice. Probe artefact exists; outcome not confirmed. (REVIEW.md unchecked lead.)
-
-- [ ] **Unverified: `pager` or `editor` from `./gridcalc.toml` may reach a subprocess.** 0.7.0 says `editor` is ignored there. Probe artefact exists; outcome not confirmed. (REVIEW.md unchecked lead.)
-
-- [ ] **Unverified: `allowed_modules` from `./gridcalc.toml`.** If still honoured there, a directory can pre-approve `pandas`, which is handed over whole (see the trust-prompt entry under Low). Probe artefact exists; outcome not confirmed. (REVIEW.md unchecked lead.)
 
 ### Documentation & infrastructure
 
@@ -214,8 +208,6 @@ Measurements for this section: `docs/dev/ironcalc.md`. Per-formula figures are f
 - [ ] **Plugin interface.** Allow third-party packages to register custom functions, commands, and cell formats via entry points or a plugin API.
 
 ### Security
-
-- [ ] **Say what approving a whole module means at the trust prompt.** Modules in `SIDE_EFFECT_MODULES` are handed over whole by design, and the trust prompt is the boundary: approving one approves code execution (`pd.read_pickle`, `pd.io.common.os`). A facade cannot contain pandas, since `df.agg("to_pickle", ...)` dispatches by string. The prompts label these modules only "unrestricted" (`tui/__init__.py`, `tui/commands.py`, `TrustDialog.tsx`); say they can run any code.
 
 - [ ] **Process isolation for PYTHON-mode recalc.** Only worth building if running untrusted workbook code becomes a supported feature; `LoadPolicy.formulas_only()` is the current answer everywhere but the TUI trust prompt. Buys a resource ceiling on every platform but filesystem confinement mainly on Linux. HYBRID's `py.*` gateway is a separate decision -- it is called mid-expression from the evaluator in the parent.
 

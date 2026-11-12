@@ -153,16 +153,21 @@ def format_serial(value: float, code: str) -> str | None:
     """
     if not code or value < 0 or value > 2_958_465:  # 9999-12-31
         return None
+    # Excel rounds to the shown precision first, so 11:49:59.6 shows 11:50 and
+    # the rounding can carry into the date. Ties go to even, as observed.
+    digits = _second_digits(code)
+    days, rem = divmod(round(value * 86400 * 10**digits), 86400 * 10**digits)
+    secs, frac = divmod(rem, 10**digits)
     try:
-        dt = from_serial(value)
+        dt = from_serial(days) + _dt.timedelta(seconds=secs)
     except (OverflowError, ValueError):
         return None
     # Excel's calendar: serial 0 is 1900-01-00 and 60 the phantom 1900-02-29,
     # and weekdays count that day, so serial 1 is a Sunday.
     year, month, day = {0: (1900, 1, 0), LEAP_BUG_SERIAL: (1900, 2, 29)}.get(
-        int(value), (dt.year, dt.month, dt.day)
+        days, (dt.year, dt.month, dt.day)
     )
-    weekday = _WEEKDAYS[int(value) % 7]
+    weekday = _WEEKDAYS[days % 7]
     month_name = _MONTHS[month - 1]
 
     time_mode = False  # `m` means minutes once an hour token has been seen
@@ -204,6 +209,12 @@ def format_serial(value: float, code: str) -> str | None:
             out.append(f"{hour:02d}" if len(run) > 1 else str(hour))
         elif token.startswith("s"):
             out.append(f"{dt.second:02d}" if len(run) > 1 else str(dt.second))
+            j = i + len(run)
+            if digits and low[j : j + 2] == ".0":  # `ss.00`: fractional seconds
+                zeros = len(_run_of(low, j + 1))
+                out.append("." + f"{frac:0{digits}d}"[:zeros])
+                i = j + 1 + zeros
+                continue
         elif token.startswith("m"):
             # `m` after an hour token is minutes; otherwise it is a month.
             if time_mode and len(run) <= 2:
@@ -257,6 +268,12 @@ def _run_of(s: str, i: int) -> str:
     while j < len(s) and s[j].lower() == ch:
         j += 1
     return s[i:j]
+
+
+def _second_digits(code: str) -> int:
+    """How many fractional-second digits ``code`` shows (`ss.000`), at most 3."""
+    m = re.search(r"[sS]\.(0+)", re.sub(r'"[^"]*"', "", code))
+    return min(len(m.group(1)), 3) if m else 0
 
 
 def _uses_ampm(code: str) -> bool:

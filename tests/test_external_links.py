@@ -211,3 +211,15 @@ def test_saving_over_a_linked_file_reports_links_only_when_lost(tmp_path):
     g.mode = Mode.HYBRID  # values only: no formula names a link
     assert "links to other workbooks" in save_losses(g, src)
     assert "links to other workbooks" in save_losses(Grid(), src)
+
+
+@pytest.mark.parametrize("live", [True, False])
+def test_an_xlsx_save_from_json_reports_the_lost_links(tmp_path, live):
+    link = _LINK if live else None  # without a cache the formula keeps Excel's value
+    g, _ = _linked_book(tmp_path, {"A1": "=[1]Data!A1+1"}, {"A1": 22}, link=link)
+    j = tmp_path / "linked.json"
+    assert g.jsonsave(str(j)) == 0
+    h = Grid()
+    assert h.jsonload(str(j)) == 0
+    assert "links to other workbooks" in save_losses(h, tmp_path / "new.xlsx")
+    assert save_losses(Grid(), tmp_path / "new.xlsx") == []

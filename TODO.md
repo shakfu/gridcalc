@@ -6,9 +6,7 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ## High
 
-- [ ] **Links left at Excel's saved value.** `[1]!Name` (a name in the linked book) and a link read through `INDIRECT` or `OFFSET`. An xlsx saved from JSON has no link parts, since JSON keeps only the cached cells; `save_losses` does not report it.
-
-- [ ] **`TEXT` truncates a time to the second; Excel rounds.** `TEXT(8.493055555547471,"h"" hrs ""m"" mins""")` is `11 hrs 49 mins` here and `11 hrs 50 mins` in Excel (`865661595a9a.xlsx`, 2 cells).
+- [ ] **Links left at Excel's saved value.** `[1]!Name` (a name in the linked book) and a link read through `INDIRECT` or `OFFSET`. An xlsx saved from JSON has no link parts, since JSON keeps only the cached cells; `save_losses` reports it.
 
 - [ ] **Corpus mismatches still open** (`docs/dev/excel-corpus.md`). Largest first:
   - Date text without a year (`"1/2"`) should read as that day this year, as Excel does; it gives `#VALUE!`.

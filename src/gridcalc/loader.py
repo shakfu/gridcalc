@@ -91,9 +91,9 @@ def save_losses(g: Grid, path: str | Path) -> list[str]:
 
     Empty for JSON. xlsx keeps every sheet and named range but not the code
     block or saved models, and keeps formulas and the links read from an
-    xlsx only in EXCEL mode. Saving over
-    an existing xlsx also drops what :func:`xlsx_extras` finds in it. csv keeps the
-    active sheet's values only.
+    xlsx only in EXCEL mode; a workbook from JSON has no link parts. Saving
+    over an existing xlsx also drops what :func:`xlsx_extras` finds in it.
+    csv keeps the active sheet's values only.
     """
     low = str(path).lower()
     csv = low.endswith(".csv")
@@ -113,9 +113,14 @@ def save_losses(g: Grid, path: str | Path) -> list[str]:
         lost.append("models")
     if g.code or g.withheld_code:
         lost.append("code")
+    links = "links to other workbooks"
     if not csv and Path(path).is_file():
-        kept = {"links to other workbooks"} if g.link_parts and g.mode == Mode.EXCEL else set()
+        kept = {links} if g.link_parts and g.mode == Mode.EXCEL else set()
         lost += [x for x in xlsx_extras(path) if x not in kept]
+    # A workbook from JSON names its links but has no parts to define them.
+    named = g.links or any(cl.cached is not None for s in g.sheets for cl in s._cells.values())
+    if not csv and g.mode == Mode.EXCEL and not g.link_parts and named and links not in lost:
+        lost.append(links)
     return lost
 
 

@@ -459,3 +459,28 @@ def test_serials_0_and_60_show_excels_dates() -> None:
 
 def test_a_time_alone_has_day_0_and_still_formats() -> None:
     assert format_date(0.25, "h:mm") == "6:00"
+
+
+# Excel 16.114, 2026-11-12: a time rounds to the shown precision before any
+# field is read, so the rounding carries into minutes, hours and the date.
+@pytest.mark.parametrize(
+    ("formula", "excel"),
+    [
+        ('TEXT(0.5+59.6/86400,"h:mm:ss")', "12:01:00"),
+        ('TEXT(0.5+59.4/86400,"h:mm:ss")', "12:00:59"),
+        ('TEXT(0.5+59.6/86400,"h:mm")', "12:01"),
+        ('TEXT(0.5+29.6/86400,"h:mm")', "12:00"),  # to the second, not the minute
+        ('TEXT(1-0.3/86400,"d h:mm:ss")', "1 0:00:00"),
+        ('TEXT(1-0.3/86400,"yyyy-mm-dd hh:mm")', "1900-01-01 00:00"),
+        ('TEXT(0.5+0.5/86400,"h:mm:ss")', "12:00:00"),  # a tie goes to even
+        ('TEXT(0.5+2.5/86400,"h:mm:ss")', "12:00:02"),
+        ('TEXT(8.493055555547471,"h"" hrs ""m"" mins""")', "11 hrs 50 mins"),
+        ('TEXT(0.5+59.6/86400,"h:mm:ss.0")', "12:00:59.6"),
+        ('TEXT(0.5+59.96/86400,"h:mm:ss.0")', "12:01:00.0"),
+        ('TEXT(0.5+59.6/86400,"h:mm:ss.000")', "12:00:59.600"),
+        ('TEXT(0.5+59.6/86400,"[h]:mm:ss")', "12:01:00"),
+        ('TEXT(0.5+59.6/86400,"mm:ss")', "01:00"),
+    ],
+)
+def test_text_rounds_a_time_as_excel_does(formula, excel) -> None:
+    assert _grid().evaluate(formula) == excel

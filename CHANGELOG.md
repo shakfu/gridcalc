@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.14.0]
+
+### Highlights
+
+- **Security.** A file changed after its trust prompt no longer loads. A `gridcalc.toml` in the working directory can no longer allow Python modules. Upgrade if you open workbooks from other people.
+- **Speed.** A named-input case on an 18,033-formula model takes 41-44 ms, against 90-95 ms in 0.13.0. `run_many(..., workers=4)` brings it to 12 ms per case. Figures: `docs/dev/comparison.md`.
+- **Excel agreement.** On the IronCalc and pycel test workbooks, 79,454 of 79,797 formula cells (99.6%) match Excel's saved values. On 2026-11-10 it was 78,942 of 79,661 (99.1%). Most fixes were probed in Excel 16.114.
+- **New:** trim references (`A:.A`), sheet-scoped defined names, parallel `run_many`, renaming a table column from its header, and linked-workbook formulas that recalculate.
+- **Results that change.** Check workbooks that depend on these:
+  - `ISBLANK("")` is FALSE, and an empty-string cell loads as text.
+  - Analysis ToolPak functions refuse a logical: `ERF(TRUE)` is `#VALUE!`. `ABS(TRUE)` now converts.
+  - Text such as `"1,600"`, `"$5"` and `"(5)"` reads as a number in arithmetic.
+  - A name such as `named1` is a name, not a cell reference.
+  - A whole-column dynamic formula below row 1 is `#SPILL!`.
+  - CONCAT and TEXTJOIN past 32767 characters are `#CALC!`.
+
 ### Added
 
 - **`run_many` and `--inputs` run cases in parallel.** `Book.run_many(cases, outputs, workers=4)`, or `--workers 4` on the CLI, splits the cases across forked processes, each starting from the workbook as it is. On 400 cases of the 18,033-formula model, 4 workers took 4.9 s against 16.8 s for 1, and 8 took 4.3 s. Fork copies the in-memory workbook as is; reloading the file in each worker would lose `--set` values and cost a load per worker. Windows has no fork, so cases run in one process there, as they do when the workbook iterates.
@@ -12,7 +28,7 @@
 
   PYTHON mode has no table syntax: `T[Qty]` is a Python subscript there, so a header edit renames nothing. `:mode python` is refused while a formula reads a table, and `:mode python convert` rewrites those references as the ranges they read now (`$B$2:$B$4`; `[@Qty]` as the relative `B2`) and switches. Refusal is the default because a range does not grow with its table. PYTHON mode has no references to other sheets, so the message counts the converted formulas that read one.
 
-  PYTHON mode has no table syntax: `T[Qty]` there is a Python subscript. A header edit in PYTHON mode renames nothing, and `:mode python` is refused while a formula reads a table.
+- **Trim references: `A:.A`, `A.:A` and `A.:.A`.** These are Excel's short form of `TRIMRANGE`. `:.` drops trailing blank rows and columns, `.:` leading ones, `.:.` both. They gave `#NAME?`. Excel's files store them as `_xlfn._TRO_TRAILING(A:A)`, `_TRO_LEADING` and `_TRO_ALL`. gridcalc reads and writes that form and shows the short one. Inserting rows or columns moves both ends.
 
 - **A bare `[Qty]` reads the formula's own table**, as `[@Qty]` already did. A name with a character Excel requires escaping, such as `*` or `.`, still does not parse. Switching to EXCEL or HYBRID mode flags a bare column that names no table column, since `[x for x in xs]` now parses as one.
 
@@ -34,7 +50,7 @@
 
 - **Text converts to a number as Excel converts it.** Arithmetic, `VALUE` and criteria now share one reading of text: `"1,600"`, `"$5"`, `"(5)"`, `"5%"` and `"(5%)"` are numbers. Hours may pass 23 (`"25:00"` is 1.0417), `TIMEVALUE` keeps only the fraction, and spaces around `/`, `-` and `:` are ignored. A date without a year is in the current year, unless its second number cannot be a day of that month: then it is a year, so `"1/40"` is 1940-01-01. An equality criterion that reads as a number also matches text with the same value, so `COUNTIF(r,"$0.05")` counts a text `"5%"`. Rules probed against Excel 16.114; the corpus gained 36 cells and lost none.
 
-- **`_copy_tables` keeps a table's style across undo.** It dropped the style, so a save after undoing a table edit wrote `TableStyleMedium2`.
+- **Undoing a table edit keeps the table's style.** It dropped the style, so a save after the undo wrote `TableStyleMedium2`.
 
 - **`A1#` on a cell without a formula is `#REF!`, as in Excel.** It returned the cell's value. A formula's scalar result is still returned.
 
@@ -54,19 +70,39 @@
 
 - **`T.TEST`, `DATE`, `ERF` and `XMATCH` follow Excel 16.114.** A paired `T.TEST` drops positions where either cell is not a number; it paired what was left of each range. `DATE` refuses a month of 32767 or more and reads a day outside 16 bits as 32767. `ERF(x, blank)` reads the blank as 0, and `ERF(x,)` is `#N/A`. `XMATCH` and `XLOOKUP` take match mode 3, a regular expression found anywhere in the cell. The corpus gained 29 cells and lost none.
 
-- **`#CALC!` and `#SPILL!` values load with their type.** Excel saves both as `#VALUE!` and names the real error in rich-value metadata (`vm`), so a loaded cell read as `#VALUE!` and `ERROR.TYPE` gave 3. The loader and the corpus harness now read the metadata. An xlsx save writes `#VALUE!`; Excel 16.114 did not open a test file holding `<v>#CALC!</v>`. The harness change showed that `DROP` and `TAKE` with an empty result are `#CALC!`, not `#VALUE!`.
+- **`#CALC!` and `#SPILL!` values load with their type.** Excel saves both as `#VALUE!`. It names the real error in rich-value metadata (`vm`). gridcalc ignored the metadata, so `ERROR.TYPE` of a loaded cell gave 3. The loader and the corpus harness now read it. An xlsx save still writes `#VALUE!`: Excel 16.114 would not open a file holding `<v>#CALC!</v>`. The harness change exposed one more bug. `DROP` and `TAKE` with an empty result now give `#CALC!`, not `#VALUE!`.
 
-- **An empty-string cell from xlsx is text, not blank.** A paste-values of `=""` leaves an empty string, which the loader dropped, so `ISBLANK` was TRUE and `MATCH("",r,0)` missed the cell. `ISBLANK("")` is now FALSE, as in Excel.
+- **An empty-string cell from xlsx is text, not blank.** Pasting `=""` as a value leaves an empty string. The loader dropped it. So `ISBLANK` was TRUE, and `MATCH("",r,0)` missed the cell. `ISBLANK("")` is now FALSE, as in Excel.
 
-- **ToolPak functions check arguments in Excel's order.** Ten functions check their day-count basis before any other argument: YEARFRAC, DISC, INTRATE, PRICE, PRICEDISC, PRICEMAT, RECEIVED, YIELD, YIELDDISC and YIELDMAT. `YEARFRAC(1/0,200,9)` is `#NUM!`. A first date out of range makes any later error or text `#NUM!`, not only a logical: `WEEKNUM(-1,1/0)` is `#NUM!`.
+- **ToolPak functions check arguments in Excel's order.** Ten functions check their day-count basis first: YEARFRAC, DISC, INTRATE, PRICE, PRICEDISC, PRICEMAT, RECEIVED, YIELD, YIELDDISC and YIELDMAT. So `YEARFRAC(1/0,200,9)` is `#NUM!`. A first date out of range turns any later bad argument into `#NUM!`. Before, only a logical did. `WEEKNUM(-1,1/0)` is now `#NUM!`.
 
-- **Lookups follow Excel 16.114 on blanks and unsorted data.** `MATCH(x,r,-1)` scans from the start, stops at an equal value or at the first smaller one, and reads a blank `x` as 0. `MATCH(2,{5,4,0,3,1},-1)` is 2; it took the last value >= 2. `XLOOKUP` and `XMATCH` rank a blank cell above every value in approximate and binary modes. A blank lookup value finds a blank cell, including one past a whole column's used rows. `VLOOKUP` and `HLOOKUP` on a scalar table are `#N/A`, or `#VALUE!` for text.
+- **Lookups follow Excel 16.114 on blanks and unsorted data.** `MATCH(x,r,-1)` scans from the start. It stops at an equal value or at the first smaller one. It reads a blank `x` as 0. So `MATCH(2,{5,4,0,3,1},-1)` is 2; it took the last value >= 2. `XLOOKUP` and `XMATCH` rank a blank cell above every value in approximate and binary modes. A blank lookup value finds a blank cell, even past a whole column's used rows. `VLOOKUP` and `HLOOKUP` on a scalar table give `#N/A`, or `#VALUE!` for text.
 
-- **`MAX((B:B<>"")*ROW(B:B))` finds the last used row.** A whole-column range is trimmed to the used rows and `ROW(B:B)` is not, so the product was `#N/A` past them. An array computed from a trimmed range now records the value its trimmed rows hold, and is padded back when the other operand is full height.
+- **Array formulas over whole columns count the unused rows.** gridcalc reads `B:B` over the used rows only. An array computed from it dropped the other rows. So `SUMPRODUCT((B:B="")*1)` counted only the used blanks, and `ROWS(B:B*1)` gave the used height. `MAX((B:B<>"")*ROW(B:B))`, the usual last-used-row formula, was `#N/A`. Such an array now records the value its unused rows hold. Common aggregates and lookups count those rows without building them. Other functions pad them, up to one column. Past that, they read the used rows only. Design: [docs/dev/whole-column-tails.md](docs/dev/whole-column-tails.md).
 
-- **Coupon functions match Excel at month-end maturities.** `COUPDAYS` with basis 1 steps back from maturity one period at a time with the day clamped, so `COUPDAYS(DATE(2024,4,1),DATE(2026,8,31),2,1)` is 182, not the 184 days from `COUPPCD` to `COUPNCD`. `DURATION` takes the days to the next coupon as E - A, as `PRICE` does; under 30/360 a direct count differs at a month end. `ODDLPRICE` and `ODDLYIELD` count the odd period on maturity's schedule and, for basis 0, move both dates off a month end. The rules are IronCalc's ports of ExcelFinancialFunctions.
+- **A trimmed whole-column array lines up with a full-height one.** `ROW(B:B)` has all 1048576 rows; `B:B<>""` has only the used ones. So `SUMPRODUCT(--(B:B<>""),ROW(B:B))` and `XLOOKUP(3,B:B,ROW(B:B))` gave `#VALUE!`. `SUM(IF(ROW(B:B)>2,B:B*2,0))` gave `#N/A`. Where the unused rows cannot matter, the full array is cut to the used rows. Elsewhere the trimmed one is padded.
 
-- **Smaller corpus fixes, probed against Excel 16.114.** `MULTINOMIAL` refuses a logical or non-numeric text, typed or read from a cell. `SMALL` and `LARGE` skip a logical or text read from a cell. A trailing `~` in a wildcard pattern is dropped. `BASE(0,2,0)` is "" and `BASE(0,2)` still "0". A blank weekend cell in `NETWORKDAYS.INTL` or `WORKDAY.INTL` is `#NUM!`; an omitted weekend is Saturday-Sunday. `RATE` refuses a guess of -1 or less with `#VALUE!`. `TEXT` takes a date code in any section (`TEXT(0,"#;-#;m")` is "1"), and refuses fractional elapsed seconds on a negative value. `"23:59."` reads as h:mm. `LOGEST` returns a row, as `LINEST` does, and `CONCATENATE` intersects a range in a legacy formula. `CHAR` and `CODE` use Windows Excel's cp1252 for codes 128-159, so `CHAR(128)` is the euro sign; Mac Excel uses Mac Roman. The corpus gained 122 cells in this batch and lost none.
+- **A whole-column dynamic formula gives `#SPILL!` where Excel does.** `=B:B*1` covers 1048576 rows. Below row 1 it runs off the sheet. A value anywhere in its columns blocks it, as does another spill into them. It used to spill the used rows. Where it fits, it still spills only those. A whole-row result such as `=1:1*1` now spills all 16384 cells.
+
+- **`TRIMRANGE` with a leading-only trim also cut the trailing rows.** It cut the range at the used extent before trimming. So `ROWS(TRIMRANGE(A:A,1))` gave the used height; Excel gives 1048576.
+
+- **CONCAT and TEXTJOIN give `#CALC!` past 32767 characters**, as Excel 16.114 does. They returned the long text. `TEXTJOIN(",",FALSE,B:B)` counts too: it joins a million blanks.
+
+- **Coupon functions match Excel at month-end maturities.** With basis 1, `COUPDAYS` steps back from maturity one period at a time, clamping the day. So `COUPDAYS(DATE(2024,4,1),DATE(2026,8,31),2,1)` is 182. It gave 184, the days from `COUPPCD` to `COUPNCD`. `DURATION` takes the days to the next coupon as E - A, as `PRICE` does. Under 30/360, a direct count differs at a month end. `ODDLPRICE` and `ODDLYIELD` count the odd period on maturity's schedule. For basis 0 they move both dates off a month end. The rules are IronCalc's ports of ExcelFinancialFunctions.
+
+- **Smaller corpus fixes, probed against Excel 16.114.** The corpus gained 122 cells and lost none.
+  - `MULTINOMIAL` refuses a logical or non-numeric text, typed or read from a cell.
+  - `SMALL` and `LARGE` skip a logical or text read from a cell.
+  - A trailing `~` in a wildcard pattern is dropped.
+  - `BASE(0,2,0)` is "", and `BASE(0,2)` is still "0".
+  - A blank weekend cell in `NETWORKDAYS.INTL` or `WORKDAY.INTL` is `#NUM!`. An omitted weekend is Saturday-Sunday.
+  - `RATE` refuses a guess of -1 or less with `#VALUE!`.
+  - `TEXT` takes a date code in any section: `TEXT(0,"#;-#;m")` is "1".
+  - `TEXT` refuses fractional elapsed seconds on a negative value.
+  - `"23:59."` reads as h:mm.
+  - `LOGEST` returns a row, as `LINEST` does.
+  - `CONCATENATE` intersects a range in a legacy formula.
+  - `CHAR` and `CODE` use Windows Excel's cp1252 for codes 128-159, so `CHAR(128)` is the euro sign. Mac Excel uses Mac Roman.
 
 ### Changed
 

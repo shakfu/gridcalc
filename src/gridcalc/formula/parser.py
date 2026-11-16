@@ -60,6 +60,7 @@ from .lexer import (
     STAR,
     STRING,
     STRUCT,
+    TRIM_SEPS,
     Token,
     tokenize,
 )
@@ -184,6 +185,8 @@ class _Parser:
         while self._peek().kind in (LPAREN, COLON):
             if self._peek().kind == COLON:
                 # Excel's range operator over any two references.
+                if self._peek().value != ":":
+                    raise ParseError(f"a trim reference joins two cells at {self._peek().pos}")
                 at = self._advance().pos
                 right = self._primary()
                 while self._peek().kind == LPAREN:
@@ -293,7 +296,7 @@ class _Parser:
         if self._peek().kind == COLON and not self._cell_follows(self.i + 1):
             return start  # `A1:INDEX(...)`: the range operator, in `_postfix`
         if self._peek().kind == COLON:
-            self._advance()
+            sep = self._advance().value
             # The right side may carry its own sheet prefix; if so, it
             # must match the left's, otherwise cross-sheet ranges are
             # rejected (Excel doesn't support them).
@@ -313,7 +316,7 @@ class _Parser:
             t2 = self._expect(CELLREF)
             col2, row2, ac2, ar2 = t2.value
             end = CellRef(col2, row2, ac2, ar2, sheet=end_sheet)
-            return RangeRef(start, end)
+            return _trimmed(RangeRef(start, end), sep)
         return start
 
     def _ref3d(self) -> Ref3D:
@@ -322,6 +325,8 @@ class _Parser:
         kind = self._peek().kind
         if kind in (COLRANGE, ROWRANGE):
             rng = self._whole_range()
+            if not isinstance(rng, RangeRef):
+                raise ParseError(f"a 3D reference cannot be trimmed at {self._peek().pos}")
             return Ref3D(first, last, rng.start, rng.end)
         t = self._expect(CELLREF)
         start = CellRef(*t.value)
@@ -331,17 +336,19 @@ class _Parser:
             end = CellRef(*self._expect(CELLREF).value)
         return Ref3D(first, last, start, end)
 
-    def _whole_range(self, sheet: str | None = None) -> RangeRef:
+    def _whole_range(self, sheet: str | None = None) -> Node:
         """`B:B` or `1:1`, as the range it covers on the grid."""
         from ..engine import NCOL, NROW
 
         t = self._advance()
-        a, b, abs_a, abs_b = t.value
+        a, b, abs_a, abs_b, sep = t.value
         if t.kind == COLRANGE:
             start = CellRef(min(a, b), 0, abs_a, True, sheet=sheet)
-            return RangeRef(start, CellRef(max(a, b), NROW - 1, abs_b, True, sheet=sheet))
-        start = CellRef(0, min(a, b), True, abs_a, sheet=sheet)
-        return RangeRef(start, CellRef(NCOL - 1, max(a, b), True, abs_b, sheet=sheet))
+            rng = RangeRef(start, CellRef(max(a, b), NROW - 1, abs_b, True, sheet=sheet))
+        else:
+            start = CellRef(0, min(a, b), True, abs_a, sheet=sheet)
+            rng = RangeRef(start, CellRef(NCOL - 1, max(a, b), True, abs_b, sheet=sheet))
+        return _trimmed(rng, sep)
 
     def _ident_or_call(self) -> Node:
         t = self._advance()
@@ -470,6 +477,16 @@ def _struct_ref(table: str | None, inner: str, pos: int) -> StructRef:
     col1 = cols[0] if cols else None
     col2 = cols[-1] if cols else None
     return StructRef(table, tuple(dict.fromkeys(areas)), col1, col2)
+
+
+# The functions Excel stores a trim reference as, by TRIMRANGE mode.
+TRIM_FUNCS = {1: "_TRO_LEADING", 2: "_TRO_TRAILING", 3: "_TRO_ALL"}
+
+
+def _trimmed(rng: RangeRef, sep: str) -> Node:
+    """``rng`` under the trim its separator asks for: `A:.A` is `_TRO_TRAILING(A:A)`."""
+    mode = TRIM_SEPS[sep]
+    return Call(TRIM_FUNCS[mode], (rng,)) if mode else rng
 
 
 def parse(text: str, *, pow_right: bool = False) -> Node:

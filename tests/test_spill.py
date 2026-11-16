@@ -458,3 +458,86 @@ def test_an_array_whose_first_element_is_blank_shows_zero() -> None:
     g = _grid()
     g.setcells_bulk([(0, 1, "5"), (2, 0, "=A1:A2")])
     assert g.cells[2][0].val == 0.0 and g.cells[2][0].err is None
+
+
+class TestWholeColumnSpill:
+    """Probed against Excel 16.114: a whole-column result needs the whole column."""
+
+    def _at(self, formula: str, c: int, r: int, extra=()) -> Grid:
+        g = _grid()
+        g.setcells_bulk([(0, 0, "1"), (0, 1, "2"), (0, 2, "3"), *extra])
+        g.setcell(c, r, formula)
+        return g
+
+    def test_it_spills_from_row_1(self) -> None:
+        g = self._at("=A:A*1", 9, 0)
+        assert g.cells[9][0].err is None and g.cells[9][2].val == 3.0
+
+    def test_it_runs_off_the_sheet_below_row_1(self) -> None:
+        assert self._at("=A:A*1", 9, 1).cells[9][1].err == ExcelError.SPILL
+        assert self._at("=A:A", 9, 1).cells[9][1].err == ExcelError.SPILL
+
+    def test_a_cell_past_the_used_rows_blocks_it(self) -> None:
+        g = self._at("=A:A*1", 9, 0, [(9, 500, "x")])
+        assert g.cells[9][0].err == ExcelError.SPILL
+        g.setcell(9, 500, "")
+        assert g.cells[9][0].err is None
+
+    def test_an_edit_past_the_used_rows_blocks_it(self) -> None:
+        g = self._at("=A:A*1", 9, 0)
+        g.setcell(9, NROW - 1, "x")
+        assert g.cells[9][0].err == ExcelError.SPILL
+
+    def test_a_whole_row_spills_in_full_with_blanks_as_zero(self) -> None:
+        g = self._at("=1:1*1", 0, 9)
+        assert g.cells[0][9].spill_shape == (1, 16384)
+        assert g.cell(16383, 9).val == 0.0
+
+    def test_an_edit_elsewhere_does_not_recheck_it(self) -> None:
+        g = self._at("=A:A*1", 9, 0)
+        scans = []
+        check = g._spill_tail_blocked
+        g._spill_tail_blocked = lambda *a: scans.append(a) or check(*a)  # type: ignore[method-assign]
+        g.setcell(3, 40, "7")
+        assert scans == []
+
+    def test_a_scalar_result_drops_the_whole_column_shape(self) -> None:
+        g = self._at("=IF(X1,A:A*1,5)", 9, 0, [(23, 0, "TRUE")])
+        g.setcells_bulk([(23, 0, "FALSE"), (9, 499, "x")])
+        assert g.cells[9][0].err is None and g.cells[9][0].val == 5.0
+
+    def test_a_value_right_of_the_used_columns_blocks_it(self) -> None:
+        g = _grid()
+        g.setcells_bulk([(10, 0, "1"), (12, 4, "2"), (4, 2, "9")])
+        g.setcell(0, 0, "=K:P")  # spills A:F; only K:M are used
+        assert g.cells[0][0].err == ExcelError.SPILL
+        g.setcell(4, 2, "")
+        assert g.cells[0][0].err is None and g.cells[2][4].val == 2.0
+
+    def test_one_used_row_still_reserves_the_column(self) -> None:
+        g = _grid()
+        g.setcells_bulk([(0, 0, "1"), (7, 0, "=A:A*1")])
+        g.setcell(7, 200, "x")
+        assert g.cells[7][0].err == ExcelError.SPILL
+
+    def test_another_spill_into_its_rows_blocks_it(self) -> None:
+        # Excel 16.114: G5's spill wins in either order, and H1 is #SPILL!.
+        h1, g5 = (7, 0, "=A:A*1"), (6, 4, "=SEQUENCE(3,2)")
+        for order in [(h1, g5), (g5, h1)]:
+            g = _grid()
+            g.setcells_bulk([(0, 0, "1"), (0, 1, "2"), (0, 2, "3")])
+            for cell in order:
+                g.setcell(*cell)
+            assert g.cells[7][0].err == ExcelError.SPILL
+            assert g.cells[6][4].err is None and g.cells[7][5].val == 4.0
+
+    def test_both_in_one_recalc_settle_in_two_passes(self) -> None:
+        g = _grid()
+        g.setcells_bulk([(0, 0, "1"), (0, 1, "2"), (0, 2, "3")])
+        applied = []
+        apply = g._apply_spill
+        g._apply_spill = lambda *a: applied.append(a[1:3]) or apply(*a)  # type: ignore[method-assign]
+        g.setcells_bulk([(7, 0, "=A:A*1"), (6, 4, "=SEQUENCE(3,2)")])
+        # Which one wins follows recalc order (TODO.md); exactly one does.
+        assert [g.cells[7][0].err, g.cells[6][4].err].count(ExcelError.SPILL) == 1
+        assert len(applied) <= 3

@@ -79,9 +79,12 @@ class Token:
 
 
 _CELLREF_RE = re.compile(r"(\$?)([A-Za-z]+)(\$?)(\d+)")
-_COLRANGE_RE = re.compile(r"(\$?)([A-Za-z]{1,3}):(\$?)([A-Za-z]{1,3})(?![A-Za-z0-9_.(!])")
+_COLRANGE_RE = re.compile(r"(\$?)([A-Za-z]{1,3})(\.?:\.?)(\$?)([A-Za-z]{1,3})(?![A-Za-z0-9_.(!])")
 _SHEETSPAN_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*):([A-Za-z_][A-Za-z0-9_.]*)!")
-_ROWRANGE_RE = re.compile(r"(\$?)(\d+):(\$?)(\d+)(?![A-Za-z0-9_.(])")
+_ROWRANGE_RE = re.compile(r"(\$?)(\d+)(\.?:\.?)(\$?)(\d+)(?![A-Za-z0-9_.(])")
+# A range separator and the TRIMRANGE mode it applies: `A:.A` drops trailing
+# blank rows, `A.:A` leading ones, `A.:.A` both (Excel's trim references).
+TRIM_SEPS = {":": 0, ".:": 1, ":.": 2, ".:.": 3}
 _NUMBER_RE = re.compile(r"\d+(\.\d*)?([eE][+-]?\d+)?|\.\d+([eE][+-]?\d+)?", re.ASCII)
 _SIGNED_NUMBER_RE = re.compile(r"[+-]?(?:" + _NUMBER_RE.pattern + ")", re.ASCII)
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -223,16 +226,28 @@ def _col_index(letters: str) -> int:
     return col - 1
 
 
-def whole_range(text: str, start: int) -> tuple[str, tuple[int, int, bool, bool], int] | None:
-    """The `B:B` or `1:1` reference at ``start``, as (kind, value, end index)."""
+def whole_range(text: str, start: int) -> tuple[str, tuple[int, int, bool, bool, str], int] | None:
+    """The `B:B` or `1:1` reference at ``start``, as (kind, value, end index).
+    The value ends with the separator, `:` or a trim form such as `:.`."""
     m = _COLRANGE_RE.match(text, start)
     if m:
-        a, b = _col_index(m.group(2)), _col_index(m.group(4))
-        return COLRANGE, (a, b, m.group(1) == "$", m.group(3) == "$"), m.end()
+        a, b = _col_index(m.group(2)), _col_index(m.group(5))
+        return COLRANGE, (a, b, m.group(1) == "$", m.group(4) == "$", m.group(3)), m.end()
     m = _ROWRANGE_RE.match(text, start)
-    if m and int(m.group(2)) > 0 and int(m.group(4)) > 0:
-        a, b = int(m.group(2)) - 1, int(m.group(4)) - 1
-        return ROWRANGE, (a, b, m.group(1) == "$", m.group(3) == "$"), m.end()
+    if m and int(m.group(2)) > 0 and int(m.group(5)) > 0:
+        a, b = int(m.group(2)) - 1, int(m.group(5)) - 1
+        return ROWRANGE, (a, b, m.group(1) == "$", m.group(4) == "$", m.group(3)), m.end()
+    return None
+
+
+def trim_sep(text: str, at: int) -> str | None:
+    """The trim separator (`.:`, `:.` or `.:.`) at ``at`` between two cell
+    references, or None."""
+    for sep in (".:.", ".:", ":."):
+        if text.startswith(sep, at):
+            nxt = text[at + len(sep) : at + len(sep) + 1]
+            if nxt == "$" or nxt.isalpha() or nxt == "'":
+                return sep
     return None
 
 
@@ -403,6 +418,11 @@ def tokenize(text: str) -> list[Token]:
             end = _bracket_end(s, i)
             tokens.append(Token(STRUCT, (None, s[i + 1 : end - 1]), pos))
             i = end
+            continue
+        # `A1:.B9`: a trim reference's separator, straight after a cell.
+        if ch in ".:" and tokens and tokens[-1].kind == CELLREF and (sep := trim_sep(s, i)):
+            tokens.append(Token(COLON, sep, pos))
+            i += len(sep)
             continue
         # multi-char operators
         if ch == "<" and i + 1 < n and s[i + 1] == "=":

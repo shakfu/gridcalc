@@ -32,10 +32,18 @@ from .formula.deps import (
 )
 from .formula.errors import ExcelError as ExcelErrorType
 from .formula.errors import FormulaError, parse_error_literal
-from .formula.evaluator import MAX_ARRAY_CELLS
+from .formula.evaluator import MAX_ARRAY_CELLS, _fill_info, _is_number, _untrim
 from .formula.lexer import _BARE_COLUMN_RE as _BARE_NAME_RE
-from .formula.lexer import _ERROR_LIT_RE, COLRANGE, bare_span_ok, parse_number, whole_range
-from .formula.parser import parse
+from .formula.lexer import (
+    _ERROR_LIT_RE,
+    COLRANGE,
+    TRIM_SEPS,
+    bare_span_ok,
+    parse_number,
+    trim_sep,
+    whole_range,
+)
+from .formula.parser import TRIM_FUNCS, parse
 from .sandbox import load_modules, validate_code, validate_formula
 
 
@@ -117,9 +125,7 @@ def _is_series(obj: object) -> bool:
     return mod.startswith("pandas") and name == "Series"
 
 
-def _is_num(v: Any) -> bool:
-    """True for real numerics; bools excluded (Excel ranges don't auto-coerce)."""
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
+_is_num = _is_number  # real numerics; bools excluded (Excel ranges don't auto-coerce)
 
 
 def _as_double(v: Any) -> Any:
@@ -408,6 +414,21 @@ class Vec:
         return Vec([_unary_or_error(a, abs) for a in self.data], cols=self.cols)
 
 
+# A trimmed whole-row result spills in full; a whole column (1048576 cells) does not.
+_SPILL_PAD_CELLS = 1 << 16
+
+
+def _spill_extent(v: Vec) -> tuple[Vec, tuple[int, int] | None]:
+    """``v`` padded to its untrimmed shape when small enough, else that shape."""
+    info = _fill_info(v)
+    if info is None or info[0] == v.shape:
+        return v, None
+    rows, cols = info[0]
+    if rows * cols <= _SPILL_PAD_CELLS:
+        return _untrim(v, info), None
+    return v, info[0]
+
+
 def _numeric_only(data: Iterable[Any]) -> list[float]:
     """Excel rule: SUM/AVG/MIN/MAX/COUNT skip text and bools-from-ranges."""
     return [float(v) for v in data if _is_num(v)]
@@ -630,6 +651,7 @@ class Cell:
         "err_msg",
         "spill_parent",
         "spill_shape",
+        "spill_full",
         "xstyle",
         "legacy",
         "cse",
@@ -653,6 +675,9 @@ class Cell:
         # None when the cell is not an anchor or is not spilling.
         self.spill_parent: tuple[int, int] | None = None
         self.spill_shape: tuple[int, int] | None = None
+        # (rows, cols) of a whole-column result whose `arr` holds the used
+        # rows only; the spill must fit and be unblocked at this size.
+        self.spill_full: tuple[int, int] | None = None
         self.text: str = ""
         self.fmt: str = ""
         self.bold: int = 0
@@ -696,6 +721,7 @@ class Cell:
         self.err_msg = None
         self.spill_parent = None
         self.spill_shape = None
+        self.spill_full = None
         self.xstyle = None
         self.legacy = False
         self.cse = None
@@ -720,6 +746,7 @@ class Cell:
         self.err_msg = src.err_msg
         self.spill_parent = src.spill_parent
         self.spill_shape = src.spill_shape
+        self.spill_full = src.spill_full
         self.xstyle = src.xstyle
         self.legacy = src.legacy
         self.cse = src.cse
@@ -973,6 +1000,22 @@ def _ref_at(text: str, i: int) -> RefMatch | None:
     return m
 
 
+def _range_end(text: str, at: int) -> tuple[str, RefMatch] | None:
+    """The separator and second cell of a range whose first cell ends at ``at``:
+    `:B2`, or a trim form such as `:.B2`."""
+    sep = ":" if text.startswith(":", at) and not text.startswith(":.", at) else trim_sep(text, at)
+    if sep is None:
+        return None
+    j = at + len(sep)
+    m = refabs(text[j:]) if j < len(text) and (text[j] in "$" or text[j].isalpha()) else None
+    if m is None or j + m.chars_consumed > len(text):
+        return None
+    k = j + m.chars_consumed
+    if k < len(text) and (text[k].isalnum() or text[k] in "_("):
+        return None
+    return sep, m
+
+
 def col_name(c: int) -> str:
     s = ""
     c += 1
@@ -1106,8 +1149,8 @@ def _rewrite_span_quals(text: str, fn: Callable[[str, str], tuple[str, str] | st
                     i = w[2]
                 elif (r1 := _ref_at(text, i)) is not None:
                     i += r1.chars_consumed
-                    if i < n and text[i] == ":" and (r2 := _ref_at(text, i + 1)) is not None:
-                        i += 1 + r2.chars_consumed
+                    if (r2 := _range_end(text, i)) is not None:
+                        i += len(r2[0]) + r2[1].chars_consumed
             else:
                 out.append(_span_qual(*new))
                 i = m.end()
@@ -1161,7 +1204,7 @@ def _rewrite_refs_on_sheet(
         w = whole_range(text, at)
         if w is None:
             return None
-        kind, (a, b, abs_a, abs_b), end_at = w
+        kind, (a, b, abs_a, abs_b, sep), end_at = w
         cols = kind == COLRANGE
         if cols:
             m1, end = RefMatch(0, a, 0, abs_a, 1), RefMatch(0, b, NROW - 1, abs_b, 1)
@@ -1180,7 +1223,7 @@ def _rewrite_refs_on_sheet(
         if (lo > hi) != (a > b):
             lo, hi, abs_a, abs_b = hi, lo, abs_b, abs_a
         name = col_name if cols else (lambda k: str(k + 1))
-        out.append(f"{qual}{'$' * abs_a}{name(lo)}:{'$' * abs_b}{name(hi)}")
+        out.append(f"{qual}{'$' * abs_a}{name(lo)}{sep}{'$' * abs_b}{name(hi)}")
         return end_at, new != rect
 
     def take_refs(at: int, sheet: str, qual: str) -> tuple[int, bool]:
@@ -1198,13 +1241,14 @@ def _rewrite_refs_on_sheet(
             out.append(text[at])
             return at + 1, False
         at += m1.chars_consumed
-        m2 = _ref_at(text, at + 1) if at < n and text[at] == ":" else None
+        ended = _range_end(text, at)
+        sep, m2 = ended if ended is not None else (":", None)
         end = m2 if m2 is not None else m1
         rect = (m1.col, m1.row, end.col, end.row)
         hit = edited_sheet is None or sheet.casefold() == edited_sheet.casefold()
         new = move(m1, end) if hit else rect
         if m2 is not None:
-            at += 1 + m2.chars_consumed
+            at += len(sep) + m2.chars_consumed
         if new is None or (new != rect and not _on_grid(*new)):
             out.append("#REF!")
             return at, True
@@ -1217,7 +1261,7 @@ def _rewrite_refs_on_sheet(
             r1, r2, ar1, ar2 = r2, r1, ar2, ar1
         out.append(qual + _emitref(c1, r1, ac1, ar1))
         if m2 is not None:
-            out.append(":" + _emitref(c2, r2, ac2, ar2))
+            out.append(sep + _emitref(c2, r2, ac2, ar2))
         return at, new != rect
 
     while i < n:
@@ -1547,12 +1591,17 @@ def _strip_xl_prefixes(text: str) -> str:
     """``text`` without Excel's file-format function prefixes, outside quotes.
 
     Excel stores the spill reference `A1#` as `_xlfn.ANCHORARRAY(A1)`; that
-    becomes `A1#` again.
+    becomes `A1#` again. A trim reference, `_xlfn._TRO_TRAILING(A:A)`, becomes
+    `A:.A`.
     """
     if "_xl" not in text and "_XL" not in text:
         return text
     text = _XL_PREFIX_RE.sub(lambda m: m[0] if m[0][0] in "\"'" else "", text)
-    if "ANCHORARRAY" not in text.upper():
+    upper = text.upper()
+    if "_TRO_" in upper:
+        text = _untrim_refs(text)
+        upper = text.upper()
+    if "ANCHORARRAY" not in upper:
         return text
     from .formula import lexer as lx
 
@@ -1573,6 +1622,44 @@ def _strip_xl_prefixes(text: str) -> str:
     return _apply_edits(text, edits)
 
 
+# Excel's file names for a trim reference, and the separator each one writes.
+_TRIM_FILE_SEPS = {TRIM_FUNCS[mode]: sep for sep, mode in TRIM_SEPS.items() if mode}
+
+
+def _untrim_refs(text: str) -> str:
+    """``text`` with each `_TRO_TRAILING(A:A)` written as `A:.A`. A call over
+    anything but a plain range is kept; it evaluates as the same function."""
+    from .formula import lexer as lx
+
+    try:
+        toks = lx.tokenize(text)
+    except FormulaError:
+        return text
+    edits: list[tuple[int, int, str]] = []
+    for i, t in enumerate(toks):
+        sep = _TRIM_FILE_SEPS.get(str(t.value).upper()) if t.kind == lx.IDENT else None
+        if sep is None or toks[i + 1].kind != lx.LPAREN:
+            continue
+        j = i + 2
+        if toks[j].kind == lx.IDENT and toks[j + 1].kind == lx.BANG:
+            j += 2
+        if toks[j].kind in (lx.COLRANGE, lx.ROWRANGE) and toks[j].value[4] == ":":
+            colon, close = text.index(":", toks[j].pos), j + 1
+        elif (
+            toks[j].kind == lx.CELLREF
+            and toks[j + 1].kind == lx.COLON
+            and toks[j + 1].value == ":"
+            and toks[j + 2].kind == lx.CELLREF
+        ):
+            colon, close = toks[j + 1].pos, j + 3
+        else:
+            continue
+        if toks[close].kind != lx.RPAREN:
+            continue
+        edits += [(t.pos, toks[i + 2].pos - t.pos, ""), (colon, 1, sep), (toks[close].pos, 1, "")]
+    return _apply_edits(text, edits)
+
+
 def _apply_edits(text: str, edits: list[tuple[int, int, str]]) -> str:
     """``text`` with each ``(pos, length, replacement)`` applied; positions do not overlap."""
     for pos, length, new in sorted(edits, reverse=True):
@@ -1583,7 +1670,7 @@ def _apply_edits(text: str, edits: list[tuple[int, int, str]]) -> str:
 # The functions Excel stores under a prefix. Without it Excel reads the name as
 # unknown and shows #NAME?. From XlsxWriter's future-function list.
 _XLFN_NAMES = """
-    REGEXEXTRACT REGEXREPLACE REGEXTEST SINGLE TRIMRANGE
+    REGEXEXTRACT REGEXREPLACE REGEXTEST SINGLE TRIMRANGE _TRO_LEADING _TRO_TRAILING _TRO_ALL
     ACOT ACOTH AGGREGATE ARABIC ARRAYTOTEXT BASE BETA.DIST BETA.INV BINOM.DIST
     BINOM.DIST.RANGE BINOM.INV BITAND BITLSHIFT BITOR BITRSHIFT BITXOR BYCOL BYROW
     CEILING.MATH CEILING.PRECISE CHISQ.DIST CHISQ.DIST.RT CHISQ.INV CHISQ.INV.RT
@@ -1606,6 +1693,7 @@ _XLFN_NAMES = """
 """
 _XL_PREFIXES: dict[str, str] = {name: "_xlfn." for name in _XLFN_NAMES.split()}
 _XL_PREFIXES.update({"FILTER": "_xlfn._xlws.", "SORT": "_xlfn._xlws."})
+_TRIM_FILE_NAMES = {sep: name for name, sep in _TRIM_FILE_SEPS.items()}
 
 
 def _add_xl_prefixes(text: str) -> str:
@@ -1654,7 +1742,26 @@ def _add_xl_prefixes(text: str) -> str:
             top[2] = False
             i = j + 1
             continue
-        if t.kind == lx.CELLREF and toks[i + 1].kind == lx.HASH:
+        if t.kind in (lx.COLRANGE, lx.ROWRANGE) and t.value[4] != ":":
+            start = toks[i - 2].pos if i >= 2 and toks[i - 1].kind == lx.BANG else t.pos
+            sep = t.value[4]
+            colon = text.index(sep, t.pos)
+            name = _TRIM_FILE_NAMES[sep]
+            edits += [(start, 0, f"_xlfn.{name}("), (colon, len(sep), ":")]
+            edits.append((whole_range(text, t.pos)[2], 0, ")"))  # type: ignore[index]
+            top[2] = False
+        elif t.kind == lx.CELLREF and toks[i + 2 : i + 3] and toks[i + 1].kind == lx.COLON:
+            sep = toks[i + 1].value
+            if sep != ":" and toks[i + 2].kind == lx.CELLREF:
+                start = toks[i - 2].pos if i >= 2 and toks[i - 1].kind == lx.BANG else t.pos
+                end = toks[i + 2].pos + refabs(text[toks[i + 2].pos :]).chars_consumed  # type: ignore[union-attr]
+                edits += [(start, 0, f"_xlfn.{_TRIM_FILE_NAMES[sep]}(")]
+                edits += [(toks[i + 1].pos, len(sep), ":"), (end, 0, ")")]
+                i += 3
+                top[2] = False
+                continue
+            top[2] = False
+        elif t.kind == lx.CELLREF and toks[i + 1].kind == lx.HASH:
             start = toks[i - 2].pos if i >= 2 and toks[i - 1].kind == lx.BANG else t.pos
             edits.append((start, 0, "_xlfn.ANCHORARRAY("))
             edits.append((toks[i + 1].pos, 1, ")"))
@@ -3371,6 +3478,9 @@ class Grid:
         # dependency on the cell blocking it, so any edit re-attempts every
         # blocked anchor -- cheap, since the set is normally empty.
         self._spill_blocked: set[tuple[str | None, int, int]] = set()
+        # Anchors spilling only the used rows of a whole column, to the (rows,
+        # cols) Excel's spill covers. An edit or spill into that area re-checks one.
+        self._spill_tails: dict[tuple[str | None, int, int], tuple[int, int]] = {}
         # True means the graph matches the cells. Set by `_rebuild_dep_graph`,
         # kept by `_refresh_deps`/`_clear_deps`; cleared by any change the
         # incremental path misses (mode, `clear_all`, sheet rename/removal).
@@ -3767,6 +3877,7 @@ class Grid:
         self._volatile.clear()
         self._topo_cache.clear()
         self._spill_blocked.clear()
+        self._spill_tails.clear()
         named = self._dep_named_ranges()
         for s in self.sheets:
             for (c, r), cl in s._cells.items():
@@ -3885,10 +3996,10 @@ class Grid:
             return set()
         sheet = self._active.name
         cells = self._active._cells
+        extra = set(self._tails_over(sheet, c, r))
         cl = cells.get((c, r))
         if cl is None:
-            return set()
-        extra: set[tuple[int, int]] = set()
+            return extra
         if cl.type == SPILL and cl.spill_parent is not None:
             extra.add(cl.spill_parent)
         if cl.spill_shape is not None:
@@ -4124,6 +4235,7 @@ class Grid:
                                     cl.val = float("nan")
                         elif isinstance(result, Vec):
                             cl.matrix = None
+                            result, cl.spill_full = _spill_extent(result)
                             cl.arr = list(result.data)
                             cl.arr_cols = result.cols
                             cl.val = result.data[0] if result.data else float("nan")
@@ -4637,6 +4749,7 @@ class Grid:
             return
         if isinstance(result, Vec):
             cl.matrix = None
+            result, cl.spill_full = _spill_extent(result)
             cl.arr = list(result.data)
             cl.arr_cols = result.cols
             # The anchor's own displayed value is the top-left element; keep
@@ -4684,6 +4797,7 @@ class Grid:
             for cl in s._cells.values():
                 cl.spill_shape = None
         self._spill_blocked.clear()
+        self._spill_tails.clear()
 
     def style_owner(self, c: int, r: int) -> tuple[int, int]:
         """The active-sheet cell holding (c, r)'s style: a spill cell's anchor, else (c, r).
@@ -4728,6 +4842,7 @@ class Grid:
         """Remove the SPILL cells owned by the anchor at (ac, ar). Returns
         the workbook keys whose value was cleared."""
         changed: set[tuple[str | None, int, int]] = set()
+        self._spill_tails.pop((sheet, ac, ar), None)
         if anchor_cl.spill_shape is None:
             return changed
         cells = self._sheet_cells(sheet)
@@ -4784,8 +4899,71 @@ class Grid:
         cl.err_msg = None
         cl.spill_shape = None
 
+    def _tails_over(
+        self, sheet: str | None, c: int, r: int, rows: int = 1, cols: int = 1
+    ) -> list[tuple[int, int]]:
+        """The anchors on ``sheet`` whose whole-column spill overlaps the
+        ``rows`` x ``cols`` rectangle at (c, r), the anchor cell excluded."""
+        return [
+            (oc, orow)
+            for (s, oc, orow), (orows, ocols) in self._spill_tails.items()
+            if s == sheet
+            and c < oc + ocols
+            and oc < c + cols
+            and r < orow + orows
+            and orow < r + rows
+            and (rows, cols, c, r) != (1, 1, oc, orow)
+        ]
+
+    @staticmethod
+    def _spill_tail_blocked(
+        cells: dict[tuple[int, int], Cell],
+        ac: int,
+        ar: int,
+        full: tuple[int, int],
+        used: tuple[int, int],
+        extent: tuple[int, int] | None,
+    ) -> bool:
+        """Whether a spill of shape ``full`` at (ac, ar) runs off the sheet or
+        covers a cell outside its ``used`` (rows, cols) that is not empty or its own."""
+        rows, cols = full
+        if ac + cols > NCOL or ar + rows > NROW:
+            return True
+        # Past the used extent every cell is blank, so usually nothing is left.
+        last_r = ar + rows - 1 if extent is None else min(ar + rows - 1, extent[1])
+        last_c = ac + cols - 1 if extent is None else min(ac + cols - 1, extent[0])
+        used_r, used_c = ar + used[0], ac + used[1]
+
+        def blocks(cl: Cell | None) -> bool:
+            return (
+                cl is not None
+                and cl.type != EMPTY
+                and not (cl.type == SPILL and cl.spill_parent == (ac, ar))
+            )
+
+        def any_in(r1: int, r2: int, c1: int, c2: int) -> bool:
+            if r1 > r2 or c1 > c2:
+                return False
+            if (r2 - r1 + 1) * (c2 - c1 + 1) <= len(cells):
+                return any(
+                    blocks(cells.get((c, r))) for r in range(r1, r2 + 1) for c in range(c1, c2 + 1)
+                )
+            return any(
+                c1 <= c <= c2 and r1 <= r <= r2 and blocks(cl) for (c, r), cl in cells.items()
+            )
+
+        # The columns right of the used ones, then the rows below them.
+        return any_in(ar, min(used_r - 1, last_r), used_c, last_c) or any_in(
+            used_r, last_r, ac, last_c
+        )
+
     def _apply_spill(
-        self, sheet: str | None, ac: int, ar: int, anchor_cl: Cell
+        self,
+        sheet: str | None,
+        ac: int,
+        ar: int,
+        anchor_cl: Cell,
+        extent: tuple[int, int] | None = None,
     ) -> set[tuple[str | None, int, int]]:
         """Materialise (or tear down) the spill for the anchor at (ac, ar).
 
@@ -4793,21 +4971,31 @@ class Grid:
         created, removed, or updated -- so the caller can recompute their
         consumers in a follow-up pass.
         """
+        key = (sheet, ac, ar)
+        self._spill_blocked.discard(key)
+        self._spill_tails.pop(key, None)
         if not anchor_cl.arr and anchor_cl.spill_shape is None:
-            self._spill_blocked.discard((sheet, ac, ar))
             return set()
         changed: set[tuple[str | None, int, int]] = set()
-        self._spill_blocked.discard((sheet, ac, ar))
         arr = anchor_cl.arr
         cols = anchor_cl.arr_cols if anchor_cl.arr_cols else 1
-        # No array, or a single element: not a spill. Tear down any prior.
-        if anchor_cl.type != FORMULA or not arr or len(arr) <= 1:
-            return self._clear_spill(sheet, ac, ar, anchor_cl)
-        rows = len(arr) // cols
-        if rows * cols <= 1:
-            return self._clear_spill(sheet, ac, ar, anchor_cl)
-        new_shape = (rows, cols)
         cells = self._sheet_cells(sheet)
+        # `spill_full` is stale once the formula stops returning an array.
+        full = anchor_cl.spill_full if anchor_cl.type == FORMULA and arr else None
+        used = (len(arr) // cols if arr else 0, cols)
+        if full is not None and self._spill_tail_blocked(cells, ac, ar, full, used, extent):
+            changed |= self._clear_spill(sheet, ac, ar, anchor_cl)
+            self._set_spill_error(anchor_cl)
+            self._spill_blocked.add(key)
+            return changed
+        # No array, or a single element: not a spill. Tear down any prior.
+        rows = len(arr) // cols if arr else 0
+        if anchor_cl.type != FORMULA or not arr or len(arr) <= 1 or rows * cols <= 1:
+            changed = self._clear_spill(sheet, ac, ar, anchor_cl)
+            if full is not None:  # one used row: the column is still reserved
+                self._spill_tails[key] = full
+            return changed
+        new_shape = (rows, cols)
         old_positions = (
             set(self._spill_positions(ac, ar, anchor_cl.spill_shape))
             if anchor_cl.spill_shape is not None
@@ -4861,6 +5049,12 @@ class Grid:
                 self._clear_deps((sheet, c, r))
                 changed.add((sheet, c, r))
         anchor_cl.spill_shape = new_shape
+        if full is not None:
+            self._spill_tails[key] = full
+        # A whole-column spill this one now runs into re-checks next pass,
+        # when the used extent includes these cells.
+        overrun = self._tails_over(sheet, ac, ar, rows, cols)
+        changed |= {(sheet, oc, orow) for oc, orow in overrun if (oc, orow) != (ac, ar)}
         return changed
 
     def _new_env(self) -> Any:
@@ -5123,7 +5317,7 @@ class Grid:
             # An error the formula caught leaves a stale reason; match it.
             if reason is not None and fcl.err is reason[0]:
                 fcl.err_msg = reason[1]
-            spill_changed |= self._apply_spill(sheet_name, c, r, fcl)
+            spill_changed |= self._apply_spill(sheet_name, c, r, fcl, env.extent())
             if stopped and running:
                 raise TimeLimit  # stop the formula that asked for this one too
 

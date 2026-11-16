@@ -42,6 +42,7 @@ from ..engine import Vec, _is_ndarray, _is_num, _scalar_or_error, _vec_per_elem
 from ..formula.errors import ExcelError, explain, first_error, parse_error_literal
 from ..formula.evaluator import (
     MAX_ARRAY_CELLS,
+    MAX_TEXT,
     Reference,
     _to_bool,
     _to_number,
@@ -680,9 +681,14 @@ def CONCATENATE(*args: Any) -> str:
     return "".join(_text(a) for a in args)
 
 
-def CONCAT(*args: Any) -> str:
+def CONCAT(*args: Any) -> str | ExcelError:
     """=CONCAT(A1:A3, B1) -- like CONCATENATE, but also joins ranges."""
-    return "".join(_text(v) for v in _flatten(args))
+    return _joined("".join(_text(v) for v in _flatten(args)))
+
+
+def _joined(s: str) -> str | ExcelError:
+    """``s``, or #CALC! past Excel's cell text limit (Excel 16.114)."""
+    return ExcelError.CALC if len(s) > _MAX_TEXT else s
 
 
 def LEFT(text: str, n: int = 1) -> str | ExcelError:
@@ -805,11 +811,11 @@ def REPLACE(text: str, start: int, n: int, new: str) -> str | ExcelError:
     return s[:i] + _text(new) + s[i + int(n) :]
 
 
-def TEXTJOIN(sep: str, ignore_empty: Any, *args: Any) -> str:
+def TEXTJOIN(sep: str, ignore_empty: Any, *args: Any) -> str | ExcelError:
     """=TEXTJOIN(",", TRUE, "a", "", "b") -> "a,b" """
     skip = bool(ignore_empty)
     parts = [_text(v) for v in _flatten(args)]
-    return _text(sep).join(p for p in parts if not (skip and p == ""))
+    return _joined(_text(sep).join(p for p in parts if not (skip and p == "")))
 
 
 def CHAR(n: int) -> str | ExcelError:
@@ -2106,7 +2112,10 @@ def _ref_shape(env: Any, args: tuple[Any, ...]) -> tuple[int, int] | ExcelError:
         return v.r2 - v.r1 + 1, v.c2 - v.c1 + 1
     if isinstance(v, ExcelError):
         return v
-    return v.shape if isinstance(v, Vec) else (1, 1)
+    if not isinstance(v, Vec):
+        return 1, 1
+    # A whole-column array is trimmed to the used rows; its shape is the column's.
+    return v.full or (v.fill_to[0] if v.fill_to else v.shape)
 
 
 def ROWS(env: Any, *args: Any) -> int | ExcelError:
@@ -2554,13 +2563,14 @@ def TRIMRANGE(env: Any, *args: Any) -> Any:
             return ExcelError.VALUE
         modes.append(int(float(m)))
     rows_mode, cols_mode = (modes + [3, 3])[:2]
-    ref = _clamp_ref(env, ref)
-    used = [
-        (c, r)
-        for r in range(ref.r1, ref.r2 + 1)
-        for c in range(ref.c1, ref.c2 + 1)
-        if env.get_cell(c, r, ref.sheet) not in (None, "")
-    ]
+    scan = _clamp_ref(env, ref)  # past the used extent every cell is blank
+    area = (scan.r2 - scan.r1 + 1) * (scan.c2 - scan.c1 + 1)
+    stored = env.stored_cells(ref.sheet) if env.stored_cells else None
+    if stored is not None and len(stored) < area:  # a cell not stored is blank
+        cells = [(c, r) for c, r in stored if scan.c1 <= c <= scan.c2 and scan.r1 <= r <= scan.r2]
+    else:
+        cells = [(c, r) for r in range(scan.r1, scan.r2 + 1) for c in range(scan.c1, scan.c2 + 1)]
+    used = [(c, r) for c, r in cells if env.get_cell(c, r, ref.sheet) not in (None, "")]
     if not used:
         return ExcelError.REF
     c1, c2 = ref.c1, ref.c2
@@ -2574,6 +2584,18 @@ def TRIMRANGE(env: Any, *args: Any) -> Any:
     if cols_mode & 2:
         c2 = max(c for c, _ in used)
     return Reference(c1, r1, c2, r2, ref.sheet)
+
+
+def _trim_ref(mode: int) -> Callable[..., Any]:
+    """A trim reference: `A:.A` is `_TRO_TRAILING(A:A)`, TRIMRANGE with ``mode``."""
+    from ..formula.ast_nodes import Number
+
+    def trim(env: Any, *args: Any) -> Any:
+        if len(args) != 1:
+            return ExcelError.VALUE
+        return TRIMRANGE(env, args[0], Number(mode), Number(mode))
+
+    return trim
 
 
 def ISOMITTED(env: Any, *args: Any) -> bool | ExcelError:
@@ -3282,8 +3304,7 @@ _LOG_DBL_MAX = math.log(sys.float_info.max)
 # one as #NUM!; without a cap, `SEQUENCE(1e5, 1e5)` exhausts memory.
 _MAX_ARRAY_CELLS = MAX_ARRAY_CELLS
 
-# Longest text Excel holds in a cell.
-_MAX_TEXT = 32767
+_MAX_TEXT = MAX_TEXT
 
 
 def _array_too_big(rows: int, cols: int) -> bool:
@@ -9060,6 +9081,9 @@ BUILTINS: dict[str, Any] = {
     "CELL": CELL,
     "SINGLE": SINGLE,
     "TRIMRANGE": TRIMRANGE,
+    "_TRO_LEADING": _trim_ref(1),
+    "_TRO_TRAILING": _trim_ref(2),
+    "_TRO_ALL": _trim_ref(3),
     "ISOMITTED": ISOMITTED,
     "ANCHORARRAY": ANCHORARRAY,
     "SHEET": SHEET,

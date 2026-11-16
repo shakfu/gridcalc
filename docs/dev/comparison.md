@@ -67,18 +67,26 @@ The 279 IronCalc and pycel test workbooks (`excel-corpus.md`). The cell set is `
 
 `named_io_bench.py` builds an amortization model with named inputs `Rate` and `Principal` and named outputs `Payment`, `TotalInterest` and `EndBalance`. `small` is one 360-row block (1,806 formulas). `big` is ten blocks (18,033). Each case changes both inputs, so every formula recalculates. There are 20 cases. The payment uses a closed form, because pycel has no `PMT`. Every engine matches gridcalc's outputs within 1e-15 relative.
 
+Rerun 2026-11-17 on the same machine (Apple M1, 16 GB, 73% of memory free): gridcalc 0.13.0 plus the unreleased changes, GridCraft 0.19.1, pycel 1.0b30, formulas 1.3.4. Two runs agreed within 3%; the table gives the second, and formulas the first.
+
 | | load, small | per case, small | load, big | per case, big |
 |-|-|-|-|-|
-| gridcalc `Book.run_many` | 0.07 s | 8.0 ms | 0.59 s | 173 ms |
-| gridcalc CLI `--inputs`, whole process / 20 | - | 20.8 ms | - | 160 ms |
-| GridCraft, one process, cases in sequence | 0.01 s | 2.9 ms | 0.08 s | 26.2 ms |
-| GridCraft, one process per case | - | 14.8 ms | - | 78.2 ms |
-| pycel `set_value` / `evaluate` | 0.75 s | 15.2 ms | 5.3 s | 126 ms |
-| formulas `compile`, then call | 2.7 s | 219 ms | 21.0 s | 3,352 ms |
+| gridcalc `Book.run_many` | 0.08 s | 4.0 ms | 0.34 s | 43.6 ms |
+| gridcalc CLI `--inputs`, whole process / 20 | - | 11.0 ms | - | 67.2 ms |
+| GridCraft, one process, cases in sequence | 0.03 s | 2.6 ms | 0.06 s | 25.3 ms |
+| GridCraft, one process per case | - | 13.3 ms | - | 81.4 ms |
+| pycel `set_value` / `evaluate` | 0.46 s | 7.2 ms | 2.73 s | 83.8 ms |
+| formulas `compile`, then call | 26.7 s | 164 ms | 10.5 s | 1,837 ms |
 
-Each GridCraft case sets every input, so it needs no reset between cases. Whether `--script` can reset is not checked. On `big`, GridCraft computes a case 6.6x faster than gridcalc, and pycel 1.4x faster. One process per case, with its own load, GridCraft is still 2.2x faster than gridcalc's in-process batch.
+Each GridCraft case sets every input, so it needs no reset between cases. Whether `--script` can reset is not checked.
 
-The timings vary by run. A run under memory pressure was 4-8x slower for every engine. An earlier run the same day gave gridcalc 182 ms and GridCraft 32.6 ms per case on `big`.
+- On `big`, GridCraft computes a case 1.7x faster than gridcalc. On 2026-11-05 it was 6.6x: 26.2 ms against 173 ms. The gain is gridcalc's (`docs/dev/261110-perf.md`); GridCraft is within 1 ms of its old figure.
+- gridcalc is now 1.9x faster than pycel per case on `big`. pycel was 1.4x faster.
+- `Book.run_many(..., workers=4)` on `big`, 400 cases: 12.2 ms per case of throughput, 2.1x GridCraft's rate in one process. 1, 2 and 8 workers: 40.8, 22.1 and 10.4 ms. Outputs are identical at every count.
+- formulas' small-model load (26.7 s) is longer than its big one (10.5 s). It likely includes building its `uv` environment on first use; not checked.
+- The first run gave the gridcalc CLI 33.2 ms on `small`, against 11.0 ms in the second, probably a cold start.
+
+Earlier figures, 2026-11-05 (gridcalc 0.11.0, GridCraft 0.5.0): gridcalc `run_many` 8.0 and 173 ms, CLI 20.8 and 160 ms, GridCraft 2.9 and 26.2 ms, GridCraft per process 14.8 and 78.2 ms, pycel 15.2 and 126 ms, formulas 219 and 3,352 ms, per case on `small` and `big`. A run under memory pressure was 4-8x slower for every engine.
 
 ## Agreement on untuned workbooks
 

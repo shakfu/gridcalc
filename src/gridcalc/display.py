@@ -32,7 +32,7 @@ from .engine import (
     _is_dataframe,
     label_value,
 )
-from .formula.evaluator import number_text
+from .formula.evaluator import _is_number, number_text
 from .numfmt import format_value
 
 # Width (in characters) handed to ``fmtcell`` by :func:`cell_text` before the
@@ -119,10 +119,6 @@ def _num_str(v: float) -> str:
     everywhere this idiom appears.
     """
     return str(int(v)) if abs(v) < 1e9 and v == int(v) else f"{v:g}"
-
-
-def _is_number(v: object) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
 def cell_clip_value(cl: Cell | None) -> str:

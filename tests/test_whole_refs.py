@@ -16,10 +16,13 @@ def _excel() -> Grid:
 @pytest.mark.parametrize(
     ("text", "kind", "value"),
     [
-        ("=B:B", COLRANGE, (1, 1, False, False)),
-        ("=$A:$C", COLRANGE, (0, 2, True, True)),
-        ("=1:1", ROWRANGE, (0, 0, False, False)),
-        ("=$2:5", ROWRANGE, (1, 4, True, False)),
+        ("=B:B", COLRANGE, (1, 1, False, False, ":")),
+        ("=$A:$C", COLRANGE, (0, 2, True, True, ":")),
+        ("=1:1", ROWRANGE, (0, 0, False, False, ":")),
+        ("=$2:5", ROWRANGE, (1, 4, True, False, ":")),
+        ("=B:.B", COLRANGE, (1, 1, False, False, ":.")),
+        ("=$A.:$C", COLRANGE, (0, 2, True, True, ".:")),
+        ("=2.:.5", ROWRANGE, (1, 4, False, False, ".:.")),
     ],
 )
 def test_whole_references_lex_as_one_token(text, kind, value) -> None:

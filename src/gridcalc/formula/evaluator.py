@@ -1463,7 +1463,18 @@ def _lift_call(name_lower: str, fn: Any, args: list[Any], lifted: list[int], env
     Shapes broadcast as in Excel: a one-row or one-column array repeats along
     that dimension, and a position past a smaller array's edge is #N/A.
     """
+    args = list(args)
+    infos = {i: _fill_info(args[i]) for i in lifted}
     shapes = {i: _vec_shape(args[i]) for i in lifted}
+    for i in lifted:  # a trimmed array beside a full-height one: pad it back
+        info = infos[i]
+        if (
+            info is not None
+            and info[0] != shapes[i]
+            and any(shapes[j] == info[0] for j in lifted if j != i)
+        ):
+            args[i] = _untrim(args[i], info)
+            shapes[i], infos[i] = info[0], None
     datas = {i: _vec_data(args[i]) for i in lifted}
     n_rows = max(r for r, _ in shapes.values())
     n_cols = max(c for _, c in shapes.values())
@@ -1481,7 +1492,16 @@ def _lift_call(name_lower: str, fn: Any, args: list[Any], lifted: list[int], env
                 call[i] = datas[i][rr * cols + cc] if rr < rows and cc < cols else ExcelError.NA
             v = _call_value(name_lower, fn, call)
             out.append(ExcelError.CALC if _is_vec(v) else v)  # no nested arrays
-    return _make_vec(out, cols=n_cols)
+    result = _make_vec(out, cols=n_cols)
+    full = {info[0] for info in infos.values() if info is not None}
+    if len(full) == 1 and all(infos[i] is not None for i in lifted):
+        # Every array was trimmed alike: `ISBLANK(B:B)` is TRUE on the trimmed rows.
+        call = list(args)
+        for i in lifted:
+            call[i] = infos[i][1]  # type: ignore[index]
+        v = _call_value(name_lower, fn, call)
+        result.fill_to = (full.pop(), ExcelError.CALC if _is_vec(v) else v)
+    return result
 
 
 # Functions that receive raw AST nodes (CellRef/RangeRef/...) plus the
@@ -1559,7 +1579,9 @@ def _eval_lazy(name: str, node: Call, env: Env) -> Any:
         subject = val(0)
         if _is_vec(subject):  # one result per element, as Excel
             _, cols = _vec_shape(subject)
-            return _make_vec([pick(x) for x in _vec_data(subject)], cols=cols)
+            out = _make_vec([pick(x) for x in _vec_data(subject)], cols=cols)
+            info = _fill_info(subject)
+            return _with_fill(out, info, lambda: _scalar_tail(pick(info[1])))  # type: ignore[index]
         return pick(subject)
 
     if name == "iferror":
@@ -1608,12 +1630,46 @@ def _choose(cond: Any, then: Callable[[], Any], other: Callable[[], Any]) -> Any
         if isinstance(b, ExcelError):
             return b
         return then() if b else other()
-    t, f = _elements(then()), _elements(other())
+    cond, then_v, other_v = _pad_to_peers([cond, then(), other()])
+    info = _fill_info(cond)
+    t, f = _elements(then_v), _elements(other_v)
     out = []
     for i, c in enumerate(_vec_data(cond)):
         b = _to_bool(c)
         out.append(b if isinstance(b, ExcelError) else (t if b else f)(i))
-    return _make_vec(out, cols=_vec_cols(cond))
+    result = _make_vec(out, cols=_vec_cols(cond))
+    if info is None:
+        return result
+    b = _to_bool(info[1])
+    tail = b if isinstance(b, ExcelError) else _branch_tail(then_v if b else other_v, info[0])
+    return result if tail is _NO_TAIL else _with_fill(result, info, lambda: tail)
+
+
+_NO_TAIL = object()
+
+
+def _pad_to_peers(vals: list[Any]) -> list[Any]:
+    """``vals`` with each trimmed array padded to the full size of another
+    one, as `B:B*2` beside `ROW(B:B)`."""
+    shapes = {_vec_shape(v) for v in vals if _is_vec(v)}
+    out = []
+    for v in vals:
+        info = _fill_info(v) if _is_vec(v) else None
+        padded = info is not None and info[0] in shapes and info[0] != _vec_shape(v)
+        out.append(_untrim(v, info) if padded else v)  # type: ignore[arg-type]
+    return out
+
+
+def _scalar_tail(v: Any) -> Any:
+    return ExcelError.CALC if _is_vec(v) else v
+
+
+def _branch_tail(v: Any, shape: tuple[int, int]) -> Any:
+    """The value a branch holds on the trimmed rows of an array of ``shape``."""
+    if not _is_vec(v):
+        return v
+    info = _fill_info(v)
+    return info[1] if info is not None and info[0] == shape else _NO_TAIL
 
 
 def _replace_where(v: Any, test: Callable[[Any], bool], fallback: Callable[[], Any]) -> Any:
@@ -1621,10 +1677,19 @@ def _replace_where(v: Any, test: Callable[[Any], bool], fallback: Callable[[], A
     if not _is_vec(v):
         return fallback() if test(v) else v
     data = _vec_data(v)
-    if not any(test(x) for x in data):
+    info = _fill_info(v)
+    tail_hit = info is not None and test(info[1])
+    if not tail_hit and not any(test(x) for x in data):
         return v
-    fb = _elements(fallback())
-    return _make_vec([fb(i) if test(x) else x for i, x in enumerate(data)], cols=_vec_cols(v))
+    v, fb_v = _pad_to_peers([v, fallback()])
+    data, info = _vec_data(v), _fill_info(v)
+    tail_hit = info is not None and test(info[1])
+    fb = _elements(fb_v)
+    out = _make_vec([fb(i) if test(x) else x for i, x in enumerate(data)], cols=_vec_cols(v))
+    if info is None:
+        return out
+    tail = _branch_tail(fb_v, info[0]) if tail_hit else info[1]
+    return out if tail is _NO_TAIL else _with_fill(out, info, lambda: tail)
 
 
 RAW_ARG_FUNCS = frozenset(
@@ -1644,6 +1709,9 @@ RAW_ARG_FUNCS = frozenset(
         "cell",
         "single",
         "trimrange",
+        "_tro_leading",
+        "_tro_trailing",
+        "_tro_all",
         "isomitted",
         "anchorarray",
         "formulatext",
@@ -1832,9 +1900,406 @@ def _eval_value_call(name_lower: str, fn: Any, node: Call, env: Env) -> Any:
         # an array criterion gives one result per element, as in `COUNTIF`.
         ranges = set(_criteria_range_positions(name_lower, len(args)))
         lifted = [i for i, a in enumerate(args) if i not in ranges and _is_vec(a)]
+    resolved = _resolve_tails(name_lower, args, set(lifted), env)
+    if isinstance(resolved, _TailResult):
+        return resolved.value
+    if isinstance(resolved, ExcelError):
+        return resolved
+    args = resolved
     if lifted:
         return _lift_call(name_lower, fn, args, lifted, env)
     return _call_value(name_lower, fn, args)
+
+
+# Functions that skip a logical, text or blank inside an array, so only a number
+# in a trimmed tail counts (docs/dev/whole-column-tails.md).
+_SKIP_NON_NUMBERS = frozenset(
+    {
+        "sum",
+        "sumsq",
+        "product",
+        "average",
+        "count",
+        "median",
+        "large",
+        "small",
+        "stdev",
+        "stdev.s",
+        "stdev.p",
+        "stdevp",
+        "var",
+        "var.s",
+        "var.p",
+        "varp",
+        "geomean",
+        "harmean",
+        "avedev",
+        "devsq",
+        "skew",
+        "kurt",
+        "mode",
+        "mode.sngl",
+        "skew.p",
+    }
+)
+# The value a number in the tail may hold without changing the result.
+_NEUTRAL_NUMBER = {"sum": 0.0, "sumsq": 0.0, "product": 1.0}
+# One copy of the tail value gives the same result as a million.
+_IDEMPOTENT = frozenset({"max", "min", "maxa", "mina", "and", "or"})
+
+
+def _is_number(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _tail_neutral(name: str, fills: list[Any], args: list[Any]) -> bool:
+    """Whether the trimmed rows, holding ``fills``, leave ``name``'s result as it is."""
+    if name in _SKIP_NON_NUMBERS:  # an error propagates; only COUNT skips it
+        return all(
+            (not _is_number(f) and (name == "count" or not isinstance(f, ExcelError)))
+            or f == _NEUTRAL_NUMBER.get(name)
+            for f in fills
+        )
+    if name == "sumproduct":  # a non-number multiplies as 0; an error propagates
+        tails = [(_fill_info(a) or (None, 1.0))[1] for a in args if _is_vec(a)]
+        if any(isinstance(f, ExcelError) for f in tails):
+            return False
+        return any(not _is_number(f) or f == 0 for f in tails)
+    if name == "filter" and len(args) > 1:  # trimmed rows the filter drops
+        info = _fill_info(args[1])
+        return info is not None and (info[1] is None or info[1] is False or info[1] == 0)
+    if name in ("counta", "averagea"):
+        return all(f is None for f in fills)
+    if name == "concat" or (name == "textjoin" and len(args) > 2):
+        empty = all(f is None or f == "" for f in fills)
+        return empty and (name == "concat" or args[0] == "" or args[1] is True or args[1] == 1)
+    if name in _EXACT_LOOKUPS and len(args) > 1:
+        return _tail_cannot_match(name, args)
+    return False
+
+
+# Lookup functions, and the position and default of their match mode.
+_EXACT_LOOKUPS = {"match": (2, 1), "xmatch": (2, 0), "xlookup": (4, 0)}
+
+
+def _tail_cannot_match(name: str, args: list[Any]) -> bool:
+    """Whether an exact lookup cannot find its value in the trimmed rows of
+    its lookup array, so those rows cannot change the result."""
+    info = _fill_info(args[1])
+    if info is None or info[1] is None:  # a range's blank rows: the lookup reads those
+        return True
+    pos, default = _EXACT_LOOKUPS[name]
+    mode = args[pos] if len(args) > pos and args[pos] is not None else default
+    search = 5 if name == "xlookup" else 3  # binary search walks the tail too
+    if mode != 0 or (len(args) > search and args[search] not in (None, 1, -1)):
+        return False
+    x, f = args[0], info[1]
+    if _is_vec(x):
+        return False
+    if isinstance(x, str) and isinstance(f, str):
+        return x.lower() != f.lower() and not (name == "match" and any(ch in x for ch in "*?~"))
+    if _is_number(x) and _is_number(f):
+        return bool(x != f)
+    return type(x) is not type(f) or bool(x != f)
+
+
+@dataclass(frozen=True)
+class _TailResult:
+    value: Any
+
+
+# Functions that pair their arrays row by row: `SUMPRODUCT(--(B:B<>""),ROW(B:B))`.
+_ROW_ALIGNED = frozenset({"sumproduct", "filter", "match", "xmatch", "xlookup"})
+
+
+def _cut_to_used(args: list[Any], lifted: set[int]) -> list[Any]:
+    """``args`` with each full-size array cut to the used rows of a trimmed
+    one of that full size. Only for a call whose trimmed rows cannot matter."""
+    used = {
+        info[0]: _vec_shape(a)
+        for i, a in enumerate(args)
+        if i not in lifted and _is_vec(a) and (info := _fill_info(a)) is not None
+    }
+    out = list(args)
+    for i, a in enumerate(args):
+        if i in lifted or not _is_vec(a) or _fill_info(a) is not None:
+            continue
+        shape = used.get(_vec_shape(a))
+        if shape is not None and shape != _vec_shape(a):
+            (rows, cols), width = shape, _vec_shape(a)[1]
+            data = _vec_data(a)
+            cut = [x for r in range(rows) for x in data[r * width : r * width + cols]]
+            out[i] = _make_vec(cut, cols=cols)
+    return out
+
+
+# Longest text Excel holds in a cell.
+MAX_TEXT = 32767
+
+
+def _joined_tail(name: str, args: list[Any], lifted: set[int]) -> ExcelError | None:
+    """CONCAT or TEXTJOIN's error from its trimmed rows: the first error they
+    hold, or #CALC! when they add more than ``MAX_TEXT`` characters."""
+    parts = args if name == "concat" else args[2:]
+    keeps_empty = (
+        name == "textjoin"
+        and len(args) > 2
+        and not _is_vec(args[1])
+        and args[1] in (False, 0)
+        and args[0] != ""
+    )
+    added = 0
+    for i, a in enumerate(parts, start=len(args) - len(parts)):
+        info = _fill_info(a) if i not in lifted and _is_vec(a) else None
+        if info is None:
+            continue
+        (rows, cols), f = info
+        if isinstance(f, ExcelError):
+            return f
+        if keeps_empty or not _is_blankish(f):  # each row adds a character or more
+            added += rows * cols - len(_vec_data(a))
+    return explain(ExcelError.CALC, "text over 32767 characters") if added > MAX_TEXT else None
+
+
+def _is_blankish(v: Any) -> bool:
+    return v is None or (isinstance(v, str) and v == "")
+
+
+def _resolve_tails(
+    name: str, args: list[Any], lifted: set[int], env: Env
+) -> list[Any] | ExcelError | _TailResult:
+    """``args`` with each computed array's trimmed rows accounted for.
+
+    Returns the args to call ``name`` with, the call's value computed here
+    (``_TailResult``), or an error. See docs/dev/whole-column-tails.md.
+    """
+    if name in ("concat", "textjoin"):
+        joined = _joined_tail(name, args, lifted)
+        if joined is not None:
+            return joined
+    computed = [
+        i
+        for i, a in enumerate(args)
+        if i not in lifted and _is_vec(a) and getattr(a, "fill_to", None) is not None
+    ]
+    if not computed:  # a range's blank rows, which only a lookup for a blank finds
+        if name not in _ROW_ALIGNED:
+            return args
+        if name in _EXACT_LOOKUPS and args and _is_blankish(args[0]):
+            kept = [i for i in range(len(args)) if i not in lifted]
+            padded = _pad_to_peers([args[i] for i in kept])
+            return [padded[kept.index(i)] if i in kept else a for i, a in enumerate(args)]
+        return _cut_to_used(args, lifted)
+    fills = [args[i].fill_to[1] for i in computed]
+    if _tail_neutral(name, fills, args):
+        return _cut_to_used(args, lifted) if name in _ROW_ALIGNED else args
+    out = list(args)
+    if name in _IDEMPOTENT:
+        for i in computed:
+            out[i] = _make_vec([*_vec_data(args[i]), args[i].fill_to[1]])
+        return out
+    if not lifted and name in _TAIL_COUNTED:
+        value = _tail_counted(name, args, computed, env)
+        if value is not _NO_SHORTCUT:
+            return _TailResult(value)
+    infos = {
+        i: info
+        for i, a in enumerate(args)
+        if i not in lifted and _is_vec(a) and (info := _fill_info(a)) is not None
+    }
+    # Past one column, padding costs too much: read the used rows only.
+    if any(rows * cols > MAX_ARRAY_CELLS for (rows, cols), _ in infos.values()):
+        return args
+    for i, info in infos.items():
+        out[i] = _untrim(args[i], info)
+    return out
+
+
+_TAIL_COUNTED = _SKIP_NON_NUMBERS | {"counta", "averagea", "sumproduct"}
+# These need each value's distance from the mean, or its rank.
+_TAIL_WEIGHED = frozenset({"median", "mode", "mode.sngl", "avedev", "skew", "skew.p", "kurt"})
+_NO_SHORTCUT = object()
+
+
+def _tail_counted(name: str, args: list[Any], computed: list[int], env: Env) -> Any:
+    """``name`` over ``args``, each trimmed tail counted, not padded; or ``_NO_SHORTCUT``."""
+    if name in ("sumproduct", "averagea"):
+        return _tail_counted_a(name, args, computed, env)
+    base = list(args)
+    tails: dict[int, tuple[float, int]] = {}
+    for i in computed:
+        (rows, cols), f = args[i].fill_to
+        n = rows * cols - len(_vec_data(args[i]))
+        if name == "counta" and f is not None:
+            tails[i] = (1.0, n)
+        elif name != "counta" and _is_number(f):
+            tails[i] = (float(f), n)
+        elif name != "counta":  # skipped, or an error that one copy carries
+            base[i] = _make_vec([*_vec_data(args[i]), f])
+    groups = list(tails.values())
+
+    def call(fname: str, argv: list[Any] = base) -> Any:
+        fn = env.lookup_func(fname)
+        if fn is None:
+            raise LookupError(fname)
+        return _call_value(fname, fn, argv)
+
+    def with_copies(k: int) -> Any:
+        extra = _make_vec([f for f, n in groups for _ in range(min(n, k))])
+        if name in ("large", "small"):
+            return call(name, [_make_vec([*_vec_data(base[0]), *extra.data]), *base[1:]])
+        return call(name, [*base, extra])
+
+    try:
+        if not groups:
+            return call(name)
+        if name in ("count", "counta"):  # these skip errors, so need no SUM check
+            return call(name) + sum(n for _, n in groups)
+        total = call("sum")
+        if isinstance(total, ExcelError):
+            return total
+        count = call("count")
+        size = count + sum(n for _, n in groups)
+        if name == "sum":
+            return total + sum(f * n for f, n in groups)
+        if name == "sumsq":
+            return call("sumsq") + sum(f * f * n for f, n in groups)
+        if name == "average":
+            return (total + sum(f * n for f, n in groups)) / size
+        if name == "product":
+            p = call("product") if count else 1.0
+            for f, n in groups:
+                p *= math.pow(f, n)
+            return p if math.isfinite(p) else ExcelError.NUM
+        if name in ("geomean", "harmean"):
+            if any(f <= 0 for f, _ in groups):
+                return ExcelError.NUM
+            part = call(name) if count else 1.0
+            if isinstance(part, ExcelError):
+                return part
+            if name == "geomean":
+                logs = count * math.log(part) + sum(n * math.log(f) for f, n in groups)
+                return math.exp(logs / size)
+            return size / (count / part + sum(n / f for f, n in groups))
+        if name in ("large", "small"):
+            k = _to_number(args[1]) if len(args) == 2 else None
+            if computed != [0] or not isinstance(k, float):
+                return _NO_SHORTCUT
+            return with_copies(max(1, math.ceil(k)))
+        if name in _TAIL_WEIGHED:
+            pairs: list[tuple[float, int]] = []
+            for i, a in enumerate(base):
+                values = _vec_data(a) if _is_vec(a) else [a]
+                pairs += [(float(x), 1) for x in values if _is_number(x) and x == x]
+                if i in tails:
+                    pairs.append(tails[i])
+            return _weighted_stat(name, pairs)
+        # DEVSQ and the variances: merge each group's mean and squared deviations.
+        mean = call("average") if count else 0.0
+        dev = call("devsq") if count else 0.0
+        for f, n in groups:
+            delta, merged = f - mean, count + n
+            mean += delta * n / merged
+            dev += delta * delta * count * n / merged
+            count = merged
+    except LookupError:
+        return _NO_SHORTCUT
+    except OverflowError:
+        return ExcelError.NUM
+    if name == "devsq":
+        return dev
+    sample = name in ("var", "var.s", "stdev", "stdev.s")
+    if sample and count < 2:
+        return ExcelError.DIV0
+    var = dev / (count - 1 if sample else count)
+    return math.sqrt(var) if name.startswith("stdev") else var
+
+
+def _tail_counted_a(name: str, args: list[Any], computed: list[int], env: Env) -> Any:
+    """SUMPRODUCT or AVERAGEA with the trimmed tails counted, or ``_NO_SHORTCUT``."""
+    fn = env.lookup_func(name)
+    if fn is None:
+        return _NO_SHORTCUT
+    if name == "sumproduct":
+        vecs = [a for a in args if _is_vec(a)]
+        infos = [info for a in vecs if (info := _fill_info(a)) is not None]
+        shapes = {info[0] for info in infos}
+        if len(infos) != len(vecs) or len(shapes) != 1 or len({_vec_shape(a) for a in vecs}) != 1:
+            return _NO_SHORTCUT
+        rows, cols = shapes.pop()
+        term = float(rows * cols - len(_vec_data(vecs[0])))
+        for _, f in infos:
+            if isinstance(f, ExcelError):
+                return f
+            term *= float(f) if _is_number(f) else 0.0
+        part = _call_value(name, fn, args)
+        return part if isinstance(part, ExcelError) else part + term
+    base, total, n_tail = list(args), 0.0, 0
+    for i in computed:
+        (rows, cols), f = args[i].fill_to
+        if isinstance(f, ExcelError):
+            return f
+        if f is not None:
+            n = rows * cols - len(_vec_data(args[i]))
+            total += n * (float(f) if _is_number(f) or isinstance(f, bool) else 0.0)
+            n_tail += n
+    count_fn = env.lookup_func("counta")
+    if count_fn is None:
+        return _NO_SHORTCUT
+    count = _call_value("counta", count_fn, base)
+    part = _call_value(name, fn, base) if count else 0.0
+    if isinstance(part, ExcelError):
+        return part
+    size = count + n_tail
+    return (part * count + total) / size if size else ExcelError.DIV0
+
+
+def _weighted_stat(name: str, pairs: list[tuple[float, int]]) -> Any:
+    """MEDIAN, MODE, AVEDEV, SKEW, SKEW.P or KURT of ``pairs``, each a value
+    and its count, in the order the values occur."""
+    size = sum(w for _, w in pairs)
+    if name in ("mode", "mode.sngl"):
+        counts: dict[float, int] = {}
+        first: dict[float, int] = {}
+        for i, (x, w) in enumerate(pairs):
+            counts[x] = counts.get(x, 0) + w
+            first.setdefault(x, i)
+        if not counts or max(counts.values()) == 1:
+            return ExcelError.NA
+        return max(counts, key=lambda x: (counts[x], -first[x]))
+    if size == 0:
+        return ExcelError.NUM if name in ("median", "avedev") else ExcelError.DIV0
+    if name == "median":
+        ranked = sorted(pairs)
+
+        def at(k: int) -> float:
+            seen = 0
+            for x, w in ranked:
+                seen += w
+                if seen > k:
+                    return x
+            raise AssertionError(k)
+
+        mid = size // 2
+        return (at(mid - 1) + at(mid)) / 2 if size % 2 == 0 else at(mid)
+    mean = sum(x * w for x, w in pairs) / size
+    if name == "avedev":
+        return sum(w * abs(x - mean) for x, w in pairs) / size
+    dev = sum(w * (x - mean) ** 2 for x, w in pairs)
+    least = {"skew": 3, "kurt": 4, "skew.p": 1}[name]
+    if size < least:
+        return ExcelError.DIV0
+    sd = math.sqrt(dev / (size if name == "skew.p" else size - 1))
+    if sd == 0:
+        return ExcelError.DIV0
+    power = 4 if name == "kurt" else 3
+    moment = sum(w * ((x - mean) / sd) ** power for x, w in pairs)
+    if name == "skew.p":
+        return moment / size
+    if name == "skew":
+        return size / ((size - 1) * (size - 2)) * moment
+    factor = size * (size + 1) / ((size - 1) * (size - 2) * (size - 3))
+    return factor * moment - 3 * (size - 1) ** 2 / ((size - 2) * (size - 3))
 
 
 def _criteria_range_positions(name: str, n: int) -> list[int]:

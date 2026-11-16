@@ -897,9 +897,114 @@ def test_excel_batch5(formula, value) -> None:
         assert got == value
 
 
-def test_last_used_row_of_a_whole_column() -> None:
-    """`B:B<>""` is trimmed to the used rows; `ROW(B:B)` is not. The trimmed
-    rows are FALSE, so the two still line up."""
-    cells = {(1, r): str(r) for r in (2, 6)}
-    assert _ev('=MAX((B:B<>"")*ROW(B:B))', cells) == 7.0
-    assert _ev('=ROWS((B:B<>"")*ROW(B:B))', cells) == 1048576.0
+# Array formulas over whole columns, probed against Excel 16.114 with A1:A3 =
+# 1, 2, 3, Z1 = 5, B1 `=""` and B2 `=FALSE`. gridcalc reads `A:A` over the used
+# rows only; the rows it leaves out must still count where the function sees them.
+@pytest.mark.parametrize(
+    ("formula", "value"),
+    [
+        ('=SUMPRODUCT((A:A="")*1)', 1048573.0),
+        ('=SUM((A:A="")*1)', 1048573.0),
+        ('=COUNT((A:A="")*1)', 1048576.0),
+        ("=ROWS(A:A*1)", 1048576.0),
+        ('=MAX((A:A<>"")*ROW(A:A))', 3.0),  # the last used row
+        ('=ROWS((A:A<>"")*ROW(A:A))', 1048576.0),
+        ("=SUM(ISBLANK(A:A)*1)", 1048573.0),  # a lifted function's trimmed rows
+        ("=AVERAGE(A:A*1)", 6 / 1048576),
+        ('=COUNTA(A:A&"")', 1048576.0),
+        ('=ROWS(FILTER(A:A,A:A=""))', 1048573.0),
+        ('=ROWS(FILTER(A:A,A:A<>""))', 3.0),
+        ("=MIN(A:A+5)", 5.0),
+        ('=AND(A:A="")', False),
+        ("=PRODUCT(A:A+1)", 24.0),
+        ("=SUM(A:A*1)", 6.0),
+        # Two whole columns: two million cells, counted rather than padded.
+        ('=COUNT((A:B="")*1)', 2097152.0),
+        ('=SUM((A:B="")*1)', 2097148.0),
+        ('=COUNTA(A:B&"")', 2097152.0),
+        ("=SUMSQ(Y:Z+1)", 2097187.0),
+        ("=VAR.P(A:A+1)", 1.335140768788e-5),
+        ("=VAR.S(A:A+1)", 1.335142042078e-5),
+        ("=STDEV.S((A:A>1)*1)", 0.001381067273),
+        ("=DEVSQ(A:A+1)", 13.999965667725),
+        ("=MEDIAN(A:A+1)", 1.0),
+        ("=GEOMEAN(A:A+1)", 1.000003030833),
+        ("=HARMEAN(A:A+1)", 1.000001827879),
+        ("=MODE(A:A+1)", 1.0),
+        ("=LARGE(A:A+1,4)", 1.0),
+        ("=LARGE(A:A+1,2)", 3.0),
+        ("=SKEW(Y:Z+1)", 1448.154687870378),
+        ("=KURT(Y:Z+1)", 2097152.0),
+        ("=AVEDEV(Y:Z+1)", 4.768369308294e-6),
+        ("=SKEW.P(Y:Z+1)", 1448.153652069224),
+        ("=SKEW(A:A+1)", 703.735927553369),
+        ("=KURT(A:A+1)", 524285.6632591),
+        ("=AVEDEV(A:A+1)", 1.144405905507e-5),
+        # Two arrays whose unused rows differ: a split median, a tied mode.
+        ("=MEDIAN((A:A>9)*1,Z:Z*0+1)", 0.5),
+        ("=MEDIAN(A:A*0+1,Z:Z*2)", 1.0),
+        ("=MODE(A:A*0+1,Z:Z*0)", 1.0),
+        ("=MODE(Z:Z*0,A:A*0+1)", 0.0),
+        ("=MODE.SNGL(A:A+1,Z:Z+3)", 3.0),
+        ("=MEDIAN(Y:Z+1,7)", 1.0),
+        ("=SKEW(A:A*0)", ExcelError.DIV0),
+        ('=AVERAGEA((A:B="")*1)', 0.999998092651),
+        ('=SUMPRODUCT((Y:Z="")*1,(Y:Z="")*2)', 4194302.0),
+        ("=AVEDEV(A:A*0+1,TRUE)", 0.0),
+        ('=SKEW(A:A+1,"5")', 623.185365679472),
+        ("=MEDIAN(A:A+1,TRUE)", 1.0),
+        # Lookups: the trimmed rows matter only where they hold the value sought.
+        ("=XLOOKUP(0,(A:A=2)*1,Z:Z)", 5.0),
+        ("=XLOOKUP(1,(A:A=2)*1,Z:Z)", 0.0),
+        ("=MATCH(0,(A:A=1)*1,0)", 2.0),
+        # IF, IFERROR and SWITCH keep the value of the trimmed rows.
+        ("=SUM(IF(ISBLANK(A:A),1,0))", 1048573.0),
+        ("=SUM(IFERROR(1/(A:A*1),7))", 7340012.833333333),
+        ('=SUM(IF(A:A="",ROW(A:A),0))', 549756338170.0),
+        ("=SUM(SWITCH(A:A,1,1,2))", 2097151.0),
+        # Text: "" adds nothing; anything else passes the 32767-character limit.
+        ('=TEXTJOIN(",",TRUE,A:B&"")', "1,2,FALSE,3"),
+        ('=CONCAT(A:B&"")', "12FALSE3"),
+        ('=TEXTJOIN(",",FALSE,A:A&"")', ExcelError.CALC),
+        ('=CONCAT(A1:A40000&"x")', ExcelError.CALC),
+        # An error in the unused rows propagates; only COUNT skips it.
+        ("=SUM(1/A:A)", ExcelError.DIV0),
+        ("=AVERAGE(1/A:A)", ExcelError.DIV0),
+        ("=SUMPRODUCT(1/A:A)", ExcelError.DIV0),
+        ("=SUMPRODUCT(A:A,1/Y:Y)", ExcelError.DIV0),
+        ("=MAX(1/A:A)", ExcelError.DIV0),
+        ("=CONCAT(1/A:A)", ExcelError.DIV0),
+        ("=COUNT(1/A:A)", 3.0),
+        # Past one column a function with no shortcut reads the used rows.
+        ("=INDEX(A:B*2,1,1)", 2.0),
+    ],
+)
+def test_whole_column_array_counts_its_unused_rows(formula, value) -> None:
+    cells = {(0, 0): "1", (0, 1): "2", (0, 2): "3", (25, 0): "5", (1, 0): '=""', (1, 1): "=FALSE"}
+    got = _ev(formula, cells)
+    if isinstance(value, float):
+        assert got == pytest.approx(value)
+    else:
+        assert got == value if isinstance(value, str) else got is value
+
+
+# Probed against Excel 16.114 with B1:B5 = 1..5: a trimmed array beside a
+# full-height one, such as `ROW(B:B)`, lines up with it.
+@pytest.mark.parametrize(
+    ("formula", "value"),
+    [
+        ('=SUMPRODUCT(--(B:B<>""),ROW(B:B))', 15.0),
+        ('=ROWS(FILTER(ROW(B:B),B:B<>""))', 5.0),
+        ("=XLOOKUP(3,B:B*1,ROW(B:B))", 3.0),
+        ("=XLOOKUP(3,B:B,ROW(B:B))", 3.0),
+        ('=XLOOKUP("",B:B,ROW(B:B))', ExcelError.NA),
+        ("=SUMPRODUCT(B:B,ROW(B:B))", 55.0),
+        ("=SUM(IF(ROW(B:B)>2,B:B*2,0))", 24.0),
+        ("=SUM(IFERROR(ROW(B:B)/(B:B>0),B:B*0+1))", 1048586.0),
+        ('=TEXTJOIN(",",FALSE,B:B)', ExcelError.CALC),
+        ('=LEN(TEXTJOIN(",",TRUE,B:B))', 9.0),
+    ],
+)
+def test_a_trimmed_array_lines_up_with_a_full_height_one(formula, value) -> None:
+    got = _ev(formula, {(1, r): str(r + 1) for r in range(5)})
+    assert got == pytest.approx(value) if isinstance(value, float) else got is value

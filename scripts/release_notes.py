@@ -45,6 +45,21 @@ def extract_section(changelog_text: str, version: str) -> str | None:
     return "\n".join(out) if in_section else None
 
 
+def extract_highlights(section: str) -> str | None:
+    """Return the body under `### Highlights` in ``section``, or None if absent."""
+    out: list[str] = []
+    found = False
+    for line in section.splitlines():
+        if line == "### Highlights":
+            found = True
+            continue
+        if found and line.startswith("### "):
+            break
+        if found:
+            out.append(line)
+    return "\n".join(out) if found else None
+
+
 def strip_blank_edges(text: str) -> str:
     lines = text.splitlines()
     while lines and not lines[0].strip():
@@ -78,6 +93,12 @@ def main(argv: list[str] | None = None) -> int:
         default="Changes since the last Release",
         help='Text after the leading "## " on line 1 of the output (default: "%(default)s").',
     )
+    parser.add_argument(
+        "--highlights",
+        metavar="URL",
+        help="Write only the `### Highlights` block, if the section has one, "
+        "then a link to the full changelog at URL.",
+    )
     args = parser.parse_args(argv)
 
     text = Path(args.changelog).read_text()
@@ -88,6 +109,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     body = strip_blank_edges(section)
+    highlights = extract_highlights(section) if args.highlights else None
+    if highlights is not None and highlights.strip():
+        body = (
+            f"{strip_blank_edges(highlights)}\n\nFull changelog: [CHANGELOG.md]({args.highlights})"
+        )
     Path(args.output).write_text(f"## {args.header}\n\n{body}\n")
     print(f"wrote {args.output} ({len(body.splitlines())} body lines)")
     return 0

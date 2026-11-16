@@ -210,7 +210,9 @@ jobs:
           path: dist/
 
       - name: Extract release notes
-        run: python3 scripts/release_notes.py "$GITHUB_REF_NAME" -o release-notes.md
+        run: >-
+          python3 scripts/release_notes.py "$GITHUB_REF_NAME" -o release-notes.md
+          --highlights "https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/CHANGELOG.md"
 
       # build-publish.yml uploads to the same release; whichever workflow
       # finishes first creates it.

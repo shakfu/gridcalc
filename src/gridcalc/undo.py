@@ -56,7 +56,19 @@ def _copy_names(names: list[NamedRange]) -> list[NamedRange]:
 def _copy_tables(tables: list[Table]) -> list[Table]:
     """Deep-copy the table list: structural edits move tables in place."""
     return [
-        Table(t.name, t.sheet, t.c1, t.r1, t.c2, t.r2, list(t.columns), t.header, t.totals, t.xml)
+        Table(
+            t.name,
+            t.sheet,
+            t.c1,
+            t.r1,
+            t.c2,
+            t.r2,
+            list(t.columns),
+            t.header,
+            t.totals,
+            t.xml,
+            t.style,
+        )
         for t in tables
     ]
 
@@ -208,6 +220,10 @@ class UndoManager:
         self.redo_stack = []
 
     def save_region(self, g: Grid, c1: int, r1: int, c2: int, r2: int) -> None:
+        if g.table_header_tables(c1, r1, c2, r2):
+            # A header edit renames a column and rewrites formulas on any sheet.
+            self.save_grid(g)
+            return
         e = _new_entry(g, g._active)
         _snap_region(g, e, c1, r1, c2, r2)
         self._push(e)

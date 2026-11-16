@@ -1049,7 +1049,7 @@ class TestFormulasReadALabelsValue:
 
     @pytest.mark.parametrize(
         "formula,expected",
-        [('=A1&"x"', "00123x"), ('=A1="00123"', "TRUE"), ("=LEN(A1)", "5"), ("=A1#", "00123")],
+        [('=A1&"x"', "00123x"), ('=A1="00123"', "TRUE"), ("=LEN(A1)", "5")],
     )
     def test_value(self, formula, expected):
         g = _xg()

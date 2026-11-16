@@ -33,6 +33,7 @@ from .formula.deps import (
 from .formula.errors import ExcelError as ExcelErrorType
 from .formula.errors import FormulaError, parse_error_literal
 from .formula.evaluator import MAX_ARRAY_CELLS
+from .formula.lexer import _BARE_COLUMN_RE as _BARE_NAME_RE
 from .formula.lexer import _ERROR_LIT_RE, COLRANGE, bare_span_ok, parse_number, whole_range
 from .formula.parser import parse
 from .sandbox import load_modules, validate_code, validate_formula
@@ -796,6 +797,30 @@ class Table:
         return self.r1 + self.header, self.r2 - self.totals
 
 
+def _unique_columns(names: list[str]) -> list[str]:
+    """Table column names as Excel makes them unique: a blank is the first
+    free `ColumnN`, and a repeat (in any case) takes the first free suffix
+    from 2. Earlier columns keep their names."""
+    taken = {n.casefold() for n in names if n}
+    seen: set[str] = set()
+    out = []
+    for name in names:
+        if not name:
+            k = 1
+            while f"column{k}" in taken:
+                k += 1
+            name = f"Column{k}"
+        elif name.casefold() in seen:
+            k = 2
+            while f"{name}{k}".casefold() in taken:
+                k += 1
+            name = f"{name}{k}"
+        taken.add(name.casefold())
+        seen.add(name.casefold())
+        out.append(name)
+    return out
+
+
 def _resolve_struct_refs(node: Any, resolve: Callable[[Any], Any]) -> Any:
     """``node`` with each structured reference replaced by the range ``resolve``
     gives it, so dependencies are exact: a calculated column reading
@@ -1410,6 +1435,92 @@ def _xlsx_read_cells(
 _XL_PREFIX_RE = re.compile(
     r"\"(?:[^\"]|\"\")*\"|'(?:[^']|'')*'|_xl(?:fn|ws|pm|op)\.", re.IGNORECASE
 )
+
+
+def _plain_column(name: str) -> bool:
+    """Whether Excel writes ``name`` after `@` without a second pair of brackets."""
+    return re.fullmatch(r"[A-Za-z0-9_]+", name) is not None
+
+
+def _rename_struct_items(inner: str, renames: dict[str, str], qualified: bool) -> str:
+    """The text inside a structured reference's brackets with each column in
+    ``renames`` (keyed casefolded) renamed. Items like `#Data` are kept."""
+    from .formula.lexer import escape_column
+    from .formula.parser import _unescape_column
+
+    lead, body = "", inner
+    if body.lstrip().startswith("@"):
+        k = len(body) - len(body.lstrip()) + 1
+        lead, body = body[:k], body[k:]
+    if body.strip() and not body.lstrip().startswith("["):  # one item: `T[Qty]`, `[@Qty]`
+        new = renames.get(_unescape_column(body).casefold())
+        if new is None or body.lstrip().startswith("#"):
+            return inner
+        item = escape_column(new)
+        if lead and not _plain_column(new):
+            item = f"[{item}]"  # `[@[two words]]`, as Excel writes it
+        elif not lead and not qualified and not _BARE_NAME_RE.fullmatch(f"[{item}]"):
+            item = f"[{item}]"  # `[[a*b]]`: a bare `[a*b]` would not lex
+        return lead + item
+    out: list[str] = []
+    i = 0
+    while i < len(body):
+        if body[i] != "[":
+            out.append(body[i])
+            i += 1
+            continue
+        j = i + 1
+        while j < len(body) and body[j] != "]":
+            j += 2 if body[j] == "'" else 1
+        item = body[i + 1 : j]
+        new = (
+            None if item.strip().startswith("#") else renames.get(_unescape_column(item).casefold())
+        )
+        out.append("[" + (item if new is None else escape_column(new)) + "]")
+        i = j + 1
+    return lead + "".join(out)
+
+
+def _rename_table_columns(
+    text: str, table: str, renames: dict[str, str], inside: bool
+) -> str | None:
+    """Formula ``text`` with ``table``'s columns renamed, or None if unchanged.
+    ``inside`` says the formula is in that table, where `[@Qty]` names it."""
+    from .formula import lexer as lx
+
+    try:
+        toks = lx.tokenize(text)
+    except FormulaError:
+        return None
+    key = table.casefold()
+    out, last = [], 0
+    for t in toks:
+        if t.kind != lx.STRUCT:
+            continue
+        name, inner = t.value
+        if name is None and not inside or name is not None and name.casefold() != key:
+            continue
+        start = t.pos + (1 if name is None else len(name) + 1)
+        new = _rename_struct_items(inner, renames, name is not None)
+        if new != inner:
+            out += [text[last:start], new]
+            last = start + len(inner)
+    return None if not out else "".join(out) + text[last:]
+
+
+_TABLE_FORMULA_RE = re.compile(
+    r"(<(calculatedColumnFormula|totalsRowFormula)\b[^>]*>)([^<]*)(</\2>)"
+)
+
+
+def _rename_xml_formula(m: re.Match[str], table: str, renames: dict[str, str], inside: bool) -> str:
+    import html
+
+    text = _rename_table_columns(html.unescape(m.group(3)), table, renames, inside)
+    if text is None:
+        return m.group(0)
+    body = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return m.group(1) + body + m.group(4)
 
 
 def _strip_xl_prefixes(text: str) -> str:
@@ -2617,6 +2728,24 @@ def _xlsx_write_cells(
     _core.xlsx_write(filename, cells, list(sheet_names or []))
 
 
+def _bare_struct_refs(node: Any) -> Iterator[Any]:
+    """The structured references in ``node`` that name no table: `[Qty]`."""
+    import dataclasses
+
+    from .formula.ast_nodes import StructRef as F_StructRef
+
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if type(n) is F_StructRef:
+            if n.table is None:
+                yield n
+        elif isinstance(n, tuple):
+            stack.extend(n)
+        elif dataclasses.is_dataclass(n) and not isinstance(n, type):
+            stack.extend(getattr(n, f.name) for f in dataclasses.fields(n))
+
+
 def _ast_has_pycall(node: Any) -> bool:
     from .formula.ast_nodes import (
         Apply,
@@ -3404,7 +3533,7 @@ class Grid:
 
     def validate_for_mode(self, target: Mode) -> list[str]:
         if target == Mode.PYTHON:
-            return []
+            return self._table_refs_for_python()
         from .formula import parse
         from .formula.errors import FormulaError
 
@@ -3422,6 +3551,12 @@ class Grid:
                 continue
             if target == Mode.EXCEL and _ast_has_pycall(ast):
                 errors.append(f"{cellname(c, r)}: py.* calls not allowed in EXCEL")
+            # Excel refuses a bare `[Qty]` outside a table with that column, and
+            # here it is more likely Python: `[x for x in xs]`.
+            for n in _bare_struct_refs(ast):
+                if self._table_ref(n, self._active.name, (c, r)) is ExcelErrorType.REF:
+                    errors.append(f"{cellname(c, r)}: [{n.col1}] is not a column of a table here")
+                    break
         return errors
 
     def load_requires(self, modules: list[str], allow_unknown: bool = False) -> None:
@@ -3656,7 +3791,10 @@ class Grid:
     def setcell(self, c: int, r: int, text: str) -> None:
         extra = self._spill_predirty(c, r) | self._blocked_anchors_active()
         if self._setcell_no_recalc(c, r, text) or not text:
-            self.recalc({(c, r)} | extra)
+            if self.tables and self._sync_table_headers({(c, r)}):
+                self.recalc()
+            else:
+                self.recalc({(c, r)} | extra)
         elif extra:
             self.recalc(extra)
 
@@ -3668,11 +3806,15 @@ class Grid:
         runs once instead of after every cell.
         """
         changed: set[tuple[int, int]] = set()
+        written: set[tuple[int, int]] = set()
         for c, r, text in cells:
             changed |= self._spill_predirty(c, r)
+            written.add((c, r))
             if self._setcell_no_recalc(c, r, text):
                 changed.add((c, r))
-        if changed:
+        if self.tables and self._sync_table_headers(written):
+            self.recalc()
+        elif changed:
             self.recalc(changed | self._blocked_anchors_active())
 
     def recalc(self, dirty: set[tuple[int, int]] | None = None) -> None:
@@ -3998,6 +4140,164 @@ class Grid:
             )
         return named
 
+    def table_header_tables(self, c1: int, r1: int, c2: int, r2: int) -> list[Table]:
+        """The active sheet's tables with a header cell in the rectangle."""
+        name = self._active.name
+        return [
+            t
+            for t in self.tables
+            if t.sheet == name and t.header and r1 <= t.r1 <= r2 and c1 <= t.c2 and t.c1 <= c2
+        ]
+
+    def _table_refs_for_python(self) -> list[str]:
+        """Formulas that read a table. PYTHON mode has no table syntax:
+        `T[Qty]` there is a subscript, so a switch would change what they mean."""
+        from .formula import lexer as lx
+
+        keys = {t.name.casefold() for t in self.tables}
+        errors: list[str] = []
+        for sh in self.sheets:
+            for (c, r), cl in sh._cells.items():
+                if cl.type != FORMULA or "[" not in cl.text:
+                    continue
+                try:
+                    toks = lx.tokenize(cl.text)
+                except FormulaError:
+                    continue
+                for t in toks:
+                    if t.kind != lx.STRUCT:
+                        continue
+                    name = t.value[0]
+                    if name is None:
+                        hit = any(
+                            tt.sheet == sh.name and tt.c1 <= c <= tt.c2 and tt.r1 <= r <= tt.r2
+                            for tt in self.tables
+                        )
+                    else:
+                        hit = name.casefold() in keys
+                    if hit:
+                        where = f"{sh.name}!{cellname(c, r)}"
+                        errors.append(f"{where}: table references have no meaning in PYTHON")
+                        break
+        return errors
+
+    def convert_table_refs(self) -> tuple[int, int]:
+        """Rewrite every formula's table references as the ranges they read now.
+
+        `T[Qty]` becomes `$B$2:$B$4` and `[@Qty]` the relative `B2`, so a fill
+        still moves along the rows. A reference to another sheet keeps its
+        sheet; one that resolves to an error becomes that error. Returns the
+        number of formulas rewritten and how many of them read another sheet.
+        """
+        from .formula import lexer as lx
+        from .formula.evaluator import Reference
+        from .formula.parser import _struct_ref
+
+        converted = other_sheet = 0
+        for sh in self.sheets:
+            for (c, r), cl in sh._cells.items():
+                if cl.type != FORMULA or "[" not in cl.text:
+                    continue
+                try:
+                    toks = lx.tokenize(cl.text)
+                except FormulaError:
+                    continue
+                out, last, crosses = [], 0, False
+                for t in toks:
+                    if t.kind != lx.STRUCT:
+                        continue
+                    name, inner = t.value
+                    try:
+                        node = _struct_ref(name, inner, t.pos)
+                    except FormulaError:
+                        continue
+                    ref = self._table_ref(node, sh.name, (c, r))
+                    end = t.pos + len(inner) + 2 + (len(name) if name else 0)
+                    if isinstance(ref, Reference):
+                        dollar = "" if "#this row" in node.areas else "$"
+                        a = f"{dollar}{col_name(ref.c1)}{dollar}{ref.r1 + 1}"
+                        b = f"{dollar}{col_name(ref.c2)}{dollar}{ref.r2 + 1}"
+                        text = a if a == b else f"{a}:{b}"
+                        if ref.sheet is not None and ref.sheet != sh.name:
+                            text = f"{_quote_sheet(ref.sheet)}!{text}"
+                            crosses = True
+                    else:
+                        text = ref.value
+                    out += [cl.text[last : t.pos], text]
+                    last = end
+                if out:
+                    cl.text = "".join(out) + cl.text[last:]
+                    converted += 1
+                    other_sheet += crosses
+        if converted:
+            self._dep_graph_built = False
+            self.dirty = 1
+        return converted, other_sheet
+
+    def _sync_table_headers(self, edited: set[tuple[int, int]]) -> bool:
+        """Rename the columns whose header cell was edited, as Excel does.
+
+        A blank header becomes `ColumnN`, a number its text, and a name already
+        taken (in any case) takes a suffix on the column further right: `Qty`
+        and `qty` become `Qty` and `qty2`. Formulas and names that read a
+        renamed column are rewritten. A formula typed into a header is left
+        alone. Returns whether any column was renamed."""
+        if self.mode == Mode.PYTHON:
+            return False  # no table syntax to rewrite: `T[Qty]` is Python there
+        renamed = False
+        for t in self.tables:
+            if t.sheet != self._active.name or not t.header:
+                continue
+            cols = [c for c, r in edited if r == t.r1 and t.c1 <= c <= t.c2]
+            if not cols:
+                continue
+            want = list(t.columns)
+            for c in cols:
+                cl = self._cells.get((c, t.r1))
+                if cl is not None and cl.type == FORMULA:
+                    continue
+                text = "" if cl is None else label_value(cl.text) if cl.type == LABEL else cl.text
+                want[c - t.c1] = text if text.strip() else ""
+            new = _unique_columns(want)
+            for k, name in enumerate(new):
+                cl = self._cells.get((t.c1 + k, t.r1))
+                if cl is not None and cl.type == FORMULA:
+                    continue
+                shown = "" if cl is None else label_value(cl.text) if cl.type == LABEL else cl.text
+                if shown != name or (cl is not None and cl.type != LABEL):
+                    self._setcell_no_recalc(t.c1 + k, t.r1, _label_text(name))
+            renames = {o.casefold(): n for o, n in zip(t.columns, new, strict=True) if o != n}
+            t.columns = new
+            if renames:
+                self._rewrite_table_columns(t, renames)
+                renamed = True
+        return renamed
+
+    def _rewrite_table_columns(self, t: Table, renames: dict[str, str]) -> None:
+        for sh in self.sheets:
+            for (c, r), cl in sh._cells.items():
+                if cl.type != FORMULA or "[" not in cl.text:
+                    continue
+                inside = sh.name == t.sheet and t.c1 <= c <= t.c2 and t.r1 <= r <= t.r2
+                text = _rename_table_columns(cl.text, t.name, renames, inside)
+                if text is not None:
+                    cl.text = text
+        for nr in self.names:
+            if nr.formula is not None and "[" in nr.formula:
+                text = _rename_table_columns(nr.formula, t.name, renames, False)
+                if text is not None:
+                    nr.formula = text
+        # The table parts kept for xlsx save hold calculated-column and totals
+        # formulas; Excel fills new rows from them.
+        for tt in self.tables:
+            if tt.xml is not None and "Formula" in tt.xml:
+                rename = functools.partial(
+                    _rename_xml_formula, table=t.name, renames=renames, inside=tt is t
+                )
+                tt.xml = _TABLE_FORMULA_RE.sub(rename, tt.xml)
+        self._dep_graph_built = False
+        self.dirty = 1
+
     def _table_ref(self, node: Any, sheet: str | None, cell: tuple[int, int] | None) -> Any:
         """Resolve structured reference ``node`` read from ``cell`` on ``sheet``."""
         from .formula.errors import ExcelError
@@ -4127,22 +4427,21 @@ class Grid:
 
     def _cell_spill_value(self, c: int, r: int, sheet: str | None = None) -> object:
         """Value of the `A1#` operator: the whole array a formula spilled,
-        or the plain scalar for a non-array cell."""
-        if sheet is not None and self._sheet_by_name(sheet) is None:
+        or the plain scalar for a non-array formula. A cell with no formula
+        is #REF!, as in Excel."""
+        cl = None
+        if sheet is None or self._sheet_by_name(sheet) is not None:
+            cl = self._sheet_cells(sheet).get((c, r))
+        if cl is None or cl.type != FORMULA:
             from .formula.errors import ExcelError
 
             return ExcelError.REF
-        cl = self._sheet_cells(sheet).get((c, r))
-        if cl is None or cl.type == EMPTY:
-            return None
         if cl.err is not None:
             return cl.err
         if cl.arr is not None and cl.arr:
             return Vec(cl.arr, cols=cl.arr_cols)
         if cl.matrix is not None:
             return cl.matrix
-        if cl.type == LABEL:
-            return label_value(cl.text)
         if cl.sval is not None:
             return cl.val if isinstance(cl.val, bool) else cl.sval
         return cl.val

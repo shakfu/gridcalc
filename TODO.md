@@ -9,36 +9,24 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 - [ ] **Links left at Excel's saved value.** `[1]!Name` (a name in the linked book) and a link read through `INDIRECT` or `OFFSET`. An xlsx saved from JSON has no link parts, since JSON keeps only the cached cells; `save_losses` reports it.
 
 - [ ] **Corpus mismatches still open** (`docs/dev/excel-corpus.md`). Largest first:
-  - Date text without a year (`"1/2"`) should read as that day this year, as Excel does; it gives `#VALUE!`.
-
   - A legacy formula keeps its rule only through copy and fill; pasting its text from the clipboard makes it dynamic. Excel keeps the `@` in the text instead.
 
-  - About 800 cells remain (99.0% agree, 2026-11-05). Open, each needs a decision beyond one function:
+  - About 700 cells remain (79,100 of 79,797, 99.1%, 2026-11-16). Open, each needs a decision beyond one function:
     - `YEARFRAC` (20 cells) and `WEEKNUM` (5) check basis/return_type before an error argument; the evaluator propagates the first error argument before the function runs.
-
-    - `TIMEVALUE("24:00")` is 0 and `DATEVALUE` takes hours of 24 and above; `dates.parse_time` rejects them, and it is shared with arithmetic.
-
-    - Percent text (`"1600%"`) does not convert in `_to_number` (`BASE_DECIMAL.xlsx`, 4 cells).
 
     - `ROW(B:B)` is the full column while `B:B<>""` is trimmed to the used extent, so the shapes differ (`ROW_COLUM.xlsx`).
 
-    - `INDEX(A1:A3,0.4)` (Excel `#VALUE!`), `MATCH(blank,...,-1)`, `XLOOKUP` with an omitted lookup value in binary mode, 4 `TEXT` format codes.
+    - `MATCH(blank,...,-1)`, `XLOOKUP` with an omitted lookup value in binary mode, 4 `TEXT` format codes.
 
     - Solver precision: `XIRR` (12 cells), `IRR` (12), `ODDFYIELD` (3), `CUMPRINC` (2) differ from Excel near 1e-9 relative; gridcalc's roots have the smaller residual. `tests/test_excel_saved_models.py` has a strict xfail for the `XIRR` case, 7e-9 off.
 
-    - Not engine bugs: `CHAR` of a control character (openpyxl reads `_x0001_`), `TODAY()` in templates, a `week()` UDF.
+    - Not engine bugs: `CHAR` of a control character (openpyxl reads `_x0001_`), `TODAY()` in templates, a `week()` UDF, and text saved under a non-US locale (`"23€"`, day-first `"2/3/2023"`).
 
   - `HYPGEOM.DIST`'s cumulative form sums one term per success and has no closed form here; a sample of a billion runs that long.
 
   - `BESSELJ` order 1 and up, for |x| >= 8, differs from Excel in the sixth digit. gridcalc's value is the more accurate one.
 
-  - `A1#` on a cell that does not spill should be `#REF!`.
-
-  - `BINOM.DIST` with 1E30 trials is `#NUM!` in Excel; gridcalc gives 0. Excel saved no value for 1E10, so the limit is unknown.
-
 - [ ] **Real-workbook survey gaps** (`docs/dev/excel-corpus.md`, survey section). By files: conditional formatting (178), data validation (118), comments (50), hyperlinks (30). The reference union `(A1:B2,C1:D2)` does not parse.
-
-- [ ] **Tables:** editing a header cell should rename the column and rewrite the formulas that name it, as Excel does. A bare `[Qty]` inside a table is not read; `[@Qty]` is. `Table167[[#Totals],[ERP (T12m)]]` gives `#VALUE!` (Damodaran `ERPNov26.xlsx`, `ERPbymonth.xlsx`).
 
 - [ ] **Evaluator speed on large array formulas.** Sheetpedia `802559d...` holds 7,676 copies of `AGGREGATE(15,6,ROW(H2:H10000)-ROW(H2)+1/(B2:B10000=Q$1)/...)`: about 380M element operations. A full recalc takes 232 s and matches Excel in every cell; under the 30 s limit most give `#CALC!`. At about 0.6 us per element no Python loop fits, so this needs native or vectorised element-wise operators. The C++ entry under Low weighs that.
 

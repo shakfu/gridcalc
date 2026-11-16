@@ -200,3 +200,203 @@ def test_column_names_keep_their_spaces():
     assert parse("=T[the two ]").col1 == "the two "
     assert parse("=T[ @Qty]").areas == ("#this row",)
     assert parse("=SUM(T[ ])").args[0].col1 is None
+
+
+# Header edits, as Excel 16.114 makes them (probed 2026-11-16).
+
+
+def _grid():
+    """Table `T` on A1:D3 (Item, Qty, Price, Cost) with `Cost` calculated by a
+    bare and a `@` reference, and formulas outside it on a second sheet."""
+    from gridcalc.engine import Mode, Table
+
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    rows = [
+        ("Item", "Qty", "Price", "Cost"),
+        ("a", "2", "10", "=[@Qty]*[@Price]"),
+        ("b", "3", "20", "=[@Qty]*[@[Price]]"),
+    ]
+    g.setcells_bulk([(c, r, v) for r, row in enumerate(rows) for c, v in enumerate(row)])
+    g.tables.append(Table("T", g._active.name, 0, 0, 3, 2, ["Item", "Qty", "Price", "Cost"]))
+    g.setcell(5, 0, "=SUM(T[Qty])")
+    g.setcell(5, 1, "=SUM(T[[#Headers],[Qty]:[Price]])")
+    g.setcell(5, 2, '="T[Qty]"')
+    g.recalc()
+    return g
+
+
+def _text(g, c, r):
+    return g.cell(c, r).text
+
+
+def test_editing_a_header_renames_the_column_and_its_references():
+    g = _grid()
+    g.setcell(1, 0, "Amount")
+    assert g.tables[0].columns == ["Item", "Amount", "Price", "Cost"]
+    assert _text(g, 5, 0) == "=SUM(T[Amount])"
+    assert _text(g, 5, 1) == "=SUM(T[[#Headers],[Amount]:[Price]])"
+    assert _text(g, 3, 1) == "=[@Amount]*[@Price]"
+    assert _text(g, 5, 2) == '="T[Qty]"'  # text is not a reference
+    assert g.cell(5, 0).val == 5.0 and g.cell(3, 2).val == 60.0
+
+
+@pytest.mark.parametrize(
+    ("col", "typed", "columns"),
+    [
+        (2, "qty", ["Item", "Qty", "qty2", "Cost"]),  # the right-hand duplicate takes the suffix
+        (0, "Price", ["Price", "Qty", "Price2", "Cost"]),
+        (2, "", ["Item", "Qty", "Column1", "Cost"]),
+        (2, "5", ["Item", "Qty", "5", "Cost"]),
+    ],
+)
+def test_header_names_stay_unique(col, typed, columns):
+    g = _grid()
+    g.setcell(col, 0, typed)
+    assert g.tables[0].columns == columns
+    assert [g.cell(c, 0).text.lstrip('"') for c in range(4)] == columns
+    assert g.cell(2, 0).type == 2  # LABEL: a number typed into a header becomes text
+    price = columns[2]
+    assert _text(g, 5, 1) == f"=SUM(T[[#Headers],[Qty]:[{price}]])"
+    assert g.cell(3, 2).val == 60.0
+
+
+@pytest.mark.parametrize(
+    ("name", "qualified", "at"),
+    [
+        ("a*b", "T[a*b]", "[@[a*b]]"),
+        ("two words", "T[two words]", "[@[two words]]"),
+        ("x [y] #z 'q", "T[x '[y'] '#z ''q]", "[@[x '[y'] '#z ''q]]"),
+    ],
+)
+def test_renamed_columns_are_spelled_as_excel_writes_them(name, qualified, at):
+    g = _grid()
+    g.setcell(1, 0, name)
+    assert _text(g, 5, 0) == f"=SUM({qualified})"
+    assert _text(g, 3, 1) == f"={at}*[@Price]"
+    assert g.cell(5, 0).val == 5.0 and g.cell(3, 1).val == 20.0
+
+
+def test_a_header_rename_rewrites_names_and_other_sheets_and_undoes():
+    from gridcalc.engine import NamedRange
+
+    g = _grid()
+    g.names.append(NamedRange("TotalQty", 0, 0, 0, 0, formula="=SUM(T[Qty])"))
+    g.add_sheet("Other")
+    g.set_active("Other")
+    g.setcell(0, 0, "=T[[#Headers],[Qty]]&TotalQty")
+    g.set_active(g.sheets[0].name)
+    undo = UndoManager()
+    undo.save_cell(g, 1, 0)
+    g.setcell(1, 0, "Units")
+    assert g.names[0].formula == "=SUM(T[Units])"
+    assert g.sheets[1]._cells[(0, 0)].text == "=T[[#Headers],[Units]]&TotalQty"
+    assert g.sheets[1]._cells[(0, 0)].sval == "Units5"
+    undo.undo(g)
+    assert g.tables[0].columns == ["Item", "Qty", "Price", "Cost"]
+    assert g.names[0].formula == "=SUM(T[Qty])"
+    assert g.sheets[1]._cells[(0, 0)].text == "=T[[#Headers],[Qty]]&TotalQty"
+
+
+def test_a_header_rename_reaches_the_saved_table_part(tmp_path):
+    g, _ = _book(tmp_path, totals=True)
+    g.set_active("Data")
+    g.setcell(1, 0, "Units")
+    out = tmp_path / "renamed.xlsx"
+    assert g.xlsxsave(str(out)) == 0
+    wb = openpyxl.load_workbook(str(out))
+    t = wb["Data"].tables["Sales"]
+    assert [c.name for c in t.tableColumns] == ["Item", "Units", "Price"]
+    assert wb["Report"]["A1"].value == "=SUM(Sales[Units])"
+    assert wb["Data"]["B5"].value == "=SUBTOTAL(109,Sales[Units])"
+
+
+def test_loading_a_file_renames_nothing(tmp_path):
+    g, _ = _book(tmp_path)
+    assert g.tables[0].columns == ["Item", "Qty", "Price"]
+    assert g._sheet_cells("Report")[(0, 0)].text == "=SUM(Sales[Qty])"
+
+
+def test_a_bare_column_reference_reads_its_own_table():
+    g = _grid()
+    g.setcell(3, 1, "=SUM([Qty])")
+    assert g.cell(3, 1).val == 5.0
+    g.setcell(7, 0, "=SUM([Qty])")  # outside any table
+    assert g.cell(7, 0).err == ExcelError.REF
+
+
+def test_a_header_rename_rewrites_the_formulas_kept_in_the_table_part():
+    g = _grid()
+    g.tables[0].xml = (
+        '<table><tableColumns count="4"><tableColumn id="1" name="Item"/>'
+        '<tableColumn id="2" name="Qty"/><tableColumn id="3" name="Price"/>'
+        '<tableColumn id="4" name="Cost"><calculatedColumnFormula>T[[#This Row],[Qty]]&amp;"&lt;"'
+        "</calculatedColumnFormula></tableColumn></tableColumns></table>"
+    )
+    g.setcell(1, 0, "Units")
+    assert '<calculatedColumnFormula>T[[#This Row],[Units]]&amp;"&lt;"<' in g.tables[0].xml
+
+
+def test_a_mode_switch_flags_a_bare_column_that_names_no_table():
+    """`[x for x in xs]` lexes as a bare column; outside a table it is Python."""
+    from gridcalc.engine import Mode
+
+    g = _grid()
+    g.setcell(3, 1, "=SUM([Qty])")
+    g.setcell(7, 0, "=[x for x in xs]")
+    errs = g.validate_for_mode(Mode.HYBRID)
+    assert errs == ["H1: [x for x in xs] is not a column of a table here"]
+
+
+def test_python_mode_has_no_table_syntax():
+    """`T[Qty]` is a Python subscript in PYTHON mode: no switch, no rewrite."""
+    from gridcalc.engine import Mode
+
+    g = _grid()
+    errs = g.validate_for_mode(Mode.PYTHON)
+    assert errs[0] == "Sheet1!D2: table references have no meaning in PYTHON"
+    assert len(errs) == 4  # D2, D3, F1, F2; `="T[Qty]"` is text
+    g.mode = Mode.PYTHON
+    g.setcell(5, 0, "=T[Qty]")
+    g.setcell(1, 0, "Units")
+    assert g.tables[0].columns == ["Item", "Qty", "Price", "Cost"]
+    assert g.cell(5, 0).text == "=T[Qty]"
+
+
+def test_mode_python_refuses_table_references_and_offers_to_convert():
+    from gridcalc import commands
+    from gridcalc.engine import Mode
+
+    g = _grid()
+    undo = UndoManager()
+    res = commands.run("mode", g, undo, ["python"])
+    assert not res.ok and g.mode == Mode.EXCEL
+    assert "`:mode python convert`" in res.message and "4 formulas" in res.message
+
+    res = commands.run("mode", g, undo, ["python", "convert"])
+    assert res.ok and g.mode == Mode.PYTHON
+    assert res.message == "mode: python; 4 formulas now read ranges"
+    assert [g.cell(c, r).text for c, r in ((3, 1), (3, 2), (5, 0), (5, 1))] == [
+        "=B2*C2",
+        "=B3*C3",
+        "=SUM($B$2:$B$3)",
+        "=SUM($B$1:$C$1)",
+    ]
+    assert g.cell(3, 2).val == 60.0 and g.cell(5, 0).val == 5.0
+    assert g.cell(5, 2).text == '="T[Qty]"'
+
+    undo.undo(g)
+    assert g.mode == Mode.EXCEL and g.cell(5, 0).text == "=SUM(T[Qty])"
+
+
+def test_converting_a_reference_to_another_sheet_says_python_cannot_read_it():
+    from gridcalc import commands
+
+    g = _grid()
+    g.add_sheet("Other")
+    g.set_active("Other")
+    g.setcell(0, 0, "=SUM(T[Price])")
+    res = commands.run("mode", g, UndoManager(), ["python", "convert"])
+    assert res.message.endswith("1 from another sheet, which PYTHON mode cannot read")
+    assert g.sheets[1]._cells[(0, 0)].text == "=SUM(Sheet1!$C$2:$C$3)"

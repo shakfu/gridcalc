@@ -35,7 +35,7 @@ from .ast_nodes import (
 )
 from .deps import resize_sum_range
 from .errors import ExcelError, explain, first_error
-from .lexer import parse_number
+from .lexer import parse_number_text
 
 Value = Any
 
@@ -321,6 +321,18 @@ def _deref(v: Any, env: Env) -> Any:
     return _materialize_ref(v, env) if isinstance(v, Reference) else v
 
 
+def text_number(v: str) -> float | None:
+    """The number text ``v`` reads as in arithmetic, or None. Date or time
+    text reads as its serial: `"2024-01-10"+1` is 45302. Spaces around a
+    number are ignored; around a date they are not."""
+    n = parse_number_text(v.strip())
+    if n is None and v == v.strip():
+        n = parse_date(v)
+        if n is None:
+            n = parse_time(v)
+    return n
+
+
 def _to_number(v: object) -> float | ExcelError:
     if isinstance(v, ExcelError):
         return v
@@ -332,13 +344,7 @@ def _to_number(v: object) -> float | ExcelError:
         return float(v)
     if isinstance(v, str):
         # Excel: `=""+1` is #VALUE!; an empty *cell* is None, handled above.
-        # Date or time text reads as its serial: `="2024-01-10"+1` is 45302.
-        # Spaces around a number are ignored; around a date they are not.
-        n = parse_number(v.strip())
-        if n is None and v == v.strip():
-            n = parse_date(v)
-            if n is None:
-                n = parse_time(v)
+        n = text_number(v)
         return ExcelError.VALUE if n is None else n
     return ExcelError.VALUE
 

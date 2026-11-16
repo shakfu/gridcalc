@@ -8,6 +8,14 @@
 
 - **A formula that reads another workbook recalculates from the values the xlsx cached for it.** Excel stores each linked sheet's referenced cells in `xl/externalLinks`, and opening a file without updating links reads those. gridcalc now does the same, so `=[1]Data!A1*B2` follows `B2`. Before, it kept the value Excel saved. A formula keeps that saved value when the cache cannot answer it: the sheet has no cached cells (`refreshError`), or it uses `INDIRECT` or `OFFSET`. JSON saves the cache, and an xlsx save in EXCEL mode writes the link parts back as read. JSON keeps no link parts, so `save_losses` warns before an xlsx save of a linked workbook loaded from JSON. On the 62 Excel-saved Sheetpedia files with links, 15,138 of 19,233 link formulas now recalculate, and 2 differ from Excel, both in `TEXT` minutes.
 
+- **Editing a table's header cell renames the column, as in Excel.** Every formula and defined name that reads the column is rewritten, on any sheet, along with the calculated-column and totals formulas kept for xlsx save. Excel's naming rules apply: a blank header becomes `Column1`, a number becomes text, and a name already taken in any case takes a suffix on the column further right (`Qty`, `qty2`). A rename is one undo step. A formula typed into a header is left as it is. Loading a file renames nothing.
+
+  PYTHON mode has no table syntax: `T[Qty]` is a Python subscript there, so a header edit renames nothing. `:mode python` is refused while a formula reads a table, and `:mode python convert` rewrites those references as the ranges they read now (`$B$2:$B$4`; `[@Qty]` as the relative `B2`) and switches. Refusal is the default because a range does not grow with its table. PYTHON mode has no references to other sheets, so the message counts the converted formulas that read one.
+
+  PYTHON mode has no table syntax: `T[Qty]` there is a Python subscript. A header edit in PYTHON mode renames nothing, and `:mode python` is refused while a formula reads a table.
+
+- **A bare `[Qty]` reads the formula's own table**, as `[@Qty]` already did. A name with a character Excel requires escaping, such as `*` or `.`, still does not parse. Switching to EXCEL or HYBRID mode flags a bare column that names no table column, since `[x for x in xs]` now parses as one.
+
 ### Fixed
 
 - **A file changed after its trust prompt no longer loads.** The prompt reads the file, then the load reads it again, so a file rewritten while the prompt waited ran code and PYTHON formulas nobody saw. Approval now carries a SHA-256 of the bytes shown, and the load refuses other bytes. A hash over the whole file covers the formulas as well as the code block; binding only the code would have left PYTHON formulas unchecked. A caller that builds its own `LoadPolicy` passes `digest=FileInfo.digest`; a policy without one checks nothing.
@@ -21,6 +29,16 @@
 - **A time rounds to the precision its format shows, as in Excel.** `TEXT(8.493055555547471,"h"" hrs ""m"" mins""")` is 11:49:59.99999 and showed `11 hrs 49 mins`; Excel shows `11 hrs 50 mins`. Each field truncated the fraction of a second, so rounding never carried into minutes, hours or the date. `ss.0` to `ss.000` now show fractional seconds, which were printed as `.0`.
 
 - **Array `IF`, `IFERROR` and `IFNA` take linear time.** Each element of the condition copied the whole branch array, so `SUM(IF(B1:B40000>3,B1:B40000,0))` took 3.7 s; it now takes 34 ms.
+
+- **Binomial functions stay accurate at large trial counts.** `BINOM.DIST(5E8,1E9,0.5,TRUE)` was -1.79, and the CDF was already wrong at 2E6 trials (0.49998 for 0.50028). `_incbeta`'s continued fraction stops after 200 steps and needs about sqrt(n). The CDF now sums the shorter tail from k by the PMF ratio, O(sd) terms, and the PMF uses Loader's saddle-point form; the `lgamma` form lost 2e-6 relative at 1E9 trials. `BINOM.INV` steps from the normal quantile instead of summing from 0, so 2E9 trials no longer hangs. All three refuse 2^31-1 trials or more with `#NUM!`, as Excel does.
+
+- **Text converts to a number as Excel converts it.** Arithmetic, `VALUE` and criteria now share one reading of text: `"1,600"`, `"$5"`, `"(5)"`, `"5%"` and `"(5%)"` are numbers. Hours may pass 23 (`"25:00"` is 1.0417), `TIMEVALUE` keeps only the fraction, and spaces around `/`, `-` and `:` are ignored. A date without a year is in the current year, unless its second number cannot be a day of that month: then it is a year, so `"1/40"` is 1940-01-01. An equality criterion that reads as a number also matches text with the same value, so `COUNTIF(r,"$0.05")` counts a text `"5%"`. Rules probed against Excel 16.114; the corpus gained 36 cells and lost none.
+
+- **`_copy_tables` keeps a table's style across undo.** It dropped the style, so a save after undoing a table edit wrote `TableStyleMedium2`.
+
+- **`A1#` on a cell without a formula is `#REF!`, as in Excel.** It returned the cell's value. A formula's scalar result is still returned.
+
+- **`INDEX` with a fractional index that truncates to 0 is `#VALUE!`.** `INDEX(A1:A3,0.4)` returned A1. A column index of 0.4 is `#VALUE!` only where 0 would select a row of several cells.
 
 ### Changed
 

@@ -86,6 +86,19 @@ _NUMBER_RE = re.compile(r"\d+(\.\d*)?([eE][+-]?\d+)?|\.\d+([eE][+-]?\d+)?", re.A
 _SIGNED_NUMBER_RE = re.compile(r"[+-]?(?:" + _NUMBER_RE.pattern + ")", re.ASCII)
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _SEGMENT_RE = re.compile(r"[A-Za-z0-9_]+")
+# A bare `[Qty]`: a column of the formula's own table. Excel requires the
+# characters excluded here to be escaped or in a second pair of brackets, so
+# `[x*2 for x in xs]` and `[Book1.xlsx]` are not column names.
+_BARE_COLUMN_RE = re.compile(r"\[(?:[^\[\]#'\"\t\n\r,:.{}$^&*+=\-<>/]|'.)+\](?![A-Za-z0-9_'!])")
+_COLUMN_ESCAPE_RE = re.compile(r"([\[\]#'])")
+
+
+def escape_column(name: str) -> str:
+    """A table column name as written inside brackets: `'` before `[`, `]`,
+    `#` and `'`, as Excel writes it."""
+    return _COLUMN_ESCAPE_RE.sub(r"'\1", name)
+
+
 # An unquoted sheet in another workbook, `[1]Data` in `[1]Data!A1`.
 _EXTSHEET_RE = re.compile(r"\[\d+\][A-Za-z_][A-Za-z0-9_.]*(?=!)")
 _ERROR_LIT_RE = re.compile(r"#(?:DIV/0!|N/A|NAME\?|REF!|VALUE!|NUM!|NULL!)", re.IGNORECASE)
@@ -99,6 +112,50 @@ def parse_number(text: str) -> float | None:
         return None
     v = float(text)
     return None if math.isinf(v) else v
+
+
+# Text Excel coerces to a number: an optional sign and `$`, in either order,
+# then digits with comma groups of three. Probed against Excel 16.114.
+_NUMBER_TEXT_RE = re.compile(
+    r"(?:([+-])\s*)?(?:\$\s*)?(?:([+-])\s*)?"
+    r"((?:\d{1,3}(?:,\d{3})+|\d*)(?:\.\d*)?(?:[eE][+-]?\d+)?)",
+    re.ASCII,
+)
+
+
+def parse_number_text(text: str) -> float | None:
+    """The number text ``text`` spells as Excel coerces it, or None.
+
+    Beyond `parse_number`: `1,600`, `$5`, `-$5`, `(5)` for -5, and one `%`
+    at either end (`5%`, `%5`, `(5)%`). ``text`` is already stripped."""
+    v = parse_number(text)
+    if v is not None or not text:
+        return v
+    pct = text[0] == "%" or text[-1] == "%"
+    if pct:
+        text = (text[1:] if text[0] == "%" else text[:-1]).strip()
+    neg = False
+    if text.startswith("$(") or text.startswith("("):
+        if not text.endswith(")"):
+            return None
+        neg, text = True, text[text.index("(") + 1 : -1].strip()
+        if text.startswith("$"):
+            text = text[1:].lstrip()
+        if not pct and text and text[-1] == "%":  # `(5%)`
+            pct, text = True, text[:-1].rstrip()
+    if pct and "$" in text:
+        return None  # `$5%`
+    m = _NUMBER_TEXT_RE.fullmatch(text)
+    if m is None or not any(ch.isdigit() for ch in m.group(3)) or (m.group(1) and m.group(2)):
+        return None
+    if neg and (m.group(1) or m.group(2)):
+        return None  # `(-5)`
+    v = float(m.group(3).replace(",", ""))
+    if math.isinf(v):
+        return None
+    if (m.group(1) or m.group(2)) == "-" or neg:
+        v = -v
+    return v / 100 if pct else v
 
 
 def _digits15(text: str) -> str | None:
@@ -338,10 +395,9 @@ def tokenize(text: str) -> list[Token]:
             tokens.append(Token(IDENT, m.group(0), pos))  # as its quoted form
             i = m.end()
             continue
-        # `[@Amount]`: a structured reference into the formula's own table.
-        # A bare `[Amount]` is not one here: `[x for x in xs]` is Python, and
-        # Excel writes the table name into files anyway.
-        if ch == "[" and s[i + 1 : i + 2] in ("@", "#", "["):
+        # `[@Amount]`, `[Amount]`: a structured reference into the formula's
+        # own table. Excel writes the table name into files; these are typed.
+        if ch == "[" and (s[i + 1 : i + 2] in ("@", "#", "[") or _BARE_COLUMN_RE.match(s, i)):
             end = _bracket_end(s, i)
             tokens.append(Token(STRUCT, (None, s[i + 1 : end - 1]), pos))
             i = end

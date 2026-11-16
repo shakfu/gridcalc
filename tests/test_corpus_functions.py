@@ -466,3 +466,148 @@ def test_second_engine_findings(formula, value) -> None:
         assert got is value
     else:
         assert got == (pytest.approx(value) if isinstance(value, float) else value)
+
+
+# Probed against Excel 16.114 (2026-11-16). A1:A3 hold 1, 2, 3; Z1 holds 5,
+# Y1 `=5`, W1 `=SEQUENCE(2)`.
+@pytest.mark.parametrize(
+    ("formula", "value"),
+    [
+        # Number text: grouping, currency, parentheses, percent.
+        ('="1,600"*1', 1600.0),
+        ('="1,600.5%"*1', 16.005),
+        ('="$1,600.50"*1', 1600.5),
+        ('="-$5"*1', -5.0),
+        ('="$-5"*1', -5.0),
+        ('="($5)"*1', -5.0),
+        ('="$(5)"*1', -5.0),
+        ('="(5%)"*1', -0.05),
+        ('="(5)%"*1', -0.05),
+        ('="%5"*1', 0.05),
+        ('="50 %"*1', 0.5),
+        ('="5e2%"*1', 5.0),
+        ('="1600%"*1', 16.0),
+        ('="5%%"*1', ExcelError.VALUE),
+        ('="$5%"*1', ExcelError.VALUE),
+        ('="(-5)"*1', ExcelError.VALUE),
+        ('="1,6"*1', ExcelError.VALUE),
+        ('="5$"*1', ExcelError.VALUE),
+        ('=VALUE("(5)")', -5.0),
+        ('=VALUE("24:00")', 1.0),
+        ('=VALUE("1E400")', ExcelError.VALUE),
+        # Hours past 23.
+        ('="25:00"+0', 25 / 24),
+        ('="9999:00"+0', 9999 / 24),
+        ('="10000:00"+0', ExcelError.VALUE),
+        ('="24:59"+0', (24 * 60 + 59) / 1440),
+        ('="23:99"+0', (23 * 60 + 99) / 1440),
+        ('="24:99"+0', ExcelError.VALUE),
+        ('="0:30 AM"+0', 30 / 1440),
+        ('="13:00 PM"+0', ExcelError.VALUE),
+        ('=TIMEVALUE("24:00")', 0.0),
+        ('=TIMEVALUE("48:30")', 30 / 1440),
+        ('=TIMEVALUE("1/1/2020 25:00")', pytest.approx(1 / 24, abs=1e-9)),
+        ('=TIMEVALUE("1/1/2020")', 0.0),
+        ('=TIMEVALUE("1600%")', ExcelError.VALUE),
+        ('=DATEVALUE("1/1/2020 25:00")', 43832.0),
+        ('=DATEVALUE("10:30")', 0.0),
+        ('="4 : 35"+0', 275 / 1440),  # spaces around a separator are ignored
+        ('="2026 - 01 - 01"+0', 46023.0),
+        ('="10 :30 PM"+0', 0.9375),
+        ('="26-01-01"+0', ExcelError.VALUE),
+        # A year-less date whose second number cannot be the day is a year.
+        ('="1/40"+0', 14611.0),
+        ('="Jan-40"+0', 14611.0),
+        ('="Jan 40"+0', 14611.0),
+        ('="1/32"+0', 11689.0),
+        ('="4/31"+0', 11414.0),
+        ('="12/99"+0', 36495.0),
+        ('="1/0"+0', 36526.0),
+        ('="1/2026"+0', 46023.0),
+        ('="Jan 2, 26"+0', 46024.0),
+        ('="13/2"+0', ExcelError.VALUE),
+        ('="0/5"+0', ExcelError.VALUE),
+        ('="1/100"+0', ExcelError.VALUE),
+        ('="1 2"+0', ExcelError.VALUE),
+        ('="40 Jan"+0', ExcelError.VALUE),
+        ('="30-Feb"+0', ExcelError.VALUE),
+        # INDEX: a fraction that truncates to 0.
+        ("=INDEX(A1:A3,0.4)", ExcelError.VALUE),
+        ("=INDEX(A1:A3,-0.4)", ExcelError.VALUE),
+        ("=INDEX(A1:A3,1.9)", 1.0),
+        ("=INDEX(A1:A3,1,0.4)", 1.0),
+        ("=INDEX(A1:C1,0.4)", ExcelError.VALUE),
+        ("=INDEX(A1:C1,1,0.4)", ExcelError.VALUE),
+        ("=ROWS(INDEX(A1:B3,0,0.4))", 3.0),
+        # `X#` needs a formula at X.
+        ("=ROWS(Z1#)", ExcelError.REF),
+        ("=ROWS(Y1#)", 1.0),
+        ("=ROWS(W1#)", 2.0),
+        ("=ROWS(W2#)", ExcelError.REF),
+        ("=ROWS(U1#)", ExcelError.REF),
+        # Binomial: Excel refuses 2^31-1 trials; large n stays accurate.
+        ("=BINOM.DIST(1,2147483646,1E-9,FALSE)", 0.250778076933),
+        ("=BINOM.DIST(1,2147483647,0.5,FALSE)", ExcelError.NUM),
+        ("=BINOM.DIST(1,1E30,1E-30,FALSE)", ExcelError.NUM),
+        ("=BINOM.DIST.RANGE(2147483647,0.5,1)", ExcelError.NUM),
+        ("=BINOM.INV(2147483647,0.5,0.5)", ExcelError.NUM),
+        ("=BINOM.INV(2147483646,0.5,0.5)", 1073741823.0),
+        ("=BINOM.DIST(5E8,1E9,0.5,TRUE)", 0.500012615663),
+        ("=BINOM.DIST(5E8,1E9,0.5,FALSE)", 2.523132521389e-5),
+        ("=BINOM.DIST(1,1E9,1E-9,FALSE)", 0.367879441355),
+        ("=BINOM.DIST(3,2^30,1E-9,TRUE)", 0.97615328355),
+    ],
+)
+def test_excel_probed(formula, value) -> None:
+    cells = {(0, 0): "1", (0, 1): "2", (0, 2): "3", (2, 0): "x"}
+    cells |= {(25, 0): "5", (24, 0): "=5", (22, 0): "=SEQUENCE(2)"}
+    got = _ev(formula, cells)
+    if isinstance(value, ExcelError):
+        assert got is value
+    elif isinstance(value, float):
+        assert got == pytest.approx(value, rel=1e-11)
+    else:
+        assert got == value
+
+
+@pytest.mark.parametrize(
+    ("text", "month", "day"),
+    [
+        ("1/2", 1, 2),
+        ("1-2", 1, 2),
+        ("01/02", 1, 2),
+        ("Jan 2", 1, 2),
+        ("2-Jan", 1, 2),
+        ("2 January", 1, 2),
+        ("Sept 2", 9, 2),
+        ("12/31", 12, 31),
+    ],
+)
+def test_yearless_date_is_this_year(text, month, day) -> None:
+    import datetime as dt
+
+    from gridcalc.dates import to_serial
+
+    assert _ev(f'="{text}"+0') == to_serial(dt.date(dt.date.today().year, month, day))
+
+
+def test_yearless_feb_29() -> None:
+    """Excel 16.114 in 2026 reads `2/29` as 2029-02-01: no Feb 29, so 29 is the year."""
+    import calendar
+    import datetime as dt
+
+    from gridcalc.dates import to_serial
+
+    y = dt.date.today().year
+    want = dt.date(y, 2, 29) if calendar.isleap(y) else dt.date(2029, 2, 1)
+    assert _ev('="2/29"+0') == to_serial(want)
+
+
+def test_binom_cdf_is_accurate_at_large_n() -> None:
+    """At p = 1/2 and k = n/2 the CDF is exactly 1/2 + pmf/2. The continued
+    fraction this replaced gave 0.49998 at n = 2e6 and -1.79 at n = 1e9."""
+    from gridcalc.libs.xlsx import _binom_cdf, _binom_pmf
+
+    for n in (2_000, 2_000_000, 1_000_000_000):
+        k = n // 2
+        assert _binom_cdf(k, n, 0.5) == pytest.approx(0.5 + _binom_pmf(k, n, 0.5) / 2, rel=1e-13)

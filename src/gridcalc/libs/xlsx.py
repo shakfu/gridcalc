@@ -34,6 +34,7 @@ from ..dates import (
     LEAP_BUG_SERIAL,
     from_serial,
     parse_date,
+    parse_time,
     to_serial,
 )
 from ..engine import Vec, _is_ndarray, _is_num, _scalar_or_error, _vec_per_elem
@@ -46,6 +47,7 @@ from ..formula.evaluator import (
     _to_string,
     number_text,
     sig15,
+    text_number,
 )
 from ..formula.lexer import parse_number
 
@@ -124,16 +126,11 @@ def _parse_criteria(criteria: Any) -> Any:
     for prefix, op in ops:
         if s.startswith(prefix):
             raw = s[len(prefix) :]
-            try:
-                return _NumCriterion(op, float(raw))
-            except ValueError:
-                # A date criterion (`">1/1/2020"`) is a numeric comparison
-                # wearing a date: cells hold serials, so the operand has to
-                # become one or the comparison silently degrades to string
-                # ordering, where "9/1/2020" sorts after "10/1/2020".
-                serial = parse_date(raw)
-                if serial is not None:
-                    return _NumCriterion(op, serial)
+            # A date criterion (`">1/1/2020"`) is a numeric comparison: cells
+            # hold serials, and as text "9/1/2020" sorts after "10/1/2020".
+            n = text_number(raw.strip())
+            if n is not None:
+                return _NumCriterion(op, n)
             if op is operator.eq:
                 regex = _wildcard_regex(raw)
                 return lambda x, r=regex: bool(r.match(str(x))) if x is not None else False
@@ -142,17 +139,13 @@ def _parse_criteria(criteria: Any) -> Any:
                 return lambda x, r=regex: not bool(r.match(str(x))) if x is not None else True
             return lambda x, o=op, v=raw: _crit_compare(o, x, v)
 
-    # No operator prefix -- equality with wildcards if non-numeric.
-    try:
-        return _NumCriterion(operator.eq, float(s))
-    except ValueError:
-        # A bare date, `COUNTIF(range, "2020-01-01")`, is equality against
-        # that day's serial rather than a text match against "2020-01-01".
-        day = parse_date(s)
-        if day is not None:
-            return _NumCriterion(operator.eq, day)
-        regex = _wildcard_regex(s)
-        return lambda x, r=regex: bool(r.match(str(x))) if x is not None else False
+    # No operator prefix -- equality with wildcards if non-numeric. A bare
+    # date, `"2020-01-01"`, is equality against that day's serial.
+    n = text_number(s)
+    if n is not None:
+        return _NumCriterion(operator.eq, n)
+    regex = _wildcard_regex(s)
+    return lambda x, r=regex: bool(r.match(str(x))) if x is not None else False
 
 
 def _special_criterion(s: str) -> Any:
@@ -186,7 +179,8 @@ class _NumCriterion:
 
     Only numbers match, with two exceptions from Excel (`crit-1`..`crit-9` in
     docs/dev/excel-check.md). An equality criterion also matches text that
-    reads as its number: a text "3" counts for `3` and `"3"`, not for `">1"`.
+    reads as its number: a text "3" counts for `3` and `"3"`, not for `">1"`;
+    a text "5%" counts for `"$0.05"`.
     A `"<>"` criterion matches everything that is not a number, blanks and a
     text "3" included.
     """
@@ -201,7 +195,7 @@ class _NumCriterion:
 
     def __call__(self, x: Any) -> bool:
         if isinstance(x, str) and self.text:
-            n = parse_number(x.strip())
+            n = text_number(x)
             return n is not None and sig15(n) == self.v
         if isinstance(x, bool) or not isinstance(x, (int, float)):
             return self.others
@@ -594,6 +588,10 @@ def INDEX(rng: Vec, row: int, col: int | None = None, area: int = 1) -> Any:
         return ExcelError.VALUE
     if int(area) != 1:  # one area only: a union reference does not parse
         return ExcelError.REF
+    # A fraction that truncates to 0 is not 0 (probed): a row is #VALUE!, a
+    # column only when it would select a whole row of several cells.
+    if (r == 0 and float(row) != 0) or (c == 0 and float(col or 0) != 0 and r and (cols or 0) > 1):
+        return ExcelError.VALUE
     if cols is None or cols <= 0:
         # Treat as 1D: single positional index. row=0, col=0 -> whole array.
         if r == 0 and c == 0:
@@ -799,25 +797,15 @@ def CODE(text: str) -> int:
 
 
 def VALUE(text: Any) -> float | ExcelError:
-    """=VALUE("$1,000") -> 1000; VALUE("50%") -> 0.5."""
+    """=VALUE("$1,000") -> 1000; VALUE("50%") -> 0.5. The text a formula's
+    arithmetic would coerce, so dates and times read too."""
     if text is None:
         return 0.0
     if isinstance(text, bool):
         return ExcelError.VALUE
     if isinstance(text, (int, float)):
         return float(text)
-    s = str(text).strip().replace(",", "")
-    pct = s.endswith("%")
-    s = s.removesuffix("%")
-    if s.startswith(("$", "-$")):
-        s = s.replace("$", "", 1)
-    try:
-        v = float(s)
-    except ValueError:
-        return ExcelError.VALUE
-    if not math.isfinite(v):
-        return ExcelError.VALUE
-    return v / 100 if pct else v
+    return _to_number(str(text).strip())
 
 
 def TEXT(value: Any, fmt: str) -> str | ExcelError:
@@ -916,30 +904,28 @@ def TIME(hour: int, minute: int, second: int) -> float | ExcelError:
 
 
 def DATEVALUE(text: str) -> float | ExcelError:
-    """=DATEVALUE("2026-05-05") -> serial. Tries common ISO formats."""
+    """=DATEVALUE("2026-05-05") -> serial. A time part is dropped."""
     s = str(text).strip()
     n = parse_date(s)
     if n is not None:
-        # A time part is dropped; a date before 1900 is not one.
+        # A date before 1900 is not one.
         return float(math.floor(n)) if n >= 1 else ExcelError.VALUE
     for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%d/%m/%Y", "%d-%b-%Y"):
         try:
             return _to_serial(_dt.datetime.strptime(s, fmt).date())
         except ValueError:
             continue
-    return ExcelError.VALUE
+    return 0.0 if parse_time(s) is not None else ExcelError.VALUE  # a bare time is day 0
 
 
 def TIMEVALUE(text: str) -> float | ExcelError:
-    """=TIMEVALUE("14:30:00") -> 0.604166..."""
+    """=TIMEVALUE("14:30:00") -> 0.604166... The day part is dropped, so
+    `"25:00"` and `"1/2 1:00"` are both 1:00."""
     s = str(text).strip()
-    for fmt in ("%H:%M:%S", "%H:%M", "%I:%M %p", "%I:%M:%S %p"):
-        try:
-            t = _dt.datetime.strptime(s, fmt).time()
-            return (t.hour * 3600 + t.minute * 60 + t.second) / 86400.0
-        except ValueError:
-            continue
-    return ExcelError.VALUE
+    n = parse_time(s)
+    if n is None:
+        n = parse_date(s)
+    return ExcelError.VALUE if n is None else n - math.floor(n)
 
 
 def _ymd(serial: float) -> tuple[int, int, int]:
@@ -3970,21 +3956,47 @@ def _t_inv(p: float, v: float) -> float:
     return _t_inv_2tail(2.0 * (1.0 - p), v)
 
 
+def _stirlerr(n: int) -> float:
+    """log(n!) - log(sqrt(2*pi*n) * (n/e)^n): Stirling's error, for n >= 1."""
+    if n > 15:
+        nn = float(n) * n
+        return (1 / 12 - (1 / 360 - (1 / 1260 - (1 / 1680 - 1 / (1188 * nn)) / nn) / nn) / nn) / n
+    return math.lgamma(n + 1.0) - (n + 0.5) * math.log(n) + n - 0.5 * math.log(2 * math.pi)
+
+
+def _bd0(x: float, m: float) -> float:
+    """x*log(x/m) + m - x, without cancellation when x is near m."""
+    if abs(x - m) < 0.1 * (x + m):
+        v = (x - m) / (x + m)
+        s = (x - m) * v
+        ej = 2 * x * v
+        v *= v
+        j = 1
+        while True:
+            ej *= v
+            s1 = s + ej / (2 * j + 1)
+            if s1 == s:
+                return s
+            s, j = s1, j + 1
+    return x * math.log(x / m) + m - x
+
+
 def _binom_pmf(k: int, n: int, p: float) -> float:
+    """Binomial PMF by Loader's saddle-point form, accurate to ~1e-15 for any n.
+    The lgamma form loses ~1e-6 relative at n = 1e9 to cancellation."""
     if k < 0 or k > n:
         return 0.0
     if p == 0.0:
         return 1.0 if k == 0 else 0.0
     if p == 1.0:
         return 1.0 if k == n else 0.0
-    log_pmf = (
-        math.lgamma(n + 1)
-        - math.lgamma(k + 1)
-        - math.lgamma(n - k + 1)
-        + k * math.log(p)
-        + (n - k) * math.log(1.0 - p)
-    )
-    return math.exp(log_pmf)
+    q = 1.0 - p
+    if k == 0:
+        return math.exp(n * math.log1p(-p))
+    if k == n:
+        return math.exp(n * math.log(p))
+    lc = _stirlerr(n) - _stirlerr(k) - _stirlerr(n - k) - _bd0(k, n * p) - _bd0(n - k, n * q)
+    return math.exp(lc) * math.sqrt(n / (2 * math.pi * k * (n - k)))
 
 
 def _pois_pmf(k: int, lam: float) -> float:
@@ -4088,11 +4100,15 @@ def T_INV_2T(p: float, df: int) -> float | ExcelError:
     return _t_inv_2tail(pp, v)
 
 
+# Excel's binomial functions refuse this many trials or more (probed, Excel 16.114).
+_BINOM_MAX_TRIALS = 2**31 - 1
+
+
 def BINOM_DIST(num_s: int, trials: int, prob_s: float, cumulative: Any) -> float | ExcelError:
     """=BINOM.DIST(num_s, trials, prob_s, cumulative)."""
     k, n = int(num_s), int(trials)
     p = float(prob_s)
-    if n < 0 or float(num_s) < 0 or k > n or not 0.0 <= p <= 1.0:
+    if n < 0 or n >= _BINOM_MAX_TRIALS or float(num_s) < 0 or k > n or not 0.0 <= p <= 1.0:
         return ExcelError.NUM
     cumulative = _to_bool(cumulative)
     if isinstance(cumulative, ExcelError):
@@ -4107,14 +4123,31 @@ _CDF_TERMS = 1000
 
 
 def _binom_cdf(k: int, n: int, p: float) -> float:
-    """P(X <= k) for X ~ Binomial(n, p)."""
+    """P(X <= k) for X ~ Binomial(n, p).
+
+    Sums the shorter tail outward from k by the PMF ratio until terms fall
+    below 1e-17 of the sum: O(sd) terms. `_incbeta`'s continued fraction does
+    not converge in its 200 steps once n passes about 1e6."""
     if k >= n or p == 0.0:
         return 1.0
     if k < 0 or p == 1.0:
         return 0.0
-    if k < _CDF_TERMS:
-        return sum(_binom_pmf(i, n, p) for i in range(k + 1))
-    return _incbeta(n - k, k + 1, 1.0 - p)
+    q = 1.0 - p
+    if k < n * p:  # lower tail
+        t = s = _binom_pmf(k, n, p)
+        r, i = q / p, k
+        while i > 0 and t > s * 1e-17:
+            t *= i / (n - i + 1) * r
+            s += t
+            i -= 1
+        return s
+    t = s = _binom_pmf(k + 1, n, p)  # upper tail
+    r, i = p / q, k + 1
+    while i < n and t > s * 1e-17:
+        t *= (n - i) / (i + 1) * r
+        s += t
+        i += 1
+    return 1.0 - s
 
 
 def POISSON_DIST(x: int, mean: float, cumulative: Any) -> float | ExcelError:
@@ -4612,14 +4645,21 @@ def BINOM_INV(trials: int, prob_s: float, alpha: float) -> int | ExcelError:
     a = float(alpha)
     # Excel refuses p = 1 and alpha 0 or 1, though its help says [0, 1]
     # (IronCalc `BINOM.xlsx`, BINOM.INV rows 3, 4 and 25).
-    if n < 0 or not 0.0 <= p < 1.0 or not 0.0 < a < 1.0:
+    if n < 0 or n >= _BINOM_MAX_TRIALS or not 0.0 <= p < 1.0 or not 0.0 < a < 1.0:
         return ExcelError.NUM
-    cum = 0.0
-    for k in range(n + 1):
+    if p == 0.0:
+        return 0
+    # Start at the normal quantile, then step one k at a time: O(sd), not O(n).
+    sd = math.sqrt(n * p * (1.0 - p))
+    k = min(max(int(n * p + sd * _norm_s_inv(a)), 0), n)
+    cum = _binom_cdf(k, n, p)
+    while cum < a and k < n:
+        k += 1
         cum += _binom_pmf(k, n, p)
-        if cum >= a:
-            return k
-    return n
+    while k > 0 and cum - _binom_pmf(k, n, p) >= a:
+        cum -= _binom_pmf(k, n, p)
+        k -= 1
+    return k
 
 
 # -- Hypothesis tests --
@@ -8025,7 +8065,7 @@ def BINOM_DIST_RANGE(
     # NaN marks number_s2 left out; a blank cell passed for it reads as 0.
     n, p, s = int(float(trials)), float(probability_s), int(float(number_s))
     s2 = s if math.isnan(number_s2) else int(float(number_s2))
-    if n < 0 or not 0 <= p <= 1 or not 0 <= s <= n or not s <= s2 <= n:
+    if n < 0 or n >= _BINOM_MAX_TRIALS or not 0 <= p <= 1 or not 0 <= s <= n or not s <= s2 <= n:
         return ExcelError.NUM
     if s2 - s < _CDF_TERMS:
         return math.fsum(_binom_pmf(k, n, p) for k in range(s, s2 + 1))

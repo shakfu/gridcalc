@@ -82,12 +82,13 @@ def test_an_exact_lookup_of_a_value_still_matches():
         ('="06/24/2022 2:30 PM"+0', 44736.604166666664),
         ('="5-February-2024"*1', 45327),
         ('=DATEVALUE("06/24/2022 12:38")', 44736),
+        ('="06/24/2022 25:00"+0', 44737 + 1 / 24),  # Excel 16.114: hours past 23 carry
     ],
 )
 def test_date_time_text_reads_as_a_serial(formula, value):
     assert _ev(formula) == pytest.approx(value, rel=1e-12)
 
 
-@pytest.mark.parametrize("formula", ['="abc 12:00"+0', '="06/24/2022 25:00"+0'])
+@pytest.mark.parametrize("formula", ['="abc 12:00"+0', '="06/24/2022 24:99"+0'])
 def test_text_that_is_not_a_date_time_stays_an_error(formula):
     assert _ev(formula) is ExcelError.VALUE

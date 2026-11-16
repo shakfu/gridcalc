@@ -449,14 +449,26 @@ def _mode(ctx: Context) -> Result:
         return fail("invalid mode -- use 1|excel, 2|hybrid, 3|python")
     if parsed == g.mode:
         return ok(f"already {parsed.name.lower()}")
-    errors = g.validate_for_mode(parsed)
+    convert = parsed == Mode.PYTHON and ctx.arg(1).lower() == "convert"
+    errors = [] if convert else g.validate_for_mode(parsed)
     if errors:
-        return fail(f"cannot switch to {parsed.name.lower()}: {errors[0]}")
-    ctx.undo.save_global(g)
+        hint = ""
+        if parsed == Mode.PYTHON and "table references" in errors[0]:
+            hint = f" ({len(errors)} formulas; `:mode python convert` rewrites them as ranges)"
+        return fail(f"cannot switch to {parsed.name.lower()}: {errors[0]}{hint}")
+    note = ""
+    if convert:
+        ctx.undo.save_grid(g)  # the conversion rewrites formulas on any sheet
+        n, other = g.convert_table_refs()
+        note = f"; {n} formulas now read ranges"
+        if other:
+            note += f", {other} from another sheet, which PYTHON mode cannot read"
+    else:
+        ctx.undo.save_global(g)
     g.mode = parsed
     g._apply_mode_libs()
     g.recalc()
-    return ok(f"mode: {parsed.name.lower()}", changed=True)
+    return ok(f"mode: {parsed.name.lower()}{note}", changed=True)
 
 
 def _iterate(ctx: Context) -> Result:
@@ -645,6 +657,13 @@ COMMANDS: tuple[Command, ...] = (
                 required=False,
                 kind="choice",
                 choices=("excel", "hybrid", "python"),
+            ),
+            Arg(
+                "convert",
+                "python only: rewrite table references as ranges",
+                required=False,
+                kind="choice",
+                choices=("convert",),
             ),
         ),
         run=_mode,

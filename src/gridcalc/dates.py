@@ -299,6 +299,7 @@ _PARSE_FORMATS = (
     "%d-%B-%Y",
     "%d-%B-%y",
     "%b %d, %Y",
+    "%b %d, %y",
     "%d %B %Y",
 )
 
@@ -310,10 +311,28 @@ _TIME_RE = re.compile(r"(\d+):(\d+)(?::(\d+(?:\.\d*)?))?\s*([AaPp][Mm])?")
 _MIN_SEC_RE = re.compile(r"(\d+):(\d+\.\d*)")
 
 
+_MONTH_NUMS = {name.lower(): i for i, full in enumerate(_MONTHS, 1) for name in (full, full[:3])}
+_MONTH_NUMS["sept"] = 9
+_DATE_WORDS = frozenset(_MONTH_NUMS) | {"am", "pm"}
+_WORD_RE = re.compile(r"[A-Za-z]+")
+_DIGIT_RE = re.compile(r"\d")
+_SEP_SPACE_RE = re.compile(r"\s*([-/:])\s*")  # Excel ignores spaces around these
+
+
+def _may_be_date(s: str) -> bool:
+    """Whether ``s`` could be a date or time: it has a digit, and its only
+    words are month names and AM/PM. Spares `strptime` on ordinary text."""
+    return _DIGIT_RE.search(s) is not None and all(
+        w.lower() in _DATE_WORDS for w in _WORD_RE.findall(s)
+    )
+
+
 def parse_time(text: str) -> float | None:
     """Parse a time (`10:30`, `2:30 PM`, `23:99`) to a day fraction, or None.
     As Excel, minutes and seconds may run past 59: `23:99` is 24:39."""
-    s = (text or "").strip()
+    s = _SEP_SPACE_RE.sub(r"\1", (text or "").strip())
+    if not _may_be_date(s):
+        return None
     ms = _MIN_SEC_RE.fullmatch(s)
     if ms is not None:  # `59:9999.0`: minutes and seconds
         mins, secs = int(ms.group(1)), float(ms.group(2))
@@ -331,12 +350,14 @@ def parse_time(text: str) -> float | None:
     sec = float(m.group(3) or 0)
     if m.group(3) is None and not m.group(4) and "." in s:
         return None
-    # Excel's limits, from its saved answers (pycel's text.xlsx): h:m takes
-    # minutes up to 9999, h:m:s minutes up to 59 and seconds up to 9999.
-    if h >= 24 or sec >= 10000 or (m.group(3) is not None and mi >= 60) or mi >= 10000:
+    # Excel's limits, from its saved answers (pycel's text.xlsx) and probes:
+    # hours up to 9999, minutes up to 59 (up to 9999 in h:m below 24 hours),
+    # seconds up to 9999. `25:00` is 1.0417, past one day; `24:99` is not a time.
+    long_minutes = m.group(3) is None and h < 24
+    if h >= 10000 or sec >= 10000 or mi >= 10000 or (mi >= 60 and not long_minutes):
         return None
     if m.group(4):
-        if not 1 <= h <= 12:
+        if not 0 <= h <= 12:
             return None
         h = h % 12 + (12 if m.group(4).upper() == "PM" else 0)
     return (h * 3600 + mi * 60 + sec) / 86400.0
@@ -345,16 +366,59 @@ def parse_time(text: str) -> float | None:
 _DATE_TIME_RE = re.compile(r"(.+?)\s+(\d{1,2}:.*)")
 
 
-@functools.lru_cache(maxsize=4096)  # criteria re-parse each cell's text; strptime is slow
+# Month first, then a day or year: `1/2`, `1-40`, `Jan 2`, `Jan-2026`.
+_MONTH_FIRST_RE = re.compile(r"(\d{1,2}|[A-Za-z]+)(?:[/-]|(?<=[A-Za-z])\s+)(\d{1,4})")
+# Day first with a month name: `2-Jan`, `2 January`.
+_DAY_FIRST_RE = re.compile(r"(\d{1,2})[\s-]+([A-Za-z]+)")
+
+
+def _yearless_date(s: str, year: int) -> float | None:
+    """A date written without its day or year, read as Excel reads it.
+
+    `1/2` is January 2 of ``year``. A second number that is not a day of that
+    month is a year instead, so `1/40` is 1940-01-01 and `2/29` in 2026 is
+    2029-02-01. Rules probed against Excel 16.114."""
+    m = _DAY_FIRST_RE.fullmatch(s)
+    if m is not None:
+        month = _MONTH_NUMS.get(m.group(2).lower())
+        try:
+            return to_serial(_dt.date(year, month, int(m.group(1)))) if month else None
+        except ValueError:
+            return None  # `30-Feb`: Excel does not read the day as a year here
+    m = _MONTH_FIRST_RE.fullmatch(s)
+    if m is None:
+        return None
+    first, num = m.group(1), m.group(2)
+    month = int(first) if first.isdigit() else _MONTH_NUMS.get(first.lower())
+    if not month or not 1 <= month <= 12:
+        return None
+    n = int(num)
+    if len(num) <= 2:
+        try:
+            return to_serial(_dt.date(year, month, n))
+        except ValueError:
+            n += 1900 if n >= 30 else 2000  # Excel: two-digit years 30-99 are 19xx
+    elif len(num) != 4 or n < 1900:
+        return None
+    return to_serial(_dt.date(n, month, 1))
+
+
 def parse_date(text: str) -> float | None:
     """Parse a date string to an Excel serial, or ``None`` if it is not one.
 
     Used by the criteria parser so `COUNTIF(range, ">1/1/2020")` compares
     dates rather than failing to coerce a string to a float. Returning
     ``None`` rather than raising keeps the caller's "is this a number?"
-    cascade readable.
+    cascade readable. A date without a year is in the current year.
     """
-    s = (text or "").strip()
+    if not _may_be_date(text or ""):
+        return None
+    return _parse_date(text, _dt.date.today().year)
+
+
+@functools.lru_cache(maxsize=4096)  # criteria re-parse each cell's text; strptime is slow
+def _parse_date(text: str, year: int) -> float | None:
+    s = _SEP_SPACE_RE.sub(r"\1", (text or "").strip())
     if not s:
         return None
     for fmt in _PARSE_FORMATS:
@@ -365,13 +429,18 @@ def parse_date(text: str) -> float | None:
         if "%y" in fmt and d.year >= 2030:
             d = d.replace(year=d.year - 100)  # Excel: two-digit years 30-99 are 19xx
         return to_serial(d)
+    n = _yearless_date(s, year)
+    if n is not None:
+        return n
     # A date, then a time: `06/24/2022 12:38`.
     m = _DATE_TIME_RE.fullmatch(s)
     if m is not None:
-        day, t = parse_date(m.group(1)), parse_time(m.group(2))
+        day, t = _parse_date(m.group(1), year), parse_time(m.group(2))
         if day is not None and t is not None and day == int(day):
             return day + t
     # Excel's phantom 1900-02-29: read it in a leap year to see if it is Feb 29.
-    if "1900" in s and parse_date(s.replace("1900", "1904")) == to_serial(_dt.date(1904, 2, 29)):
-        return float(LEAP_BUG_SERIAL)
+    if "1900" in s:
+        leap = _parse_date(s.replace("1900", "1904"), year)
+        if leap == to_serial(_dt.date(1904, 2, 29)):
+            return float(LEAP_BUG_SERIAL)
     return None

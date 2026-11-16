@@ -90,3 +90,15 @@ def test_editing_a_legacy_formula_makes_it_dynamic() -> None:
     g.cell(3, 2).legacy = True
     g.setcell(3, 2, "=A1:A5")
     assert not g.cell(3, 2).legacy and g.cell(3, 2).val == 1.0
+
+
+def test_concatenate_intersects_a_range_in_a_legacy_formula() -> None:
+    """Each CONCATENATE argument takes one value: `CONCATENATE(A1:A5,"!")` in D3 joins A3."""
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    g.setcells_bulk([(0, r, f'"t{r + 1}') for r in range(5)])
+    g.setcell(3, 2, '=CONCATENATE(A1:A5,"!")')
+    g.cell(3, 2).legacy = True
+    g.recalc()
+    assert g.cell(3, 2).sval == "t3!"

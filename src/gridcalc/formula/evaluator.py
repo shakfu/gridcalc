@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import inspect
 import math
 import operator
@@ -33,7 +34,7 @@ from .ast_nodes import (
     StructRef,
     UnaryOp,
 )
-from .deps import resize_sum_range
+from .deps import name_key, resize_sum_range
 from .errors import ExcelError, explain, first_error
 from .lexer import parse_number_text
 
@@ -201,7 +202,9 @@ class Env:
         return self._builtins.get(name.lower())
 
     def lookup_name(self, name: str) -> Node | None:
-        return self._named.get(name.lower())
+        """A defined name as the current formula's sheet sees it: its own
+        sheet-scoped name first, then the workbook's."""
+        return self._named.get(name_key(self._named, name, self.current_sheet))
 
     def get_cell(self, c: int, r: int, sheet: str | None = None) -> object:
         return self.cell_value(c, r, sheet)
@@ -231,6 +234,9 @@ class Env:
                 s.sheet,
             )
         if isinstance(node, Name):
+            found, local = self.lookup_local(node.name)
+            if found:  # a LET or LAMBDA name bound to a reference stays one
+                return local if isinstance(local, Reference) else None
             target = self.lookup_name(node.name)
             key = node.name.lower()
             if target is None or key in self._names_active:
@@ -454,18 +460,55 @@ def _vec_shape(v: object) -> tuple[int, int]:
     return getattr(v, "shape", (len(_vec_data(v)), 1))
 
 
+def _fill_info(v: Any) -> tuple[tuple[int, int], Any] | None:
+    """The untrimmed shape of ``v`` and the value of its trimmed positions."""
+    full = getattr(v, "full", None)
+    return (full, None) if full else getattr(v, "fill_to", None)
+
+
+def _untrim(v: Any, info: tuple[tuple[int, int], Any]) -> Any:
+    """``v`` padded out to its untrimmed shape."""
+    (rows, cols), fill = info
+    r, c = _vec_shape(v)
+    data = _vec_data(v)
+    out: list[Any] = []
+    for i in range(r):
+        out += data[i * c : (i + 1) * c] + [fill] * (cols - c)
+    out += [fill] * ((rows - r) * cols)
+    return _make_vec(out, cols=cols)
+
+
+def _with_fill(out: Any, info: tuple[tuple[int, int], Any] | None, fill: Callable[[], Any]) -> Any:
+    if info is not None:
+        out.fill_to = (info[0], fill())
+    return out
+
+
 def _vec_apply2(op: Callable[[Any, Any], Any], a: Any, b: Any) -> Any:
     if _is_vec(a) and _is_vec(b):
         ad, bd = _vec_data(a), _vec_data(b)
         ca, cb = _vec_cols(a), _vec_cols(b)
+        fa, fb = _fill_info(a), _fill_info(b)
         if len(ad) == len(bd) and (not ca or not cb or _vec_shape(a) == _vec_shape(b)):
             out_cols = ca if ca else cb
-            return _make_vec([op(x, y) for x, y in zip(ad, bd, strict=False)], cols=out_cols)
+            out = _make_vec([op(x, y) for x, y in zip(ad, bd, strict=False)], cols=out_cols)
+            same = fa is not None and fb is not None and fa[0] == fb[0]
+            return _with_fill(out, fa if same else None, lambda: op(fa[1], fb[1]))  # type: ignore[index]
+        # A range trimmed past the used extent is blank there: pad it back
+        # when that makes the shapes agree, so `(B:B<>"")*ROW(B:B)` lines up.
+        if fa is not None and fa[0] == _vec_shape(b):
+            return _vec_apply2(op, _untrim(a, fa), b)
+        if fb is not None and fb[0] == _vec_shape(a):
+            return _vec_apply2(op, a, _untrim(b, fb))
         return _broadcast2(op, ad, _vec_shape(a), bd, _vec_shape(b))
     if _is_vec(a):
-        return _make_vec([op(x, b) for x in _vec_data(a)], cols=_vec_cols(a))
+        out = _make_vec([op(x, b) for x in _vec_data(a)], cols=_vec_cols(a))
+        info = _fill_info(a)
+        return _with_fill(out, info, lambda: op(info[1], b))  # type: ignore[index]
     if _is_vec(b):
-        return _make_vec([op(a, y) for y in _vec_data(b)], cols=_vec_cols(b))
+        out = _make_vec([op(a, y) for y in _vec_data(b)], cols=_vec_cols(b))
+        info = _fill_info(b)
+        return _with_fill(out, info, lambda: op(a, info[1]))  # type: ignore[index]
     return op(a, b)
 
 
@@ -496,7 +539,9 @@ def _broadcast2(
 
 def _vec_apply1(op: Callable[[Any], Any], a: Any) -> Any:
     if _is_vec(a):
-        return _make_vec([op(x) for x in _vec_data(a)], cols=_vec_cols(a))
+        out = _make_vec([op(x) for x in _vec_data(a)], cols=_vec_cols(a))
+        info = _fill_info(a)
+        return _with_fill(out, info, lambda: op(info[1]))  # type: ignore[index]
     return op(a)
 
 
@@ -583,6 +628,15 @@ def _pow(a: Any, b: Any) -> Any:
         return nb
     if na == 0 and nb == 0:
         return ExcelError.NUM  # Excel: 0^0 is undefined
+    if na == 0 and nb < 0:
+        return ExcelError.DIV0
+    if na < 0 and nb != int(nb):
+        # Excel takes the real root when the exponent is 1/n for an odd n:
+        # `(-8)^(1/3)` is -2, `(-8)^(2/3)` #NUM!.
+        n = 1 / nb
+        if abs(n - round(n)) < 1e-9 and round(n) % 2 == 1:
+            return _finite(-((-na) ** nb))
+        return ExcelError.NUM
     try:
         r = na**nb
     except (ValueError, OverflowError, ZeroDivisionError):
@@ -971,14 +1025,182 @@ _ERROR_AWARE_FUNCS = frozenset(
         "islogical",
         "isnumber",
         "istext",
+        "isnontext",
         "error.type",
         "type",
         "valuetotext",
         "arraytotext",
         "textbefore",  # an if_not_found error counts only when returned
         "textafter",
+        "wraprows",  # a pad_with error pads; WRAPROWS checks its other arguments
+        "wrapcols",
     }
 )
+
+# Excel's Analysis ToolPak functions refuse a logical argument, even inside an
+# array, where the others read TRUE as 1: `ERF(TRUE)` is #VALUE!, `ABS(TRUE)` 1.
+# Probed against Excel 16.114. `NETWORKDAYS.INTL` and `XNPV` are exceptions.
+_TOOLPAK_FUNCS = frozenset(
+    [
+        "accrint",
+        "accrintm",
+        "besseli",
+        "besselj",
+        "besselk",
+        "bessely",
+        "bin2dec",
+        "bin2hex",
+        "bin2oct",
+        "complex",
+        "convert",
+        "coupdaybs",
+        "coupdays",
+        "coupdaysnc",
+        "coupncd",
+        "coupnum",
+        "couppcd",
+        "cumipmt",
+        "cumprinc",
+        "dec2bin",
+        "dec2hex",
+        "dec2oct",
+        "delta",
+        "disc",
+        "dollarde",
+        "dollarfr",
+        "duration",
+        "edate",
+        "effect",
+        "eomonth",
+        "erf",
+        "erfc",
+        "erf.precise",
+        "erfc.precise",
+        "factdouble",
+        "fvschedule",
+        "gcd",
+        "gestep",
+        "hex2bin",
+        "hex2dec",
+        "hex2oct",
+        "imreal",
+        "imaginary",
+        "imabs",
+        "imargument",
+        "imconjugate",
+        "imsum",
+        "imsub",
+        "improduct",
+        "imdiv",
+        "impower",
+        "imsqrt",
+        "imexp",
+        "imln",
+        "imlog10",
+        "imlog2",
+        "imsin",
+        "imcos",
+        "imtan",
+        "imsinh",
+        "imcosh",
+        "imsec",
+        "imcsc",
+        "imcot",
+        "imsech",
+        "imcsch",
+        "intrate",
+        "iseven",
+        "isodd",
+        "lcm",
+        "mduration",
+        "mround",
+        "multinomial",
+        "networkdays",
+        "nominal",
+        "oct2bin",
+        "oct2dec",
+        "oct2hex",
+        "oddfprice",
+        "oddfyield",
+        "oddlprice",
+        "oddlyield",
+        "price",
+        "pricedisc",
+        "pricemat",
+        "quotient",
+        "randbetween",
+        "received",
+        "seriessum",
+        "sqrtpi",
+        "tbilleq",
+        "tbillprice",
+        "tbillyield",
+        "weeknum",
+        "workday",
+        "workday.intl",
+        "yearfrac",
+        "yield",
+        "yielddisc",
+        "yieldmat",
+    ]
+)
+
+# ToolPak functions that take a date first. A first date out of range makes a
+# later error, logical or text #NUM!: `WEEKNUM(-1,TRUE)` and `WEEKNUM(-1,1/0)`
+# are #NUM!, `WEEKNUM(1,TRUE)` #VALUE!.
+_TOOLPAK_DATE_FIRST = frozenset(
+    [
+        "coupdaybs",
+        "coupdays",
+        "coupdaysnc",
+        "coupncd",
+        "coupnum",
+        "couppcd",
+        "disc",
+        "duration",
+        "edate",
+        "eomonth",
+        "intrate",
+        "mduration",
+        "networkdays",
+        "oddfprice",
+        "oddfyield",
+        "oddlprice",
+        "oddlyield",
+        "price",
+        "pricedisc",
+        "pricemat",
+        "received",
+        "tbilleq",
+        "tbillprice",
+        "tbillyield",
+        "weeknum",
+        "workday",
+        "workday.intl",
+        "yearfrac",
+        "yield",
+        "yielddisc",
+        "yieldmat",
+    ]
+)
+_LAST_SERIAL = 2958465  # 9999-12-31
+# Functions that check their basis, by position, before any other argument:
+# `YEARFRAC(1/0,200,9)` is #NUM!, `YEARFRAC(-1,200,TRUE)` #VALUE!. COUPDAYS,
+# DURATION and the ODD* functions do not.
+_TOOLPAK_BASIS_FIRST = {
+    "yearfrac": 2,
+    "disc": 4,
+    "intrate": 4,
+    "pricedisc": 4,
+    "received": 4,
+    "yielddisc": 4,
+    "pricemat": 5,
+    "yieldmat": 5,
+    "price": 6,
+    "yield": 6,
+}
+# Positions where a ToolPak function takes a logical: ACCRINT's calc_method.
+_TOOLPAK_LOGICAL_ARGS = {"accrint": (7,)}
 
 # Functions whose array arguments may hold error elements. Every other function
 # receives the first error in an array argument instead, so aggregates
@@ -1058,6 +1280,8 @@ _CRITERIA_FUNCS = frozenset(
 _DIRECT_ARG_COERCE_FUNCS = frozenset(
     {
         "sum",
+        "small",
+        "large",
         "average",
         "min",
         "max",
@@ -1086,7 +1310,6 @@ _DIRECT_ARG_COERCE_FUNCS = frozenset(
         "maxa",
         "mina",
         "averagea",
-        "multinomial",
         "sumsq",
         "gcd",
         "lcm",
@@ -1097,25 +1320,42 @@ _DIRECT_ARG_COERCE_FUNCS = frozenset(
 _REF_NODES = (CellRef, RangeRef, SpillRef, Ref3D)
 
 # Excel: an omitted argument (`MROUND(,5)`) to these is #N/A, not a blank.
-_MISSING_NA_FUNCS = frozenset({"gcd", "lcm", "mround"})
-# An omitted trailing `places` (`DEC2BIN(5,)`) takes its default; a blank cell is 0 places.
+_MISSING_NA_FUNCS = frozenset({"gcd", "lcm", "mround", "erf", "multinomial"})  # `ERF(7,)` is #N/A
+# An omitted argument to these takes its default, where a blank cell is 0:
+# `DEC2BIN(5,)` and `BASE(0,2,)` have no padding, `WORKDAY.INTL(d,1,)` a
+# Saturday-Sunday weekend.
 _MISSING_DEFAULT_FUNCS = frozenset(
     f"{a}2{b}" for a in ("bin", "oct", "dec", "hex") for b in ("bin", "oct", "dec", "hex") if a != b
-)
+) | {"base", "networkdays.intl", "workday.intl"}
+
+
+@functools.lru_cache(maxsize=256)
+def _param_default(fn: Any, i: int) -> Any:
+    """The default of ``fn``'s parameter ``i``; None if it has none."""
+    params = [
+        p
+        for p in inspect.signature(fn).parameters.values()
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+    ]
+    if i >= len(params) or params[i].default is inspect.Parameter.empty:
+        return None
+    return params[i].default
 
 
 def _coerce_direct_args(name: str, nodes: tuple[Node, ...], env: Env) -> list[Any] | ExcelError:
     """Evaluate aggregate arguments, converting direct scalar values to numbers."""
     out: list[Any] = []
     for node in nodes:
-        if isinstance(node, Missing) and name in _MISSING_NA_FUNCS:
-            out.append(ExcelError.NA)
+        if isinstance(node, Missing):  # `MAX(,-1)` is 0: an omitted argument is 0
+            out.append(ExcelError.NA if name in _MISSING_NA_FUNCS else 0.0)
             continue
         raw = _ref3d_values(node, env) if isinstance(node, Ref3D) else _eval(node, env)
         is_ref = isinstance(raw, Reference) or isinstance(node, _REF_NODES)
         if isinstance(node, Name) and not env.lookup_local(node.name)[0]:
             is_ref = True  # a named range
         v = _deref(raw, env)
+        if not is_ref and isinstance(v, ExcelError) and name not in ("count", "counta"):
+            return v  # left to right: `MAX(NA(),"abc")` is #N/A, `MAX("abc",NA())` #VALUE!
         if not is_ref and isinstance(v, (bool, str)):
             if name in ("and", "or", "xor") and isinstance(v, str):
                 u = v.strip().upper()
@@ -1262,6 +1502,17 @@ def _lift_call(name_lower: str, fn: Any, args: list[Any], lifted: list[int], env
 LAZY_FUNCS = frozenset({"if", "ifs", "switch", "iferror", "ifna", "choose"})
 
 
+def _switch_equal(a: Any, b: Any) -> bool:
+    """SWITCH's comparison, stricter than `=`: a blank is 0, never "" or
+    FALSE, and a number never matches a logical. Text ignores case."""
+    a, b = (0.0 if v is None else v for v in (a, b))
+    if isinstance(a, bool) or isinstance(b, bool):
+        return type(a) is type(b) and a == b
+    if isinstance(a, str) or isinstance(b, str):
+        return isinstance(a, str) and isinstance(b, str) and a.casefold() == b.casefold()
+    return _compare("=", a, b) is True
+
+
 def _eval_lazy(name: str, node: Call, env: Env) -> Any:
     """Evaluate a conditional function, materialising only the arguments that
     determine its result. Argument-count errors mirror what the eager path
@@ -1291,18 +1542,25 @@ def _eval_lazy(name: str, node: Call, env: Env) -> Any:
     if name == "switch":
         if not args:
             return ExcelError.VALUE
-        subject = val(0)
-        if isinstance(subject, ExcelError):
-            return subject
         rest = len(args) - 1
-        for i in range(rest // 2):
-            match = val(1 + 2 * i)
-            if isinstance(match, ExcelError):
-                return match
-            if _compare("=", subject, match) is True:
-                return val(2 + 2 * i)
-        # A trailing unpaired argument is the default.
-        return val(len(args) - 1) if rest % 2 == 1 else ExcelError.NA
+
+        def pick(subject: Any) -> Any:
+            if isinstance(subject, ExcelError):
+                return subject
+            for i in range(rest // 2):
+                match = val(1 + 2 * i)
+                if isinstance(match, ExcelError):
+                    return match
+                if _switch_equal(subject, match):
+                    return val(2 + 2 * i)
+            # A trailing unpaired argument is the default.
+            return val(len(args) - 1) if rest % 2 == 1 else ExcelError.NA
+
+        subject = val(0)
+        if _is_vec(subject):  # one result per element, as Excel
+            _, cols = _vec_shape(subject)
+            return _make_vec([pick(x) for x in _vec_data(subject)], cols=cols)
+        return pick(subject)
 
     if name == "iferror":
         if len(args) != 2:
@@ -1415,7 +1673,8 @@ def _eval_let(node: Call, env: Env) -> Any:
             name_node = args[i]
             if not isinstance(name_node, Name):
                 return ExcelError.VALUE
-            value = _eval(args[i + 1], env)
+            # A reference binds as one, so `ISREF(x)` and `ROW(x)` see it.
+            value = env.ref_or_value(args[i + 1])
             if value is None:
                 value = 0.0
             scope[name_node.name.lower()] = value
@@ -1453,7 +1712,8 @@ def _apply_named(fn: Any, node: Call | Apply, env: Env) -> Any:
     short-circuited, so a lambda wrapping IFERROR can still see them.
     """
     # An empty argument slot, `f(1,)`, is omitted as much as a missing one.
-    args = [OMITTED if isinstance(a, Missing) else _deref(_eval(a, env), env) for a in node.args]
+    # A reference argument stays a reference, as in Excel: `LAMBDA(x, ISREF(x))(A1)`.
+    args = [OMITTED if isinstance(a, Missing) else env.ref_or_value(a) for a in node.args]
     return fn(*args)
 
 
@@ -1546,8 +1806,11 @@ def _eval_value_call(name_lower: str, fn: Any, node: Call, env: Env) -> Any:
             _ref3d_values(a, env) if isinstance(a, Ref3D) else _deref(_eval(a, env), env)
             for a in node.args
         ]
-    elif name_lower in _MISSING_DEFAULT_FUNCS and node.args and isinstance(node.args[-1], Missing):
-        args = [_deref(_eval(a, env), env) for a in node.args[:-1]]
+    elif name_lower in _MISSING_DEFAULT_FUNCS:
+        args = [
+            _param_default(fn, i) if isinstance(a, Missing) else _deref(_eval(a, env), env)
+            for i, a in enumerate(node.args)
+        ]
     elif name_lower in _MISSING_NA_FUNCS:
         args = [
             ExcelError.NA if isinstance(a, Missing) else _deref(_eval(a, env), env)
@@ -1558,7 +1821,9 @@ def _eval_value_call(name_lower: str, fn: Any, node: Call, env: Env) -> Any:
     positions, _ = _param_info(name_lower, fn)
     if _scalar_context(env):
         args = [
-            _intersect(a, env) if i < len(positions) and positions[i] else a
+            _intersect(a, env)
+            if (i < len(positions) and positions[i]) or name_lower in _SCALAR_VARARGS
+            else a
             for i, a in enumerate(args)
         ]
     lifted = [i for i, a in enumerate(args[: len(positions)]) if positions[i] and _is_vec(a)]
@@ -1587,14 +1852,27 @@ def _call_value(name_lower: str, fn: Any, args: list[Any]) -> Any:
     if name_lower not in _ERROR_AWARE_FUNCS:
         if name_lower not in _CRITERIA_FUNCS:
             # Left to right, as Excel: `FLOOR("", 1/0)` fails on its "" first.
+            toolpak = name_lower in _TOOLPAK_FUNCS
+            basis = _TOOLPAK_BASIS_FIRST.get(name_lower, len(args))
+            if basis < len(args):
+                err = _basis_error(args[basis])
+                if err is not None:
+                    return err
+            bad_date = False
             for i, a in enumerate(args):
                 if isinstance(a, ExcelError):
-                    return a
+                    return ExcelError.NUM if bad_date else a
+                if toolpak and i not in _TOOLPAK_LOGICAL_ARGS.get(name_lower, ()):
+                    if isinstance(a, bool) or (_is_vec(a) and any(type(x) is bool for x in a.data)):
+                        return ExcelError.NUM if bad_date else ExcelError.VALUE
+                    if i == 0 and name_lower in _TOOLPAK_DATE_FIRST:
+                        d = _to_number(a) if isinstance(a, str) else a
+                        bad_date = isinstance(d, (int, float)) and not 0 <= d <= _LAST_SERIAL
                 kind = coerce[i] if i < len(coerce) else None
                 if kind and isinstance(a, str):
                     n = _to_bool(a) if kind == "bool" else _to_number(a)
                     if isinstance(n, ExcelError):
-                        return n
+                        return ExcelError.NUM if bad_date else n
         if name_lower not in _ARRAY_ERROR_TOLERANT_FUNCS:
             err = _first_array_error(args)
             if err:
@@ -1618,6 +1896,21 @@ def _call_value(name_lower: str, fn: Any, args: list[Any]) -> Any:
         return ExcelError.NUM
     except (TypeError, AttributeError):
         return ExcelError.VALUE
+
+
+def _basis_error(b: Any) -> ExcelError | None:
+    """The error a day-count basis gives on its own: #VALUE! for a logical or
+    text, #NUM! outside 0..4. None for a valid or blank basis."""
+    if isinstance(b, ExcelError):
+        return b
+    if isinstance(b, bool):
+        return ExcelError.VALUE
+    n = _to_number(b) if isinstance(b, str) else b
+    if isinstance(n, ExcelError):
+        return n
+    if isinstance(n, (int, float)) and not 0 <= int(n) <= 4:
+        return ExcelError.NUM
+    return None
 
 
 def _first_array_error(args: list[Any]) -> ExcelError | None:
@@ -1679,6 +1972,11 @@ def _intersect(v: Any, env: Env) -> Any:
     if not 0 <= i < rows * cols:
         return ExcelError.VALUE
     return v.data[i] if i < len(v.data) else None  # past the used extent: blank
+
+
+# Varargs that each take one value, so a legacy formula intersects a range
+# passed to them: CONCATENATE(A1:A3,"!") in B2 joins A2.
+_SCALAR_VARARGS = frozenset({"concatenate"})
 
 
 def _scalar_context(env: Env) -> bool:
@@ -1767,7 +2065,8 @@ def _eval_unary(node: UnaryOp, env: Env) -> Any:
     if isinstance(v, ExcelError):
         return v
     if node.op == "+":
-        return _vec_apply1(lambda x: _to_number(x), v)
+        # Unary plus changes nothing, as in Excel: `+TRUE` is TRUE, `+"3"` text.
+        return _vec_apply1(lambda x: 0.0 if x is None else x, v)
 
     # minus
     def neg(x: Any) -> Any:

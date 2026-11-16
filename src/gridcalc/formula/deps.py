@@ -214,6 +214,20 @@ def extract_deps(
     return out
 
 
+def name_key(named: dict[str, Node], name: str, sheet: str | None) -> str:
+    """The key of ``named`` that ``name`` resolves to from a formula on ``sheet``:
+    that sheet's own name first (keyed ``sheet!name``), then the workbook's.
+    A qualified ``Data!Total`` falls back to the workbook's ``Total``."""
+    key = name.lower()
+    if "!" in key:
+        return key if key in named else key.rpartition("!")[2]
+    if sheet is not None:
+        local = f"{sheet.lower()}!{key}"
+        if local in named:
+            return local
+    return key
+
+
 def reads_range_as_array(
     node: Node,
     named: dict[str, Node] | None = None,
@@ -232,7 +246,7 @@ def reads_range_as_array(
         if type(n) in (RangeRef, Ref3D, SpillRef, RangeOp, StructRef):
             return True
         if type(n) is Name:
-            target = named.get(n.name.lower())
+            target = named.get(name_key(named, n.name, None))
             return type(target) in (RangeRef, Ref3D)
         return False
 
@@ -322,7 +336,7 @@ def _walk(
             if not (address_only and type(a) in (CellRef, RangeRef, Name)):
                 _walk(a, named, out, formula_sheet, collapse, span, seen)
         # A call to a named LAMBDA reads what its body reads.
-        fn = node.name.lower()
+        fn = name_key(named, node.name, formula_sheet)
         if fn in named and fn not in seen:
             _walk(named[fn], named, out, formula_sheet, collapse, span, seen | {fn})
     elif type(node) is Ref3D:
@@ -350,7 +364,7 @@ def _walk(
         sheet = anchor.sheet if anchor.sheet is not None else formula_sheet
         out.add((sheet, anchor.col, anchor.row))
     elif type(node) is Name:
-        nm = node.name.lower()
+        nm = name_key(named, node.name, formula_sheet)
         target = named.get(nm)
         if target is not None and nm not in seen:  # a name may refer to itself
             _walk(target, named, out, formula_sheet, collapse, span, seen | {nm})

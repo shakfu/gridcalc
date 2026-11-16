@@ -257,6 +257,16 @@ class _Parser:
                 if self._peek().kind != CELLREF:
                     return self._whole_range(sheet=sheet_tok.value)
                 return self._cellref_or_range(sheet=sheet_tok.value)
+            # IDENT BANG IDENT is a name scoped to that sheet: `Data!Scope_Test`.
+            if (
+                self.i + 2 < len(self.tokens)
+                and self.tokens[self.i + 1].kind == BANG
+                and self.tokens[self.i + 2].kind == IDENT
+                and not (self.i + 3 < len(self.tokens) and self.tokens[self.i + 3].kind == LPAREN)
+            ):
+                sheet_tok = self._advance()
+                self._advance()  # BANG
+                return Name(f"{sheet_tok.value}!{self._advance().value}")
             return self._ident_or_call()
         raise ParseError(f"unexpected {t.kind} at {t.pos}")
 

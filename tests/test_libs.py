@@ -477,7 +477,7 @@ class TestInformation:
         assert ISTEXT("hi") is True
         assert ISTEXT(5) is False
         assert ISBLANK(None) is True
-        assert ISBLANK("") is True
+        assert ISBLANK("") is False  # Excel 16.114: only an empty cell is blank
         assert ISBLANK(0) is False
 
     def test_iserror_family(self) -> None:
@@ -2573,7 +2573,8 @@ class TestStatDistributionsHeavier:
         expected = T_INV_2T(0.05, 49) * 1.0 / math.sqrt(50)  # type: ignore[operator]
         assert isinstance(result, float)
         assert math.isclose(result, expected, rel_tol=1e-12)
-        assert CONFIDENCE_T(0.05, 1.0, 1) is ExcelError.NUM
+        assert CONFIDENCE_T(0.05, 1.0, 1) is ExcelError.DIV0  # IronCalc CONFIDENCE.xlsx, E18
+        assert CONFIDENCE_T(0.05, 1.0, 0) is ExcelError.NUM
 
     def test_standardize_phi(self) -> None:
         from gridcalc.libs.xlsx import PHI, STANDARDIZE

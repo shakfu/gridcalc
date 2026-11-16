@@ -8,6 +8,7 @@ openpyxl = pytest.importorskip("openpyxl")
 
 from gridcalc.cellstyle import Side, XStyle  # noqa: E402
 from gridcalc.engine import Grid, Mode, NamedRange  # noqa: E402
+from gridcalc.formula.errors import ExcelError  # noqa: E402
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 
@@ -1155,3 +1156,85 @@ def test_an_xlsx_save_names_no_template_folder(tmp_path, mode):
     with zipfile.ZipFile(out) as z:
         assert b"absPath" not in z.read("xl/workbook.xml")  # OpenXLSX's author's folder
     assert openpyxl.load_workbook(str(out)).active["A1"].value == 1
+
+
+_RD = "http://schemas.microsoft.com/office/spreadsheetml/2017/richdata"
+_RICH_PARTS = {
+    "xl/metadata.xml": (
+        '<metadata xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+        f' xmlns:xlrd="{_RD}"><metadataTypes count="1"><metadataType name="XLRICHVALUE"/>'
+        '</metadataTypes><futureMetadata name="XLRICHVALUE" count="2"><bk><extLst><ext>'
+        '<xlrd:rvb i="0"/></ext></extLst></bk><bk><extLst><ext><xlrd:rvb i="1"/></ext>'
+        '</extLst></bk></futureMetadata><valueMetadata count="2"><bk><rc t="1" v="0"/></bk>'
+        '<bk><rc t="1" v="1"/></bk></valueMetadata></metadata>'
+    ),
+    "xl/richData/rdrichvalue.xml": (
+        f'<rvData xmlns="{_RD}" count="2"><rv s="0"><v>13</v><v>0</v></rv>'
+        '<rv s="0"><v>8</v><v>0</v></rv></rvData>'
+    ),
+    "xl/richData/rdrichvaluestructure.xml": (
+        f'<rvStructures xmlns="{_RD}" count="1"><s t="_error"><k n="errorType" t="i"/>'
+        '<k n="subType" t="i"/></s></rvStructures>'
+    ),
+}
+
+
+def _with_rich_errors(src: Path, dst: Path) -> None:
+    """``src`` with A1 and A2 pointed at rich values for #CALC! and #SPILL!, as Excel saves them."""
+    import zipfile
+
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w") as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                data = data.replace(b'r="A1" t="e"', b'r="A1" t="e" vm="1"')
+                data = data.replace(b'r="A2" t="e"', b'r="A2" t="e" vm="2"')
+            zout.writestr(item, data)
+        for name, text in _RICH_PARTS.items():
+            zout.writestr(name, text)
+
+
+def test_calc_and_spill_values_keep_their_type(tmp_path):
+    """Excel stores both as `#VALUE!` and names the real error in rich-value metadata."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws["A1"], ws["A2"] = "#VALUE!", "#VALUE!"
+    ws["B1"], ws["B2"] = "=ERROR.TYPE(A1)", "=ERROR.TYPE(A2)"
+    wb.save(tmp_path / "plain.xlsx")
+    _with_rich_errors(tmp_path / "plain.xlsx", tmp_path / "rich.xlsx")
+    g = Grid()
+    assert g.xlsxload(str(tmp_path / "rich.xlsx")) == 0
+    assert [g.cell(0, r).err for r in (0, 1)] == [ExcelError.CALC, ExcelError.SPILL]
+    assert [g.cell(1, r).val for r in (0, 1)] == [14.0, 9.0]
+    # gridcalc writes no rich values, so the file gets the `#VALUE!` Excel's own `<v>` holds.
+    g.xlsxsave(str(tmp_path / "out.xlsx"))
+    back = openpyxl.load_workbook(tmp_path / "out.xlsx")
+    assert back.active["A1"].value == "#VALUE!"
+    # JSON keeps the type.
+    g.jsonsave(str(tmp_path / "out.json"))
+    h = Grid()
+    assert h.jsonload(str(tmp_path / "out.json")) == 0
+    assert h.cell(0, 0).err is ExcelError.CALC
+
+
+def test_an_empty_string_cell_is_text_not_blank(tmp_path):
+    """A paste-values of `=""` stores an empty string; ISBLANK is FALSE there."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws["A1"] = "x"
+    ws["B1"] = "=ISBLANK(A1)"
+    wb.save(tmp_path / "s.xlsx")
+    import zipfile
+
+    src, dst = tmp_path / "s.xlsx", tmp_path / "e.xlsx"
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w") as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename in ("xl/sharedStrings.xml", "xl/worksheets/sheet1.xml"):
+                data = data.replace(b"<t>x</t>", b"<t/>")
+            zout.writestr(item, data)
+    g = Grid()
+    assert g.xlsxload(str(dst)) == 0
+    g.setcell(2, 0, '=A1=""')
+    assert g.cell(1, 0).val is False
+    assert g.cell(2, 0).val is True

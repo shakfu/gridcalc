@@ -370,12 +370,13 @@ def _name(ctx: Context) -> Result:
         return fail(f"bad range: {spec}")
     c1, r1, c2, r2 = rect
     shown = formula or range_a1(c1, r1, c2, r2)
-    existing = any(nr.name == key for nr in g.names)
+    # `:name` defines a workbook name; a sheet-scoped one of that name stays.
+    existing = any(nr.name == key and nr.scope is None for nr in g.names)
     if not existing and len(g.names) >= MAXNAMES:
         return fail(f"too many names (limit {MAXNAMES})")
     ctx.undo.save_global(g)
     for nr in g.names:
-        if nr.name == key:
+        if nr.name == key and nr.scope is None:
             nr.c1, nr.r1, nr.c2, nr.r2, nr.formula = c1, r1, c2, r2, formula
             g.recalc()
             return ok(f"{key} = {shown}", changed=True)
@@ -388,7 +389,7 @@ def _names(ctx: Context) -> Result:
     listed = sorted(ctx.grid.names, key=lambda n: n.name.lower())
     if not listed:
         return ok("no named ranges")
-    pairs = [(nr.name, nr.formula or range_a1(nr.c1, nr.r1, nr.c2, nr.r2)) for nr in listed]
+    pairs = [(nr.key, nr.formula or range_a1(nr.c1, nr.r1, nr.c2, nr.r2)) for nr in listed]
     return ok(
         "  ".join(f"{name}={rng}" for name, rng in pairs),
         lines=[f"{name} = {rng}" for name, rng in pairs],
@@ -399,7 +400,7 @@ def _unname(ctx: Context) -> Result:
     target = ctx.arg(0).strip()
     g = ctx.grid
     for i, nr in enumerate(g.names):
-        if nr.name == target:
+        if nr.key == target:  # `Sheet!Name` removes a sheet-scoped name
             ctx.undo.save_global(g)
             g.names.pop(i)
             g.recalc()

@@ -197,6 +197,10 @@ class Vec:
     # (rows, cols) of the range this Vec was cut from, when `_eval_range`
     # trimmed blank rows or columns past the used extent. None otherwise.
     full: tuple[int, int] | None = None
+    # For an array computed elementwise from a trimmed range: that range's
+    # (rows, cols) and the value each trimmed position would hold. `B:B<>""`
+    # is FALSE there. Lets it broadcast against an untrimmed `ROW(B:B)`.
+    fill_to: tuple[tuple[int, int], Any] | None = None
     # (sheet, col, row) of the range this Vec was read from, for implicit
     # intersection in a legacy formula. None for any computed array.
     origin: tuple[str | None, int, int] | None = None
@@ -238,10 +242,10 @@ class Vec:
     def exact_index(self, step: int = 1) -> tuple[dict[str, int], dict[Any, int]] | None:
         """First position of each value among every ``step``-th element.
 
-        Text is keyed in lower case and everything else by value, as an exact
-        lookup compares them. None means the caller scans: on the first call,
-        because one lookup scans faster than it indexes, and when an element
-        is unhashable.
+        Text is keyed in lower case and everything else by ``(is_bool, value)``,
+        as an exact lookup compares them: FALSE does not match 0. None means
+        the caller scans: on the first call, because one lookup scans faster
+        than it indexes, and when an element is unhashable.
         """
         if self._index is None:
             self._index = {}
@@ -254,7 +258,7 @@ class Vec:
                     if isinstance(v, str):
                         text.setdefault(v.lower(), i)
                     elif not (isinstance(v, float) and v != v):  # NaN equals nothing
-                        values.setdefault(v, i)
+                        values.setdefault((isinstance(v, bool), v), i)
                 self._index[step] = (text, values)
             except TypeError:
                 self._index[step] = None
@@ -495,6 +499,12 @@ def _scalar_or_error(x: Any, op: Callable[[float], float]) -> Any:
         return x
     if x is None:  # a blank cell in a range reads as 0
         x = 0.0
+    elif isinstance(x, (bool, str)):  # `ABS(TRUE)` is 1, `SQRT("25")` 5
+        from .formula.evaluator import _to_number
+
+        x = _to_number(x)
+        if isinstance(x, ExcelError):
+            return x
     if not _is_num(x):
         return ExcelError.VALUE
     try:
@@ -722,7 +732,7 @@ class Cell:
 
 
 class NamedRange:
-    __slots__ = ("name", "c1", "r1", "c2", "r2", "sheet", "formula")
+    __slots__ = ("name", "c1", "r1", "c2", "r2", "sheet", "formula", "scope")
 
     def __init__(
         self,
@@ -733,6 +743,7 @@ class NamedRange:
         r2: int = 0,
         sheet: str | None = None,
         formula: str | None = None,
+        scope: str | None = None,
     ) -> None:
         self.name = name
         self.c1 = c1
@@ -747,6 +758,14 @@ class NamedRange:
         # rectangle, as Excel's Name Manager allows. The rectangle is unused.
         # EXCEL and HYBRID mode only.
         self.formula = formula
+        # The sheet a sheet-scoped name belongs to, or None for the workbook.
+        # A formula on that sheet sees it in place of a workbook name.
+        self.scope = scope
+
+    @property
+    def key(self) -> str:
+        """The name as `_build_named_ranges` keys it: `Data!Total` when scoped."""
+        return f"{self.scope}!{self.name}" if self.scope else self.name
 
 
 class Table:
@@ -1329,7 +1348,8 @@ def _constant(t: str) -> tuple[str, Any, str | None, Any] | None:
     u = t.strip().upper()
     if u in ("TRUE", "FALSE"):
         return u, u == "TRUE", u, None
-    if _ERROR_LIT_RE.fullmatch(u):
+    # `#CALC!` and `#SPILL!` are no formula literal, but a file can hold them.
+    if _ERROR_LIT_RE.fullmatch(u) or u in ("#CALC!", "#SPILL!"):
         err = parse_error_literal(u)
         if err is not None:
             return str(err), math.nan, None, err
@@ -1753,8 +1773,8 @@ def _parse_defined_ref(text: str) -> tuple[str, int, int, int, int] | None:
     hi = hi or lo
     a = ref(lo)
     b = ref(hi)
-    if a is None or b is None:
-        return None
+    if a is None or b is None or a[0] != len(lo) or b[0] != len(hi):
+        return None  # `Inputs!$B$6*2` is a formula, not the cell
     _, c1, r1 = a
     _, c2, r2 = b
     return sheet, min(c1, c2), min(r1, r2), max(c1, c2), max(r1, r2)
@@ -1884,6 +1904,73 @@ def _xlsx_read_saved_values(
     return out
 
 
+# Excel saves `#SPILL!` and `#CALC!` as `#VALUE!` with a `vm` index into
+# xl/metadata.xml, which points at an `_error` rich value holding the real
+# `errorType`: ERROR.TYPE minus 1, of which gridcalc has these two.
+_RICH_ERRORS = {8: "#SPILL!", 13: "#CALC!"}
+_XLSX_RD_NS = "{http://schemas.microsoft.com/office/spreadsheetml/2017/richdata}"
+
+
+def _xlsx_rich_errors(filename: str, root: Any) -> dict[tuple[str, int, int], str]:
+    """Each error cell whose rich value names `#SPILL!` or `#CALC!`. Never raises."""
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    out: dict[tuple[str, int, int], str] = {}
+    if root is None:
+        return out
+    try:
+        with zipfile.ZipFile(filename) as z:
+            if "xl/richData/rdrichvalue.xml" not in z.namelist():
+                return out
+            # noqa justification: see _xlsx_workbook_xml.
+            structs = ET.fromstring(z.read("xl/richData/rdrichvaluestructure.xml"))  # noqa: S314
+            where: dict[int, int] = {}  # structure index -> position of errorType
+            for i, s in enumerate(structs.findall(f"{_XLSX_RD_NS}s")):
+                keys = [k.get("n") for k in s.findall(f"{_XLSX_RD_NS}k")]
+                if s.get("t") == "_error" and "errorType" in keys:
+                    where[i] = keys.index("errorType")
+            values = ET.fromstring(z.read("xl/richData/rdrichvalue.xml"))  # noqa: S314
+            rich: list[str | None] = []  # rich value index -> error text
+            for rv in values.findall(f"{_XLSX_RD_NS}rv"):
+                vs = [v.text or "" for v in rv.findall(f"{_XLSX_RD_NS}v")]
+                pos = where.get(int(rv.get("s", "-1")))
+                code = vs[pos] if pos is not None and pos < len(vs) else ""
+                rich.append(_RICH_ERRORS.get(int(code)) if code.isdigit() else None)
+            meta = ET.fromstring(z.read("xl/metadata.xml"))  # noqa: S314
+            types = meta.find(f"{_XLSX_NS}metadataTypes")
+            names = [t.get("name") for t in ([] if types is None else types)]
+            future: list[str | None] = []  # XLRICHVALUE block index -> error text
+            for fm in meta.findall(f"{_XLSX_NS}futureMetadata"):
+                if fm.get("name") == "XLRICHVALUE":
+                    for rvb in fm.iter(f"{_XLSX_RD_NS}rvb"):
+                        i = int(rvb.get("i", "-1"))
+                        future.append(rich[i] if 0 <= i < len(rich) else None)
+            vm: list[str | None] = []  # `vm` - 1 -> error text
+            block = meta.find(f"{_XLSX_NS}valueMetadata")
+            for bk in [] if block is None else block.findall(f"{_XLSX_NS}bk"):
+                rc = bk.find(f"{_XLSX_NS}rc")
+                t, v = (-1, -1) if rc is None else (int(rc.get("t", "0")), int(rc.get("v", "-1")))
+                ok = 1 <= t <= len(names) and names[t - 1] == "XLRICHVALUE"
+                vm.append(future[v] if ok and 0 <= v < len(future) else None)
+            if not any(vm):
+                return out
+            for sheet, part in _xlsx_sheet_parts(z, root).items():
+                with z.open(part) as f:
+                    for _, el in ET.iterparse(f):  # noqa: S314
+                        if el.tag != f"{_XLSX_NS}c":
+                            continue
+                        idx, at = el.get("vm"), ref(el.get("r", ""))
+                        if el.get("t") == "e" and idx and idx.isdigit() and at is not None:
+                            text = vm[int(idx) - 1] if 1 <= int(idx) <= len(vm) else None
+                            if text is not None:
+                                out[(sheet, at[1], at[2])] = text
+                        el.clear()
+    except (KeyError, OSError, ValueError, zipfile.BadZipFile, ET.ParseError):
+        return {}
+    return out
+
+
 _Layout = tuple[list[tuple[int, int, int, int]], dict[int, float], set[int], str | None]
 
 
@@ -1979,17 +2066,28 @@ def _xlsx_iterate_patch(data: bytes, iterate: tuple[int, float]) -> bytes:
     return data.replace(b"<calcPr", b"<calcPr" + attrs.encode())
 
 
+def _xlsx_local_sheet(root: Any, lid: str | None) -> str | None:
+    """The sheet a ``localSheetId`` names. It indexes every ``<sheet>`` in
+    ``workbook.xml``, chart sheets included, so gridcalc's sheet list cannot."""
+    if root is None or lid is None or not lid.isdigit():
+        return None
+    sheets = root.find(f"{_XLSX_NS}sheets")
+    els = [] if sheets is None else sheets.findall(f"{_XLSX_NS}sheet")
+    return els[int(lid)].get("name") if int(lid) < len(els) else None
+
+
 def _xlsx_read_defined_names(
     root: Any, sheet_order: list[str]
-) -> list[tuple[str, str | None, int, int, int, int]]:
+) -> list[tuple[str, str | None, int, int, int, int, str | None]]:
     """Read simple cell/range defined names from a parsed ``xl/workbook.xml``.
-    Returns ``(name, sheet, c1, r1, c2, r2)`` tuples. Built-in names
+    Returns ``(name, sheet, c1, r1, c2, r2, scope)`` tuples; ``scope`` is the
+    sheet a ``localSheetId`` name belongs to. Built-in names
     (``_xlnm.*``) and non-reference names are skipped. A name defined locally
     on every sheet with the same rectangle on that sheet -- what
     ``_xlsx_defined_names_xml`` writes for a sheet-less name -- comes back
     with ``sheet`` None. Never raises -- a malformed or name-less workbook
     yields an empty list."""
-    out: list[tuple[str, str | None, int, int, int, int]] = []
+    out: list[tuple[str, str | None, int, int, int, int, str | None]] = []
     container = None if root is None else root.find(f"{_XLSX_NS}definedNames")
     if container is None:
         return out
@@ -2002,10 +2100,11 @@ def _xlsx_read_defined_names(
         if parsed is None or parsed[0] not in sheet_order:
             continue  # a formula, or another workbook's range: a formula name
         lid = el.get("localSheetId")
-        if lid is not None and lid.isdigit():
-            local.setdefault(name, {})[int(lid)] = parsed
-        else:
-            out.append((name, *parsed))
+        own = _xlsx_local_sheet(root, lid)
+        if own in sheet_order:
+            local.setdefault(name, {})[sheet_order.index(own)] = parsed
+        elif lid is None:
+            out.append((name, *parsed, None))
     global_names = {row[0] for row in out}
     for name, by_id in local.items():
         rects = {p[1:] for p in by_id.values()}
@@ -2016,35 +2115,43 @@ def _xlsx_read_defined_names(
             and len(rects) == 1
             and all(by_id[i][0] == sh for i, sh in enumerate(sheet_order))
         ):
-            out.append((name, None, *rects.pop()))
+            out.append((name, None, *rects.pop(), None))
         else:
-            out.extend((name, *p) for p in by_id.values())
+            out.extend(
+                (name, *p, sheet_order[i] if i < len(sheet_order) else None)
+                for i, p in by_id.items()
+            )
     return out
 
 
 def _xlsx_read_formula_names(
     root: Any, taken: set[str], sheets: list[str]
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, str, str | None]]:
     """``(name, "=formula")`` for each defined name that is not a rectangle on
     one of ``sheets``: a formula, or a range in another workbook
     (`[1]Data!$A$1`) or on a sheet the file lacks, kept as written.
 
-    A sheet-local one is kept only when no other name has its name, since
-    gridcalc's names are workbook-wide. Never raises.
+    Returns ``(name, "=formula", scope)``; ``taken`` holds the keys
+    (`NamedRange.key`) already read as rectangles. Never raises.
     """
     container = None if root is None else root.find(f"{_XLSX_NS}definedNames")
     if container is None:
         return []
-    found: dict[str, list[str]] = {}
+    found: dict[tuple[str, str | None], str] = {}
     for el in container.findall(f"{_XLSX_NS}definedName"):
         name = el.get("name", "")
         text = (el.text or "").strip()
-        if not name or name.startswith("_xlnm.") or not text or name in taken:
+        lid = el.get("localSheetId")
+        scope = _xlsx_local_sheet(root, lid)
+        if lid is not None and scope not in sheets:
+            continue  # scoped to a chart sheet, or to a sheet the file lacks
+        key = f"{scope}!{name}" if scope else name
+        if not name or name.startswith("_xlnm.") or not text or key in taken:
             continue
         parsed = _parse_defined_ref(text)
         if parsed is None or parsed[0] not in sheets:
-            found.setdefault(name, []).append(text)
-    return [(n, "=" + _strip_xl_prefixes(t[0])) for n, t in found.items() if len(t) == 1]
+            found.setdefault((name, scope), text)
+    return [(n, "=" + _strip_xl_prefixes(t), sc) for (n, sc), t in found.items()]
 
 
 def _xlsx_defined_names_xml(names: list[NamedRange], sheet_names: list[str]) -> str:
@@ -2057,17 +2164,21 @@ def _xlsx_defined_names_xml(names: list[NamedRange], sheet_names: list[str]) -> 
 
     els: list[str] = []
     for nr in names:
+        own = f' localSheetId="{sheet_names.index(nr.scope)}"' if nr.scope in sheet_names else ""
+        if nr.scope is not None and not own:
+            continue  # its sheet is gone
         if nr.formula is not None:
             text = escape(_add_xl_prefixes(nr.formula.removeprefix("=")))
-            els.append(f"<definedName name={quoteattr(nr.name)}>{text}</definedName>")
+            els.append(f"<definedName name={quoteattr(nr.name)}{own}>{text}</definedName>")
             continue
         rng = f"${col_name(nr.c1)}${nr.r1 + 1}"
         if (nr.c1, nr.r1) != (nr.c2, nr.r2):
             rng += f":${col_name(nr.c2)}${nr.r2 + 1}"
-        if nr.sheet is None:
+        if nr.sheet is None and nr.scope is None:
             targets: list[tuple[int | None, str]] = list(enumerate(sheet_names))
-        elif nr.sheet in sheet_names:
-            targets = [(None, nr.sheet)]
+        elif (nr.sheet or nr.scope) in sheet_names:
+            lid = sheet_names.index(nr.scope) if nr.scope else None
+            targets = [(lid, nr.sheet or nr.scope)]  # type: ignore[list-item]
         else:
             continue  # its sheet is gone; the name already resolves to nothing
         for lid, sheet in targets:
@@ -3375,6 +3486,7 @@ class Grid:
         order = [s.name for s in self.sheets]
         del self.sheets[idx]
         self.tables = [t for t in self.tables if t.sheet != name]
+        self.names = [nr for nr in self.names if nr.scope != name]  # as Excel
 
         def shrink(first: str, last: str) -> tuple[str, str] | str | None:
             # As Excel: a deleted end moves inward; a span of only it is #REF!.
@@ -3485,6 +3597,8 @@ class Grid:
         for nr in self.names:
             if nr.sheet == old:
                 nr.sheet = new
+            if nr.scope == old:
+                nr.scope = new
             if nr.formula is not None:
                 nr.formula = _rewrite_sheet_prefix(
                     _rewrite_span_quals(nr.formula, renamed), old, new
@@ -3921,8 +4035,10 @@ class Grid:
             from .formula.evaluator import TRIM_CELLS
 
             extent = functools.cache(self._used_extent)  # only if a range needs it
-            for nr in self.names:
-                if nr.formula is not None:
+            # A name scoped to the active sheet replaces the workbook's.
+            here = self._active.name
+            for nr in sorted(self.names, key=lambda n: n.scope is not None):
+                if nr.formula is not None or nr.scope not in (None, here):
                     continue  # EXCEL-grammar text; PYTHON mode has no parser for it
                 nr_cells = self._sheet_cells(nr.sheet) if nr.sheet else self._cells
                 c2, r2 = nr.c2, nr.r2
@@ -4120,14 +4236,14 @@ class Grid:
             if nr.formula is not None:
                 node = self._name_ast(nr.formula)
                 if node is not None:
-                    named[nr.name] = node
+                    named[nr.key] = node
                 continue
             start = F_CellRef(nr.c1, nr.r1, False, False, sheet=nr.sheet)
             if nr.c1 == nr.c2 and nr.r1 == nr.r2:
-                named[nr.name] = start
+                named[nr.key] = start
             else:
                 end = F_CellRef(nr.c2, nr.r2, False, False, sheet=nr.sheet)
-                named[nr.name] = F_RangeRef(start, end)
+                named[nr.key] = F_RangeRef(start, end)
         for t in self.tables:
             d1, d2 = t.data_rows()
             # A table's bare name is its data rows: `=SUM(Table1)`.
@@ -5735,7 +5851,8 @@ class Grid:
         for name, rng in names_dict.items():
             if not isinstance(name, str) or not isinstance(rng, str):
                 continue
-            nr = NamedRange(name=name)
+            scope, _, bare = name.rpartition("!")
+            nr = NamedRange(name=bare, scope=scope or None)
             if rng.startswith("="):
                 nr.formula = rng
                 self.names.append(nr)
@@ -6008,8 +6125,9 @@ class Grid:
         if self.names:
             out["names"] = {}
             for nr in self.names:
+                # A sheet-scoped name keys as `Sheet!Name`; a name cannot hold `!`.
                 if nr.formula is not None:
-                    out["names"][nr.name] = nr.formula
+                    out["names"][nr.key] = nr.formula
                     continue
                 a = cellname(nr.c1, nr.r1)
                 rng = f"{a}:{col_name(nr.c2)}{nr.r2 + 1}"
@@ -6018,7 +6136,7 @@ class Grid:
                 # bare ``A1:B3`` form (backward compatible with v1/v2 files).
                 if nr.sheet:
                     rng = f"{nr.sheet}!{rng}"
-                out["names"][nr.name] = rng
+                out["names"][nr.key] = rng
 
         if self.tables:
             out["tables"] = [
@@ -6140,13 +6258,13 @@ class Grid:
         # formulas like `=SUM(SalesData)` resolve.
         root = _xlsx_workbook_xml(filename)
         self.names = [
-            NamedRange(name=nm, c1=c1, r1=r1, c2=c2, r2=r2, sheet=sh)
-            for (nm, sh, c1, r1, c2, r2) in _xlsx_read_defined_names(root, sheet_order)
+            NamedRange(name=nm, c1=c1, r1=r1, c2=c2, r2=r2, sheet=sh, scope=sc)
+            for (nm, sh, c1, r1, c2, r2, sc) in _xlsx_read_defined_names(root, sheet_order)
         ]
-        taken = {nr.name for nr in self.names}
+        taken = {nr.key for nr in self.names}
         self.names += [
-            NamedRange(name=nm, formula=f)
-            for nm, f in _xlsx_read_formula_names(root, taken, sheet_order)
+            NamedRange(name=nm, formula=f, scope=sc)
+            for nm, f, sc in _xlsx_read_formula_names(root, taken, sheet_order)
         ]
         self.tables = _xlsx_read_tables(filename, root)
         # `cw` is workbook-wide in gridcalc, so the first sheet's default sets it.
@@ -6166,6 +6284,7 @@ class Grid:
         from .formula.errors import parse_error_literal
 
         dropped = 0
+        rich_errors = _xlsx_rich_errors(filename, root)
         for sname, c, r, kind, value, numfmt_code, numfmt_id, style in cells:
             if not (0 <= c < NCOL and 0 <= r < NROW):
                 dropped += 1
@@ -6173,8 +6292,10 @@ class Grid:
             self.active = sheet_index[sname]
             datefmt = normalise_format(numfmt_code, numfmt_id)
             if kind == "s":
-                self._put_label(c, r, _label_text(value))
+                # An empty string is a cell, not a blank: ISBLANK is FALSE, ="" TRUE.
+                self._put_label(c, r, _label_text(value) if value else '"')
             elif kind == "e":
+                value = rich_errors.get((sname, c, r), value)
                 if parse_error_literal(value) is not None:
                     self._put_constant(c, r, value)
                 else:
@@ -6373,7 +6494,10 @@ class Grid:
                         # OpenXLSX writes no error cell; the postprocess turns
                         # this formula into one.
                         payload.append((s.name, c, r, "f", cl.text, None, numfmt, style))
-                        errors.setdefault(s.name, []).append((cellname(c, r), cl.text))
+                        # Excel opens no `<v>#CALC!</v>`; it writes these two as
+                        # `#VALUE!` plus rich-value metadata gridcalc does not write.
+                        code = "#VALUE!" if cl.text in ("#CALC!", "#SPILL!") else cl.text
+                        errors.setdefault(s.name, []).append((cellname(c, r), code))
                     else:
                         payload.append((s.name, c, r, "b", cl.val, numfmt, style))
                 elif cl.type == NUM:

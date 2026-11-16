@@ -1020,7 +1020,7 @@ class TestBlankCellsInRanges:
             ("=COUNT(A1:A3)", 2.0),
             ("=COUNTA(A1:A3)", 2.0),
             ('=COUNTIF(A1:A3,"")', 1.0),
-            ('=COUNTIF(A1:A3,"*")', 2.0),
+            ('=COUNTIF(A1:A3,"*")', 0.0),  # Excel 16.114: "*" matches text only
             ("=MEDIAN(A1:A3)", 6.0),
             ("=AVERAGE(OFFSET(A1,0,0,3,1))", 6.0),
             ("=SUM(A1:A3)", 12.0),

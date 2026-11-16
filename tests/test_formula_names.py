@@ -133,3 +133,90 @@ def test_a_saved_name_that_reads_as_a_cell_warns_on_load(tmp_path: Path) -> None
     assert g.load_warnings == [
         "name TAX1 reads as a cell reference, since columns now reach XFD; rename it"
     ]
+
+
+# Sheet-scoped names (`localSheetId` in xlsx), as Excel resolves them.
+
+
+def _scoped() -> Grid:
+    """`Total` is A1 for the workbook (1) and Data!A1 on Data (2); Other has none."""
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    first = g.sheets[0].name
+    g.setcell(0, 0, "1")
+    g.add_sheet("Data")
+    g.set_active("Data")
+    g.setcell(0, 0, "2")
+    g.add_sheet("Other")
+    g.names += [
+        NamedRange("Total", 0, 0, 0, 0, sheet=first),
+        NamedRange("Total", 0, 0, 0, 0, sheet="Data", scope="Data"),
+    ]
+    g.setcell(1, 0, "=Total")
+    g.set_active("Other")
+    g.setcell(1, 0, "=Total")
+    g.setcell(2, 0, "=Data!Total")
+    g.set_active(first)
+    g.setcell(1, 0, "=Total")
+    g.recalc()
+    return g
+
+
+def _v(g: Grid, sheet: str, c: int, r: int):
+    cl = g._sheet_cells(sheet)[(c, r)]
+    return cl.err if cl.err is not None else cl.val
+
+
+def test_a_sheet_scoped_name_shadows_the_workbook_name_on_its_sheet():
+    g = _scoped()
+    first = g.sheets[0].name
+    assert _v(g, first, 1, 0) == 1.0
+    assert _v(g, "Data", 1, 0) == 2.0
+    assert _v(g, "Other", 1, 0) == 1.0
+    assert _v(g, "Other", 2, 0) == 2.0  # `Data!Total` names Data's own
+
+
+def test_sheet_scoped_names_survive_xlsx_and_json(tmp_path):
+    g = _scoped()
+    for ext, save, load in ((".xlsx", "xlsxsave", "xlsxload"), (".json", "jsonsave", "jsonload")):
+        path = str(tmp_path / f"b{ext}")
+        assert getattr(g, save)(path) == 0
+        g2 = Grid()
+        assert getattr(g2, load)(path) == 0
+        g2.recalc()
+        assert sorted(nr.key for nr in g2.names) == ["Data!Total", "Total"], ext
+        assert [_v(g2, s, 1, 0) for s in ("Data", "Other")] == [2.0, 1.0], ext
+        assert _v(g2, "Other", 2, 0) == 2.0, ext
+
+
+def test_a_sheet_scoped_name_follows_its_sheet():
+    g = _scoped()
+    g.rename_sheet("Data", "Facts")
+    g.recalc()
+    assert [nr.key for nr in g.names] == ["Total", "Facts!Total"]
+    assert g._sheet_cells("Other")[(2, 0)].text == "=Facts!Total"
+    assert _v(g, "Other", 2, 0) == 2.0
+    g.remove_sheet("Facts")
+    g.recalc()
+    assert [nr.key for nr in g.names] == ["Total"]
+
+
+def test_name_commands_leave_sheet_scoped_names_alone():
+    g = _scoped()
+    undo = UndoManager()
+    assert shared.run("name", g, undo, ["Total", "C3"]).ok
+    assert [(nr.key, nr.c1, nr.r1) for nr in g.names] == [("Total", 2, 2), ("Data!Total", 0, 0)]
+    assert shared.run("unname", g, undo, ["Data!Total"]).ok
+    assert [nr.key for nr in g.names] == ["Total"]
+    undo.undo(g)
+    assert [nr.key for nr in g.names] == ["Total", "Data!Total"]
+
+
+def test_names_past_column_xfd_are_names():
+    """`named1` is a name: columns stop at XFD (IronCalc defined_names_for_unit_test.xlsx)."""
+    g = _grid(named1="B4", AddressLine1="B5")
+    g.setcell(1, 3, "11")
+    g.setcell(1, 4, "22")
+    g.setcell(0, 0, "=named1+AddressLine1")
+    assert g.cells[0][0].val == 33.0

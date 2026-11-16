@@ -308,7 +308,8 @@ _TIME_FORMATS = ("%H:%M:%S", "%H:%M", "%I:%M %p", "%I:%M:%S %p", "%I %p")
 
 
 _TIME_RE = re.compile(r"(\d+):(\d+)(?::(\d+(?:\.\d*)?))?\s*([AaPp][Mm])?")
-_MIN_SEC_RE = re.compile(r"(\d+):(\d+\.\d*)")
+_MIN_SEC_RE = re.compile(r"(\d+):(\d+\.\d+)")  # `23:59.0` is m:ss
+_HM_DOT_RE = re.compile(r"\d+:\d+\.")  # `23:59.` is h:mm
 
 
 _MONTH_NUMS = {name.lower(): i for i, full in enumerate(_MONTHS, 1) for name in (full, full[:3])}
@@ -334,6 +335,8 @@ def parse_time(text: str) -> float | None:
     if not _may_be_date(s):
         return None
     ms = _MIN_SEC_RE.fullmatch(s)
+    if ms is None and _HM_DOT_RE.fullmatch(s):
+        s = s[:-1]
     if ms is not None:  # `59:9999.0`: minutes and seconds
         mins, secs = int(ms.group(1)), float(ms.group(2))
         return None if mins >= 60 or secs >= 10000 else (mins * 60 + secs) / 86400.0

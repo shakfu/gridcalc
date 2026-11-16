@@ -25,7 +25,7 @@ from typing import Any
 from openpyxl import load_workbook as openpyxl_load
 from openpyxl.utils.datetime import to_excel
 
-from gridcalc.engine import FORMULA, Grid
+from gridcalc.engine import FORMULA, Grid, _xlsx_rich_errors, _xlsx_workbook_xml
 from gridcalc.formula.deps import RangeKey, extract_deps
 from gridcalc.loader import load_workbook
 
@@ -44,6 +44,10 @@ def application(path: Path) -> str:
         if el.tag.endswith("}Application"):
             return el.text or ""
     return ""
+
+
+# Excel writes a control character in a string as `_xHHHH_`; openpyxl keeps the escape.
+_XML_ESCAPE_RE = re.compile(r"_x([0-9A-Fa-f]{4})_")
 
 
 def excel_values(path: Path) -> tuple[dict[Key, str], dict[Key, Any]]:
@@ -66,11 +70,15 @@ def excel_values(path: Path) -> tuple[dict[Key, str], dict[Key, Any]]:
             v = cell.value
             if cell.data_type == "e":
                 v = ("error", str(v))
+            elif isinstance(v, str):
+                v = _XML_ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 16)), v)
             elif isinstance(v, (dt.datetime, dt.date, dt.time)):
                 v = _Ms(to_excel(v))
             elif isinstance(v, dt.timedelta):  # openpyxl's reading of `[h]:mm` formats
                 v = _Ms(v.total_seconds() / 86400)
             saved[key] = v
+    rich = _xlsx_rich_errors(str(path), _xlsx_workbook_xml(str(path)))
+    saved |= {k: ("error", text) for k, text in rich.items() if k in saved}
     return formulas, saved
 
 

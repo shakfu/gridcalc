@@ -2964,7 +2964,7 @@ class TestFormulasCannotCrashSetcell:
         g.setcell(5, 3, "=SUM(SEQUENCE(1024, 1024))")
         assert g.cells[5][0].val == float(math.factorial(170))
         assert g.cells[5][1].val == 32766.0
-        assert g.cells[5][2].val == 0.0
+        assert g.cells[5][2].err is ExcelError.NUM  # Excel 16.114: COMBINA(0, k>0)
         assert g.cells[5][3].val == 1048576 * 1048577 / 2
 
     def test_a_py_function_returning_a_huge_int_is_num(self):

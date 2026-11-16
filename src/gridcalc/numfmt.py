@@ -153,12 +153,13 @@ def format_value(
         return Formatted(text, sec.color)
     if _ELAPSED_RE.search(body):
         return Formatted(_render_elapsed(v, body), sec.color)
-    if is_date_format(body):
-        if _DIGIT_IN_DATE_RE.search(_NOISE_RE.sub("", body)):
+    plain = _NOISE_RE.sub("", body)
+    # `is_date_format` reads a bare `m` as no date, to stay safe on load; here
+    # it is a month, as in Excel: TEXT(45000,"m") is "3".
+    if is_date_format(body) or _DATE_LETTER_RE.search(plain):
+        if _DIGIT_IN_DATE_RE.search(plain):
             return Formatted(None, sec.color)  # `mm###` mixes date and digit codes
         return Formatted(format_serial(v, body), sec.color)
-    if _DATE_LETTER_RE.search(_NOISE_RE.sub("", body)):
-        return Formatted(None, sec.color)
     return Formatted(_render_number(v, body), sec.color)
 
 
@@ -182,9 +183,9 @@ def _render_elapsed(v: float, body: str) -> str | None:
     unbounded. A negative value is allowed only for a code of one bracket."""
     toks = re.findall(r'\[(?:h+|m+|s+)\]|"[^"]*"|\\.|\.0+|h+|m+|s+|.', body, re.IGNORECASE)
     units = [t for t in toks if t[0] in "[hHmMsS"]
-    if v < 0 and len(units) > 1:
-        return None
     dec = next((len(t) - 1 for t in toks if t.startswith(".0")), 0)
+    if v < 0 and (len(units) > 1 or dec):
+        return None  # Excel: TEXT(-1,"[s]") is "-86400", TEXT(-1,"[s].000") #VALUE!
     sign = "-" if v < 0 else ""
     total = round(abs(v) * 86400 * 10**dec) / 10**dec  # seconds, rounded as shown
     whole = int(total)

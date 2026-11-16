@@ -11,16 +11,16 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 - [ ] **Corpus mismatches still open** (`docs/dev/excel-corpus.md`). Largest first:
   - A legacy formula keeps its rule only through copy and fill; pasting its text from the clipboard makes it dynamic. Excel keeps the `@` in the text instead.
 
-  - About 700 cells remain (79,100 of 79,797, 99.1%, 2026-11-16). Open, each needs a decision beyond one function:
-    - `YEARFRAC` (20 cells) and `WEEKNUM` (5) check basis/return_type before an error argument; the evaluator propagates the first error argument before the function runs.
+  - About 340 cells remain (79,454 of 79,797, 99.57%, 2026-11-16). Open:
+    - Solver precision: `XIRR` (15 cells), `IRR` and `NPV` (12), `ODDFYIELD` (3), `CUMPRINC` (2), `NORM.INV` and `LOGNORM.INV` (2) differ from Excel near 1e-9 relative; gridcalc's roots have the smaller residual. `tests/test_excel_saved_models.py` has a strict xfail for the `XIRR` case, 7e-9 off. `RATE(360,-1000,150000,0,0,0)` is `#NUM!` in Excel, whose iteration fails from a guess of 0; gridcalc converges.
 
-    - `ROW(B:B)` is the full column while `B:B<>""` is trimmed to the used extent, so the shapes differ (`ROW_COLUM.xlsx`).
+    - Aggregates ignore the trimmed tail of a computed array: `SUMPRODUCT((B:B="")*1)` counts only the used rows, and `ROWS(B:B*1)` is the used height. A lifted function (`ISBLANK(B:B)*ROW(B:B)`) records no tail value.
 
-    - `MATCH(blank,...,-1)`, `XLOOKUP` with an omitted lookup value in binary mode, 4 `TEXT` format codes.
+    - `TEXT(1.5,"#.#####00#0")` is "1.5000" in Excel; the digit rule is not known.
 
-    - Solver precision: `XIRR` (12 cells), `IRR` (12), `ODDFYIELD` (3), `CUMPRINC` (2) differ from Excel near 1e-9 relative; gridcalc's roots have the smaller residual. `tests/test_excel_saved_models.py` has a strict xfail for the `XIRR` case, 7e-9 off.
+    - `CODE` of a character outside cp1252 returns its code point. Windows Excel likely gives 63 (`?`); unverified, since only Mac Excel is at hand.
 
-    - Not engine bugs: `CHAR` of a control character (openpyxl reads `_x0001_`), `TODAY()` in templates, a `week()` UDF, and text saved under a non-US locale (`"23€"`, day-first `"2/3/2023"`).
+    - Not engine bugs: `TODAY()`, `NOW()` and `RANDARRAY` in templates, `TAN` near pi/2, text saved under a non-US locale (`"23€"`, day-first `"2/3/2023"`), `GEOMEAN.xlsx` (not saved by Excel: its errors are stored as text), `excelcompiler.xlsx` `datetime!B9` (a stale saved value), and `npv.xlsx` (last-bit `NPV` differences, magnified by a subtraction).
 
   - `HYPGEOM.DIST`'s cumulative form sums one term per success and has no closed form here; a sample of a billion runs that long.
 

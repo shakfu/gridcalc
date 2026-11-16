@@ -49,7 +49,8 @@ def _copy_names(names: list[NamedRange]) -> list[NamedRange]:
     mutated by the very edit it is meant to record.
     """
     return [
-        NamedRange(n.name, n.c1, n.r1, n.c2, n.r2, sheet=n.sheet, formula=n.formula) for n in names
+        NamedRange(n.name, n.c1, n.r1, n.c2, n.r2, sheet=n.sheet, formula=n.formula, scope=n.scope)
+        for n in names
     ]
 
 

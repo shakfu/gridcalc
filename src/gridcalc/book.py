@@ -85,7 +85,10 @@ class Book:
                 if (nr.c1, nr.r1) != (nr.c2, nr.r2):
                     rect += ":" + _abs(nr.c2, nr.r2)
                 where = f"{_quote(nr.sheet)}!{rect}" if nr.sheet else rect
-            key = nr.name if nr.name not in out else f"{_quote(nr.sheet or '')}!{nr.name}"
+            if nr.scope:
+                key = f"{_quote(nr.scope)}!{nr.name}"
+            else:
+                key = nr.name if nr.name not in out else f"{_quote(nr.sheet or '')}!{nr.name}"
             out[key] = where
         return out
 
@@ -100,10 +103,12 @@ class Book:
         sheet, _, local = text.rpartition("!")
         sheet = _unquote(sheet)
         key = local.casefold()
-        found = [
-            nr
-            for nr in self.grid.names
-            if nr.name.casefold() == key and (not sheet or (nr.sheet or "") == sheet)
+        named = [nr for nr in self.grid.names if nr.name.casefold() == key]
+        # `Data!Total` is Data's own `Total` if it has one; a bare name is the
+        # workbook's, as from a cell on a sheet without its own.
+        scoped = [nr for nr in named if nr.scope is not None and nr.scope == sheet]
+        found = scoped or [
+            nr for nr in named if nr.scope is None and (not sheet or (nr.sheet or "") == sheet)
         ]
         if len(found) > 1:
             found = [nr for nr in found if nr.sheet is None] or found

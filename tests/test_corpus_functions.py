@@ -611,3 +611,295 @@ def test_binom_cdf_is_accurate_at_large_n() -> None:
     for n in (2_000, 2_000_000, 1_000_000_000):
         k = n // 2
         assert _binom_cdf(k, n, 0.5) == pytest.approx(0.5 + _binom_pmf(k, n, 0.5) / 2, rel=1e-13)
+
+
+# Argument rules probed against Excel 16.114 (2026-11-16), and the IronCalc
+# corpus files named. B1 holds `=TRUE`, B2 `="25"`, B3 `=DATE(2024,1,31)`.
+@pytest.mark.parametrize(
+    ("formula", "value"),
+    [
+        # The Analysis ToolPak refuses a logical; the other functions read it as 1.
+        ("=ERF(B1)", ExcelError.VALUE),
+        ("=ERF(TRUE)", ExcelError.VALUE),
+        ("=GESTEP(TRUE)", ExcelError.VALUE),
+        ("=ISODD(TRUE)", ExcelError.VALUE),
+        ("=QUOTIENT(TRUE,1)", ExcelError.VALUE),
+        ("=GCD({TRUE,2})", ExcelError.VALUE),
+        ("=EDATE(B3,B1)", ExcelError.VALUE),
+        ("=WEEKNUM(1,TRUE)", ExcelError.VALUE),
+        ("=WEEKNUM(-1,TRUE)", ExcelError.NUM),  # the date's range comes first
+        ("=YEARFRAC(-1,TRUE)", ExcelError.NUM),
+        ("=YEARFRAC(-1,200,TRUE)", ExcelError.VALUE),  # YEARFRAC checks basis first
+        ("=NETWORKDAYS.INTL(B3,B3+5,B1)", 4.0),
+        ("=ERF(B2)", math.erf(25)),
+        ('=EDATE(B3,"1")', 45351.0),
+        ("=ABS(B1)", 1.0),
+        ("=SQRT(B2)", 5.0),
+        ("=COMBIN(B1,1)", 1.0),
+        ("=ISNONTEXT(1/0)", True),
+        ('=NORM.DIST(42,40,1.5,"abc")', ExcelError.VALUE),
+        ('=EXPON.DIST(0.2,10,"abc")', ExcelError.VALUE),
+        # Times round to the second; arguments have Excel's limits.
+        ("=MINUTE(12.5/24-0.0004/86400)", 30.0),
+        ("=SECOND(PI())", 54.0),
+        ("=HOUR(1-0.1/86400)", 0.0),
+        ("=TIME(32768,0,0)", ExcelError.NUM),
+        ("=TIME(32767,0,0)", pytest.approx((32767 % 24) / 24)),
+        ("=EDATE(2958465,0)", 2958465.0),
+        ("=EOMONTH(2958465,0)", 2958465.0),
+        ("=EDATE(2958465,1)", ExcelError.NUM),
+        ("=EDATE(1,-1)", ExcelError.NUM),
+        # Degrees of freedom truncate.
+        ("=CHISQ.DIST(8,3.34,TRUE)", pytest.approx(0.9539882943107687, rel=1e-9)),
+        ("=CHISQ.INV(0.5,3.5)", pytest.approx(2.365973884375, rel=1e-9)),
+        ("=F.DIST(0.8,2.4,3,TRUE)", pytest.approx(0.4733220523344033, rel=1e-9)),
+        ("=F.INV(0.5,2.9,3)", pytest.approx(0.881101577952, rel=1e-9)),
+        ("=CONFIDENCE.T(0.05,1,1.9)", ExcelError.DIV0),
+        ("=RANK.EQ(4,A1:A3)", ExcelError.NA),
+        ("=PROB({1,2,3},{0.5,0.5},1)", ExcelError.NA),
+        ("=PROB({1,2},{0.5,0.5},2,1)", 0.0),
+        ("=COVARIANCE.P({1,2,3},{1,2})", ExcelError.NA),
+        ("=COTH(9999999999999)", 1.0),
+        ("=SECH(9999999999999)", 0.0),
+        ("=ROUND(7.123,-10000000)", 0.0),
+        ("=ROUNDUP(7.123,-10000000)", ExcelError.NUM),
+        # Comparison and lookup.
+        ('=SWITCH(Z9,0,"m","n")', "m"),
+        ('=SWITCH(Z9,"","m","n")', "n"),
+        ('=SWITCH(Z9,FALSE,"m","n")', "n"),
+        ('=SWITCH(1,TRUE,"m","n")', "n"),
+        ('=SWITCH("a","A","m","n")', "m"),
+        ('=SWITCH("1",1,"m","n")', "n"),
+        ("=INDEX(SWITCH({FALSE,TRUE},FALSE,0,TRUE,1),2)", 1.0),
+        ('=MATCH(FALSE,{"FALSE",0},0)', ExcelError.NA),
+        ('=MATCH(FALSE,{"FALSE",0,FALSE},0)', 3.0),
+        ("=MATCH(0,{FALSE,0},0)", 2.0),
+        ('=SUMIF(E1:E2,"12*",F1:F2)', 3.0),  # a number is not text: E2's error is skipped
+        ('=COUNTIF(A1:A3,"*")', 0.0),
+        # Powers, COMBINA, SMALL, SUBSTITUTE.
+        ("=(-8)^(1/3)", -2.0),
+        ("=(-8)^(1/5)", pytest.approx(-1.51571656651)),
+        ("=(-8)^(2/3)", ExcelError.NUM),
+        ("=POWER(-2,0.5)", ExcelError.NUM),
+        ("=POWER(0,-1)", ExcelError.DIV0),
+        ("=COMBINA(0,5)", ExcelError.NUM),
+        ("=COMBINA(0,0)", 1.0),
+        ('=SMALL("3.4",1)', 3.4),
+        ("=SMALL(TRUE,1)", 1.0),
+        ('=SMALL("x",1)', ExcelError.VALUE),
+        ('=SUBSTITUTE("aaa","a","b",0)', ExcelError.VALUE),
+        ('=SUBSTITUTE("aaa","a","b",1.5)', "baa"),
+    ],
+)
+def test_excel_argument_rules(formula, value) -> None:
+    cells = {(0, 0): "1", (0, 1): "2", (0, 2): "3", (1, 0): "=TRUE", (1, 1): '="25"'}
+    cells |= {(1, 2): "=DATE(2024,1,31)", (4, 0): '"1213', (4, 1): "1213"}
+    cells |= {(5, 0): "3", (5, 1): "=1/0"}
+    got = _ev(formula, cells)
+    if isinstance(value, (ExcelError, bool)):
+        assert got is value
+    elif isinstance(value, float):
+        assert got == pytest.approx(value, rel=1e-12)
+    else:
+        assert got == value
+
+
+# Probed against Excel 16.114 (2026-11-16) or read from IronCalc's saved values.
+# A1:A3 hold 1, 2, 3; K1 holds the text "text".
+@pytest.mark.parametrize(
+    ("formula", "value"),
+    [
+        ("=MAX(,-1)", 0.0),  # an omitted argument is 0
+        ("=MIN(5,)", 0.0),
+        ("=AVERAGE(,2)", 1.0),
+        ("=COUNT(,1)", 2.0),
+        ('=MAX(NA(),"abc")', ExcelError.NA),  # left to right
+        ('=MAX("abc",NA())', ExcelError.VALUE),
+        ("=+TRUE", True),
+        ('=TYPE(+"3")', 2.0),
+        ('=NOT(" TRUE ")', ExcelError.VALUE),
+        ('=ADDRESS(1,1,1,1,"A Wird One$")', "'A Wird One$'!$A$1"),
+        ('=ADDRESS(1,1,1,1,"A1")', "'A1'!$A$1"),
+        ('=ADDRESS(1,1,1,1,"a.b")', "a.b!$A$1"),
+        ("=XMATCH(2,{1,2;3,4})", ExcelError.VALUE),
+        ("=SEQUENCE(-1)", ExcelError.VALUE),
+        ("=INDEX(SEQUENCE(,12,,2.5),1,2)", 3.5),
+        ('=NUMBERVALUE(" 3 000 ")', 3000.0),
+        ('=NUMBERVALUE("3"&CHAR(160)&"000")', ExcelError.VALUE),
+        ('=NUMBERVALUE("1.234,5",",;",".;")', 1234.5),
+        ('=NUMBERVALUE("1.000,5")', ExcelError.VALUE),
+        ('=NUMBERVALUE("1,5",",",",")', ExcelError.VALUE),
+        ('=NUMBERVALUE("%")', 0.0),
+        ('=NUMBERVALUE("inf")', ExcelError.VALUE),
+        ('=TEXTAFTER("a-b-c","")', "a-b-c"),
+        ('=TEXTAFTER("a-b-c","",-1)', ""),
+        ('=TEXTBEFORE("a-b-c","")', ""),
+        ('=TEXTBEFORE("a-b-c","",-100)', "a-b-c"),
+        ('=TEXTSPLIT("Hello","")', ExcelError.VALUE),
+        ('=INDEX(TEXTSPLIT("1,2.3-4",{",",".","-"}),1,3)', "3"),
+        ("=INDEX(WRAPROWS(A1:A3,2,NA()),1,1)", 1.0),
+        ('=INDEX(SORT({1;"a";#N/A;#DIV/0!},1,-1),1)', ExcelError.NA),  # errors by code
+        ("=LAMBDA(x,ISREF(x))(K1)", True),
+        ("=LET(x,A1:A2,ISREF(x))", True),
+        ("=LET(x,5,ISREF(x))", False),
+        ("=LAMBDA(x,MAX(x))(K1)", 0.0),  # text in a reference is skipped
+        ("=LET(x,A2,ROW(x))", 2.0),
+    ],
+)
+def test_excel_batch3(formula, value) -> None:
+    got = _ev(formula, {(0, 0): "1", (0, 1): "2", (0, 2): "3", (10, 0): "text"})
+    if isinstance(value, (ExcelError, bool)):
+        assert got is value
+    elif isinstance(value, float):
+        assert got == pytest.approx(value, rel=1e-12)
+    else:
+        assert got == value
+
+
+# Probed against Excel 16.114 (2026-11-16); IronCalc's T_TEST.xlsx and XMATCH.xlsx.
+# A1:B7 pair numbers with logicals and text; D2:D9 hold country names.
+@pytest.mark.parametrize(
+    ("formula", "value"),
+    [
+        ("=T.TEST(A1:A7,B1:B7,1,1)", 0.15855028798217946),  # pairs with a non-number drop
+        ("=T.TEST(A1:A7,B1:B7,2,1)", 0.3171005759643589),
+        ("=T.TEST(A1:A7,B1:B6,2,1)", ExcelError.NA),
+        ("=DATE(2025,1,32767)", 78424.0),
+        ("=DATE(2025,1,1E15)", 78424.0),  # a day past 16 bits reads as 32767
+        ("=DATE(2025,1,-40000)", 78424.0),
+        ("=DATE(2025,1,-32768)", 12889.0),
+        ("=DATE(2025,32766,1)", 1042920.0),
+        ("=DATE(2025,32767,1)", ExcelError.NUM),
+        ("=DATE(2025,-32768,1)", ExcelError.NUM),
+        ("=ERF(7,Z99)", -1.0),  # a blank upper limit is 0
+        ("=ERF(7,)", ExcelError.NA),
+        ('=XMATCH("[A-Z][a-z]+y",D2:D9,3,1)', 4.0),
+        ('=XMATCH("[A-Z][a-z]+y",D2:D9,3,-1)', 8.0),
+        ('=XMATCH("[A-Z][a-z]+y",D2:D9,3,2)', ExcelError.VALUE),
+        ("=XMATCH(42,D2:D3,3)", ExcelError.NA),
+        ('=XLOOKUP("^Ind",D2:D9,D2:D9,,3)', "Indonesia"),
+    ],
+)
+def test_excel_batch4(formula, value) -> None:
+    pairs = [
+        ("1", "2"),
+        ("2", "-3.3"),
+        ("3", "0"),
+        ("4", "TRUE"),
+        ("-3", '"no'),
+        ("TRUE", "2"),
+        ('"hello', "2"),
+    ]
+    cells = {(c, r): v for r, row in enumerate(pairs) for c, v in enumerate(row)}
+    countries = [
+        "Albania",
+        "Indonesia",
+        "India",
+        "Germany",
+        "Spain",
+        "Venezuela",
+        "Italy",
+        "Francialy",
+    ]
+    cells |= {(3, r + 1): name for r, name in enumerate(countries)}
+    got = _ev(formula, cells)
+    if isinstance(value, ExcelError):
+        assert got is value
+    elif isinstance(value, float):
+        assert got == pytest.approx(value, rel=1e-12)
+    else:
+        assert got == value
+
+
+# Probed against Excel 16.114 (2026-11-16). A1:A3 = 1, 2, 3; B1 is ="" and
+# B2 FALSE; A4:A5 and Q99 are blank.
+@pytest.mark.parametrize(
+    ("formula", "value"),
+    [
+        ("=MULTINOMIAL(TRUE,1,2)", ExcelError.VALUE),
+        ("=MULTINOMIAL(B1:B2,1)", ExcelError.VALUE),  # a logical or text in a range too
+        ('=MULTINOMIAL("2",1)', 3.0),
+        ("=MULTINOMIAL(Q99,1)", 1.0),
+        ("=MULTINOMIAL(,1)", ExcelError.NA),
+        ("=SMALL(TRUE,1)", 1.0),  # typed: converts
+        ("=SMALL(B2,1)", ExcelError.NUM),  # read from a cell: no number
+        ("=LARGE(B1,1)", ExcelError.NUM),
+        ('=SMALL(A1,"1")', 1.0),
+        ('=SEARCH("~","Hi ~Bang!")', 1.0),  # a trailing tilde is dropped
+        ('=SEARCH("a~","a~b")', 1.0),
+        ('=MATCH("~",{"a","~","b"},0)', ExcelError.NA),
+        ('=VLOOKUP("a","a",1)', ExcelError.VALUE),  # a scalar table
+        ("=VLOOKUP(3,3,0)", ExcelError.NA),
+        ('=HLOOKUP("a",TRUE,1)', ExcelError.NA),
+        ("=BASE(0,2,0)", ""),
+        ("=LEN(BASE(0,2,))", 1.0),  # an omitted length
+        ("=LEN(BASE(0,2,Q99))", 0.0),  # a blank length is 0
+        ('=ISBLANK("")', False),
+        ("=ISBLANK(B1)", False),
+        ("=YEARFRAC(1/0,200,5)", ExcelError.NUM),  # basis before the dates
+        ('=YEARFRAC(1/0,200,"x")', ExcelError.VALUE),
+        ("=YEARFRAC(1/0,200,0)", ExcelError.DIV0),
+        ("=DISC(NA(),100,1,1,9)", ExcelError.NUM),
+        ("=DURATION(NA(),100,0.05,0.05,2,9)", ExcelError.NA),  # no basis first here
+        ("=WEEKNUM(-1,1/0)", ExcelError.NUM),  # a bad first date before a later error
+        ('=EDATE(-1,"x")', ExcelError.NUM),
+        ("=COUPDAYS(-1,100,2,NA())", ExcelError.NUM),
+        ("=WEEKNUM(1,1/0)", ExcelError.DIV0),
+        ("=NETWORKDAYS.INTL(DATE(2025,1,1),DATE(2026,1,1),Q99)", ExcelError.NUM),
+        ("=NETWORKDAYS.INTL(DATE(2025,1,1),DATE(2026,1,1),)", 262.0),
+        ("=WORKDAY.INTL(DATE(2025,1,10),10,)", 45681.0),
+        ("=WORKDAY.INTL(DATE(2025,1,10),10,,DATE(2025,1,13))", 45684.0),
+        ("=RATE(48,-200,8000,0,0,-1)", ExcelError.VALUE),
+        ("=RATE(48,-200,8000,0,0,-0.5)", ExcelError.NUM),
+        ('=TEXT(0,"#;-#;m")', "1"),  # a date code in one section
+        ('=TEXT(45000,"m")', "3"),
+        ('=TEXT(-1,"[s].000")', ExcelError.VALUE),
+        ('=TEXT(-1,"[s]")', "-86400"),
+        ('=VALUE("23:59.")', 1439 / 1440),  # h:mm, the dot with no digits
+        ('=VALUE("23:59.0")', 1439 / 86400),  # m:ss.0
+        ("=DROP(A1:A3,3)", ExcelError.CALC),
+        ("=TAKE(A1:A3,0)", ExcelError.CALC),
+        ("=CHAR(128)", "€"),  # Windows Excel's cp1252
+        ("=CHAR(129)", "\x81"),
+        ('=CODE("€")', 128.0),
+        ("=MATCH(2,{5,4,0,3,1},-1)", 2.0),  # -1 scans: the first smaller value stops it
+        ("=MATCH(0,{0,1,2,3,4},-1)", 1.0),
+        ("=MATCH(Q99,{4,3,2,1,0},-1)", 5.0),
+        ("=MATCH(,A1:A3,-1)", 3.0),
+        ("=XLOOKUP(,A1:A5,{10;20;30;40;50})", 40.0),  # a blank finds a blank
+        ("=XLOOKUP(5,A1:A5,{10;20;30;40;50},,1)", 40.0),  # a blank ranks above a number
+        ('=XLOOKUP("z",A1:A5,{10;20;30;40;50},,1,2)', 40.0),
+        ("=XLOOKUP(5,A1:A5,{10;20;30;40;50},,-1,2)", 30.0),
+        ("=XLOOKUP(,A1:A5,{10;20;30;40;50},,1,-2)", ExcelError.NA),
+        ("=XLOOKUP(Q99,A1:A3,{10;20;30},,-1)", 30.0),
+        ("=XLOOKUP(Q99,A1:A3,{10;20;30},,1)", ExcelError.NA),
+        ("=XLOOKUP(Q99,A1:A5,{10;20;30;40;50},,0,-1)", 50.0),
+        ("=XLOOKUP(Q99,A1:A5,{10;20;30;40;50},,0,-2)", ExcelError.NA),
+        ("=XMATCH(,A1:A5,1,2)", 4.0),
+        ("=COLUMNS(LOGEST(A1:A3))", 2.0),  # one row, as LINEST
+        ("=COUPDAYS(DATE(2024,4,1),DATE(2026,8,31),2,1)", 182.0),
+        ("=COUPDAYS(DATE(2024,1,15),DATE(2026,8,30),2,1)", 184.0),
+        ("=DURATION(DATE(2024,1,15),DATE(2026,8,30),0.05,0.06,2,0)", 2.445002592587616),
+        (
+            "=ODDLPRICE(DATE(2024,3,15),DATE(2024,8,30),DATE(2024,2,29),0.05,0.06,100,2,0)",
+            99.56214263670627,
+        ),
+    ],
+)
+def test_excel_batch5(formula, value) -> None:
+    cells = {(0, 0): "1", (0, 1): "2", (0, 2): "3", (1, 0): '=""', (1, 1): "=FALSE"}
+    got = _ev(formula, cells)
+    if isinstance(value, float) and not isinstance(value, bool):
+        assert got == pytest.approx(value, rel=1e-12)
+    elif isinstance(value, (bool, ExcelError)):
+        assert got is value or got == ("TRUE" if value is True else "FALSE")
+    else:
+        assert got == value
+
+
+def test_last_used_row_of_a_whole_column() -> None:
+    """`B:B<>""` is trimmed to the used rows; `ROW(B:B)` is not. The trimmed
+    rows are FALSE, so the two still line up."""
+    cells = {(1, r): str(r) for r in (2, 6)}
+    assert _ev('=MAX((B:B<>"")*ROW(B:B))', cells) == 7.0
+    assert _ev('=ROWS((B:B<>"")*ROW(B:B))', cells) == 1048576.0

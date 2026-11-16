@@ -202,6 +202,8 @@ def _parse_cellref(text: str, start: int) -> tuple[int, int, int, bool, bool] | 
         col = col * 26 + (ord(ch) - ord("A") + 1)
     col -= 1
     row = rownum - 1
+    if col >= 16384 or row >= 1048576:
+        return None  # past XFD1048576: a name, such as `named1` or `AddressLine1`
     return (m.end(), col, row, abs_c, abs_r)
 
 

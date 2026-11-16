@@ -7,6 +7,7 @@ All functions accept the same argument patterns as their Excel counterparts.
 from __future__ import annotations
 
 import bisect
+import calendar
 import cmath
 import datetime as _dt
 import functools
@@ -63,8 +64,8 @@ def _wildcard_regex(pattern: str, anchored: bool = True) -> re.Pattern[str]:
     i = 0
     while i < len(pattern):
         ch = pattern[i]
-        if ch == "~" and i + 1 < len(pattern):
-            out.append(re.escape(pattern[i + 1]))
+        if ch == "~":  # Excel drops a trailing `~`: SEARCH("a~","a~b") is 1
+            out.append(re.escape(pattern[i + 1 : i + 2]))
             i += 2
             continue
         if ch == "*":
@@ -133,19 +134,20 @@ def _parse_criteria(criteria: Any) -> Any:
                 return _NumCriterion(op, n)
             if op is operator.eq:
                 regex = _wildcard_regex(raw)
-                return lambda x, r=regex: bool(r.match(str(x))) if x is not None else False
+                return lambda x, r=regex: isinstance(x, str) and bool(r.match(x))
             if op is operator.ne:
                 regex = _wildcard_regex(raw)
                 return lambda x, r=regex: not bool(r.match(str(x))) if x is not None else True
             return lambda x, o=op, v=raw: _crit_compare(o, x, v)
 
     # No operator prefix -- equality with wildcards if non-numeric. A bare
-    # date, `"2020-01-01"`, is equality against that day's serial.
+    # date, `"2020-01-01"`, is equality against that day's serial. Text
+    # criteria match text only: `"12*"` does not match the number 1213.
     n = text_number(s)
     if n is not None:
         return _NumCriterion(operator.eq, n)
     regex = _wildcard_regex(s)
-    return lambda x, r=regex: bool(r.match(str(x))) if x is not None else False
+    return lambda x, r=regex: isinstance(x, str) and bool(r.match(x))
 
 
 def _special_criterion(s: str) -> Any:
@@ -266,7 +268,7 @@ def OR(*args: Any) -> bool | ExcelError:
 def NOT(x: Any) -> bool | ExcelError:
     """=NOT(A1>0). Text other than TRUE/FALSE is #VALUE!."""
     if isinstance(x, str):
-        u = x.strip().upper()
+        u = x.upper()  # no trimming: `NOT(" TRUE ")` is #VALUE!
         if u not in ("TRUE", "FALSE"):
             return ExcelError.VALUE
         return u == "FALSE"
@@ -293,6 +295,8 @@ def _snap(x: float) -> Decimal:
 def _round_dec(x: float, n: int, mode: str) -> float:
     """Round ``x`` to ``n`` decimal places (negative: left of the point)."""
     d = _snap(x)
+    if int(n) < -400:  # past any double: ROUNDUP has no finite answer
+        return ExcelError.NUM if mode == ROUND_UP and d != 0 else 0.0  # type: ignore[return-value]
     try:
         return float(d.quantize(Decimal(1).scaleb(-int(n)), rounding=mode))
     except InvalidOperation:  # inf/nan, or more digits than the context holds
@@ -351,10 +355,10 @@ def MOD(x: float, y: float) -> float:
 
 
 def POWER(x: float, y: float) -> float | ExcelError:
-    """=POWER(2, 10) -> 1024. ``0^0`` is ``#NUM!``, as the ``^`` operator."""
-    if x == 0 and y == 0:
-        return ExcelError.NUM
-    return float(x**y)
+    """=POWER(2, 10) -> 1024. The same rules as the ``^`` operator."""
+    from ..formula.evaluator import _pow
+
+    return _pow(float(x), float(y))  # type: ignore[no-any-return]
 
 
 def SIGN(x: float) -> int:
@@ -400,15 +404,31 @@ def SUMPRODUCT(*arrays: Any) -> float | ExcelError:
     return total
 
 
-def LARGE(x: Vec, k: int) -> float | ExcelError:
+def _k_data(x: Any) -> list[float] | ExcelError:
+    """SMALL/LARGE values. The evaluator has converted a value typed as the
+    argument (`"3.4"`, TRUE); text or a logical left here was read from a cell."""
+    if isinstance(x, Vec):
+        return _vec_data(x)
+    if isinstance(x, ExcelError):
+        return x
+    return [] if isinstance(x, (bool, str)) or x is None else [float(x)]
+
+
+def LARGE(array: Any, k: int) -> float | ExcelError:
     """=LARGE(A1:A10, 2) -- kth largest value."""
-    s = sorted(_vec_data(x), reverse=True)
+    data = _k_data(array)
+    if isinstance(data, ExcelError):
+        return data
+    s = sorted(data, reverse=True)
     return s[int(k) - 1] if 1 <= int(k) <= len(s) else ExcelError.NUM
 
 
-def SMALL(x: Vec, k: int) -> float | ExcelError:
+def SMALL(array: Any, k: int) -> float | ExcelError:
     """=SMALL(A1:A10, 2) -- kth smallest value."""
-    s = sorted(_vec_data(x))
+    data = _k_data(array)
+    if isinstance(data, ExcelError):
+        return data
+    s = sorted(data)
     return s[int(k) - 1] if 1 <= int(k) <= len(s) else ExcelError.NUM
 
 
@@ -481,6 +501,8 @@ def _exact_match(target: Any, candidate: Any, wildcards: bool = True) -> bool:
         return bool(_wildcard_regex(target).match(str(candidate)))
     if isinstance(target, str) and isinstance(candidate, str):
         return target.lower() == candidate.lower()
+    if isinstance(target, bool) != isinstance(candidate, bool):
+        return False  # FALSE is not 0
     return bool(target == candidate)
 
 
@@ -492,7 +514,7 @@ def _exact_pos(lookup: Any, rng: Vec, step: int = 1, wildcards: bool = True) -> 
         try:
             if isinstance(lookup, str):
                 return index[0].get(lookup.lower(), -1)
-            return index[1].get(lookup, -1)
+            return index[1].get((isinstance(lookup, bool), lookup), -1)
         except TypeError:  # an unhashable lookup value
             pass
     data = rng.data
@@ -510,6 +532,8 @@ def VLOOKUP(lookup: Any, table: Vec, col_idx: int, approx: Any = True) -> Any:
     on a sorted first column; ``approx=FALSE`` does exact match (with Excel
     wildcards when lookup is a string).
     """
+    if not isinstance(table, Vec):  # Excel: text is #VALUE!, any other scalar #N/A
+        return ExcelError.VALUE if isinstance(table, str) else ExcelError.NA
     ci = int(col_idx)
     data = table.data
     n = len(data)
@@ -537,6 +561,8 @@ def VLOOKUP(lookup: Any, table: Vec, col_idx: int, approx: Any = True) -> Any:
 
 def HLOOKUP(lookup: Any, table: Vec, row_idx: int, approx: Any = True) -> Any:
     """=HLOOKUP(value, A1:J3, 3, 0). Like VLOOKUP but searches the first row."""
+    if not isinstance(table, Vec):
+        return ExcelError.VALUE if isinstance(table, str) else ExcelError.NA
     ri = int(row_idx)
     data = table.data
     n = len(data)
@@ -707,16 +733,20 @@ def PROPER(text: str) -> str:
     return _text(text).title()
 
 
-def SUBSTITUTE(text: str, old: str, new: str, instance: int = 0) -> str:
+def SUBSTITUTE(text: str, old: str, new: str, instance: int | None = None) -> str | ExcelError:
     """=SUBSTITUTE("abab", "a", "x") -> "xbxb"
     =SUBSTITUTE("abab", "a", "x", 1) -> "xbab" (1-based instance)
     """
     s = _text(text)
     old_s = _text(old)
     new_s = _text(new)
+    if instance is not None:
+        instance = int(instance)
+        if instance < 1:
+            return ExcelError.VALUE  # as Excel, even when `old` is empty
     if not old_s:
         return s
-    if instance <= 0:
+    if instance is None:
         return s.replace(old_s, new_s)
     count = 0
     result = []
@@ -783,17 +813,26 @@ def TEXTJOIN(sep: str, ignore_empty: Any, *args: Any) -> str:
 
 
 def CHAR(n: int) -> str | ExcelError:
-    """=CHAR(65) -> 'A'. Codes outside 1-255 are #VALUE!."""
+    """=CHAR(65) -> 'A'. Codes outside 1-255 are #VALUE!. The character set is
+    Windows Excel's, cp1252: CHAR(128) is the euro sign. Mac Excel uses Mac Roman."""
     code = int(n)
     if not 1 <= code <= 255:
         return ExcelError.VALUE
-    return chr(code)
+    try:
+        return bytes([code]).decode("cp1252")
+    except UnicodeDecodeError:  # the five codes cp1252 leaves undefined
+        return chr(code)
 
 
 def CODE(text: str) -> int:
-    """=CODE("A") -> 65"""
+    """=CODE("A") -> 65. The inverse of CHAR: CODE("\u20ac") is 128."""
     s = _text(text)
-    return ord(s[0]) if s else 0
+    if not s:
+        return 0
+    try:
+        return s[0].encode("cp1252")[0]
+    except UnicodeEncodeError:
+        return ord(s[0])
 
 
 def VALUE(text: Any) -> float | ExcelError:
@@ -885,18 +924,25 @@ def DATE(year: int, month: int, day: int) -> float | ExcelError:
     y = int(year)
     if 0 <= y < 1900:
         y += 1900
+    # Excel's 16-bit limits, probed in Excel 16.114: a month of +-32767 or
+    # more is #NUM!, and a day outside -32768..32767 reads as 32767.
+    if abs(float(month)) >= 32767:
+        return ExcelError.NUM
+    d = int(day) if -32768 <= float(day) <= 32767 else 32767
     months = int(month) - 1
     try:
         first = _dt.date(y + months // 12, months % 12 + 1, 1)
     except (ValueError, OverflowError):
         return ExcelError.NUM
     # Day overflow is serial arithmetic, so it counts Excel's 1900-02-29.
-    serial = _to_serial(first) + int(day) - 1
+    serial = _to_serial(first) + d - 1
     return serial if 0 <= serial <= _LAST_SERIAL else ExcelError.NUM
 
 
 def TIME(hour: int, minute: int, second: int) -> float | ExcelError:
     """=TIME(14, 30, 0) -> 0.604166... (fractional day). Wraps past 24h."""
+    if max(int(hour), int(minute), int(second)) > 32767:  # Excel's argument limit
+        return ExcelError.NUM
     total = int(hour) * 3600 + int(minute) * 60 + int(second)
     if total < 0:
         return ExcelError.NUM
@@ -954,16 +1000,28 @@ def DAY(serial: float) -> int:
     return _ymd(serial)[2]
 
 
-def HOUR(serial: float) -> int:
-    return _from_serial(float(serial)).hour
+def _day_seconds(serial: float) -> int | ExcelError:
+    """The time of day in ``serial``, rounded to the second as Excel does:
+    12:29:59.9996 is 12:30:00."""
+    v = float(serial)
+    if not 0 <= v <= _LAST_SERIAL:
+        return ExcelError.NUM
+    return round((v - math.floor(v)) * 86400) % 86400
 
 
-def MINUTE(serial: float) -> int:
-    return _from_serial(float(serial)).minute
+def HOUR(serial: float) -> int | ExcelError:
+    s = _day_seconds(serial)
+    return s if isinstance(s, ExcelError) else s // 3600
 
 
-def SECOND(serial: float) -> int:
-    return _from_serial(float(serial)).second
+def MINUTE(serial: float) -> int | ExcelError:
+    s = _day_seconds(serial)
+    return s if isinstance(s, ExcelError) else s // 60 % 60
+
+
+def SECOND(serial: float) -> int | ExcelError:
+    s = _day_seconds(serial)
+    return s if isinstance(s, ExcelError) else s % 60
 
 
 # WEEKDAY/WEEKNUM return_type -> the weekday (Mon=0..Sun=6) counted as day 1.
@@ -992,28 +1050,31 @@ def WEEKDAY(serial: float, return_type: int = 1) -> int | ExcelError:
     return (py_dow - first) % 7 + 1
 
 
-def EDATE(serial: float, months: int) -> float:
+def _in_date_range(serial: float) -> float | ExcelError:
+    return serial if 0 <= serial <= _LAST_SERIAL else ExcelError.NUM
+
+
+def EDATE(serial: float, months: int) -> float | ExcelError:
     """=EDATE(serial, n) -> serial of date n months later."""
     d = _from_serial(float(serial)).date()
     m = d.month - 1 + int(months)
     y = d.year + m // 12
     m = m % 12 + 1
     last = _last_day(y, m)
-    return _to_serial(_dt.date(y, m, min(d.day, last)))
+    return _in_date_range(_to_serial(_dt.date(y, m, min(d.day, last))))
 
 
-def EOMONTH(serial: float, months: int) -> float:
+def EOMONTH(serial: float, months: int) -> float | ExcelError:
     """=EOMONTH(serial, n) -> last day of month n months from serial."""
     d = _from_serial(float(serial)).date()
     m = d.month - 1 + int(months)
     y = d.year + m // 12
     m = m % 12 + 1
-    return _to_serial(_dt.date(y, m, _last_day(y, m)))
+    return _in_date_range(_to_serial(_dt.date(y, m, _last_day(y, m))))
 
 
 def _last_day(y: int, m: int) -> int:
-    nxt = _dt.date(y + 1, 1, 1) if m == 12 else _dt.date(y, m + 1, 1)
-    return (nxt - _dt.timedelta(days=1)).day
+    return calendar.monthrange(y, m)[1]
 
 
 def DATEDIF(start: float, end: float, unit: str) -> int | ExcelError:
@@ -1076,7 +1137,7 @@ def ISTEXT(x: Any) -> bool:
 
 
 def ISBLANK(x: Any) -> bool:
-    return x is None or x == ""
+    return x is None
 
 
 def ISERROR(x: Any) -> bool:
@@ -1277,9 +1338,11 @@ def COVAR(x: Vec, y: Vec) -> float | ExcelError:
     return sum((a[i] - ma) * (b[i] - mb) for i in range(n)) / n
 
 
-def RANK(value: float, rng: Vec, order: int = 0) -> int:
+def RANK(value: float, rng: Vec, order: int = 0) -> int | ExcelError:
     """=RANK(v, rng[, order]). order=0 (default) descending; non-zero ascending."""
     data = _vec_data(rng)
+    if float(value) not in data:
+        return ExcelError.NA
     sorted_data = sorted(data, reverse=int(order) == 0)
     return sorted_data.index(float(value)) + 1
 
@@ -1391,6 +1454,8 @@ def RATE(
     """Newton's method on the periodic-cashflow equation."""
     n = float(nper)
     r = float(guess)
+    if r <= -1:
+        return ExcelError.VALUE  # Excel: a guess of -1 or less, unlike a later step
     for _ in range(100):
         if r <= -1:
             return ExcelError.NUM
@@ -2580,13 +2645,31 @@ def _approx_pos(
 ) -> int | ExcelError:
     """Index of the last value on ``lookup``'s side of the order, or -1.
 
-    ``mt`` 1 takes values <= ``lookup``, -1 values >= it. When those values
-    are all first, this is what Excel's binary search returns. When they are
-    not, Excel's answer depends on where its search probes, so give #N/A.
+    ``mt`` 1 takes values <= ``lookup``. When those values are all first,
+    this is what Excel's binary search returns. When they are not, Excel's
+    answer depends on where its search probes, so give #N/A. ``mt`` -1 takes
+    values >= it, scanning as Excel does.
     """
-    if lookup is None and mt > 0:
+    if lookup is None:
         lookup = 0  # Excel: a blank lookup value matches as 0
     best = -1
+    if mt < 0:
+        # Excel scans from the start: an equal value is the answer, and the
+        # first smaller one ends the scan. MATCH(2,{5,4,0,3,1},-1) is 2.
+        vals = list(values)
+        for i, v in enumerate(vals):
+            c = _lookup_cmp(v, lookup)
+            if c == 0:
+                return i
+            if c is not None and c < 0:
+                later = (_lookup_cmp(w, lookup) for w in vals[i + 1 :])
+                if best < 0 and any(d is not None and d >= 0 for d in later):
+                    why = f"{name}: range is not sorted descending around {_text(lookup)}; {hint}"
+                    return explain(ExcelError.NA, why)
+                break
+            if c is not None:
+                best = i
+        return best
     passed = False  # a comparable value on the far side has been seen
     for i, v in enumerate(values):
         c = _lookup_cmp(v, lookup)
@@ -2724,6 +2807,8 @@ def MINA(*args: Any) -> float:
 
 
 def _covariance(x: Vec, y: Vec, sample: bool) -> float | ExcelError:
+    if len(_as_vec(x).data) != len(_as_vec(y).data):
+        return ExcelError.NA
     a, b = _pair_numeric(x, y)
     n = len(a)
     divisor = n - 1 if sample else n
@@ -3062,6 +3147,8 @@ _ERROR_TYPE_MAP: dict[ExcelError, int] = {
     ExcelError.NAME: 5,
     ExcelError.NUM: 6,
     ExcelError.NA: 7,
+    ExcelError.SPILL: 9,
+    ExcelError.CALC: 14,
 }
 
 
@@ -3126,20 +3213,25 @@ def ENCODEURL(text: Any) -> str | ExcelError:
 
 
 def NUMBERVALUE(text: Any, decimal_sep: str = ".", group_sep: str = ",") -> float | ExcelError:
-    s = _text(text).strip()
-    if not s:
-        return 0.0
-    s = s.replace(str(group_sep), "")
-    if str(decimal_sep) != ".":
-        s = s.replace(str(decimal_sep), ".")
-    pct = 0
-    while s.endswith("%"):
-        pct += 1
-        s = s[:-1]
-    try:
-        v = float(s)
-    except ValueError:
+    """=NUMBERVALUE(text, [decimal_sep], [group_sep]). Whitespace anywhere is
+    dropped, and only the first character of each separator counts."""
+    s = re.sub(r"[ \t\n\r]", "", _text(text))  # not a no-break space
+    dec, grp = _text(decimal_sep)[:1], _text(group_sep)[:1]
+    if not dec or not grp or dec == grp:
         return ExcelError.VALUE
+    if dec and grp and dec in s and grp in s[s.index(dec) :]:
+        return ExcelError.VALUE  # a group separator after the decimal one
+    pct = len(s) - len(s.rstrip("%"))
+    s = s.rstrip("%")
+    if grp:
+        s = s.replace(grp, "")
+    if dec and dec != ".":
+        s = s.replace(".", "\0").replace(dec, ".")
+    if not s:
+        return 0.0  # "" and "%"
+    if not re.fullmatch(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?", s):
+        return ExcelError.VALUE  # also "inf" and "nan", which float() takes
+    v = float(s)
     return v / (100**pct) if pct else v
 
 
@@ -3214,8 +3306,8 @@ def COMBINA(n: int, k: int) -> int | ExcelError:
     nn, kk = int(n), int(k)
     if nn < 0 or kk < 0:
         return ExcelError.NUM
-    if nn == 0 and kk == 0:
-        return 1
+    if nn == 0:
+        return 1 if kk == 0 else ExcelError.NUM
     if nn > 0 and _log_comb(nn + kk - 1, kk) > _LOG_DBL_MAX:
         return ExcelError.NUM
     return math.comb(nn + kk - 1, kk)
@@ -3238,14 +3330,17 @@ def PERMUTATIONA(n: int, k: int) -> int | ExcelError:
 
 
 def MULTINOMIAL(*args: Any) -> int | ExcelError:
+    """Excel refuses a logical or non-numeric text anywhere, typed or read from a cell."""
     nums: list[int] = []
-    for a in args:
-        if isinstance(a, Vec):
-            nums.extend(
-                int(v) for v in a.data if isinstance(v, (int, float)) and not isinstance(v, bool)
-            )
-        elif isinstance(a, (int, float)) and not isinstance(a, bool):
-            nums.append(int(a))
+    for v in (v for a in args for v in (a.data if isinstance(a, Vec) else (a,))):
+        if isinstance(v, ExcelError):
+            return v
+        if isinstance(v, bool):
+            return ExcelError.VALUE
+        n = 0.0 if v is None else _to_number(v)
+        if isinstance(n, ExcelError):
+            return n
+        nums.append(int(n))
     if any(n < 0 for n in nums):
         return ExcelError.NUM
     total = sum(nums)
@@ -3459,7 +3554,13 @@ def ADDRESS(
         col_part = f"C{c}" if an in (1, 3) else f"C[{c}]"
         addr = row_part + col_part
     if sheet is not None and str(sheet) != "":
-        return f"{sheet}!{addr}"
+        name = str(sheet)
+        bare = re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", name) and not re.fullmatch(
+            r"(?i)[A-Z]{1,3}\d+|R\d*C\d*", name
+        )
+        if not bare:  # as Excel quotes it: `'A Wird One$'!$A$1`, `'A1'!$A$1`
+            name = "'" + name.replace("'", "''") + "'"
+        return f"{name}!{addr}"
     return addr
 
 
@@ -3497,6 +3598,8 @@ def XLOOKUP(
         return found
     if found < 0:
         return if_not_found if if_not_found is not None else ExcelError.NA
+    if found >= len(la):
+        return None  # a blank trimmed off the end of a whole-column range
     if horizontal:
         col = [return_array.at(i, found + 1) for i in range(1, rrows + 1)]
         return col[0] if rrows == 1 else Vec(col, cols=1)
@@ -3506,53 +3609,69 @@ def XLOOKUP(
 
 
 def _xmatch_index(lookup: Any, rng: Vec, mm: int, sm: int) -> int | ExcelError:
-    """0-based position for XLOOKUP/XMATCH, -1 if absent. Only match_mode 2
-    applies wildcards; text compares ignore case."""
+    """0-based position for XLOOKUP/XMATCH, -1 if absent. Match mode 2
+    applies wildcards and 3 a regular expression; other text compares ignore case."""
     la = rng.data
     order = range(len(la) - 1, -1, -1) if sm < 0 else range(len(la))
-    if mm == 2 and abs(sm) == 2:
+    if mm in (2, 3) and abs(sm) == 2:
         return ExcelError.VALUE  # Excel: wildcards do not work with binary search
     if mm == 2 and isinstance(lookup, str):
         regex = _wildcard_regex(lookup)
         return next((i for i in order if regex.match(_text(la[i]))), -1)
-    if mm in (0, 2):
+    if mm == 3:  # a regular expression, found anywhere in the cell's text
+        rx = _regex(_text(lookup), 0)
+        if isinstance(rx, ExcelError):
+            return rx
+        return next((i for i in order if rx.search(_text(la[i])) is not None), -1)
+    if mm not in (-1, 0, 1, 2):
+        return ExcelError.VALUE
+    # Excel ranks a blank cell above every value, and a blank lookup value
+    # equals it: XLOOKUP(5,{1;2;""},,1) finds the blank. A range trimmed past
+    # the used extent stands for its blank tail by one position, `len(la)` or,
+    # searching backwards, the last trimmed cell.
+    vals: list[tuple[int, Any]] = [(i, la[i]) for i in order]
+    if rng.tail:
+        vals = [(len(la) + rng.tail - 1, None), *vals] if sm < 0 else [*vals, (len(la), None)]
+    if mm in (0, 2) and abs(sm) != 2:
+        if lookup is None:
+            return next((i for i, v in vals if v is None), -1)
         if sm >= 0:
             return _exact_pos(lookup, rng, wildcards=False)
         return next((i for i in order if _exact_match(lookup, la[i], wildcards=False)), -1)
-    if mm not in (-1, 1):
-        return ExcelError.VALUE
+    ranked = [(i, v) for i, v in vals if _xlookup_cmp(v, lookup) is not None]
     if abs(sm) == 2:
         # Binary search; -2 searches the reversed (descending) array.
-        idx = [i for i in order if _xlookup_cmp(la[i], lookup) is not None]
-        lo, hi = 0, len(idx)
+        lo, hi = 0, len(ranked)
         while lo < hi:
             mid = (lo + hi) // 2
-            if (_xlookup_cmp(la[idx[mid]], lookup) or 0) < 0:
+            if (_xlookup_cmp(ranked[mid][1], lookup) or 0) < 0:
                 lo = mid + 1
             else:
                 hi = mid
-        if lo < len(idx) and _xlookup_cmp(la[idx[lo]], lookup) == 0:
-            return idx[lo]
+        if lo < len(ranked) and _xlookup_cmp(ranked[lo][1], lookup) == 0:
+            return ranked[lo][0]
+        if mm in (0, 2):
+            return -1
         pos = lo - 1 if mm < 0 else lo
-        return idx[pos] if 0 <= pos < len(idx) else -1
+        return ranked[pos][0] if 0 <= pos < len(ranked) else -1
     # -1: exact or next smaller; 1: exact or next larger.
-    best = -1
-    for i in order:
-        c = _xlookup_cmp(la[i], lookup)
-        if c is None:
-            continue
+    best: tuple[int, Any] | None = None
+    for i, v in ranked:
+        c = _xlookup_cmp(v, lookup) or 0
         if c == 0:
             return i
-        if c * mm > 0 and (best < 0 or (_xlookup_cmp(la[i], la[best]) or 0) * mm < 0):
-            best = i
-    return best
+        if c * mm > 0 and (best is None or (_xlookup_cmp(v, best[1]) or 0) * mm < 0):
+            best = (i, v)
+    return -1 if best is None else best[0]
 
 
 def _xlookup_cmp(a: Any, b: Any) -> int | None:
-    """Order for XLOOKUP/XMATCH approximate modes: numbers < text < FALSE < TRUE.
-    Returns None for blanks and errors, which are skipped."""
+    """Order for XLOOKUP/XMATCH approximate modes: numbers < text < FALSE <
+    TRUE < blank. Returns None for errors, which are skipped."""
 
     def key(v: Any) -> tuple[int, Any] | None:
+        if v is None:
+            return (3, 0)
         if isinstance(v, bool):
             return (2, v)
         if isinstance(v, (int, float)):
@@ -3578,6 +3697,9 @@ def XMATCH(
     match_mode: 0=exact, -1=exact-or-next-smaller, 1=exact-or-next-larger,
                 2=wildcard. search_mode: 1=first-to-last, -1=last-to-first.
     """
+    lookup_array = _as_vec(lookup_array)
+    if lookup_array.is_2d and min(lookup_array.shape) > 1:
+        return ExcelError.VALUE  # one row or one column only
     found = _xmatch_index(lookup, lookup_array, int(match_mode), int(search_mode))
     if isinstance(found, ExcelError):
         return found
@@ -3639,7 +3761,7 @@ def _xl_sort_key(v: Any) -> tuple[int, Any]:
     if isinstance(v, (int, float)):
         return (0, float(v))
     if isinstance(v, ExcelError):
-        return (3, str(v))
+        return (3, ERROR_TYPE(v))  # by ERROR.TYPE code: #DIV/0! before #N/A
     return (1, str(v).lower())
 
 
@@ -3731,14 +3853,24 @@ def UNIQUE(rng: Vec, by_col: bool = False, exactly_once: bool = False) -> Vec:
 
 
 def SEQUENCE(
-    rows: int, columns: int = 1, start: float = 1.0, step: float = 1.0
+    rows: int | None = None,
+    columns: int | None = None,
+    start: float | None = None,
+    step: float | None = None,
 ) -> Vec | ExcelError:
     """=SEQUENCE(rows, [columns], [start], [step])
 
     Generates ``rows*columns`` numbers row-major. ``cols`` field is set so
     INDEX can re-shape the result.
     """
-    n_rows = max(int(rows), 0)
+    # An omitted argument takes its default: `SEQUENCE(,12,,2.5)` starts at 1.
+    rows = 1 if rows is None else rows
+    columns = 1 if columns is None else columns
+    start = 1.0 if start is None else start
+    step = 1.0 if step is None else step
+    if int(rows) < 0 or int(columns) < 0:
+        return ExcelError.VALUE  # 0 is an empty array, #CALC!
+    n_rows = int(rows)
     n_cols = max(int(columns), 1)
     if _array_too_big(n_rows, n_cols):
         return ExcelError.NUM
@@ -4013,7 +4145,10 @@ def NORM_DIST(x: float, mean: float, sd: float, cumulative: Any = True) -> float
     if s <= 0:
         return ExcelError.NUM
     z = (float(x) - float(mean)) / s
-    if bool(cumulative):
+    cum = _to_bool(cumulative)  # text other than TRUE/FALSE is #VALUE!
+    if isinstance(cum, ExcelError):
+        return cum
+    if cum:
         return _norm_cdf(z)
     return _norm_pdf(z) / s
 
@@ -4026,10 +4161,13 @@ def NORM_INV(p: float, mean: float = 0.0, sd: float = 1.0) -> float | ExcelError
     return float(mean) + s * _norm_s_inv(pp)
 
 
-def NORM_S_DIST(z: float, cumulative: Any = True) -> float:
+def NORM_S_DIST(z: float, cumulative: Any = True) -> float | ExcelError:
     """=NORM.S.DIST(z, cumulative). Excel 2010+ requires cumulative; legacy
     NORMSDIST is one-arg and always cumulative."""
-    if bool(cumulative):
+    cum = _to_bool(cumulative)  # text other than TRUE/FALSE is #VALUE!
+    if isinstance(cum, ExcelError):
+        return cum
+    if cum:
         return _norm_cdf(float(z))
     return _norm_pdf(float(z))
 
@@ -4170,7 +4308,10 @@ def EXPON_DIST(x: float, lam: float, cumulative: Any) -> float | ExcelError:
     lv = float(lam)
     if xv < 0 or lv <= 0:
         return ExcelError.NUM
-    if bool(cumulative):
+    cum = _to_bool(cumulative)  # text other than TRUE/FALSE is #VALUE!
+    if isinstance(cum, ExcelError):
+        return cum
+    if cum:
         return 1.0 - math.exp(-lv * xv)
     return lv * math.exp(-lv * xv)
 
@@ -4343,12 +4484,15 @@ def _f_cdf(x: float, d1: float, d2: float) -> float:
 
 
 def F_DIST(x: float, df1: int, df2: int, cumulative: Any = True) -> float | ExcelError:
-    """=F.DIST(x, df1, df2, cumulative). Left-tail."""
+    """=F.DIST(x, df1, df2, cumulative). Left-tail. Degrees of freedom are truncated."""
     xv = float(x)
-    v1, v2 = float(df1), float(df2)
+    v1, v2 = float(math.floor(float(df1))), float(math.floor(float(df2)))
     if xv < 0 or v1 < 1 or v2 < 1:
         return ExcelError.NUM
-    if bool(cumulative):
+    cum = _to_bool(cumulative)  # text other than TRUE/FALSE is #VALUE!
+    if isinstance(cum, ExcelError):
+        return cum
+    if cum:
         return _f_cdf(xv, v1, v2)
     if xv == 0:
         return 0.0
@@ -4367,7 +4511,7 @@ def F_DIST(x: float, df1: int, df2: int, cumulative: Any = True) -> float | Exce
 def F_DIST_RT(x: float, df1: int, df2: int) -> float | ExcelError:
     """=F.DIST.RT(x, df1, df2). Right-tail; legacy FDIST signature."""
     xv = float(x)
-    v1, v2 = float(df1), float(df2)
+    v1, v2 = float(math.floor(float(df1))), float(math.floor(float(df2)))
     if xv < 0 or v1 < 1 or v2 < 1:
         return ExcelError.NUM
     return 1.0 - _f_cdf(xv, v1, v2)
@@ -4375,7 +4519,7 @@ def F_DIST_RT(x: float, df1: int, df2: int) -> float | ExcelError:
 
 def F_INV(p: float, df1: int, df2: int) -> float | ExcelError:
     pp = float(p)
-    v1, v2 = float(df1), float(df2)
+    v1, v2 = float(math.floor(float(df1))), float(math.floor(float(df2)))
     if not 0.0 <= pp <= 1.0 or v1 < 1 or v2 < 1:
         return ExcelError.NUM
     if pp == 0:
@@ -4400,12 +4544,15 @@ def _chi2_cdf(x: float, df: float) -> float:
 
 
 def CHISQ_DIST(x: float, df: int, cumulative: Any = True) -> float | ExcelError:
-    """=CHISQ.DIST(x, df, cumulative). Left-tail."""
+    """=CHISQ.DIST(x, df, cumulative). Left-tail. ``df`` is truncated, as in Excel."""
     xv = float(x)
-    v = float(df)
+    v = float(math.floor(float(df)))
     if xv < 0 or v < 1:
         return ExcelError.NUM
-    if bool(cumulative):
+    cum = _to_bool(cumulative)  # text other than TRUE/FALSE is #VALUE!
+    if isinstance(cum, ExcelError):
+        return cum
+    if cum:
         return _chi2_cdf(xv, v)
     if xv == 0:
         return 0.0 if v != 2 else 0.5
@@ -4416,7 +4563,7 @@ def CHISQ_DIST(x: float, df: int, cumulative: Any = True) -> float | ExcelError:
 def CHISQ_DIST_RT(x: float, df: int) -> float | ExcelError:
     """=CHISQ.DIST.RT(x, df). Right-tail; legacy CHIDIST."""
     xv = float(x)
-    v = float(df)
+    v = float(math.floor(float(df)))
     if xv < 0 or v < 1:
         return ExcelError.NUM
     return 1.0 - _chi2_cdf(xv, v)
@@ -4424,7 +4571,7 @@ def CHISQ_DIST_RT(x: float, df: int) -> float | ExcelError:
 
 def CHISQ_INV(p: float, df: int) -> float | ExcelError:
     pp = float(p)
-    v = float(df)
+    v = float(math.floor(float(df)))
     if not 0.0 <= pp <= 1.0 or v < 1:
         return ExcelError.NUM
     if pp == 0:
@@ -4575,7 +4722,10 @@ def LOGNORM_DIST(x: float, mean: float, sd: float, cumulative: Any = True) -> fl
     if xv <= 0 or sigma <= 0:
         return ExcelError.NUM
     z = (math.log(xv) - mu) / sigma
-    if bool(cumulative):
+    cum = _to_bool(cumulative)  # text other than TRUE/FALSE is #VALUE!
+    if isinstance(cum, ExcelError):
+        return cum
+    if cum:
         return _norm_cdf(z)
     return _norm_pdf(z) / (xv * sigma)
 
@@ -4595,7 +4745,10 @@ def WEIBULL_DIST(x: float, alpha: float, beta: float, cumulative: Any = True) ->
     xv, av, bv = float(x), float(alpha), float(beta)
     if xv < 0 or av <= 0 or bv <= 0:
         return ExcelError.NUM
-    if bool(cumulative):
+    cum = _to_bool(cumulative)  # text other than TRUE/FALSE is #VALUE!
+    if isinstance(cum, ExcelError):
+        return cum
+    if cum:
         return 1.0 - math.exp(-((xv / bv) ** av))
     return float((av / bv) * (xv / bv) ** (av - 1) * math.exp(-((xv / bv) ** av)))
 
@@ -4610,7 +4763,10 @@ def HYPGEOM_DIST(
     k, n, K, N = int(sample_s), int(num_sample), int(pop_s), int(num_pop)
     if k < 0 or n < 0 or K < 0 or N < 0 or n > N or K > N or k > n or k > K:
         return ExcelError.NUM
-    if bool(cumulative):
+    cum = _to_bool(cumulative)  # text other than TRUE/FALSE is #VALUE!
+    if isinstance(cum, ExcelError):
+        return cum
+    if cum:
         return sum(_hypgeom_pmf(i, n, K, N) for i in range(k + 1))
     return _hypgeom_pmf(k, n, K, N)
 
@@ -4678,8 +4834,17 @@ def T_TEST(array1: Vec, array2: Vec, tails: int, ttype: int) -> float | ExcelErr
     if tt not in (1, 2, 3) or tl not in (1, 2):
         return ExcelError.NUM
     if tt == 1:
-        if len(a) != len(b) or len(a) < 2:
-            return ExcelError.NUM
+        # Paired: a position counts only when both cells hold numbers.
+        xa, xb = _as_vec(array1).data, _as_vec(array2).data
+        if len(xa) != len(xb):
+            return ExcelError.NA
+        a, b = [], []
+        for u, v in zip(xa, xb, strict=True):
+            if _is_num(u) and _is_num(v):
+                a.append(float(u))
+                b.append(float(v))
+        if len(a) < 2:
+            return ExcelError.DIV0
         diffs = [ai - bi for ai, bi in zip(a, b, strict=True)]
         n = len(diffs)
         m = sum(diffs) / n
@@ -4738,8 +4903,10 @@ def CONFIDENCE_T(alpha: float, sd: float, n: int) -> float | ExcelError:
     a = float(alpha)
     s = float(sd)
     nn = int(n)
-    if not 0.0 < a < 1.0 or s <= 0 or nn < 2:
+    if not 0.0 < a < 1.0 or s <= 0 or nn < 1:
         return ExcelError.NUM
+    if nn == 1:
+        return ExcelError.DIV0  # no degrees of freedom
     return _t_inv_2tail(a, nn - 1) * s / math.sqrt(nn)
 
 
@@ -4764,29 +4931,32 @@ def PROB(
     Sums prob_range[i] for x_range[i] in [lower, upper]. With no
     upper, returns the probability at lower exactly.
     """
+    if len(x_range.data) != len(prob_range.data):
+        return ExcelError.NA
     xs = _vec_data(x_range)
     ps = _vec_data(prob_range)
-    if len(xs) != len(ps) or not xs:
+    if not xs or not ps:
+        return ExcelError.DIV0  # no numbers: text only
+    if len(xs) != len(ps):
         return ExcelError.NUM
     if any(p < 0 for p in ps) or not math.isclose(sum(ps), 1.0, abs_tol=1e-9):
         return ExcelError.NUM
     lo = float(lower_limit)
     hi = lo if upper_limit is None else float(upper_limit)
-    if hi < lo:
-        lo, hi = hi, lo
     return sum(p for x, p in zip(xs, ps, strict=True) if lo <= x <= hi)
 
 
 # -- Math: error function --
 
 
-def ERF(lower: float, upper: float | None = None) -> float | ExcelError:
+def ERF(lower: float, upper: float | None = math.nan) -> float | ExcelError:
     """=ERF(lower, [upper]). One-arg form returns erf(lower); two-arg
-    returns erf(upper) - erf(lower)."""
+    returns erf(upper) - erf(lower). NaN marks `upper` left out; a blank
+    cell passed for it is 0, as in Excel."""
     a = float(lower)
-    if upper is None:
+    if upper is not None and math.isnan(upper):
         return math.erf(a)
-    return math.erf(float(upper)) - math.erf(a)
+    return math.erf(0.0 if upper is None else float(upper)) - math.erf(a)
 
 
 def ERFC(x: float) -> float:
@@ -4828,6 +4998,10 @@ def _text_cut(
     me = int(match_end)
     if me not in (0, 1) or me != match_end:
         return ExcelError.VALUE
+    if not any(delims):
+        # An empty delimiter matches at the start, or at the end searching back.
+        whole_after = (inst > 0) == after
+        return s if whole_after else ""
     case_fold = bool(int(match_mode))
     haystack = s.lower() if case_fold else s
     matches: list[tuple[int, int]] = []  # (start, len) sorted by start
@@ -4897,9 +5071,17 @@ def TEXTSPLIT(
     s = _text(text)
     case_fold = bool(int(match_mode))
 
+    def _delims(dlm: Any) -> list[str]:
+        if isinstance(dlm, Vec):
+            return [d for d in (_text(x) for x in dlm.data) if d]
+        items = list(dlm) if isinstance(dlm, (list, tuple)) else [_text(dlm)]
+        return [d for d in items if d]
+
+    if not _delims(col_delimiter) and not _delims(row_delimiter):
+        return ExcelError.VALUE  # nothing to split on
+
     def _splitall(t: str, dlm: Any) -> list[str]:
-        delims = list(dlm) if isinstance(dlm, (list, tuple)) else [_text(dlm)]
-        delims = [d for d in delims if d]
+        delims = _delims(dlm)
         if not delims:
             return [t]
         # Case-insensitive split via regex.
@@ -5359,7 +5541,8 @@ def LOGEST(
         return raw
     # Coefficients live in row 1 of the result; exponentiate them.
     if not bool(stats):
-        return Vec([math.exp(c) if isinstance(c, (int, float)) else c for c in raw.data])
+        exp = [math.exp(c) if isinstance(c, (int, float)) else c for c in raw.data]
+        return Vec(exp, cols=raw.cols)  # one row, as LINEST's
     # 5xp stats matrix: row 1 (first p elements) gets exp.
     cols = raw.cols or len(raw.data)
     out = list(raw.data)
@@ -5842,6 +6025,9 @@ def TOCOL(rng: Vec, ignore: int = 0, scan_by_column: int = 0) -> Vec | ExcelErro
 
 
 def _wrap(vec: Vec, count: int, pad: Any, by_row: bool) -> Vec | ExcelError:
+    for a in (vec, count):
+        if isinstance(a, ExcelError):
+            return a  # `pad` may be an error: it is a value to pad with
     vec = _as_vec(vec)
     n = int(count)
     if n < 1:
@@ -5916,13 +6102,13 @@ def TAKE(rng: Vec, rows: int, columns: int | None = None) -> Vec | ExcelError:
     nr = int(rows)
     nc = int(columns) if columns is not None else src_cols
     if nr == 0 or nc == 0:
-        return ExcelError.VALUE
+        return ExcelError.CALC  # an empty array
     row_range = range(nr) if nr > 0 else range(src_rows + nr, src_rows)
     col_range = range(nc) if nc > 0 else range(src_cols + nc, src_cols)
     rows_keep = [i for i in row_range if 0 <= i < src_rows]
     cols_keep = [j for j in col_range if 0 <= j < src_cols]
     if not rows_keep or not cols_keep:
-        return ExcelError.VALUE
+        return ExcelError.CALC
     out: list[Any] = []
     for i in rows_keep:
         for j in cols_keep:
@@ -5943,7 +6129,7 @@ def DROP(rng: Vec, rows: int, columns: int | None = None) -> Vec | ExcelError:
     keep_rows = list(range(dr, src_rows)) if dr >= 0 else list(range(0, src_rows + dr))
     keep_cols = list(range(dc, src_cols)) if dc >= 0 else list(range(0, src_cols + dc))
     if not keep_rows or not keep_cols:
-        return ExcelError.VALUE
+        return ExcelError.CALC
     out: list[Any] = []
     for i in keep_rows:
         for j in keep_cols:
@@ -6092,20 +6278,22 @@ def ARABIC(text: str) -> int | ExcelError:
     return -total if neg else total
 
 
-def BASE(number: int, radix: int, min_length: int = 0) -> str | ExcelError:
-    """=BASE(number, radix, [min_length]) -> number as a string in radix 2..36."""
+def BASE(number: int, radix: int, min_length: int = _NO_PLACES) -> str | ExcelError:
+    """=BASE(number, radix, [min_length]) -> number as a string in radix 2..36.
+    Excel writes 0 as "0" only when min_length is omitted: BASE(0,2,0) is ""."""
     n = int(number)
     r = int(radix)
-    ml = int(min_length)
+    omitted = min_length is _NO_PLACES
+    ml = 0 if omitted or min_length is None else int(min_length)
     # Sign is checked before truncation: BASE(-0.5,2) is #NUM!, not "0".
     if number < 0 or n >= 2**53:
         return ExcelError.NUM
     if r < 2 or r > 36:
         return ExcelError.NUM
-    if min_length < 0 or ml > 255:
+    if ml < 0 or (not omitted and min_length is not None and min_length < 0) or ml > 255:
         return ExcelError.NUM
     if n == 0:
-        s = "0"
+        s = "0" if omitted else ""
     else:
         s = ""
         while n:
@@ -6425,7 +6613,7 @@ def _weekend_set(weekend: Any) -> set[int] | ExcelError:
     """Resolve a NETWORKDAYS.INTL/WORKDAY.INTL weekend spec to a set of
     Python weekday indices (Mon=0..Sun=6) that are non-working."""
     if weekend is None:
-        weekend = 1  # an omitted weekend is Saturday-Sunday
+        return ExcelError.NUM  # a blank cell is code 0; an omitted weekend arrives as 1
     if isinstance(weekend, str):
         m = weekend.strip()
         if len(m) != 7 or any(c not in "01" for c in m):
@@ -6709,8 +6897,25 @@ def COUPDAYS(
     sd, md = _date(settlement), _date(maturity)
     if sd >= md:
         return ExcelError.NUM
+    if int(basis) == 1:
+        md = _coupdays_anchor(sd, md, 12 // int(frequency))
     pcd, ncd, _ = _coupon_info(sd, md, int(frequency))
     return _coup_days(pcd, ncd, int(frequency), int(basis))
+
+
+def _coupdays_anchor(sd: _dt.date, md: _dt.date, months: int) -> _dt.date:
+    """The maturity Excel's actual/actual COUPDAYS measures from: maturity
+    stepped back one period at a time, the day clamped to each month and no
+    end-of-month rule, while it stays after settlement. So COUPDAYS(DATE(2024,
+    4,1),DATE(2026,8,31),2,1) is 182, not the 184 days from COUPPCD to COUPNCD.
+    The rule is IronCalc's (`coupdays_actual`, issue 1682); PRICE and the rest
+    use the coupon period itself."""
+    while True:
+        y, m = _add_months(md.year, md.month, -months)
+        earlier = _dt.date(y, m, min(md.day, _last_day(y, m)))
+        if earlier <= sd:
+            return md
+        md = earlier
 
 
 def _price(
@@ -6827,17 +7032,43 @@ def _oddl_args(
     if not li < sd < md:
         return ExcelError.NUM
     f, b = int(frequency), int(basis)
-    fwd = _quasi_dates(li, 12 // f, 1, lambda d: d >= md)
+    months = 12 // f
+    # Quasi-coupon periods from the last interest date, counted on maturity's
+    # own schedule, so the last one can run past a whole period: from 2024-02-29
+    # to a 2024-08-30 maturity is one period, not two. Each NL is measured, and
+    # basis 0 measures NL and DC with both dates moved off a month end. The
+    # scheme is ExcelFinancialFunctions' `oddLFunc`, as IronCalc ports it.
+    ncd = _coupon_info(li, md, f)[1]
+    nc = ((md.year - ncd.year) * 12 + md.month - ncd.month) // months + 1
+
+    def days(d1: _dt.date, d2: _dt.date) -> float:
+        return max(0.0, float(_daycount(d1, d2, b)))
+
+    def period(d1: _dt.date, d2: _dt.date) -> float:
+        return max(0.0, _days360_both(d1, d2)) if b == 0 else days(d1, d2)
+
     dc = dsc = a = 0.0
-    for lo, hi in zip(fwd, fwd[1:], strict=False):
-        # Bases 2 and 3 take NL as the actual quasi-period length here, not 360/f or 365/f.
-        nl = float((hi - lo).days) if b in (2, 3) else _coup_days(lo, hi, f, b)
-        dc += _daycount(lo, min(hi, md), b) / nl
-        if sd > lo:
-            a += _daycount(lo, min(hi, sd), b) / nl
-        if sd < hi:
-            dsc += _daycount(max(lo, sd), min(hi, md), b) / nl
+    early = li
+    for k in range(1, nc + 1):
+        y, m = _add_months(early.year, early.month, months)
+        late = _dt.date(y, m, min(early.day, _last_day(y, m)))
+        nl = period(early, late)
+        dci = nl if k < nc else period(early, md)
+        dc += dci / nl
+        a += (dci if late < sd else days(early, sd) if early < sd else 0.0) / nl
+        dsc += days(max(sd, early), min(md, late)) / nl
+        early = late
     return dc, dsc, a
+
+
+def _days360_both(d1: _dt.date, d2: _dt.date) -> float:
+    """US 30/360 days with both dates moved off a month end, February's too."""
+    day1, day2 = d1.day, d2.day
+    if d2.month == 2 and day2 == _last_day(d2.year, 2) or day2 == 31:
+        day2 = 30
+    if day1 == 31 or (d1.month == 2 and day1 == _last_day(d1.year, 2)):
+        day1 = 30
+    return float(360 * (d2.year - d1.year) + 30 * (d2.month - d1.month) + day2 - day1)
 
 
 def ODDLPRICE(
@@ -6972,7 +7203,7 @@ def DURATION(
     f = int(frequency)
     pcd, ncd, n = _coupon_info(sd, md, f)
     e = _coup_days(pcd, ncd, f, int(basis))
-    dsc = float(_daycount(sd, ncd, int(basis)))
+    dsc = e - float(_daycount(pcd, sd, int(basis)))  # E - A, as in PRICE
     ndiff = dsc / e - 1.0  # fractional-period offset, coupon-consistent
     cpn = float(coupon) * 100.0 / f
     y = float(yld) / f + 1.0
@@ -7253,7 +7484,8 @@ def _tbill_dsm(settlement: float, maturity: float, x: float) -> int | ExcelError
         return ExcelError.VALUE  # Excel rejects logicals here
     sd, md = _date(settlement), _date(maturity)
     dsm = (md - sd).days
-    if dsm <= 0 or float(maturity) > EDATE(settlement, 12):
+    year_on = EDATE(settlement, 12)
+    if dsm <= 0 or isinstance(year_on, ExcelError) or float(maturity) > year_on:
         return ExcelError.NUM
     return dsm
 
@@ -7858,25 +8090,19 @@ def SEC(x: float) -> float | ExcelError:
 
 
 def COTH(x: float) -> float | ExcelError:
-    v = _trig_arg(x)
-    if isinstance(v, ExcelError):
-        return v
+    v = float(x)  # no argument limit: the hyperbolic functions saturate
     return ExcelError.DIV0 if v == 0 else 1.0 / math.tanh(v)
 
 
 def CSCH(x: float) -> float | ExcelError:
-    v = _trig_arg(x)
-    if isinstance(v, ExcelError):
-        return v
+    v = float(x)
     if v == 0:
         return ExcelError.DIV0
     return 0.0 if abs(v) > 710 else 1.0 / math.sinh(v)
 
 
 def SECH(x: float) -> float | ExcelError:
-    v = _trig_arg(x)
-    if isinstance(v, ExcelError):
-        return v
+    v = float(x)
     return 0.0 if abs(v) > 710 else 1.0 / math.cosh(v)
 
 
@@ -7927,7 +8153,7 @@ def SERIESSUM(x: float, n: float, m: float, coefficients: Any) -> float | ExcelE
 
 def GAUSS(z: float) -> float:
     """=GAUSS(z) -> probability a standard normal lies between the mean and z."""
-    return NORM_S_DIST(z, True) - 0.5
+    return _norm_cdf(float(z)) - 0.5
 
 
 def ERF_PRECISE(x: float) -> float:

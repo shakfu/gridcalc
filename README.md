@@ -2,7 +2,23 @@
 
 [![PyPI](https://img.shields.io/pypi/v/gridcalc)](https://pypi.org/project/gridcalc/) [![Python](https://img.shields.io/pypi/pyversions/gridcalc)](https://pypi.org/project/gridcalc/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A programmable spreadsheet for developers and technical users, with Excel-compatible formulas, Python escape hatches, XLSX interop, goal seek, and LP/MIP solving. It ships **two frontends over one engine**: a curses terminal app, and a desktop window that renders the same workbook in a webview. The same engine also **runs `.xlsx` models headlessly**: inputs and outputs go by defined name, with no Excel and no window.
+gridcalc is a spreadsheet you can script, test and optimize. It reads and writes Excel workbooks, runs them from the command line or Python with no Excel installed, and solves optimization models written against sheet data. One engine drives a terminal app, a desktop app and a headless CLI.
+
+What sets it apart:
+
+- **Excel-compatible.** 465 Excel functions, dynamic arrays, tables and structured references, and Excel's 16384 x 1048576 grid. On 282 test workbooks, 99.6% of formula cells match the values Excel saved; read that as an upper bound for unseen files ([details](#run-an-excel-workbook-as-a-function)).
+
+- **A workbook as a function.** Set inputs and read outputs by defined name, from the CLI or the Python `Book` API. A batch writes only the inputs that change between cases, so each case costs one incremental recalculation.
+
+- **Optimization in the sheet.** `:opt` solves LP, MIP and QP models built from cell formulas, as Excel's Solver does, with shadow prices, sweeps and infeasibility diagnosis. Cross-tab models, as in [SolverStudio](https://solverstudio.org), run PuLP, Pyomo or GMPL text over named ranges and tables and write the results back to the sheet.
+
+- **Python when formulas are not enough.** A workbook can use strict Excel formulas, Excel plus Python calls, or Python expressions with numpy and pandas, and can carry its own Python module.
+
+- **Safe to open.** A workbook's code -- a code block, Python formulas or a solver model -- runs only after you approve it. A model runs in a separate process with time and memory limits, no network access, and no file writes outside a private temporary directory.
+
+- **Two frontends, one engine.** A vim-style terminal app, and a desktop app with menus, a command palette and a model editor. Most commands are one implementation that both dispatch.
+
+- **No third-party runtime dependencies in the core** on Linux and macOS. The HiGHS solver and the xlsx reader are compiled in.
 
 Inspired by Serge Zaitsev's [kalk](https://github.com/zserge/kalk).
 

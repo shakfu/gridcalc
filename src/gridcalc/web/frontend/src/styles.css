@@ -491,7 +491,7 @@ button {
   max-height: 220px;
   overflow: auto;
   margin: 0 0 14px;
-  padding: 10px 12px;
+  padding: 0;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1055,12 +1055,9 @@ table.sens tr.breakpoint td {
   border-bottom: 1px solid var(--border);
 }
 
-.model-title {
-  flex: 1;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* The panel edits the active sheet's model; the toolbar already names the sheet. */
+.model-close {
+  margin-left: auto;
 }
 
 .model-running {
@@ -1139,4 +1136,10 @@ button.link {
 
 .muted {
   color: var(--muted);
+}
+
+/* The trust dialog's code preview: highlighted, read-only, scrolled inside its box. */
+.trust-code .code-editor,
+.trust-code .cm-editor {
+  max-height: 218px;
 }

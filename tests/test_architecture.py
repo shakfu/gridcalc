@@ -60,6 +60,8 @@ CORE_MODULES = (
     "xlsxmodel.py",
     # The indexed data item dict, apart from the engine so the model child skips it.
     "itemdict.py",
+    # GMPL: the static check, the data file and glpsol's report.
+    "gmpl.py",
     "optspec.py",
     "report.py",
     "config.py",

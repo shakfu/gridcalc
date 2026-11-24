@@ -185,7 +185,9 @@ def test_variables_lists_used_columns_only() -> None:
 @pytest.mark.parametrize(
     ("action", "message"),
     [
-        (lambda x, p: x * x, "product of two variables"),
+        (lambda x, p: x * x * x, "past degree 2"),
+        (lambda x, p: x**3, "only a square"),
+        (lambda x, p: x * x <= 1, "only the objective may be quadratic"),
         (lambda x, p: 1 / x, "unsupported operand|not linear"),
         (lambda x, p: x / x, "dividing by a variable"),
         (lambda x, p: p.writeLP("f.lp"), "LpProblem.writeLP is not in gridcalc's PuLP subset"),
@@ -337,3 +339,87 @@ def test_in_place_add_is_linear_and_leaves_variables_alone() -> None:
     w += 1
     assert v.terms == {v: 1.0} and v.constant == 0.0
     assert w.constant == 1.0
+
+
+# --- quadratic objectives: gridcalc's extension; PuLP itself has none -------
+
+
+def test_convex_qp_minimum() -> None:
+    x, y = LpVariable("x"), LpVariable("y")
+    p = LpProblem("q", LpMinimize)
+    p += (x - 1) ** 2 + (y - 2) ** 2
+    p += x + y <= 2
+    assert p.solve() == LpStatusOptimal
+    assert (x.varValue, y.varValue) == (pytest.approx(0.5, abs=1e-5), pytest.approx(1.5, abs=1e-5))
+    assert value(p.objective) == pytest.approx(0.5, abs=1e-5)  # constant 5 kept
+
+
+def test_cross_terms_and_concave_maximum() -> None:
+    # max -(x^2 + x*y + y^2) + 3x: optimum where 2x + y = 3, x + 2y = 0 -> x = 2, y = -1
+    x, y = LpVariable("x"), LpVariable("y")
+    p = LpProblem("q", LpMaximize)
+    p += -(x * x + x * y + y * x * 0 + y * y) + 3 * x
+    p.solve()
+    assert (x.varValue, y.varValue) == (pytest.approx(2, abs=1e-5), pytest.approx(-1, abs=1e-5))
+    assert value(p.objective) == pytest.approx(3, abs=1e-5)
+
+
+def test_qp_has_no_duals() -> None:
+    x = LpVariable("x")
+    p = LpProblem("q", LpMinimize)
+    p += x * x
+    p += x >= 1, "lo"
+    p.solve()
+    assert x.varValue == pytest.approx(1, abs=1e-5)
+    assert p.constraints["lo"].pi is None and x.dj is None
+
+
+def test_non_convex_qp_explains() -> None:
+    x = LpVariable("x", 0, 1)
+    p = LpProblem("q", LpMinimize)
+    p += -(x * x)
+    with pytest.raises(PulpError, match="must be convex when minimising"):
+        p.solve()
+
+
+def test_miqp_refused() -> None:
+    x = LpVariable("x", 0, 5, LpInteger)
+    p = LpProblem("q", LpMinimize)
+    p += (x - 2.5) ** 2
+    with pytest.raises(PulpError, match="MIQP"):
+        p.solve()
+
+
+def test_expression_algebra_with_squares() -> None:
+    x, y = LpVariable("x"), LpVariable("y")
+    e = (x + 2 * y + 1) * (x - 1)
+    assert e.constant == -1
+    assert e.terms == {x: 0.0, y: -2.0} or e.terms == {y: -2.0, x: 0.0}
+    sq = {frozenset(k): v for k, v in e.qterms.items()}
+    assert sq == {frozenset([x]): 1.0, frozenset([x, y]): 2.0}
+    x.varValue, y.varValue = 3.0, 1.0
+    assert e.value() == pytest.approx((3 + 2 + 1) * (3 - 1))
+    assert (x * y).qterms == (y * x).qterms  # one term, whichever order
+
+
+def test_hessian_layout() -> None:
+    from gridcalc.lpmodel import _hessian, _pair
+
+    x, y, z = LpVariable("x"), LpVariable("y"), LpVariable("z")
+    pos = {x: 0, y: 1, z: 2}
+    q = {_pair(x, x): 3.0, _pair(x, y): 1.0, _pair(z, z): 1.0}
+    assert _hessian(q, pos) == [[6.0], [1.0], [0.0, 0.0, 2.0]]
+
+
+def test_quadratic_variables_come_first() -> None:
+    a, b = LpVariable("a"), LpVariable("b")
+    p = LpProblem("q", LpMinimize)
+    p += a + b * b
+    p += a + b >= 1
+    assert p._columns()[0] is b
+
+
+def test_lpsum_keeps_quadratic_terms() -> None:
+    x = LpVariable("x")
+    e = lpSum([x * x, 2 * x, 1])
+    assert list(e.qterms.values()) == [1.0] and e.terms == {x: 2.0} and e.constant == 1

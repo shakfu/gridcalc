@@ -99,12 +99,29 @@ def _number(x: Any) -> float:
     return float(x)
 
 
-class LpAffineExpression(_Subset):
-    """``sum(coef * var) + constant``."""
+Pair = tuple["LpVariable", "LpVariable"]
 
-    def __init__(self, terms: dict[LpVariable, float] | None = None, constant: float = 0.0) -> None:
+
+def _pair(a: LpVariable, b: LpVariable) -> Pair:
+    """``(a, b)`` in a fixed order, so `x*y` and `y*x` are one term."""
+    return (a, b) if id(a) <= id(b) else (b, a)
+
+
+class LpAffineExpression(_Subset):
+    """``sum(coef * var) + constant``, plus ``sum(coef * var * var)`` for a QP objective.
+
+    The quadratic part is gridcalc's: PuLP itself refuses a product of variables.
+    """
+
+    def __init__(
+        self,
+        terms: dict[LpVariable, float] | None = None,
+        constant: float = 0.0,
+        qterms: dict[Pair, float] | None = None,
+    ) -> None:
         self.terms: dict[LpVariable, float] = dict(terms or {})
         self.constant = constant
+        self.qterms: dict[Pair, float] = dict(qterms or {})
 
     @staticmethod
     def of(x: Any) -> LpAffineExpression:
@@ -117,24 +134,36 @@ class LpAffineExpression(_Subset):
         return LpAffineExpression(constant=_number(x))
 
     def copy(self) -> LpAffineExpression:
-        return LpAffineExpression(self.terms, self.constant)
+        return LpAffineExpression(self.terms, self.constant, self.qterms)
 
     def _add(self, other: Any, sign: float) -> LpAffineExpression:
-        o = LpAffineExpression.of(other)
-        out = self.copy()
-        for v, a in o.terms.items():
-            out.terms[v] = out.terms.get(v, 0.0) + sign * a
-        out.constant += sign * o.constant
-        return out
+        return self.copy()._add_in_place(other, sign)
 
     def _scale(self, k: Any) -> LpAffineExpression:
         if isinstance(k, (LpAffineExpression, LpVariable)):
-            other = LpAffineExpression.of(k)
-            if self.terms and other.terms:
-                raise PulpError("a product of two variables is not linear")
-            return other._scale(self.constant) if not other.terms else self._scale(other.constant)
+            return self._product(LpAffineExpression.of(k))
         f = _number(k)
-        return LpAffineExpression({v: a * f for v, a in self.terms.items()}, self.constant * f)
+        return LpAffineExpression(
+            {v: a * f for v, a in self.terms.items()},
+            self.constant * f,
+            {p: a * f for p, a in self.qterms.items()},
+        )
+
+    def _product(self, other: LpAffineExpression) -> LpAffineExpression:
+        """``self * other``: quadratic at most, as HiGHS solves."""
+        if not other.terms and not other.qterms:
+            return self._scale(other.constant)
+        if not self.terms and not self.qterms:
+            return other._scale(self.constant)
+        if self.qterms or other.qterms:
+            raise PulpError("a product past degree 2 is not supported; HiGHS solves quadratics")
+        out = self._scale(other.constant)._add(other._scale(self.constant), 1.0)
+        out.constant -= self.constant * other.constant  # counted in both scales
+        for v, a in self.terms.items():
+            for w, b in other.terms.items():
+                p = _pair(v, w)
+                out.qterms[p] = out.qterms.get(p, 0.0) + a * b
+        return out
 
     def __add__(self, o: Any) -> LpAffineExpression:
         return self._add(o, 1.0)
@@ -149,8 +178,15 @@ class LpAffineExpression(_Subset):
         o = LpAffineExpression.of(other)
         for v, a in o.terms.items():
             self.terms[v] = self.terms.get(v, 0.0) + sign * a
+        for p, a in o.qterms.items():
+            self.qterms[p] = self.qterms.get(p, 0.0) + sign * a
         self.constant += sign * o.constant
         return self
+
+    def __pow__(self, n: Any) -> LpAffineExpression:
+        if n != 2:
+            raise PulpError("only a square (** 2) is supported")
+        return self._product(self)
 
     # In place, as in PuLP, so `e += x` in a loop is linear, not quadratic.
     def __iadd__(self, o: Any) -> LpAffineExpression:
@@ -179,14 +215,20 @@ class LpAffineExpression(_Subset):
             raise PulpError("dividing by a variable is not linear")
         return self._scale(1.0 / _number(k))
 
+    def _constraint(self, o: Any, sense: int) -> LpConstraint:
+        e = self - o
+        if e.qterms:
+            raise PulpError("a constraint must be linear; only the objective may be quadratic")
+        return LpConstraint(e, sense)
+
     def __le__(self, o: Any) -> LpConstraint:
-        return LpConstraint(self - o, LpConstraintLE)
+        return self._constraint(o, LpConstraintLE)
 
     def __ge__(self, o: Any) -> LpConstraint:
-        return LpConstraint(self - o, LpConstraintGE)
+        return self._constraint(o, LpConstraintGE)
 
     def __eq__(self, o: Any) -> LpConstraint:  # type: ignore[override]
-        return LpConstraint(self - o, LpConstraintEQ)
+        return self._constraint(o, LpConstraintEQ)
 
     __hash__ = object.__hash__
 
@@ -196,10 +238,15 @@ class LpAffineExpression(_Subset):
             if v.varValue is None:
                 return None
             total += a * v.varValue
+        for (v, w), a in self.qterms.items():
+            if v.varValue is None or w.varValue is None:
+                return None
+            total += a * v.varValue * w.varValue
         return total
 
     def __repr__(self) -> str:
-        parts = [f"{a:g}*{v.name}" for v, a in self.terms.items()]
+        parts = [f"{a:g}*{v.name}*{w.name}" for (v, w), a in self.qterms.items()]
+        parts += [f"{a:g}*{v.name}" for v, a in self.terms.items()]
         if self.constant or not parts:
             parts.append(f"{self.constant:g}")
         return " + ".join(parts)
@@ -248,6 +295,14 @@ class LpVariable(LpAffineExpression):
     def constant(self, _: Any) -> None:
         pass
 
+    @property
+    def qterms(self) -> dict[Pair, float]:
+        return {}
+
+    @qterms.setter
+    def qterms(self, _: Any) -> None:
+        pass
+
     def copy(self) -> LpAffineExpression:
         return LpAffineExpression({self: 1.0})
 
@@ -292,6 +347,23 @@ def _var_name(name: str, index: list[Any]) -> str:
     return "_".join([name, *(str(i) for i in index)]).replace(" ", "_")
 
 
+def _hessian(qterms: dict[Pair, float], pos: dict[LpVariable, int]) -> list[list[float]]:
+    """The lower triangle of Q, ragged, for HiGHS's ``c'x + 0.5 x'Qx``.
+
+    ``a * x_i * x_j`` puts ``a`` at ``Q[i][j]`` and ``Q[j][i]``; a square
+    ``a * x_i**2`` puts ``2a`` at ``Q[i][i]``.
+    """
+    rows: list[list[float]] = [[] for _ in pos]
+    for (v, w), a in qterms.items():
+        i, j = pos[v], pos[w]
+        i, j = max(i, j), min(i, j)
+        row = rows[i]
+        if len(row) <= j:
+            row.extend([0.0] * (j + 1 - len(row)))
+        row[j] += 2 * a if i == j else a
+    return rows
+
+
 class LpConstraint(_Subset):
     """``expr sense 0``, from a comparison of expressions."""
 
@@ -311,14 +383,10 @@ class LpConstraint(_Subset):
 
 def lpSum(vector: Iterable[Any]) -> LpAffineExpression:  # noqa: N802  (PuLP's spelling)
     """The sum of numbers, variables and expressions."""
-    terms: dict[LpVariable, float] = {}
-    constant = 0.0
+    out = LpAffineExpression()
     for x in vector:  # in place: `out = out + x` copies the dict each time
-        e = LpAffineExpression.of(x)
-        for v, a in e.terms.items():
-            terms[v] = terms.get(v, 0.0) + a
-        constant += e.constant
-    return LpAffineExpression(terms, constant)
+        out._add_in_place(x, 1.0)
+    return out
 
 
 def value(x: Any) -> Any:
@@ -375,9 +443,14 @@ class LpProblem(_Subset):
         return sorted(self._columns(), key=lambda v: v.name)
 
     def _columns(self) -> list[LpVariable]:
+        """Every variable in the model; those in quadratic terms first, so the
+        Hessian's lower-triangle rows stay as short as the quadratic part."""
         seen: dict[LpVariable, None] = {}
         exprs = [c.expr for c in self.constraints.values()]
         if self.objective is not None:
+            for v, w in self.objective.qterms:
+                seen.setdefault(v)
+                seen.setdefault(w)
             exprs.insert(0, self.objective)
         for e in exprs:
             for v in e.terms:
@@ -435,8 +508,16 @@ class LpProblem(_Subset):
             "integer_vars": [j for j, v in enumerate(cols) if v.cat == LpInteger],
             "binary_vars": [j for j, v in enumerate(cols) if v.cat == LpBinary],
         }
-        # Duals exist for an LP only; HiGHS ignores the flag for a MIP.
+        # Duals exist for an LP only; HiGHS ignores the flag for a MIP or QP.
         args["sensitivity"] = not (args["integer_vars"] or args["binary_vars"])
+        quadratic = {p: a for p, a in obj.qterms.items() if a != 0.0}
+        if quadratic:
+            if args["integer_vars"] or args["binary_vars"]:
+                raise PulpError(
+                    "a quadratic objective with integer variables (MIQP) is not supported"
+                )
+            args["hessian"] = _hessian(quadratic, pos)
+            args["sensitivity"] = False
         if time_limit is not None:
             args["time_limit"] = _number(time_limit)
         try:
@@ -452,6 +533,11 @@ class LpProblem(_Subset):
                 **args,
             )
         except (RuntimeError, ValueError) as exc:
+            if quadratic:
+                raise PulpError(
+                    f"solver failed: {exc}; a quadratic objective must be convex when"
+                    " minimising and concave when maximising"
+                ) from exc
             raise PulpError(f"solver failed: {exc}") from exc
         self.status = {
             _ext.OPTIMAL: LpStatusOptimal,

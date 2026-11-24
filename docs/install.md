@@ -58,6 +58,20 @@ pip install 'gridcalc[pulp]'
 
 It installs PuLP 2 or 3, which bundles the CBC solver. PuLP 4 is a different API and is not supported.
 
+## The `[pyomo]` extra
+
+Runs sheet models written with [Pyomo](https://www.pyomo.org) ([Cross-tab models](guide/models.md#solvers)):
+
+```sh
+pip install 'gridcalc[pyomo]'
+```
+
+Pyomo bundles no solver. Install one it can start, such as `glpsol` from GLPK ([below](#gmpl-models)) or `cbc`, or `pip install highspy` for its in-process `appsi_highs`. For nonlinear models, install Ipopt (`brew install ipopt`, `apt install coinor-libipopt-dev` and its `ipopt` program, or a COIN-OR build); `bonmin` and `couenne` are also allowed.
+
+## GMPL models
+
+Models in GMPL (GNU MathProg) run under `glpsol` from GLPK, which is not a Python package and is not bundled: GLPK is GPL-3, and gridcalc only starts it as a program. Install it with `brew install glpk`, `apt install glpk-utils`, or a Windows build, so that `glpsol` is on `PATH`.
+
 ## From a source checkout
 
 The desktop app loads a compiled React bundle that is a build artifact and is not in git, so build it before running from a checkout:

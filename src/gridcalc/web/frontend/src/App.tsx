@@ -347,6 +347,8 @@ export function App() {
             key={`${wb.dims.filename}:${wb.loads}:${wb.sheets.active}`}
             ncol={wb.dims.ncol}
             nrow={wb.dims.nrow}
+            usedRows={wb.dims.used_rows}
+            usedCols={wb.dims.used_cols}
             revision={wb.revision}
             onSelectionChange={setSelection}
             annotations={annotations}

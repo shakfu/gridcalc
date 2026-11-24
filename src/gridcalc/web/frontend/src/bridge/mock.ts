@@ -142,7 +142,7 @@ export function installMockBridge(): void {
 
   // Mirrors `Api._touch`: any mutation dirties the workbook and says so.
   let modelText = ''
-  let modelBackend: 'builtin' | 'pulp' = 'builtin'
+  let modelBackend: 'builtin' | 'pulp' | 'pyomo' | 'gmpl' = 'builtin'
   // Data items the mock `item`/`unitem` commands keep, for the items dialog.
   const dataItems = new Map<string, DataItemInfo>([
     ['Bars', { name: 'Bars', index: [], has_missing: false, missing: null, output: false, table: null, source: '', problem: '', sheet: 'Sheet1', ref: 'C3:G3' }],
@@ -687,8 +687,8 @@ export function installMockBridge(): void {
         running: solvePolls > 0,
       }),
       set_model_backend: async (backend: string): Promise<SetModelResult> => {
-        if (backend !== 'builtin' && backend !== 'pulp') {
-          return { ok: false, error: 'model backend must be one of builtin, pulp' }
+        if (backend !== 'builtin' && backend !== 'pulp' && backend !== 'pyomo' && backend !== 'gmpl') {
+          return { ok: false, error: 'model backend must be one of builtin, pulp, pyomo, gmpl' }
         }
         modelBackend = backend
         return { ...touch(), problems: [] }

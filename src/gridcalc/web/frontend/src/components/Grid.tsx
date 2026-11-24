@@ -11,7 +11,7 @@ import {
   type Ref,
 } from 'react'
 import { bridge } from '../bridge/api'
-import type { ModelBox, Viewport } from '../bridge/types'
+import type { ModelBox, Viewport, ViewportCell } from '../bridge/types'
 import { cellCss } from '../lib/cellstyle'
 import {
   CH,
@@ -52,6 +52,10 @@ export interface GridHandle {
 interface GridProps {
   ncol: number
   nrow: number
+  // Rows and columns up to the last stored cell. The scroll canvas spans these
+  // plus slack, not the whole sheet: see `span` below.
+  usedRows?: number
+  usedCols?: number
   // Bumps when an out-of-grid action (undo/redo, formatting) changes cells, so
   // the grid refetches its viewport without losing scroll/cursor.
   revision: number
@@ -73,6 +77,9 @@ interface GridProps {
 }
 
 const MIN_COL_W = 28
+// Rows and columns of canvas past the used cells, the cursor and the view.
+const SLACK_ROWS = 200
+const SLACK_COLS = 26
 
 // A restored cursor is clamped to the sheet rather than trusted: it was
 // recorded against a sheet of the same dimensions, but nothing guarantees the
@@ -87,6 +94,8 @@ function restoreCursor(p: Cursor | undefined, nrow: number, ncol: number): Curso
 export function Grid({
   ncol,
   nrow,
+  usedRows = 0,
+  usedCols = 0,
   revision,
   onSelectionChange,
   annotations,
@@ -126,8 +135,40 @@ export function Grid({
   // Refs mirroring state so window-level and async handlers read current values.
   const curRef = useRef(cur)
   curRef.current = cur
+  const nrowRef = useRef(nrow)
+  nrowRef.current = nrow
   const anchorRef = useRef(anchor)
+  const canvasEl = useRef<HTMLDivElement>(null)
   anchorRef.current = anchor
+
+  // The scroll canvas spans the used part of the sheet plus slack, not the
+  // whole sheet: WebKit blocks its main thread for seconds on a canvas a
+  // million rows tall (docs/dev/web-canvas-height.md). It reaches past the
+  // used cells, the cursor, the selection and the scrolled-to region, so
+  // scrolling to its end grows it, and it never shrinks, so the scrollbar
+  // does not jump under the pointer.
+  const spanMax = useRef({ rows: 0, cols: 0 })
+  const viewH = scrollEl.current?.clientHeight ?? 800
+  const viewW = scrollEl.current?.clientWidth ?? 1200
+  const span = {
+    rows: Math.min(
+      nrow,
+      Math.max(
+        spanMax.current.rows,
+        Math.max(usedRows, cur.r + 1, anchor.r + 1, Math.ceil((scroll.top + viewH) / CH)) +
+          SLACK_ROWS,
+      ),
+    ),
+    cols: Math.min(
+      ncol,
+      Math.max(
+        spanMax.current.cols,
+        Math.max(usedCols, cur.c + 1, anchor.c + 1, Math.ceil((scroll.left + viewW) / CW)) +
+          SLACK_COLS,
+      ),
+    ),
+  }
+  spanMax.current = span
 
   // Cursor/anchor moves write through to the refs immediately rather than
   // waiting for the re-render. Otherwise two commands issued in one tick
@@ -338,6 +379,22 @@ export function Grid({
     const l = a[c]
     const w = a[c + 1] - a[c]
     const t = CH + r * CH
+    // The canvas must reach the target before the scroll can: grow it now
+    // rather than after the render that the cursor move schedules.
+    // Through the same high-water mark the render reads, so the next render
+    // agrees with what is set here and nothing ever shrinks it.
+    const canvas = canvasEl.current
+    const rows = Math.min(nrowRef.current, r + 1 + SLACK_ROWS)
+    const cols = Math.min(a.length - 1, c + 1 + SLACK_COLS)
+    const grow = {
+      rows: Math.max(spanMax.current.rows, rows),
+      cols: Math.max(spanMax.current.cols, cols),
+    }
+    if (canvas && (grow.rows > spanMax.current.rows || grow.cols > spanMax.current.cols)) {
+      spanMax.current = grow
+      canvas.style.height = `${CH + grow.rows * CH}px`
+      canvas.style.width = `${a[grow.cols]}px`
+    }
     if (l < el.scrollLeft + GW) el.scrollLeft = l - GW
     else if (l + w > el.scrollLeft + el.clientWidth) el.scrollLeft = l + w - el.clientWidth
     if (t < el.scrollTop + CH) el.scrollTop = t - CH
@@ -774,6 +831,32 @@ export function Grid({
       (byRow.get(r) ?? []).some(([c0, c1]) => c >= c0 && c <= c1) ||
       merges.some(([r0, c0]) => r === r0 && c === c0) // an anchor outside the window
     const byPos = new Map(view.cells.map((cell) => [`${cell.r},${cell.c}`, cell]))
+    // A left-aligned label runs on over empty cells to its right, as in Excel
+    // and the terminal grid, up to the first cell with content or a merge.
+    // Only plain text does: a fill, border, wrap or other alignment would be
+    // drawn across the neighbours too, so those cells keep their own width.
+    const lastCol = view.c0 + view.cols - 1
+    const overflowTo = (cell: ViewportCell): number => {
+      const st = cell.style
+      const plain =
+        cell.align === 'l' &&
+        cell.text !== '' &&
+        !st?.fill &&
+        !st?.wrap &&
+        !st?.rotation &&
+        !st?.left &&
+        !st?.right &&
+        !st?.top &&
+        !st?.bottom &&
+        (!st?.halign || st.halign === 'left' || st.halign === 'general')
+      if (!plain) return cell.c
+      let end = cell.c
+      for (let k = cell.c + 1; k <= lastCol; k++) {
+        if (byPos.get(`${cell.r},${k}`)?.text || inside(cell.r, k)) break
+        end = k
+      }
+      return end
+    }
     // A merge is one box over its area: its anchor's content and style, on an
     // opaque background so the gridlines inside it do not show.
     const mergeBoxes = merges.map(([r0, c0, r1, c1]) => {
@@ -814,7 +897,7 @@ export function Grid({
           ...cellCss(cell.style, cell.color, cell.underline),
           left: xs[cell.c],
           top: CH + cell.r * CH,
-          width: xs[cell.c + 1] - xs[cell.c],
+          width: xs[overflowTo(cell) + 1] - xs[cell.c],
         }}
       >
         {cell.text}
@@ -856,13 +939,13 @@ export function Grid({
   // uniform).
   const vlineLayer = useMemo(() => {
     if (!view) return null
-    const h = nrow * CH
+    const h = span.rows * CH
     const items = []
     for (let c = view.c0; c <= view.c0 + view.cols; c++) {
       items.push(<div key={c} className="vline" style={{ left: xs[c], height: h }} />)
     }
     return items
-  }, [view, xs, nrow])
+  }, [view, xs, span.rows])
 
   // Positioned like cells, but driven by the solve result rather than the
   // viewport fetch. Off-screen annotations are skipped rather than clamped --
@@ -872,7 +955,7 @@ export function Grid({
     const items = []
     for (const [a1, ann] of Object.entries(annotations)) {
       const at = parseRef(a1)
-      if (!at || at.r >= nrow || at.c >= ncol) continue
+      if (!at || at.r >= span.rows || at.c >= span.cols) continue
       items.push(
         <div
           key={a1}
@@ -883,16 +966,18 @@ export function Grid({
       )
     }
     return items
-  }, [annotations, xs, ncol, nrow])
+  }, [annotations, xs, span.rows, span.cols])
 
   // Above the cells, but click-through, so the sheet under a box stays editable.
   const modelLayer = useMemo(() => {
     if (!modelBoxes?.length) return null
+    // Clipped to the canvas: a whole-column item would otherwise make it a
+    // million rows tall again.
     return modelBoxes
-      .filter((b) => b.r0 < nrow && b.c0 < ncol)
+      .filter((b) => b.r0 < span.rows && b.c0 < span.cols)
       .map((b) => {
-        const c1 = Math.min(b.c1, ncol - 1)
-        const r1 = Math.min(b.r1, nrow - 1)
+        const c1 = Math.min(b.c1, span.cols - 1)
+        const r1 = Math.min(b.r1, span.rows - 1)
         return (
           <div
             key={b.name}
@@ -910,7 +995,7 @@ export function Grid({
           </div>
         )
       })
-  }, [modelBoxes, xs, ncol, nrow])
+  }, [modelBoxes, xs, span.rows, span.cols])
 
   const gutterLayer = useMemo(() => {
     if (!view) return null
@@ -996,7 +1081,11 @@ export function Grid({
         onDoubleClick={onDoubleClick}
         onKeyDown={onKeyDown}
       >
-        <div className="grid-canvas" style={{ width: xs[ncol], height: CH + nrow * CH }}>
+        <div
+          className="grid-canvas"
+          ref={canvasEl}
+          style={{ width: xs[span.cols], height: CH + span.rows * CH }}
+        >
           <div className="vline-layer">{vlineLayer}</div>
           <div className="annot-layer">{annotationLayer}</div>
           <div className="cell-layer">{cellLayer}</div>

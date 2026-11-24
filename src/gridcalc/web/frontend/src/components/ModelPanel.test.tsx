@@ -38,7 +38,8 @@ test('loads the model into a Python editor', async () => {
   await bridge.set_model('prob = 1\n')
   const { container } = renderPanel()
   await waitFor(() => expect(container.querySelector('.cm-content')).toHaveTextContent('prob = 1'))
-  expect(screen.getByText('Model - Sheet1')).toBeInTheDocument()
+  expect(screen.getByRole('complementary', { name: 'Model' })).toBeInTheDocument()
+  expect(screen.queryByText(/^Model - /)).toBeNull() // no title: it could not be read
   // Python highlighting is on: the editor tags the language.
   expect(container.querySelector('.cm-content')).toHaveAttribute('data-language', 'python')
 })
@@ -168,4 +169,18 @@ test('the backend selector switches to the PuLP library', async () => {
   await waitFor(() => expect(select).toHaveValue('pulp'))
   expect(props.onEdited).toHaveBeenCalled()
   expect((await bridge.model()).backend).toBe('pulp')
+})
+
+
+test('GMPL text is not highlighted as Python', async () => {
+  const { container } = renderPanel()
+  const select = await screen.findByLabelText('Model backend')
+  await waitFor(() =>
+    expect(container.querySelector('.cm-content')).toHaveAttribute('data-language', 'python'),
+  )
+  await userEvent.setup().selectOptions(select, 'gmpl')
+  await waitFor(() =>
+    expect(container.querySelector('.cm-content')).not.toHaveAttribute('data-language'),
+  )
+  expect((await bridge.model()).backend).toBe('gmpl')
 })

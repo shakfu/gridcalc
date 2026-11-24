@@ -94,6 +94,8 @@ After the run, each key of the item's index is written with its variable's value
 
 The PuLP subset: `LpProblem`, `LpVariable` (with `.dicts`), `lpSum`, `value`, `LpStatus`, and the sense, category and status constants. Anything else raises `PulpError` naming it. It follows PuLP 2 and 3; PuLP 4 is a different API. A model may import `pulp`, `math`, and the modules the [sandbox](../security-plan.md) marks safe.
 
+The builtin backend also takes a quadratic objective: `prob += lpSum((Y[p] - a * X[p] - b) ** 2 for p in P)` fits a least-squares line. This goes beyond PuLP, which refuses a product of variables, so such a model does not run under the pulp backend. HiGHS solves it when it is convex (concave when maximising), with linear constraints and no integer variables; anything else is refused with the reason. A QP solve reports no `pi` or `dj`.
+
 After an optimal LP solve, `constraint.pi` is the shadow price, d(objective)/d(right-hand side), and `variable.dj` the reduced cost, d(objective)/d(variable). Both are in the objective's own direction, as PuLP reports them with its default solver, CBC. A MIP has neither.
 
 `print` output appears while the model runs: on the terminal's status line, and in the desktop panel. It is capped at 1 MB.
@@ -105,6 +107,43 @@ After an optimal LP solve, `constraint.pi` is the shadow price, d(objective)/d(r
 By default a model runs on the builtin PuLP subset, solved by HiGHS. With the [`[pulp]` extra](../install.md#the-pulp-extra) it can run under the PuLP library itself, with its solvers: `:model backend pulp` in the terminal, or the selector in the desktop panel. The setting is saved per sheet.
 
 The model text stays the same. It may now use the rest of PuLP, such as `prob.solve(PULP_CBC_CMD(msg=0))` or `COIN_CMD`, `GLPK_CMD` and `HiGHS`. Solvers that need a network licence server do not work, since the model process has no network.
+
+### Pyomo
+
+With the [`[pyomo]` extra](../install.md#the-pyomo-extra), `:model backend pyomo` (or **Pyomo** in the desktop selector) runs a model written with Pyomo. Data items are globals, as for PuLP:
+
+```python
+import pyomo.environ as pyo
+
+m = pyo.ConcreteModel()
+m.x = pyo.Var(Warehouses, Bars, within=pyo.NonNegativeIntegers)
+m.cost = pyo.Objective(expr=sum(costs[w, b] * m.x[w, b] for w in Warehouses for b in Bars))
+m.sup = pyo.Constraint(Warehouses, rule=lambda m, w: sum(m.x[w, b] for b in Bars) <= supply[w])
+m.dem = pyo.Constraint(Bars, rule=lambda m, b: sum(m.x[w, b] for w in Warehouses) >= demand[b])
+results = pyo.SolverFactory("glpk").solve(m)
+flow = m.x            # with flow an output item; or assign flow[w, b] = pyo.value(...)
+```
+
+Imports are limited to the `pyomo` package and the usual safe modules. The status comes from the one `SolverResults` the model keeps (`results` above), and the objective from the model's one active objective. Pyomo starts solver programs under the same rules as the pulp backend.
+
+### GMPL
+
+`:model backend gmpl` (or **GMPL (glpsol)** in the desktop selector) makes the sheet's model GMPL text, run by `glpsol` from GLPK ([install](../install.md#gmpl-models)):
+
+```gmpl
+set Warehouses; set Bars;
+param costs{Warehouses, Bars}; param supply{Warehouses}; param demand{Bars};
+var flow{Warehouses, Bars} >= 0, integer;
+minimize cost: sum{w in Warehouses, b in Bars} costs[w,b] * flow[w,b];
+s.t. sup{w in Warehouses}: sum{b in Bars} flow[w,b] <= supply[w];
+s.t. dem{b in Bars}: sum{w in Warehouses} flow[w,b] >= demand[b];
+end;
+```
+
+- Data items the model declares as a `set` or `param` are written to its data section, matched by name. A cross-tab or table item becomes a param with one subscript per key; `missing=` becomes its `default`. Undeclared items are left out.
+- Results fill output items by name: output item `flow` gets the variable `flow`, key by key; an output item named like the objective (`cost`) gets its value. GMPL has no assignment back to data, so this is the only way out.
+- `printf` and `display` go to the model output.
+- `table` statements and `printf ... > "file"` are refused: they write files, and `table` drivers can reach databases.
 
 ## Safety
 
@@ -122,7 +161,7 @@ The model runs in a separate process with these limits:
 
 The audit hook stops routes the static checks miss, but it is not an OS boundary: CPython documents audit hooks as unsuitable for sandboxing. On Linux and Windows nothing below it stops native code that gets loaded.
 
-The pulp backend relaxes two rules, because PuLP writes its model to a file and starts a solver program. Writes are allowed only in a private temporary directory, deleted after the run. Programs may be started only from PuLP's bundled solvers, or `cbc`, `glpsol`, `highs`, `scip`, `cplex` and `gurobi_cl` on `PATH`. Network stays denied. The memory cap and a cancel cover the solver too.
+The pulp, pyomo and gmpl backends relax two rules, because they write the model to a file and start a solver program. Writes are allowed only in a private temporary directory, deleted after the run. Programs may be started only from PuLP's bundled solvers, or `cbc`, `glpsol`, `highs`, `scip`, `cplex`, `gurobi_cl`, and the nonlinear solvers `ipopt`, `bonmin` and `couenne`, on `PATH`. Network stays denied. The memory cap and a cancel cover the solver too. `glpsol` is a native program, so outside macOS only the static check stops a GMPL model writing files.
 
 ## Files
 

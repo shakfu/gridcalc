@@ -512,3 +512,44 @@ def test_child_does_not_import_the_engine_or_metadata() -> None:
         check=True,
     ).stdout
     assert json.loads(out.splitlines()[-1]) == []
+
+
+def test_quadratic_model_from_a_sheet() -> None:
+    """Least squares through the builtin backend: fit y = a*x + b to five points."""
+    from gridcalc.dataitems import DataItem
+    from gridcalc.engine import NamedRange
+
+    g = Grid()
+    xs, ys = [1, 2, 3, 4, 5], [2.1, 3.9, 6.2, 7.8, 10.1]
+    g.setcells_bulk(
+        [(0, r, str(v)) for r, v in enumerate(xs)] + [(1, r, str(v)) for r, v in enumerate(ys)]
+    )
+    g.setcells_bulk([(3, 0, "1"), (3, 1, "2"), (3, 2, "3"), (3, 3, "4"), (3, 4, "5")])
+    sheet = g._active.name
+    for name, c1, r1, c2, r2 in [
+        ("P", 3, 0, 3, 4),
+        ("X", 0, 0, 0, 4),
+        ("Y", 1, 0, 1, 4),
+        ("slope", 5, 0, 5, 0),
+        ("intercept", 5, 1, 5, 1),
+    ]:
+        g.names.append(NamedRange(name, c1, r1, c2, r2, sheet=sheet))
+    g.data_items = {
+        "P": DataItem(),
+        "X": DataItem(("P",)),
+        "Y": DataItem(("P",)),
+        "slope": DataItem(output=True),
+        "intercept": DataItem(output=True),
+    }
+    g._active.model_text = (
+        "from pulp import *\n"
+        "a, b = LpVariable('a'), LpVariable('b')\n"
+        "prob = LpProblem('fit', LpMinimize)\n"
+        "prob += lpSum((Y[p] - a * X[p] - b) ** 2 for p in P)\n"
+        "prob.solve()\n"
+        "slope, intercept = a, b\n"
+    )
+    res = run_model(g)
+    assert res.status == "Optimal" and res.written == 2
+    assert g.cells[5][0].val == pytest.approx(1.99, abs=1e-4)  # numpy.polyfit gives 1.99, 0.05
+    assert g.cells[5][1].val == pytest.approx(0.05, abs=1e-4)

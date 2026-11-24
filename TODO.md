@@ -39,6 +39,12 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ### Optimization
 
+- [ ] **Model runs on Linux and Windows are confined less than on macOS.** No OS layer below the audit hook on either: Landlock (Linux 5.13+) is the candidate, unbuilt because it needs raw syscalls through ctypes and could not be tested here. Windows also has no CPU or memory limit for a model, and the pulp, pyomo and gmpl backends have not been run there. `test_address_space_limit_stops_the_child_without_the_parent` runs only on Linux CI (`docs/guide/models.md`, Safety).
+
+- [ ] **`:untable`.** A table cannot be removed. Excel's "Convert to Range" rewrites the formulas that read it as plain ranges; refusing while a formula reads it is the simpler option.
+
+- [ ] **A table item cannot index a cross-tab item.** `:item costs Warehouses Bars` with `Warehouses` a column set is refused; only a range set can index.
+
 - [ ] **Sensitivity for quadratic models.** Withheld today: a QP's duals do not carry the shadow-price reading the report describes. HiGHS does return them, so this is a question of deciding what they mean to a spreadsheet user, not of plumbing.
 
 ### Iterative calculation
@@ -122,6 +128,8 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 ## Low
 
 ### Optimization
+
+- [ ] **More model backends: CVXPY and NEOS.** Undecided whether either is wanted (`docs/dev/crosstab-model.md`). CVXPY solves in-process, so it would confine like the builtin backend. NEOS sends the workbook's data to a third-party server and needs network access, which every backend denies; it would need consent on each solve.
 
 - [ ] **Integer + quadratic together.** HiGHS does not support integrality with a Hessian. Currently the combination is simply refused.
 

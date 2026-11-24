@@ -161,3 +161,25 @@ PuLP 3.3 deprecates `PULP_CBC_CMD` in favour of `COIN_CMD` with `pulp[cbc]`; bot
 
 Start-up after taking the engine, `importlib.metadata` and `traceback` out of the child: 39.6 ms per run under `sandbox-exec`, from 79 ms. The child imports `itemdict` for `ItemDict` instead of `dataitems`.
 
+## GMPL
+
+Vendored HiGHS 1.15.1 reads MPS and CPLEX LP only (`highs/io/Filereader.cpp`), so GMPL needs GLPK, which is GPL-3. Three routes were weighed:
+
+- `glpsol` solves and gridcalc reads its `-o` report. Chosen: no C++ change, and GLPK stays a separate program.
+- `glpsol --check --wlp` translates and HiGHS solves the LP file. Same HiGHS answers and dual signs as the builtin backend, but it still needs `glpsol`, plus an LP reader in `_opt` and a map from `flow(A,1)` names back to keys.
+- `swiglpk` in the child. GPL code imported into gridcalc's process; murkier than starting a program.
+
+The `-o` report puts a name over 12 characters on its own line, values on the next; an integer column has `*` before its activity; symbols with spaces are quoted. `gmpl.read_report` tells a name line from a value line by whether the fields past column 12 hold a bare number, which a name outside quotes cannot.
+
+GMPL can write files (`table ... OUT`, `printf ... > "f"`) and its `table` drivers include ODBC and MySQL. `gmpl.problems` refuses both from a token scan before the run. glpsol is native, so the audit hook cannot see it: on macOS `sandbox-exec` confines it as it confines CBC; elsewhere the static check is the only layer.
+
+## Pyomo
+
+Pyomo 6.11 writes its `.lp` model and the solver's files under `tempfile.gettempdir()`, starts the solver with `subprocess.Popen` and removes the files (audit trace, 2026-11-24). It also reopens an `mkstemp` descriptor for writing, so the audit hook allows `open` on an integer: a descriptor grants no file it did not already have. Its import takes about 0.8 s, done before the hook. The import hook admits only the `pyomo` namespace, returning the top package for `import pyomo.environ as pyo` as `__import__` does.
+
+## Quadratic objectives
+
+Probed through `_opt` (2026-11-24): HiGHS solves a convex QP and a concave maximisation; a non-convex objective and a QP with integer columns both end in a bare `Highs_run failed`. The subset refuses MIQP before the solve and adds the convexity condition to the failure. `solve_lp_sparse` gained the dense ragged Hessian `solve_lp` already took. Quadratic variables are ordered first, so each lower-triangle row is no longer than the quadratic part, not the model.
+
+Checked with Ipopt 3.14.20: Pyomo calls `os.putenv(b"PYOMO_AMPLFUNC", b"")` before starting it, and no other variable for ipopt or glpk. The hook allows `putenv`/`unsetenv` only for `AMPLFUNC`/`PYOMO_AMPLFUNC` with an empty value, and only for program backends. A non-empty value is a shared library the AMPL solver loads, the same risk as `LD_PRELOAD`, and the model can write files into its temp directory.
+

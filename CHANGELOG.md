@@ -2,30 +2,47 @@
 
 ## [Unreleased]
 
-- **`:item flow[Warehouses, Bars]`** is the same as `:item flow Warehouses Bars`: the form `:items` and the overlay show, so a listed item can be typed back as shown. `output=true`/`output=false` are accepted beside `output`; any other value is refused rather than ignored.
+## [0.15.0]
 
-- **Long-format data items from tables.** `:item cost table=Routes` reads a table's rows as `{(key, ...): value}`, with any number of key columns: every column but the last by default, or `keys=` and `value=`. `column=` gives the distinct values of one column, for a set. A cross-tab item has at most two indexes; a table has as many as it has key columns, and leaves out what does not exist. Writes and output binding fill existing rows; a key with no row is refused rather than added.
-- **`:table NAME` makes the selection a table**, its first row the column names. Tables could only come from a file before.
+### Highlights
 
-- **Output data items are filled from the model's variables.** `:item flow Warehouses Bars output` (or the Output box in the desktop dialog) marks an item; the model rebinds `flow` to its variables, nested as `LpVariable.dicts` makes them or keyed by tuple, and every index key is written after the solve. The copy loop SolverStudio models end with is no longer needed. Opt-in per item rather than by matching name, so a variable that happens to share an item's name never writes cells. A missing key, or a variable left without a value by a failed solve, refuses the whole write.
+- **Optimization models over sheet data, as in SolverStudio.** Named ranges and tables become model data. A model written in PuLP, Pyomo or GMPL solves and writes its results back to the sheet. Try `examples/example_crosstab.json`, PuLP's beer distribution problem; guide: `docs/guide/models.md`.
+- **Four ways to run a model.** The builtin PuLP subset on HiGHS needs no install and also takes quadratic objectives. `gridcalc[pulp]` and `gridcalc[pyomo]` run those libraries with their solvers, Ipopt included. GMPL runs under `glpsol` from GLPK, which you install.
+- **A model is code, and it is confined.** A file with a model raises the trust prompt. The model runs in a separate process with time, CPU and memory limits. An audit hook refuses file writes, processes and sockets; on macOS `sandbox-exec` enforces the same.
+- **The desktop app opens in about 150 ms on macOS,** where it took about 20 s, and a cursor move takes 5-10 ms.
 
-- **Models can run under the PuLP library.** `pip install 'gridcalc[pulp]'`, then `:model backend pulp` or the selector in the desktop panel. The same model text runs with PuLP's solvers, CBC bundled. Its process may write only in a private temp directory and start only PuLP's bundled solvers or named solver programs on `PATH`; network stays denied. PuLP 4 is refused: it dropped `LpVariable.dicts`.
-- **A model's memory cap and cancel cover what it starts.** The model process runs in its own process group, which the parent measures and kills as a whole.
-- **A model run starts in 40 ms, from 79.** The model process no longer imports the spreadsheet engine, `importlib.metadata` or `traceback`; `gridcalc.__version__` is read on first use.
+### Added
 
-- **Data items: defined names read as model data.** `gridcalc.dataitems` reads a name with zero, one or two index names as a list, a scalar, `{key: value}` or `{(row, col): value}`, as SolverStudio does for cross-tab ranges. A model writes results back by key, as one undo step; a key outside the index or a formula cell is refused. JSON keeps them under `data_items`; xlsx does not yet. No command uses them yet. Design: `docs/dev/crosstab-model.md`.
-- **A PuLP subset solved by the builtin HiGHS.** `gridcalc.lpmodel` provides `LpProblem`, `LpVariable` (with `.dicts`), `lpSum`, `value` and `LpStatus`, with PuLP 2.x defaults, so PuLP's beer distribution model runs unchanged. A PuLP name outside the subset, such as `writeLP` or a solver argument, raises `PulpError` naming it, so a model never runs with different meaning. Sensitivity (`pi`, `dj`) is left out because PuLP's sign conventions differ by solver.
-- **A sheet's model runs in a child process.** `gridcalc.modelrun.run_model` runs the active sheet's model text and writes its results as one undo step, or writes nothing if the model fails. A hang, or memory past 2 GB, kills the child, not gridcalc. macOS does not enforce `RLIMIT_AS`, so the parent also polls the child's memory. Model text is code: it is saved per sheet in JSON, raises the trust prompt, and does not run from a file opened untrusted. A model may name a variable after a builtin the sandbox refuses, as PuLP's examples do with `vars`; the child has no such builtin, so the name is only ever the model's own. No command runs a model yet.
-- **`:item`, `:items`, `:unitem`, `:model` and `:solve`.** `:item costs Warehouses Bars` makes a data item, defining the name from the selection if it is new. `:model` edits the sheet's model in `$EDITOR`; `:solve` runs it. Each change is one undo step, including model text and data items, which undo did not capture before. Saving lists every problem with the models and data items, but saves anyway, so a half-written model is not lost. The desktop app's palette lists the four shared commands; it has no model editor yet. Guide: `docs/guide/models.md`.
-- **`:solve` runs in the background, and `:cancel` stops it.** The sheet stays editable while a model runs. If a data item changes meanwhile, nothing is written, since the solution would answer the old data. Writing the result to the cells anyway was the alternative; it would write numbers that no longer match their inputs.
-- **Model editor and "Show Model" in the desktop app.** Data > Model Editor opens a CodeMirror panel with Python highlighting, Solve and Cancel. Data > Show Model outlines each data item and labels it, as SolverStudio does. In the terminal, `:showmodel` colours data item cells and names the item under the cursor. CodeMirror adds `codemirror`, `@codemirror/lang-python`, `@codemirror/state`, `@codemirror/view` and `@codemirror/theme-one-dark` to the client, pinned.
-- **xlsx keeps models and data items.** They are stored in a custom XML part, as SolverStudio stores its models, and Excel keeps the part when it saves the file (checked with Excel 16.114 for Mac). An xlsx holding a model now raises the trust prompt, and does not load if it changed after approval.
-- **Models are confined further.** An audit hook in the model process refuses file writes, processes, sockets and native calls, including routes the AST validator misses, such as the real `open` reached through `print.__self__`. On macOS the process also runs under `sandbox-exec`, which denies the same at the OS level. Linux and Windows have no OS layer; Windows also has no CPU or memory limit (`docs/guide/models.md`).
-- **`pi` and `dj` after an LP solve.** Shadow prices and reduced costs, with PuLP's signs under its default solver, CBC. PuLP's HiGHS interface flips both for a maximisation; matching CBC was checked against PuLP 3.3.2 on five cases.
-- **Large models solve.** The model solver passes the constraint matrix sparse, so a 300 x 300 transport model (90,000 variables) solves in 0.5 s, where a dense matrix would need 432 MB. `lpSum` and `+=` on an expression no longer copy it per term: the same model spent 24 s building its sums.
-- **Model output shows while the model runs**, on the terminal's status line and in the desktop panel. It is capped at 1 MB.
-- **Undoing a solve snapshots only the cells written**, not the whole workbook.
-- **Data > Data Items... in the desktop app** lists data items, makes the selection one, and goes to an item's range on any sheet.
+- **Data items: named ranges read as model data.** `:item costs Warehouses Bars`, or `:item costs[Warehouses, Bars]`, makes the range `costs` a dict keyed `(warehouse, bar)`. A one-row or one-column range with no index is a set; one cell is a value; one index gives a dict with plain keys. `missing=0` gives blank cells and unknown keys a default. `:items` lists items and their problems; `:unitem` removes one. Items are saved in JSON and xlsx, and checked on save.
+
+- **Long-format data items from tables.** `:item cost table=Routes` reads a table's rows as `{(key, ...): value}`, with as many key columns as the table has: all but the last by default, or `keys=` and `value=`. `column=` gives one column's distinct values, for a set. `:table NAME` makes the selection a table, its first row the column names. Writes fill existing rows; a key with no row is refused.
+
+- **Output items.** An item marked `output` is filled from the model variable bound to its name: `flow = LpVariable.dicts(...)` or `flow = m.x`, with no copy loop. Opt-in per item, so a variable that happens to share a name never writes cells. A missing key, or a variable left without a value by a failed solve, refuses the whole write. Assigning keys, `flow[w, b] = ...`, also works.
+
+- **A model per sheet, and commands to run it.** `:model` edits it in `$EDITOR`. `:solve` runs it in the background, with its output on the status line; `:cancel` stops it. `:showmodel` colours data item cells and names the item under the cursor. Results are written as one undo step. If a data item changes while the model runs, nothing is written, since the solution answers the old data.
+
+- **The PuLP subset.** `LpProblem`, `LpVariable` (with `.dicts`), `lpSum`, `value`, `LpStatus` and the constants, as PuLP 2 and 3 define them, solved by the bundled HiGHS. `pi` and `dj` follow PuLP's signs under its default solver, CBC. A quadratic objective is solved when convex (concave when maximising); PuLP itself has none, so such a model does not run under the pulp backend. A PuLP name outside the subset raises `PulpError` naming it. The constraint matrix is passed sparse: a 300 x 300 transport model (90,000 variables) solves in 0.5 s.
+
+- **Backends: `:model backend pulp|pyomo|gmpl`.** `pulp` runs the PuLP library (`gridcalc[pulp]`, PuLP 2 or 3; PuLP 4 dropped `LpVariable.dicts`). `pyomo` runs Pyomo (`gridcalc[pyomo]`) with the solvers it starts, nonlinear ones included. `gmpl` runs GMPL text under `glpsol`: declared sets and params get the data items, and output items are filled by variable or objective name. GLPK is GPL-3, so gridcalc starts the installed program and neither bundles nor links it. GMPL `table` statements and `printf` to a file are refused.
+
+- **Model editor, Show Model and Data Items in the desktop app.** Data > Model Editor opens a CodeMirror panel with Solve, Cancel, the backend, the model's problems and its output as it runs; a failed run puts the cursor on the failing line. Data > Show Model outlines and labels each data item, as SolverStudio does. Data > Data Items lists items, makes the selection or a table one, and goes to an item's range on any sheet.
+
+- **Models and data items in xlsx.** They are stored in a custom XML part, as SolverStudio stores its models, and Excel keeps the part when it saves the file (checked with Excel 16.114 for Mac).
+
+- **Confinement of model runs.** The model process has a wall clock (120 s), CPU and memory (2 GB) limits, and runs in its own process group, so a limit or a cancel also stops a solver it started. An audit hook refuses file writes, processes, sockets and native calls, including routes the static check misses, such as the real `open` reached through `print.__self__`. Backends that start a solver may write only in a private temporary directory and start only listed solver programs; network is denied to all. Linux and Windows have no OS layer, and Windows has no CPU or memory limit: `docs/guide/models.md` has the table.
+
+### Fixed
+
+- **The desktop app stalled for seconds at a time on macOS.** The grid's scroll canvas was the whole sheet, 23 million pixels tall, and WKWebView blocked a page loaded with it for about 8 s at a time: about 20 s before the first dialog, and 1-5 s for some cursor moves. The canvas now spans the used cells plus slack and grows as the cursor or scroll reaches its edge. Measurements: `docs/dev/web-canvas-height.md`.
+
+- **Long text was clipped to its cell in the desktop app.** It now runs on over empty cells to its right, as in Excel and the terminal, up to the first cell with content or a merge. Numbers, and text with a fill, border, wrap or other alignment, keep to their cell. The desktop grid also received text cut at 64 characters; text now arrives whole.
+
+### Changed
+
+- **The desktop trust dialog highlights the code it asks about,** and says that a model runs in a separate, restricted process. An xlsx holding a model now raises the trust prompt, and does not load if it changed after approval.
+- **`import gridcalc` takes 1.8 ms, from 22.** `gridcalc.__version__` is read on first use; `importlib.metadata` was most of the cost.
+- **`Api.dims()` reports `used_rows` and `used_cols`** for the active sheet.
+- **New dependencies.** The desktop client adds CodeMirror (`codemirror`, `@codemirror/lang-python`, `@codemirror/state`, `@codemirror/view`, `@codemirror/theme-one-dark`), pinned. Optional extras `pulp` and `pyomo`.
 
 ## [0.14.0]
 

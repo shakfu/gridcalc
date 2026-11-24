@@ -449,3 +449,106 @@ test('data items are outlined and labelled over the cells', async () => {
   expect(supply).toHaveAttribute('title', 'supply: 2x1 does not match')
   expect(container.querySelector('[data-testid="model-box-far"]')).toBeNull()
 })
+
+// WebKit blocked its main thread for 8 s at a time on a canvas a million rows
+// tall, so the canvas spans the used cells plus slack and grows on demand.
+describe('the scroll canvas spans the used part of the sheet', () => {
+  const canvas = (c: HTMLElement) => c.querySelector('.grid-canvas') as HTMLElement
+  const px = (s: string) => Number(s.replace('px', ''))
+
+  test('a million-row sheet gets a canvas of used rows plus slack', async () => {
+    const { container, cells } = renderGrid({ nrow: 1048576, ncol: 16384, usedRows: 12, usedCols: 8 })
+    await waitFor(() => cells().getByText('gridcalc demo'))
+    // Used rows plus slack, plus at most a screen for the visible region.
+    const h = px(canvas(container).style.height)
+    expect(h).toBeGreaterThanOrEqual(CH + (12 + 200) * CH)
+    expect(h).toBeLessThanOrEqual(CH + (12 + 200 + 50) * CH)
+    expect(px(canvas(container).style.width)).toBeLessThanOrEqual(GW + (8 + 26 + 20) * CW)
+  })
+
+  test('a jump far down grows the canvas to reach it', async () => {
+    const ref = createRef<GridHandle>()
+    const { container, cells } = renderGrid({ nrow: 1048576, ncol: 16384, ref })
+    await waitFor(() => cells().getByText('gridcalc demo'))
+    act(() => {
+      ref.current?.goto('C5000')
+    })
+    await waitFor(() =>
+      expect(px(canvas(container).style.height)).toBeGreaterThanOrEqual(CH + 5000 * CH),
+    )
+    expect(px(canvas(container).style.height)).toBeLessThan(CH + 6000 * CH)
+  })
+
+  test('scrolling to the end grows it, and it never shrinks', async () => {
+    const ref = createRef<GridHandle>()
+    const { container, scroll, cells } = renderGrid({ nrow: 1048576, ncol: 16384, ref })
+    await waitFor(() => cells().getByText('gridcalc demo'))
+    const before = px(canvas(container).style.height)
+    scroll.scrollTop = before
+    fireEvent.scroll(scroll)
+    await waitFor(() => expect(px(canvas(container).style.height)).toBeGreaterThan(before))
+    const grown = px(canvas(container).style.height)
+    act(() => {
+      ref.current?.goto('A1')
+    })
+    scroll.scrollTop = 0
+    fireEvent.scroll(scroll)
+    expect(px(canvas(container).style.height)).toBe(grown)
+  })
+
+  test('a whole-column overlay box is clipped to the canvas', async () => {
+    const { container, cells } = renderGrid({
+      nrow: 1048576,
+      ncol: 16384,
+      modelBoxes: [{ name: 'all', label: 'all', r0: 0, c0: 0, r1: 1048575, c1: 0, problem: '' }],
+    })
+    await waitFor(() => cells().getByText('gridcalc demo'))
+    const box = container.querySelector('[data-testid="model-box-all"]') as HTMLElement
+    expect(px(box.style.height)).toBe(px(canvas(container).style.height) - CH)
+  })
+})
+
+describe('a long label runs on over empty cells to its right', () => {
+  const cell = (r: number, c: number, text: string, extra: Record<string, unknown> = {}) => ({
+    r,
+    c,
+    text,
+    align: 'l' as const,
+    ...extra,
+  })
+  const widthOf = (container: HTMLElement, text: string) => {
+    const el = [...container.querySelectorAll('.cell-layer .cell')].find(
+      (e) => e.textContent === text,
+    ) as HTMLElement
+    return Number(el.style.width.replace('px', ''))
+  }
+
+  test('to the first cell with content, and not for numbers, fills or borders', async () => {
+    vi.spyOn(bridge, 'viewport').mockResolvedValue({
+      r0: 0,
+      c0: 0,
+      rows: 10,
+      cols: 8,
+      cells: [
+        cell(0, 0, 'a long title that needs room'), // B1:E1 empty, F1 holds text
+        cell(0, 5, 'stop'),
+        cell(1, 0, 'next to text'), // B2 has content
+        cell(1, 1, 'x'),
+        cell(2, 0, '12345678901234', { align: 'r' }), // a number
+        cell(3, 0, 'filled label', { style: { fill: 'ffff00' } }),
+        cell(4, 0, 'boxed label', { style: { bottom: { style: 'thin' } } }),
+        cell(5, 0, 'before a blank', {}),
+        cell(5, 1, ''), // formatted but empty: does not stop the overflow
+      ],
+    })
+    const { container, cells } = renderGrid()
+    await waitFor(() => cells().getByText('stop'))
+    expect(widthOf(container, 'a long title that needs room')).toBe(5 * CW) // A..E
+    expect(widthOf(container, 'next to text')).toBe(CW)
+    expect(widthOf(container, '12345678901234')).toBe(CW)
+    expect(widthOf(container, 'filled label')).toBe(CW)
+    expect(widthOf(container, 'boxed label')).toBe(CW)
+    expect(widthOf(container, 'before a blank')).toBe(8 * CW) // to the window's edge
+    vi.restoreAllMocks()
+  })
+})

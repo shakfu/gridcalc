@@ -4133,6 +4133,18 @@ class TestEditorLaunch:
         assert undo.undo(self.g)
         assert self.g._active.model_backend == "builtin"
 
+    def test_gmpl_model_edits_as_a_mod_file(self, monkeypatch, tmp_path):
+        from gridcalc.modelrun import set_backend
+        from gridcalc.tui import cmdexec
+
+        set_backend(self.g._active, "gmpl")
+        seen = tmp_path / "path.txt"
+        ed = self._editor(tmp_path, f'echo "$1" > {seen}; echo "end;" > "$1"')
+        monkeypatch.setenv("EDITOR", ed)
+        cmdexec(self.stdscr, self.g, UndoManager(), "model")
+        assert seen.read_text().strip().endswith(".mod")
+        assert self.g._active.model_text == "end;\n"
+
     def test_failed_model_edit_records_nothing(self, monkeypatch, tmp_path):
         from gridcalc.tui import cmdexec
 

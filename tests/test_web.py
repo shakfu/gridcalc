@@ -2308,3 +2308,27 @@ def test_table_items_listed_with_their_table() -> None:
     )
     lines = shared.run("items", g, UndoManager()).lines
     assert "v = table Tab  output" in lines
+
+
+def test_dims_reports_the_used_extent() -> None:
+    g = Grid()
+    api = Api(g)
+    assert (api.dims()["used_rows"], api.dims()["used_cols"]) == (0, 0)
+    g.setcell(4, 99, "x")  # E100
+    assert (api.dims()["used_rows"], api.dims()["used_cols"]) == (100, 5)
+    assert api.dims()["nrow"] == NROW  # the sheet's own size is unchanged
+
+
+def test_viewport_sends_long_labels_whole() -> None:
+    """The grid runs a long label over empty cells, so the text must not be cut."""
+    g = Grid()
+    g.mode = Mode.EXCEL
+    g._apply_mode_libs()
+    long = "a label longer than the sixty-four characters a number display gets, by far"
+    g.setcell(0, 0, long)
+    g.setcell(1, 0, '="' + "x" * 100 + '"')
+    g.setcell(2, 0, "1" * 80)
+    cells = {(c["r"], c["c"]): c["text"] for c in Api(g).viewport(0, 0, 1, 3)["cells"]}
+    assert cells[(0, 0)] == long
+    assert cells[(0, 1)] == "x" * 100  # a formula's text result
+    assert len(cells[(0, 2)]) <= 64  # a number keeps the cap

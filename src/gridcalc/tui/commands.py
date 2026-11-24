@@ -345,7 +345,7 @@ def cmd_edit(stdscr: curses.window, g: Grid) -> bool:
 
 def cmd_model(stdscr: curses.window, g: Grid, undo: UndoManager, args: str = "") -> bool:
     """Edit the active sheet's model text in $EDITOR, or set its backend."""
-    from ..modelrun import BACKENDS, check_model
+    from ..modelrun import BACKENDS, check_model, set_backend
 
     sh = g._active
     parts = args.split()
@@ -358,16 +358,18 @@ def cmd_model(stdscr: curses.window, g: Grid, undo: UndoManager, args: str = "")
             return False
         if parts[1] != sh.model_backend:
             undo.save_model(g)
-            sh.model_backend = parts[1]
+            set_backend(sh, parts[1])
             g.dirty = 1
         problems = check_model(g) if sh.model_text.strip() else []
         if problems:
             pager(stdscr, f"Model problems ({len(problems)})", problems)
         return False
     if parts:
-        show_error(stdscr, "usage: :model  or  :model backend [builtin|pulp]")
+        show_error(stdscr, "usage: :model  or  :model backend [builtin|pulp|pyomo|gmpl]")
         return False
-    content = _edit_text(stdscr, sh.model_text, "model")
+    # The suffix picks the editor's highlighting: GMPL is a `.mod` file.
+    suffix = ".mod" if sh.model_lang == "gmpl" else ".py"
+    content = _edit_text(stdscr, sh.model_text, "model", suffix)
     if content is None or content == sh.model_text:
         return False
     undo.save_model(g)
@@ -459,7 +461,7 @@ def cmd_showmodel(stdscr: curses.window, g: Grid) -> bool:
     return False
 
 
-def _edit_text(stdscr: curses.window, text: str, what: str) -> str | None:
+def _edit_text(stdscr: curses.window, text: str, what: str, suffix: str = ".py") -> str | None:
     """``text`` after editing in $EDITOR, or None if the editor failed."""
     editor = os.environ.get("EDITOR") or _state._cfg.editor or "vi"
     try:
@@ -467,7 +469,7 @@ def _edit_text(stdscr: curses.window, text: str, what: str) -> str | None:
     except ValueError as exc:
         show_error(stdscr, f"Bad editor command {editor!r}: {exc}")
         return None
-    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".py", delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=suffix, delete=False) as f:
         f.write(text)
         tmppath = f.name
     try:
@@ -1346,7 +1348,7 @@ VIEW_COMMANDS: tuple[ViewCommand, ...] = (
         "model",
         "Model",
         "Edit the sheet's solver model in $EDITOR, or set what runs it; :solve runs it",
-        ":model [backend builtin|pulp]",
+        ":model [backend builtin|pulp|gmpl]",
         lambda s, g, u, a, sel: cmd_model(s, g, u, a),
     ),
     ViewCommand(

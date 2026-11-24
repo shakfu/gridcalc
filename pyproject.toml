@@ -66,6 +66,8 @@ web = ["pywebview>=5.0"]
 # Run sheet models under the PuLP library and its solvers (CBC is bundled)
 # instead of the builtin subset. PuLP 4 is a different API, hence the cap.
 pulp = ["pulp>=2.7,<4"]
+# Run sheet models written with Pyomo; it starts solver programs such as glpsol.
+pyomo = ["pyomo>=6.7"]
 
 [dependency-groups]
 dev = [
@@ -77,6 +79,7 @@ dev = [
     "pandas-stubs>=2.0",
     "pygments>=2.15",
     "pulp>=2.7,<4",
+    "pyomo>=6.7",
     "pytest",
     "pytest-cov>=5.0",
     "pytest-playwright>=0.5",

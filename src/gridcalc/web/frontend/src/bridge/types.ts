@@ -7,6 +7,10 @@
 export interface Dims {
   ncol: number
   nrow: number
+  // Up to the last stored cell of the active sheet; the grid sizes its scroll
+  // canvas from these, growing it as the cursor or scroll nears the edge.
+  used_rows?: number
+  used_cols?: number
   filename: string
   // True when the workbook has changes not yet written to disk.
   dirty: boolean
@@ -431,8 +435,8 @@ export interface PywebviewApi {
 export interface SheetModel {
   sheet: string
   lang: string
-  // What runs it: the builtin PuLP subset on HiGHS, or the PuLP library.
-  backend: 'builtin' | 'pulp'
+  // What runs it: the builtin PuLP subset on HiGHS, the PuLP library, Pyomo, or glpsol (GMPL text).
+  backend: 'builtin' | 'pulp' | 'pyomo' | 'gmpl'
   text: string
   problems: string[]
   running: boolean

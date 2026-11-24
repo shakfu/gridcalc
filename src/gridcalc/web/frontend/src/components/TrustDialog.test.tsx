@@ -92,3 +92,10 @@ test('the unknown-module answer does not carry across files', async () => {
   rerender(<TrustDialog info={{ ...INFO, path: '/tmp/other.json' }} onDecide={onDecide} />)
   expect(screen.getByRole('checkbox')).not.toBeChecked()
 })
+
+test('the code is highlighted as Python and cannot be edited', () => {
+  render(<TrustDialog info={INFO} onDecide={() => {}} />)
+  const code = screen.getByLabelText('Code block')
+  expect(code).toHaveAttribute('data-language', 'python')
+  expect(code).toHaveAttribute('contenteditable', 'false')
+})

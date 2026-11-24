@@ -419,10 +419,11 @@ Solution solve_lp_sparse(
     const std::vector<int>& integer_vars,
     const std::vector<int>& binary_vars,
     bool sensitivity,
+    const std::vector<std::vector<double>>& hessian,
     double time_limit)
 {
     return solve_core(c, static_cast<int>(sense.size()), a_start, a_index, a_value, sense,
-                      rhs, lb, ub, maximize, integer_vars, binary_vars, sensitivity, {},
+                      rhs, lb, ub, maximize, integer_vars, binary_vars, sensitivity, hessian,
                       time_limit);
 }
 
@@ -494,8 +495,10 @@ NB_MODULE(_opt, m) {
         nb::arg("integer_vars") = std::vector<int>{},
         nb::arg("binary_vars")  = std::vector<int>{},
         nb::arg("sensitivity")  = false,
+        nb::arg("hessian")      = std::vector<std::vector<double>>{},
         nb::arg("time_limit")   = DEFAULT_TIME_LIMIT,
         "solve_lp with A in row-wise CSR: row i is a_index/a_value"
         "[a_start[i]:a_start[i+1]], the last row running to the end. One row "
-        "per entry of sense. No Hessian.");
+        "per entry of sense. hessian as for solve_lp; a row may be shorter "
+        "than its index, or empty.");
 }

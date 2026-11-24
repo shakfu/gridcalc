@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { EditorView, basicSetup } from 'codemirror'
-import { Annotation, EditorState } from '@codemirror/state'
+import { Annotation, Compartment, EditorState } from '@codemirror/state'
 import { python } from '@codemirror/lang-python'
 import { oneDark } from '@codemirror/theme-one-dark'
 
@@ -13,14 +13,26 @@ interface CodeEditorProps {
   // 1-based line to put the cursor on, e.g. where a model failed.
   gotoLine?: number | null
   ariaLabel?: string
+  // Highlighting: Python, or none for text in another language (GMPL).
+  language?: 'python' | 'plain'
+  // Shown, not edited: the trust dialog's preview of a file's code.
+  readOnly?: boolean
 }
 
 // A CodeMirror 6 Python editor. The view is created once; a `value` that
 // differs from the document (a sheet switch, an undo) replaces it, while the
 // user's own edits flow out through `onChange` without a round trip.
-export function CodeEditor({ value, onChange, gotoLine, ariaLabel }: CodeEditorProps) {
+export function CodeEditor({
+  value,
+  onChange,
+  gotoLine,
+  ariaLabel,
+  language = 'python',
+  readOnly = false,
+}: CodeEditorProps) {
   const host = useRef<HTMLDivElement>(null)
   const view = useRef<EditorView | null>(null)
+  const lang = useRef(new Compartment())
   const change = useRef(onChange)
   change.current = onChange
 
@@ -32,9 +44,10 @@ export function CodeEditor({ value, onChange, gotoLine, ariaLabel }: CodeEditorP
         doc: value,
         extensions: [
           basicSetup,
-          python(),
+          lang.current.of(language === 'python' ? python() : []),
           oneDark,
           EditorView.lineWrapping,
+          ...(readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
           EditorView.contentAttributes.of({ 'aria-label': ariaLabel ?? 'model text' }),
           EditorView.updateListener.of((u) => {
             if (u.docChanged && !u.transactions.some((t) => t.annotation(external))) {
@@ -61,6 +74,12 @@ export function CodeEditor({ value, onChange, gotoLine, ariaLabel }: CodeEditorP
       annotations: external.of(true),
     })
   }, [value])
+
+  useEffect(() => {
+    view.current?.dispatch({
+      effects: lang.current.reconfigure(language === 'python' ? python() : []),
+    })
+  }, [language])
 
   useEffect(() => {
     const v = view.current

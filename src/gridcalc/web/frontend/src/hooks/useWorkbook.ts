@@ -290,6 +290,9 @@ export function useWorkbook({ confirm, onMutate }: WorkbookOptions): Workbook {
       setSheet: async (idx: number) => {
         const s = await guard('sheet', () => bridge.set_active(idx))
         if (s) setSheets(s)
+        // The used extent is per sheet, and the grid sizes its canvas from it.
+        const d = await guard('sheet', () => bridge.dims())
+        if (d) setDims(d)
       },
       addSheet: (name: string) => sheetOp('sheet', () => bridge.add_sheet(name)),
       deleteSheet: async (name: string) => {

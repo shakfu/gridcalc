@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
+import { CodeEditor } from './CodeEditor'
 import type { TrustInfo, TrustPolicy } from '../bridge/types'
 
 // The web frontend's answer to the curses trust prompt: a workbook's code block
@@ -46,9 +47,10 @@ export function TrustDialog({
         <Dialog.Content className="dialog-content wide" aria-label="Trust this workbook">
           <Dialog.Title className="dialog-title">Run code from {info.name}?</Dialog.Title>
           <p className="trust-lede">
-            This workbook carries Python that runs in this application&rsquo;s process. Until you
-            approve it the sheet loads formulas only, and cells that call into the code report an
-            error.
+            This workbook carries code. A Python code block runs in this application&rsquo;s
+            process; a solver model runs in a separate, restricted process when you solve. Until
+            you approve it the sheet loads formulas only, cells that call into the code report an
+            error, and models do not run.
           </p>
 
           <div className="trust-facts">
@@ -106,9 +108,9 @@ export function TrustDialog({
           </div>
 
           {info.has_code && (
-            <pre className="trust-code" aria-label="Code block">
-              {info.code}
-            </pre>
+            <div className="trust-code">
+              <CodeEditor value={info.code} onChange={() => {}} readOnly ariaLabel="Code block" />
+            </div>
           )}
 
           {info.unknown.length > 0 && (

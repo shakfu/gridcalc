@@ -171,10 +171,19 @@ class Api:
         g.dirty = 0  # a freshly loaded (or demo) workbook is not user-modified
 
     def dims(self) -> dict[str, Any]:
-        """Sheet extent, the loaded filename, and the unsaved-changes flag."""
+        """Sheet extent, the used extent, the loaded filename, and the unsaved-changes flag.
+
+        ``used_rows``/``used_cols`` count up to the last stored cell of the
+        active sheet. The client sizes its scroll canvas from them, not from
+        the sheet's million rows: WebKit blocks for seconds on a canvas that
+        tall (`docs/dev/web-canvas-height.md`).
+        """
+        cells = self._g._active._cells
         return {
             "ncol": NCOL,
             "nrow": NROW,
+            "used_rows": max((r for _, r in cells), default=-1) + 1,
+            "used_cols": max((c for c, _ in cells), default=-1) + 1,
             "filename": getattr(self._g, "filename", "") or "",
             "dirty": self._dirty,
         }
@@ -933,7 +942,7 @@ class Api:
 
     def set_model_backend(self, backend: str) -> dict[str, Any]:
         """Choose what runs the active sheet's model, as one undo step."""
-        from ..modelrun import BACKENDS, check_model
+        from ..modelrun import BACKENDS, check_model, set_backend
 
         if backend not in BACKENDS:
             return {"ok": False, "error": f"model backend must be one of {', '.join(BACKENDS)}"}
@@ -941,7 +950,7 @@ class Api:
         if backend == sh.model_backend:
             return {"ok": True, "problems": check_model(self._g)}
         self._undo.save_model(self._g)
-        sh.model_backend = backend
+        set_backend(sh, backend)
         out = self._touch()
         out["problems"] = check_model(self._g)
         return out

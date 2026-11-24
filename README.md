@@ -89,6 +89,8 @@ Full reference: <https://shakfu.github.io/gridcalc/reference/cli/#named-inputs-a
 
 - **Linear, mixed-integer & quadratic programming** built in via HiGHS -- `:opt max B4 vars A4:A5 st D4:D6` solves from cells in the sheet, with shadow prices, infeasibility diagnosis, and RHS sweeps. Models persist in the workbook.
 
+- **Optimization models over sheet data, as in SolverStudio** -- named ranges and tables become model data for a PuLP, Pyomo or GMPL model, which solves and writes its results back to the sheet. Runs on the built-in HiGHS, or the PuLP, Pyomo and GLPK solvers, in a confined process ([guide](docs/guide/models.md)).
+
 - **Goal-seek** -- `:goal B10 = 100 by A1` adjusts a variable so a formula hits a target value.
 
 - **Vim-style command line** (`:w`, `:e`, `:q`, `/search`, `y/p`, visual selection, undo), with **system-clipboard copy/paste** -- yank pushes values as TSV, paste pulls TSV in from other apps.
@@ -131,6 +133,7 @@ gridcalc example.json                # PYTHON: numpy/pandas, list-comprehensions
 gridcalc example_multisheet.json     # 3-sheet budget, cross-sheet formulas
 gridcalc example_lp.json             # LP/MIP demo -- type :opt to solve
 gridcalc example_goal.json           # goal-seek demo -- :goal B1 = 11 by A1
+gridcalc example_crosstab.json      # SolverStudio-style model -- :showmodel, then :solve
 gridcalc example_loan.xlsx           # loan model -- run it headless with --set/--get
 ```
 

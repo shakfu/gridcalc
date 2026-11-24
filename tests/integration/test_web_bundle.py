@@ -445,7 +445,8 @@ def test_clicking_a_cell_moves_the_cursor(page) -> None:
 
 
 def test_arrow_keys_navigate_the_grid(page) -> None:
-    page.locator(".cell-layer").get_by_text("gridcalc demo").click()  # A1
+    # Inside A1: the label runs on over B1.., so its middle is another column.
+    page.locator(".cell-layer").get_by_text("gridcalc demo").click(position={"x": 10, "y": 10})
     page.keyboard.press("ArrowDown")
     page.keyboard.press("ArrowRight")
     assert page.locator(".name-box").input_value() == "B2"
@@ -530,7 +531,7 @@ def test_drag_fill_handle_fills_down(page) -> None:
 
 
 def test_formula_point_mode_inserts_references(page) -> None:
-    page.locator(".cell-layer").get_by_text("gridcalc demo").click()  # A1 active
+    page.locator(".cell-layer").get_by_text("gridcalc demo").click(position={"x": 10, "y": 10})
     page.keyboard.press("=")  # start a formula
     editor = page.locator(".cell-editor")
     editor.wait_for(state="visible")

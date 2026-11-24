@@ -3,6 +3,8 @@ import { bridge } from '../bridge/api'
 import type { ModelRunResult } from '../bridge/types'
 import { CodeEditor } from './CodeEditor'
 
+type Backend = 'builtin' | 'pulp' | 'pyomo' | 'gmpl'
+
 const SAVE_DELAY_MS = 400
 const POLL_MS = 250
 
@@ -34,8 +36,7 @@ export function ModelPanel({
   fail,
 }: ModelPanelProps) {
   const [text, setText] = useState('')
-  const [sheet, setSheet] = useState('')
-  const [backend, setBackend] = useState<'builtin' | 'pulp'>('builtin')
+  const [backend, setBackend] = useState<Backend>('builtin')
   const [problems, setProblems] = useState<string[]>([])
   const [running, setRunning] = useState(false)
   const [elapsed, setElapsed] = useState(0)
@@ -121,7 +122,6 @@ export function ModelPanel({
     void bridge.model().then((m) => {
       if (!live) return
       setText(m.text)
-      setSheet(m.sheet)
       setBackend(m.backend)
       setProblems(m.problems)
       void poll()
@@ -156,7 +156,7 @@ export function ModelPanel({
     void poll()
   }
 
-  const chooseBackend = async (b: 'builtin' | 'pulp') => {
+  const chooseBackend = async (b: Backend) => {
     const r = await bridge.set_model_backend(b)
     if (!r.ok) {
       fail(r.error ?? 'could not change the backend')
@@ -175,7 +175,6 @@ export function ModelPanel({
   return (
     <aside className="model-panel" aria-label="Model">
       <header className="model-head">
-        <span className="model-title">Model{sheet ? ` - ${sheet}` : ''}</span>
         {running ? (
           <>
             <span className="model-running">running {elapsed.toFixed(0)} s</span>
@@ -192,10 +191,12 @@ export function ModelPanel({
           aria-label="Model backend"
           value={backend}
           disabled={running}
-          onChange={(e) => void chooseBackend(e.target.value as 'builtin' | 'pulp')}
+          onChange={(e) => void chooseBackend(e.target.value as Backend)}
         >
           <option value="builtin">Built-in (HiGHS)</option>
           <option value="pulp">PuLP library</option>
+          <option value="pyomo">Pyomo</option>
+          <option value="gmpl">GMPL (glpsol)</option>
         </select>
         <label className="model-toggle">
           <input
@@ -205,11 +206,16 @@ export function ModelPanel({
           />
           Show model
         </label>
-        <button type="button" aria-label="Close model panel" onClick={onClose}>
+        <button type="button" className="model-close" aria-label="Close model panel" onClick={onClose}>
           x
         </button>
       </header>
-      <CodeEditor value={text} onChange={onChange} gotoLine={errorLine} />
+      <CodeEditor
+        value={text}
+        onChange={onChange}
+        gotoLine={errorLine}
+        language={backend === 'gmpl' ? 'plain' : 'python'}
+      />
       {problems.length > 0 && (
         <ul className="model-problems" aria-label="Model problems">
           {problems.map((p) => (

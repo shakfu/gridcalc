@@ -27,13 +27,26 @@ from .dataitems import DataItemError, ItemDict
 from .engine import Grid, Sheet
 from .sandbox import _BLOCKED_NAMES, validate_code
 
-LANGS = ("pulp",)
+LANGS = ("pulp", "pyomo", "gmpl")
 # "builtin": the PuLP subset on the HiGHS extension, in the child alone.
 # "pulp": the PuLP library (`gridcalc[pulp]`), which writes temp files and
 # starts a solver program, so its child gets those two exceptions.
-BACKENDS = ("builtin", "pulp")
-# Solver programs PuLP may start from PATH, besides its own bundled CBC.
-SOLVER_PROGRAMS = ("cbc", "glpsol", "highs", "scip", "cplex", "gurobi_cl")
+BACKENDS = ("builtin", "pulp", "pyomo", "gmpl")
+# Backends that run a solver program: their child may write in a temp dir and start one.
+_PROGRAM_BACKENDS = ("pulp", "pyomo", "gmpl")
+# Solver programs a model may start from PATH, besides PuLP's bundled CBC.
+# LP/MIP, then the nonlinear (AMPL-interface) solvers Pyomo starts.
+SOLVER_PROGRAMS = (
+    "cbc",
+    "glpsol",
+    "highs",
+    "scip",
+    "cplex",
+    "gurobi_cl",
+    "ipopt",
+    "bonmin",
+    "couenne",
+)
 TIMEOUT_S = 120.0
 MEM_MB = 2048
 _POLL_S = 0.2
@@ -80,6 +93,16 @@ def _text_problems(sh: Sheet) -> list[str]:
         problems.append(f"model backend {sh.model_backend!r} is not one of {', '.join(BACKENDS)}")
     elif sh.model_backend == "pulp" and _pulp_dir() is None:
         problems.append("the pulp backend needs PuLP: pip install 'gridcalc[pulp]'")
+    elif sh.model_backend == "pyomo" and not _installed("pyomo"):
+        problems.append("the pyomo backend needs Pyomo: pip install 'gridcalc[pyomo]'")
+    if sh.model_backend == "gmpl":
+        # GMPL text is not Python: glpsol parses it, and reports its own errors.
+        from . import gmpl
+
+        if shutil.which("glpsol") is None:
+            problems.append("the gmpl backend needs glpsol from GLPK on PATH")
+        problems += [f"model on {sh.name}: {p}" for p in gmpl.problems(sh.model_text)]
+        return problems
     ok, why = validate_code(_rename_own_names(sh.model_text))
     if not ok:
         problems.append(f"model on {sh.name}: {why}")
@@ -153,6 +176,21 @@ _SANDBOX_PROFILE = """(version 1)
 """
 
 
+def set_backend(sh: Sheet, backend: str) -> None:
+    """Set a sheet's backend and the language its text is in: GMPL, or Python for the rest."""
+    sh.model_backend = backend
+    sh.model_lang = {"gmpl": "gmpl", "pyomo": "pyomo"}.get(backend, "pulp")
+
+
+def _installed(name: str) -> bool:
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def _pulp_dir() -> str | None:
     """The installed PuLP package's directory, found without importing it."""
     import importlib.util
@@ -167,7 +205,9 @@ def _pulp_dir() -> str | None:
 
 def solver_programs() -> tuple[list[str], list[str]]:
     """Programs the pulp backend may start: (paths, directories), resolved."""
-    files = {os.path.realpath(p) for name in SOLVER_PROGRAMS if (p := shutil.which(name))}
+    # Both the PATH entry and its target: sandbox-exec may see either.
+    found = [p for name in SOLVER_PROGRAMS if (p := shutil.which(name))]
+    files = {os.path.realpath(p) for p in found} | set(found)
     pulp = _pulp_dir()
     dirs = [os.path.join(pulp, "solverdir")] if pulp else []
     return sorted(files), dirs
@@ -194,7 +234,7 @@ def _child_argv(backend: str = "builtin", tmp: str | None = None) -> list[str]:
     argv = [sys.executable, "-I", "-B", "-m", "gridcalc._modelchild"]
     if sys.platform != "darwin" or not os.path.exists(_SANDBOX_EXEC):
         return argv
-    if backend != "pulp" or tmp is None:
+    if backend not in _PROGRAM_BACKENDS or tmp is None:
         return [_SANDBOX_EXEC, "-p", _SANDBOX_PROFILE, *argv]
     files, dirs = solver_programs()
     params = ["-D", f"TMP={os.path.realpath(tmp)}", "-D", f"PY={sys.executable}"]
@@ -320,7 +360,7 @@ class ModelJob:
         """
         if self._cancelled:
             raise ModelError("model cancelled")
-        if self.backend != "pulp":
+        if self.backend not in _PROGRAM_BACKENDS:
             return self._spawn(None)
         import tempfile
 

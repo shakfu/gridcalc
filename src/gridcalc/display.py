@@ -36,9 +36,7 @@ from .formula.evaluator import _is_number, number_text
 from .numfmt import format_value
 
 # Width (in characters) handed to ``fmtcell`` by :func:`cell_text` before the
-# padding is stripped. Wide enough that ordinary values and array badges
-# survive; over-long labels are truncated, which a GUI cell tolerates since it
-# manages its own column width.
+# padding is stripped, for numbers and array badges. Text gets its own length.
 _CELL_CHARS = 64
 
 
@@ -168,7 +166,13 @@ def cell_text(cl: Cell | None, global_fmt: str = "") -> str:
     """
     if cl is None or cl.type == EMPTY:
         return ""
-    return fmtcell(cl, _CELL_CHARS, global_fmt).strip()
+    # Text is never cut: the web grid runs a long label on over empty cells to
+    # its right, as Excel does. Numbers keep the cap, where `###` is the rule.
+    text = label_value(cl.text) if cl.type == LABEL else None
+    if text is None and cl.err is None and isinstance(cl.sval, str):
+        text = cl.sval
+    width = max(_CELL_CHARS, len(text)) if text else _CELL_CHARS
+    return fmtcell(cl, width, global_fmt).strip()
 
 
 def cell_color(cl: Cell | None) -> str | None:

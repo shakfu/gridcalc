@@ -570,3 +570,20 @@ def test_quadratic_model_from_a_sheet() -> None:
     assert res.status == "Optimal" and res.written == 2
     assert g.cells[5][0].val == pytest.approx(1.99, abs=1e-4)  # numpy.polyfit gives 1.99, 0.05
     assert g.cells[5][1].val == pytest.approx(0.05, abs=1e-4)
+
+
+def test_popen_with_a_windows_command_line(tmp_path, monkeypatch) -> None:
+    import os
+
+    from gridcalc import _modelchild as ch
+
+    prog = tmp_path / "solver dir" / "cbc.exe"
+    prog.parent.mkdir()
+    prog.write_text("")
+    real = os.path.normcase(os.path.realpath(prog))
+    monkeypatch.setattr(ch, "_programs", frozenset({real}))
+    # As Windows raises it: no executable, argv joined by list2cmdline.
+    ch._audit("subprocess.Popen", (None, f'"{prog}" model.mps', None, None))
+    for cmdline in (f'"{prog}x" model.mps', "cmd /c del x", "", "   "):
+        with pytest.raises(PermissionError):
+            ch._audit("subprocess.Popen", (None, cmdline, None, None))

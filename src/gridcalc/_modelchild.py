@@ -156,8 +156,15 @@ _PYOMO: Any = None  # `pyomo.environ`, for the pyomo backend
 def _inside(path: Any, root: str | None) -> bool:
     if root is None or not isinstance(path, (str, bytes, os.PathLike)):
         return False
-    real = os.path.realpath(os.fsdecode(path))
+    real = os.path.normcase(os.path.realpath(os.fsdecode(path)))
     return real == root or real.startswith(root + os.sep)
+
+
+def _first_word(cmdline: str) -> str:
+    """The program in a Windows command line, as `subprocess.list2cmdline` quotes it."""
+    if cmdline.startswith('"'):
+        return cmdline[1:].split('"', 1)[0]
+    return cmdline.split(None, 1)[0] if cmdline.strip() else ""
 
 
 def _allowed_program(args: tuple[Any, ...]) -> bool:
@@ -165,9 +172,11 @@ def _allowed_program(args: tuple[Any, ...]) -> bool:
     argv = args[1] if len(args) > 1 else None
     if exe is None and isinstance(argv, (list, tuple)) and argv:
         exe = argv[0]
-    if not isinstance(exe, (str, bytes, os.PathLike)):
+    elif exe is None and isinstance(argv, str):
+        exe = _first_word(argv)  # Windows joins argv before the event
+    if not isinstance(exe, (str, bytes, os.PathLike)) or not exe:
         return False
-    real = os.path.realpath(os.fsdecode(exe))
+    real = os.path.normcase(os.path.realpath(os.fsdecode(exe)))
     return real in _programs or any(_inside(real, d) for d in _program_dirs)
 
 
@@ -371,9 +380,11 @@ def _setup_pulp(req: dict[str, Any]) -> None:
 def _confine_programs(req: dict[str, Any]) -> None:
     """Record the temp dir and solver programs a program backend may use."""
     global _tmp, _programs, _program_dirs
-    _tmp = os.path.realpath(req["tmp"])
-    _programs = frozenset(os.path.realpath(p) for p in req.get("programs", []))
-    _program_dirs = tuple(os.path.realpath(d) for d in req.get("program_dirs", []))
+    _tmp = os.path.normcase(os.path.realpath(req["tmp"]))
+    _programs = frozenset(os.path.normcase(os.path.realpath(p)) for p in req.get("programs", []))
+    _program_dirs = tuple(
+        os.path.normcase(os.path.realpath(d)) for d in req.get("program_dirs", [])
+    )
 
 
 def run_gmpl(req: dict[str, Any], log: Any) -> dict[str, Any]:

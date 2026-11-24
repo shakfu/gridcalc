@@ -2145,6 +2145,7 @@ def test_model_text_edit_is_undoable(beer) -> None:
     assert api.model() == {
         "sheet": "Sheet1",
         "lang": "pulp",
+        "backend": "builtin",
         "text": "",
         "problems": [],
         "running": False,
@@ -2271,3 +2272,13 @@ def test_data_items_listing(beer) -> None:
     assert items["flow"]["has_missing"] and items["flow"]["missing"] == 0.0
     assert items["SolverResult"]["ref"] == "B14"
     assert items["supply"]["problem"].startswith("supply: 2x1")
+
+
+def test_model_backend_switch_is_undoable(beer) -> None:
+    api = Api(beer)
+    assert api.set_model_backend("nope")["ok"] is False
+    res = api.set_model_backend("pulp")
+    assert res["dirty"] is True
+    assert api.model()["backend"] == "pulp"
+    api.undo()
+    assert api.model()["backend"] == "builtin"

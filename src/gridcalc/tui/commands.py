@@ -343,11 +343,30 @@ def cmd_edit(stdscr: curses.window, g: Grid) -> bool:
     return False
 
 
-def cmd_model(stdscr: curses.window, g: Grid, undo: UndoManager) -> bool:
-    """Edit the active sheet's model text in $EDITOR."""
-    from ..modelrun import check_model
+def cmd_model(stdscr: curses.window, g: Grid, undo: UndoManager, args: str = "") -> bool:
+    """Edit the active sheet's model text in $EDITOR, or set its backend."""
+    from ..modelrun import BACKENDS, check_model
 
     sh = g._active
+    parts = args.split()
+    if parts and parts[0] == "backend":
+        if len(parts) == 1:
+            show_error(stdscr, f"model backend: {sh.model_backend} (one of {', '.join(BACKENDS)})")
+            return False
+        if parts[1] not in BACKENDS:
+            show_error(stdscr, f"model backend must be one of {', '.join(BACKENDS)}")
+            return False
+        if parts[1] != sh.model_backend:
+            undo.save_model(g)
+            sh.model_backend = parts[1]
+            g.dirty = 1
+        problems = check_model(g) if sh.model_text.strip() else []
+        if problems:
+            pager(stdscr, f"Model problems ({len(problems)})", problems)
+        return False
+    if parts:
+        show_error(stdscr, "usage: :model  or  :model backend [builtin|pulp]")
+        return False
     content = _edit_text(stdscr, sh.model_text, "model")
     if content is None or content == sh.model_text:
         return False
@@ -1326,9 +1345,9 @@ VIEW_COMMANDS: tuple[ViewCommand, ...] = (
     ViewCommand(
         "model",
         "Model",
-        "Edit the sheet's solver model in $EDITOR; :solve runs it",
-        ":model",
-        lambda s, g, u, a, sel: cmd_model(s, g, u),
+        "Edit the sheet's solver model in $EDITOR, or set what runs it; :solve runs it",
+        ":model [backend builtin|pulp]",
+        lambda s, g, u, a, sel: cmd_model(s, g, u, a),
     ),
     ViewCommand(
         "solve",

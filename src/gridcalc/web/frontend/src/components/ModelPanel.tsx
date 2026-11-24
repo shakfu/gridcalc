@@ -35,6 +35,7 @@ export function ModelPanel({
 }: ModelPanelProps) {
   const [text, setText] = useState('')
   const [sheet, setSheet] = useState('')
+  const [backend, setBackend] = useState<'builtin' | 'pulp'>('builtin')
   const [problems, setProblems] = useState<string[]>([])
   const [running, setRunning] = useState(false)
   const [elapsed, setElapsed] = useState(0)
@@ -121,6 +122,7 @@ export function ModelPanel({
       if (!live) return
       setText(m.text)
       setSheet(m.sheet)
+      setBackend(m.backend)
       setProblems(m.problems)
       void poll()
     })
@@ -154,6 +156,17 @@ export function ModelPanel({
     void poll()
   }
 
+  const chooseBackend = async (b: 'builtin' | 'pulp') => {
+    const r = await bridge.set_model_backend(b)
+    if (!r.ok) {
+      fail(r.error ?? 'could not change the backend')
+      return
+    }
+    setBackend(b)
+    setProblems(r.problems ?? [])
+    if (r.dirty) onEdited()
+  }
+
   const cancel = async () => {
     const r = await bridge.cancel_solve()
     if (!r.ok) fail(r.error ?? 'could not cancel')
@@ -175,6 +188,15 @@ export function ModelPanel({
             Solve
           </button>
         )}
+        <select
+          aria-label="Model backend"
+          value={backend}
+          disabled={running}
+          onChange={(e) => void chooseBackend(e.target.value as 'builtin' | 'pulp')}
+        >
+          <option value="builtin">Built-in (HiGHS)</option>
+          <option value="pulp">PuLP library</option>
+        </select>
         <label className="model-toggle">
           <input
             type="checkbox"

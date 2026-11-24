@@ -63,6 +63,9 @@ extras = ["numpy>=1.24", "pandas>=2.0", "pygments>=2.15"]
 # desktop webview. The engine stays in-process on CPython; pywebview embeds the
 # OS webview and bridges to it. `pip install gridcalc[web]` then `gridcalc-web`.
 web = ["pywebview>=5.0"]
+# Run sheet models under the PuLP library and its solvers (CBC is bundled)
+# instead of the builtin subset. PuLP 4 is a different API, hence the cap.
+pulp = ["pulp>=2.7,<4"]
 
 [dependency-groups]
 dev = [
@@ -73,6 +76,7 @@ dev = [
     "pandas>=2.0",
     "pandas-stubs>=2.0",
     "pygments>=2.15",
+    "pulp>=2.7,<4",
     "pytest",
     "pytest-cov>=5.0",
     "pytest-playwright>=0.5",

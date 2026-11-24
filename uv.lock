@@ -563,6 +563,9 @@ extras = [
     { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pygments" },
 ]
+pulp = [
+    { name = "pulp" },
+]
 web = [
     { name = "pywebview" },
 ]
@@ -578,6 +581,7 @@ dev = [
     { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pandas-stubs", version = "2.3.3.260113", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas-stubs", version = "3.0.0.260204", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "pulp" },
     { name = "pygments" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -597,12 +601,13 @@ docs = [
 requires-dist = [
     { name = "numpy", marker = "extra == 'extras'", specifier = ">=1.24" },
     { name = "pandas", marker = "extra == 'extras'", specifier = ">=2.0" },
+    { name = "pulp", marker = "extra == 'pulp'", specifier = ">=2.7,<4" },
     { name = "pygments", marker = "extra == 'extras'", specifier = ">=2.15" },
     { name = "pywebview", marker = "extra == 'web'", specifier = ">=5.0" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=1.0" },
     { name = "windows-curses", marker = "sys_platform == 'win32'", specifier = ">=2.3" },
 ]
-provides-extras = ["extras", "web"]
+provides-extras = ["extras", "web", "pulp"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -612,6 +617,7 @@ dev = [
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pandas-stubs", specifier = ">=2.0" },
+    { name = "pulp", specifier = ">=2.7,<4" },
     { name = "pygments", specifier = ">=2.15" },
     { name = "pytest" },
     { name = "pytest-cov", specifier = ">=5.0" },
@@ -1581,6 +1587,15 @@ name = "proxy-tools"
 version = "0.1.0"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f2/cf/77d3e19b7fabd03895caca7857ef51e4c409e0ca6b37ee6e9f7daa50b642/proxy_tools-0.1.0.tar.gz", hash = "sha256:ccb3751f529c047e2d8a58440d86b205303cf0fe8146f784d1cbcd94f0a28010", size = 2978, upload-time = "2014-05-05T21:02:24.606Z" }
+
+[[package]]
+name = "pulp"
+version = "3.3.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/70/69be07a67621ad804d6cf347965eb4e0d7786a97330d99c31d735aaa6c5a/pulp-3.3.2.tar.gz", hash = "sha256:d0904700c207ac11e25e3b1213b70eae1d6fb25faa719d75f3f15054901258c0", size = 16305346, upload-time = "2026-05-25T09:41:26.207Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dd/6e/d674f1dde91c71e2ac19e5e5cf1ee6d5845e3aefecd9c39ed9c4b0c9a696/pulp-3.3.2-py3-none-any.whl", hash = "sha256:631b166f72086971a9597f7a0233ababa99bb8d50a01cd543f7758be5a9f86c0", size = 16391742, upload-time = "2026-05-25T09:41:22.2Z" },
+]
 
 [[package]]
 name = "pycparser"

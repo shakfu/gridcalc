@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import hashlib
 import importlib
-import importlib.metadata
 import json
 import os
 import re
@@ -273,9 +272,11 @@ def load_modules(
             errors.append(f"'{name}' is not installed")
             continue
         if op is not None and ver is not None:
+            from importlib import metadata  # lazy: about 15 ms, needed only here
+
             try:
-                installed = importlib.metadata.version(name.split(".")[0])
-            except importlib.metadata.PackageNotFoundError:
+                installed = metadata.version(name.split(".")[0])
+            except metadata.PackageNotFoundError:
                 errors.append(f"'{name}': installed but version metadata not found")
                 continue
             if not _check_version(installed, op, ver):

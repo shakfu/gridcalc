@@ -3378,6 +3378,7 @@ class Sheet:
         "filtered_rows",
         "autofilter",
         "model_lang",
+        "model_backend",
         "model_text",
     )
 
@@ -3406,6 +3407,9 @@ class Sheet:
         # Solver model text that reads data items (`modelrun.py`). It is code:
         # a file holding one raises the trust prompt.
         self.model_lang: str = "pulp"
+        # What runs the model: "builtin" (the PuLP subset on HiGHS) or "pulp"
+        # (the PuLP library and its solvers; `modelrun.BACKENDS`).
+        self.model_backend: str = "builtin"
         self.model_text: str = ""
         # Hidden rows, and the subset a filter hid; SUBTOTAL 1-11 skips only
         # those. Neither view hides them. `autofilter` is the sheet's xlsx
@@ -3413,6 +3417,23 @@ class Sheet:
         self.hidden_rows: set[int] = set()
         self.filtered_rows: set[int] = set()
         self.autofilter: str | None = None
+
+    def model_json(self) -> dict[str, str]:
+        """The model as saved: lang and text, plus the backend when not builtin."""
+        out = {"lang": self.model_lang, "text": self.model_text}
+        if self.model_backend != "builtin":
+            out["backend"] = self.model_backend
+        return out
+
+    def load_model(self, m: Any) -> None:
+        """Set the model from saved, untrusted data; a malformed entry is ignored."""
+        if not isinstance(m, dict) or not isinstance(m.get("text"), str):
+            return
+        self.model_text = m["text"]
+        lang = m.get("lang", "pulp")
+        self.model_lang = lang if isinstance(lang, str) else "pulp"
+        backend = m.get("backend", "builtin")
+        self.model_backend = backend if isinstance(backend, str) else "builtin"
 
 
 class Grid:
@@ -6198,11 +6219,7 @@ class Grid:
                     and 0 <= freeze[1] < NROW
                 ):
                     sh.tc, sh.tr = freeze
-                model = entry.get("model")
-                if isinstance(model, dict) and isinstance(model.get("text"), str):
-                    sh.model_text = model["text"]
-                    lang = model.get("lang", "pulp")
-                    sh.model_lang = lang if isinstance(lang, str) else "pulp"
+                sh.load_model(entry.get("model"))
                 self.sheets.append(sh)
                 self.active = len(self.sheets) - 1
                 cells_payload = entry.get("cells", [])
@@ -6424,7 +6441,7 @@ class Grid:
             if s.tc or s.tr:
                 entry["freeze"] = [s.tc, s.tr]
             if s.model_text:
-                entry["model"] = {"lang": s.model_lang, "text": s.model_text}
+                entry["model"] = s.model_json()
             out["sheets"].append(entry)
 
         def write(path: str) -> None:
@@ -6489,12 +6506,13 @@ class Grid:
                 self.data_items[iname] = DataItem.from_json(idata)
             except DataItemError as exc:
                 self.load_warnings.append(f"data item {iname} dropped: {exc}")
-        for sheet, (lang, text) in xlsxmodel.model_texts(doc).items():
-            sh = self._sheet_by_name(sheet)
+        models = doc.get("models")
+        for sheet, m in (models if isinstance(models, dict) else {}).items():
+            sh = self._sheet_by_name(sheet) if isinstance(sheet, str) else None
             if sh is None:
                 self.load_warnings.append(f"model for missing sheet {sheet} dropped")
                 continue
-            sh.model_lang, sh.model_text = lang, text
+            sh.load_model(m)
 
     def _xlsxload_into(
         self,
@@ -6865,11 +6883,7 @@ class Grid:
 
         model_doc = xlsxmodel.payload(
             self.data_items,
-            {
-                s.name: {"lang": s.model_lang, "text": s.model_text}
-                for s in self.sheets
-                if s.model_text
-            },
+            {s.name: s.model_json() for s in self.sheets if s.model_text},
         )
         return self._save_via(filename, write)
 

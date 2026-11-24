@@ -125,13 +125,12 @@ def test_hang_is_killed(beer: Grid) -> None:
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="the parent's RSS poll is the macOS layer")
 def test_memory_blowup_is_killed_by_the_parent(beer: Grid) -> None:
-    # macOS ignores RLIMIT_AS, so the parent's RSS poll must stop this.
-    # Bounded at 400 MB in case it does not; the cap is 100 MB.
-    beer._active.model_text = (
-        "x = []\nfor i in range(400):\n    x.append([i] * 125000)\n    sum(range(20000))\n"
-    )
+    # macOS ignores RLIMIT_AS, so the parent's RSS poll must stop this. The
+    # model holds 300 MB and spins, so the poll sees it however fast it was
+    # allocated; a model that finished between polls would race the check.
+    beer._active.model_text = "x = [[i] * 125000 for i in range(300)]\nwhile True:\n    pass\n"
     with pytest.raises(ModelError, match=r"stopped past 100 MB of memory"):
-        run_model(beer, mem_mb=100)
+        run_model(beer, mem_mb=100, timeout=20)
 
 
 def _raw_child_proc(text: str, mem_mb: int, cpu_s: int):
@@ -493,3 +492,23 @@ def test_macos_profile_denies_without_the_audit_hook(code, tmp_path) -> None:
     assert r.returncode != 0
     assert "not permitted" in r.stderr or "Permission" in r.stderr or "denied" in r.stderr.lower()
     assert not (tmp_path / "w.txt").exists()
+
+
+def test_child_does_not_import_the_engine_or_metadata() -> None:
+    # Most of a model run's start-up was these imports (docs/dev/crosstab-model.md).
+    import json
+    import subprocess
+
+    code = (
+        "import sys, gridcalc._modelchild as c\n"
+        "c.run({'text': 'x = 1\\n', 'items': {}})\n"
+        "print(json.dumps([m for m in ('gridcalc.engine', 'importlib.metadata', 'traceback')"
+        " if m in sys.modules]))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-I", "-c", "import json\n" + code],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert json.loads(out.splitlines()[-1]) == []

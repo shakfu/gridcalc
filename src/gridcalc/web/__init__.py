@@ -910,6 +910,7 @@ class Api:
         return {
             "sheet": sh.name,
             "lang": sh.model_lang,
+            "backend": sh.model_backend,
             "text": sh.model_text,
             "problems": check_model(self._g),
             "running": self._job is not None,
@@ -926,6 +927,21 @@ class Api:
             return {"ok": True, "problems": check_model(self._g)}
         self._undo.save_model(self._g)
         sh.model_text = text
+        out = self._touch()
+        out["problems"] = check_model(self._g)
+        return out
+
+    def set_model_backend(self, backend: str) -> dict[str, Any]:
+        """Choose what runs the active sheet's model, as one undo step."""
+        from ..modelrun import BACKENDS, check_model
+
+        if backend not in BACKENDS:
+            return {"ok": False, "error": f"model backend must be one of {', '.join(BACKENDS)}"}
+        sh = self._g._active
+        if backend == sh.model_backend:
+            return {"ok": True, "problems": check_model(self._g)}
+        self._undo.save_model(self._g)
+        sh.model_backend = backend
         out = self._touch()
         out["problems"] = check_model(self._g)
         return out

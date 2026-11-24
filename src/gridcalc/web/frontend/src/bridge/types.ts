@@ -418,6 +418,7 @@ export interface PywebviewApi {
   chart_data(spec: string): Promise<ChartData>
   model(): Promise<SheetModel>
   set_model(text: string): Promise<SetModelResult>
+  set_model_backend(backend: string): Promise<SetModelResult>
   start_solve(): Promise<StartSolveResult>
   solve_status(offset?: number): Promise<SolveStatus>
   cancel_solve(): Promise<{ ok: boolean; error?: string }>
@@ -429,6 +430,8 @@ export interface PywebviewApi {
 export interface SheetModel {
   sheet: string
   lang: string
+  // What runs it: the builtin PuLP subset on HiGHS, or the PuLP library.
+  backend: 'builtin' | 'pulp'
   text: string
   problems: string[]
   running: boolean

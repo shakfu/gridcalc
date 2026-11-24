@@ -141,6 +141,7 @@ export function installMockBridge(): void {
 
   // Mirrors `Api._touch`: any mutation dirties the workbook and says so.
   let modelText = ''
+  let modelBackend: 'builtin' | 'pulp' = 'builtin'
   // Data items the mock `item`/`unitem` commands keep, for the items dialog.
   const dataItems = new Map<string, DataItemInfo>([
     ['Bars', { name: 'Bars', index: [], has_missing: false, missing: null, problem: '', sheet: 'Sheet1', ref: 'C3:G3' }],
@@ -674,10 +675,18 @@ export function installMockBridge(): void {
       model: async (): Promise<SheetModel> => ({
         sheet: 'Sheet1',
         lang: 'pulp',
+        backend: modelBackend,
         text: modelText,
         problems: modelText.includes('import os') ? ["model on Sheet1: import of 'os' is blocked"] : [],
         running: solvePolls > 0,
       }),
+      set_model_backend: async (backend: string): Promise<SetModelResult> => {
+        if (backend !== 'builtin' && backend !== 'pulp') {
+          return { ok: false, error: 'model backend must be one of builtin, pulp' }
+        }
+        modelBackend = backend
+        return { ...touch(), problems: [] }
+      },
       set_model: async (text: string): Promise<SetModelResult> => {
         modelText = text
         return { ...touch(), problems: [] }

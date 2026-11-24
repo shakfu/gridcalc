@@ -48,6 +48,16 @@ Those bindings are compiled against the system interpreter, so a virtualenv only
 
 See [Desktop app](desktop.md) for what it does and what it does not do yet. The curses app has no such dependency.
 
+## The `[pulp]` extra
+
+Runs sheet models under the PuLP library and its solvers, instead of the builtin subset on HiGHS ([Cross-tab models](guide/models.md#solvers)):
+
+```sh
+pip install 'gridcalc[pulp]'
+```
+
+It installs PuLP 2 or 3, which bundles the CBC solver. PuLP 4 is a different API and is not supported.
+
 ## From a source checkout
 
 The desktop app loads a compiled React bundle that is a build artifact and is not in git, so build it before running from a checkout:

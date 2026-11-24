@@ -116,7 +116,9 @@ def read_file(path: str) -> dict[str, Any] | None:
 
 
 def model_texts(doc: dict[str, Any] | None) -> dict[str, tuple[str, str]]:
-    """Each sheet's ``(lang, text)`` from a read part, skipping malformed entries."""
+    """Each sheet's ``(lang, text)`` from a read part, skipping malformed entries.
+
+    For the trust prompt; loading reads the full entry with `Sheet.load_model`."""
     models = doc.get("models") if isinstance(doc, dict) else None
     out: dict[str, tuple[str, str]] = {}
     if not isinstance(models, dict):

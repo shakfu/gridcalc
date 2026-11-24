@@ -4118,6 +4118,21 @@ class TestEditorLaunch:
         assert undo.undo(self.g)
         assert self.g._active.model_text == ""
 
+    def test_model_backend_command(self):
+        from gridcalc.tui import cmdexec
+
+        undo = UndoManager()
+        cmdexec(self.stdscr, self.g, undo, "model backend pulp")
+        assert self.g._active.model_backend == "pulp"
+        assert self.g.dirty == 1
+        cmdexec(self.stdscr, self.g, undo, "model backend")
+        assert "model backend: pulp" in self.stdscr._last_addnstr
+        cmdexec(self.stdscr, self.g, undo, "model backend gurobi")
+        assert "must be one of builtin, pulp" in self.stdscr._last_addnstr
+        assert self.g._active.model_backend == "pulp"
+        assert undo.undo(self.g)
+        assert self.g._active.model_backend == "builtin"
+
     def test_failed_model_edit_records_nothing(self, monkeypatch, tmp_path):
         from gridcalc.tui import cmdexec
 

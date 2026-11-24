@@ -151,3 +151,13 @@ Reference run, PuLP 3.3.2, five LPs (max/min, `<=`/`>=`/`=`). CBC and HiGHS agre
 
 One custom XML part, `customXml/itemN.xml`, root `{urn:gridcalc:models:1}gridcalc`, text a JSON document with `data_items` and per-sheet `models`. Excel 16.114 for Mac kept it through open and save.
 
+## Tier 1: the PuLP library
+
+Per-sheet `model_backend`, `builtin` or `pulp`; the text is unchanged. PuLP writes `<uuid>-pulp.mps` under `tempfile.gettempdir()`, starts `cbc` with `subprocess.Popen` and removes the file (audit trace, PuLP 3.3.2). So the pulp child gets three exceptions, each in the audit hook and, on macOS, in the `sandbox-exec` profile: writes and removals under a per-run `TMPDIR` the parent creates and deletes; `Popen` of a program under PuLP's `solverdir` or in `SOLVER_PROGRAMS` on `PATH`; `os.devnull`, which PuLP opens for `msg=0`. Profile paths are `-D` parameters, never profile text.
+
+The child is a process-group leader, so the RSS cap sums the group and `_kill` signals it: CBC is a grandchild, and `proc.kill()` alone would orphan it.
+
+PuLP 3.3 deprecates `PULP_CBC_CMD` in favour of `COIN_CMD` with `pulp[cbc]`; both are allowed.
+
+Start-up after taking the engine, `importlib.metadata` and `traceback` out of the child: 39.6 ms per run under `sandbox-exec`, from 79 ms. The child imports `itemdict` for `ItemDict` instead of `dataitems`.
+

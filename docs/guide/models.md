@@ -63,6 +63,12 @@ After an optimal LP solve, `constraint.pi` is the shadow price, d(objective)/d(r
 
 **Data > Data Items...** lists every data item with its range, indexes and problems. Clicking a range goes to it, switching sheet if needed. The form below makes the selection a data item; only sets are offered as indexes.
 
+## Solvers
+
+By default a model runs on the builtin PuLP subset, solved by HiGHS. With the [`[pulp]` extra](../install.md#the-pulp-extra) it can run under the PuLP library itself, with its solvers: `:model backend pulp` in the terminal, or the selector in the desktop panel. The setting is saved per sheet.
+
+The model text stays the same. It may now use the rest of PuLP, such as `prob.solve(PULP_CBC_CMD(msg=0))` or `COIN_CMD`, `GLPK_CMD` and `HiGHS`. Solvers that need a network licence server do not work, since the model process has no network.
+
 ## Safety
 
 A model is code. A file containing a model raises the trust prompt, xlsx included; a model in a file opened untrusted does not run. Saving checks every model and data item, and lists the problems; it does not run the model.
@@ -78,6 +84,8 @@ The model runs in a separate process with these limits:
 | Same, enforced by the OS (`sandbox-exec`) | yes | no | no |
 
 The audit hook stops routes the static checks miss, but it is not an OS boundary: CPython documents audit hooks as unsuitable for sandboxing. On Linux and Windows nothing below it stops native code that gets loaded.
+
+The pulp backend relaxes two rules, because PuLP writes its model to a file and starts a solver program. Writes are allowed only in a private temporary directory, deleted after the run. Programs may be started only from PuLP's bundled solvers, or `cbc`, `glpsol`, `highs`, `scip`, `cplex` and `gurobi_cl` on `PATH`. Network stays denied. The memory cap and a cancel cover the solver too.
 
 ## Files
 

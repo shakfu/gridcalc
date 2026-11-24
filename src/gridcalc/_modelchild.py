@@ -13,7 +13,6 @@ import io
 import json
 import os
 import sys
-import traceback
 from typing import Any
 
 FILENAME = "<model>"
@@ -131,6 +130,32 @@ _IMPORT_ONLY = frozenset({"ctypes.dlopen", "ctypes.dlsym", "os.putenv", "os.unse
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
 _importing = 0
 
+# The pulp backend's exceptions, set by `run`: PuLP writes its model and
+# solution files in `_tmp`, and starts one of `_programs` (or a program under
+# `_program_dirs`, PuLP's bundled solvers) to solve.
+_tmp: str | None = None
+_programs: frozenset[str] = frozenset()
+_program_dirs: tuple[str, ...] = ()
+_PULP: Any = None
+
+
+def _inside(path: Any, root: str | None) -> bool:
+    if root is None or not isinstance(path, (str, bytes, os.PathLike)):
+        return False
+    real = os.path.realpath(os.fsdecode(path))
+    return real == root or real.startswith(root + os.sep)
+
+
+def _allowed_program(args: tuple[Any, ...]) -> bool:
+    exe = args[0] if args else None
+    argv = args[1] if len(args) > 1 else None
+    if exe is None and isinstance(argv, (list, tuple)) and argv:
+        exe = argv[0]
+    if not isinstance(exe, (str, bytes, os.PathLike)):
+        return False
+    real = os.path.realpath(os.fsdecode(exe))
+    return real in _programs or any(_inside(real, d) for d in _program_dirs)
+
 
 def _audit(event: str, args: tuple[Any, ...]) -> None:
     """Refuse writes, processes, sockets and native calls once the model runs."""
@@ -138,8 +163,14 @@ def _audit(event: str, args: tuple[Any, ...]) -> None:
         mode = args[1] if len(args) > 1 else None
         flags = args[2] if len(args) > 2 else 0
         writes = isinstance(mode, str) and any(ch in mode for ch in "wax+")
-        if writes or (isinstance(flags, int) and flags & _WRITE_FLAGS):
+        # `os.devnull` takes discarded output, such as a solver's with msg=0.
+        sink = args[0] == os.devnull or _inside(args[0], _tmp)
+        if (writes or (isinstance(flags, int) and flags & _WRITE_FLAGS)) and not sink:
             raise PermissionError(f"a model may not write files ({args[0]!r})")
+        return
+    if event in ("os.remove", "os.rename") and args and _inside(args[0], _tmp):
+        return
+    if event == "subprocess.Popen" and _allowed_program(args):
         return
     if _importing and event in _IMPORT_ONLY:
         return
@@ -156,7 +187,7 @@ def _import(
 
     global _importing
     if level == 0 and name == "pulp":
-        return lpmodel
+        return _PULP if _PULP is not None else lpmodel
     whole = name in _WHOLE_MODULES
     if level != 0 or not (whole or (classify_module(name) == "safe" and name in NAMES)):
         raise ImportError(f"import of {name!r} is not allowed in a model")
@@ -171,7 +202,7 @@ def _import(
 
 
 def _items(spec: dict[str, Any]) -> dict[str, Any]:
-    from .dataitems import _RAISE, ItemDict
+    from .itemdict import _RAISE, ItemDict
 
     out: dict[str, Any] = {}
     for name, it in spec.items():
@@ -187,7 +218,11 @@ def _items(spec: dict[str, Any]) -> dict[str, Any]:
 
 def _problem_summary(ns: dict[str, Any]) -> tuple[str | None, float | None]:
     """Status and objective of the one solved LpProblem in ``ns``, if exactly one."""
-    from .lpmodel import LpProblem, LpStatus, LpStatusNotSolved, value
+    from . import lpmodel
+
+    lib = _PULP if _PULP is not None else lpmodel
+    LpProblem, LpStatus, value = lib.LpProblem, lib.LpStatus, lib.value  # noqa: N806
+    LpStatusNotSolved = lib.LpStatusNotSolved  # noqa: N806
 
     solved = [v for v in ns.values() if isinstance(v, LpProblem) and v.status != LpStatusNotSolved]
     if len(solved) != 1:
@@ -197,8 +232,24 @@ def _problem_summary(ns: dict[str, Any]) -> tuple[str | None, float | None]:
     return LpStatus[p.status], obj
 
 
+def _setup_pulp(req: dict[str, Any]) -> None:
+    """Import the PuLP library and record what it may write and run. Before the hook."""
+    global _PULP, _tmp, _programs, _program_dirs
+    import pulp  # type: ignore[import-untyped]
+
+    major = int(str(getattr(pulp, "__version__", "0")).split(".")[0] or 0)
+    if major >= 4:
+        raise ImportError(
+            f"PuLP {pulp.__version__} is a different API; the pulp backend needs PuLP 2 or 3"
+        )
+    _PULP = pulp
+    _tmp = os.path.realpath(req["tmp"])
+    _programs = frozenset(os.path.realpath(p) for p in req.get("programs", []))
+    _program_dirs = tuple(os.path.realpath(d) for d in req.get("program_dirs", []))
+
+
 def run(req: dict[str, Any], out: Any = None) -> dict[str, Any]:
-    from .dataitems import ItemDict
+    from .itemdict import ItemDict
     from .sandbox import _BLOCKED_NAMES
 
     items = _items(req["items"])
@@ -210,6 +261,8 @@ def run(req: dict[str, Any], out: Any = None) -> dict[str, Any]:
     log = _Log(out if out is not None else io.StringIO())
     try:
         code = compile(req["text"], FILENAME, "exec")
+        if req.get("backend") == "pulp":
+            _setup_pulp(req)
         from . import _module_names, lpmodel, sandbox  # noqa: F401  (before the hook)
 
         sys.addaudithook(_audit)
@@ -219,9 +272,12 @@ def run(req: dict[str, Any], out: Any = None) -> dict[str, Any]:
         line = None
         if isinstance(exc, SyntaxError) and exc.filename == FILENAME:
             line = exc.lineno
-        for fr in traceback.extract_tb(exc.__traceback__):
-            if fr.filename == FILENAME:
-                line = fr.lineno
+        # The deepest frame in the model text. `traceback` would cost 11 ms to import.
+        tb = exc.__traceback__
+        while tb is not None:
+            if tb.tb_frame.f_code.co_filename == FILENAME:
+                line = tb.tb_lineno
+            tb = tb.tb_next
         msg = f"{type(exc).__name__}: {exc}"
         return {"ok": False, "error": msg, "line": line, "log": log.getvalue()}
 

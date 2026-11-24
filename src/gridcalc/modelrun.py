@@ -28,6 +28,12 @@ from .engine import Grid, Sheet
 from .sandbox import _BLOCKED_NAMES, validate_code
 
 LANGS = ("pulp",)
+# "builtin": the PuLP subset on the HiGHS extension, in the child alone.
+# "pulp": the PuLP library (`gridcalc[pulp]`), which writes temp files and
+# starts a solver program, so its child gets those two exceptions.
+BACKENDS = ("builtin", "pulp")
+# Solver programs PuLP may start from PATH, besides its own bundled CBC.
+SOLVER_PROGRAMS = ("cbc", "glpsol", "highs", "scip", "cplex", "gurobi_cl")
 TIMEOUT_S = 120.0
 MEM_MB = 2048
 _POLL_S = 0.2
@@ -70,6 +76,10 @@ def _text_problems(sh: Sheet) -> list[str]:
     problems: list[str] = []
     if sh.model_lang not in LANGS:
         problems.append(f"model language {sh.model_lang!r} is not one of {', '.join(LANGS)}")
+    if sh.model_backend not in BACKENDS:
+        problems.append(f"model backend {sh.model_backend!r} is not one of {', '.join(BACKENDS)}")
+    elif sh.model_backend == "pulp" and _pulp_dir() is None:
+        problems.append("the pulp backend needs PuLP: pip install 'gridcalc[pulp]'")
     ok, why = validate_code(_rename_own_names(sh.model_text))
     if not ok:
         problems.append(f"model on {sh.name}: {why}")
@@ -141,23 +151,83 @@ _SANDBOX_PROFILE = """(version 1)
 """
 
 
-def _child_argv() -> list[str]:
+def _pulp_dir() -> str | None:
+    """The installed PuLP package's directory, found without importing it."""
+    import importlib.util
+
+    try:
+        spec = importlib.util.find_spec("pulp")
+    except (ImportError, ValueError):
+        return None
+    locs = list(spec.submodule_search_locations or []) if spec else []
+    return os.path.realpath(locs[0]) if locs else None
+
+
+def solver_programs() -> tuple[list[str], list[str]]:
+    """Programs the pulp backend may start: (paths, directories), resolved."""
+    files = {os.path.realpath(p) for name in SOLVER_PROGRAMS if (p := shutil.which(name))}
+    pulp = _pulp_dir()
+    dirs = [os.path.join(pulp, "solverdir")] if pulp else []
+    return sorted(files), dirs
+
+
+def _pulp_profile(n_files: int, n_dirs: int) -> str:
+    """The pulp backend's profile: also writes in TMP and runs listed programs.
+
+    Paths arrive as `-D` parameters, so no path text is ever profile syntax.
+    """
+    allowed = ['(literal (param "PY"))', '(literal (param "PYREAL"))']
+    allowed += [f'(literal (param "F{i}"))' for i in range(n_files)]
+    allowed += [f'(subpath (param "D{i}"))' for i in range(n_dirs)]
+    return (
+        "(version 1)\n(allow default)\n(deny network*)\n"
+        '(deny file-write* (require-not (require-any (literal "/dev/null")'
+        ' (subpath (param "TMP")))))\n'
+        f"(deny process-exec (require-not (require-any {' '.join(allowed)})))\n"
+    )
+
+
+def _child_argv(backend: str = "builtin", tmp: str | None = None) -> list[str]:
     # -B: no .pyc writes, which the sandbox would refuse anyway.
     argv = [sys.executable, "-I", "-B", "-m", "gridcalc._modelchild"]
-    if sys.platform == "darwin" and os.path.exists(_SANDBOX_EXEC):
+    if sys.platform != "darwin" or not os.path.exists(_SANDBOX_EXEC):
+        return argv
+    if backend != "pulp" or tmp is None:
         return [_SANDBOX_EXEC, "-p", _SANDBOX_PROFILE, *argv]
-    return argv
+    files, dirs = solver_programs()
+    params = ["-D", f"TMP={os.path.realpath(tmp)}", "-D", f"PY={sys.executable}"]
+    params += ["-D", f"PYREAL={os.path.realpath(sys.executable)}"]
+    params += [x for i, f in enumerate(files) for x in ("-D", f"F{i}={f}")]
+    params += [x for i, d in enumerate(dirs) for x in ("-D", f"D{i}={d}")]
+    return [_SANDBOX_EXEC, *params, "-p", _pulp_profile(len(files), len(dirs)), *argv]
 
 
-def _rss_mb(pid: int) -> int:
-    """Resident memory of ``pid`` in MB, or 0 where ``ps`` is unavailable."""
+def _rss_mb(pgid: int) -> int:
+    """Resident memory of process group ``pgid`` in MB, or 0 where ``ps`` is unavailable.
+
+    The group, so a solver the model started counts against the cap too.
+    """
     ps = shutil.which("ps")
     if ps is None:
         return 0
     out = subprocess.run(  # noqa: S603
-        [ps, "-o", "rss=", "-p", str(pid)], capture_output=True, text=True, check=False
-    ).stdout.strip()
-    return int(out) // 1024 if out.isdigit() else 0
+        [ps, "-A", "-o", "pgid=,rss="], capture_output=True, text=True, check=False
+    ).stdout
+    kb = 0
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == str(pgid) and parts[1].isdigit():
+            kb += int(parts[1])
+    return kb // 1024
+
+
+def _kill(proc: subprocess.Popen[str]) -> None:
+    """Kill the child and anything it started (its process group, where there is one)."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        if hasattr(os, "killpg"):
+            os.killpg(proc.pid, 9)
+        else:
+            proc.kill()
 
 
 class ModelJob:
@@ -184,11 +254,13 @@ class ModelJob:
         self.mem_mb = mem_mb
         self.started = time.monotonic()
         self._items = self._read(g)
+        self.backend = sh.model_backend
         self._request = {
             "text": sh.model_text,
             "items": self._items,
             "mem_mb": mem_mb,
             "cpu_s": max(1, math.ceil(timeout)),
+            "backend": self.backend,
         }
         self._proc: subprocess.Popen[str] | None = None
         self._out: list[str] = []
@@ -219,8 +291,7 @@ class ModelJob:
         """Stop the child; ``run`` then ends with a "cancelled" error."""
         self._cancelled = True
         if self._proc is not None:
-            with contextlib.suppress(ProcessLookupError):
-                self._proc.kill()
+            _kill(self._proc)
 
     def output(self, start: int = 0) -> str:
         """The model's output so far, from character ``start``. Safe from any thread."""
@@ -247,16 +318,36 @@ class ModelJob:
         """
         if self._cancelled:
             raise ModelError("model cancelled")
+        if self.backend != "pulp":
+            return self._spawn(None)
+        import tempfile
+
+        tmp = tempfile.mkdtemp(prefix="gridcalc-model-")
+        try:
+            return self._spawn(tmp)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def _spawn(self, tmp: str | None) -> dict[str, Any]:
+        env = None
+        if tmp is not None:
+            files, dirs = solver_programs()
+            self._request.update(tmp=os.path.realpath(tmp), programs=files, program_dirs=dirs)
+            # PuLP writes its model and solution files in `tempfile.gettempdir()`.
+            env = {**os.environ, "TMPDIR": tmp, "TEMP": tmp, "TMP": tmp}
         proc = subprocess.Popen(  # noqa: S603
-            _child_argv(),
+            _child_argv(self.backend, tmp),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=env,
+            # Its own process group, so the memory cap and a kill cover a solver it starts.
+            start_new_session=hasattr(os, "killpg"),
         )
         self._proc = proc
         if self._cancelled:  # cancel() ran before _proc was set
-            proc.kill()
+            _kill(proc)
         # Popen with PIPE sets all three; the casts only tell the type checker.
         stdin = cast(Any, proc.stdin)
         stdout = cast(Any, proc.stdout)
@@ -287,9 +378,9 @@ class ModelJob:
             elif _rss_mb(proc.pid) > self.mem_mb:
                 killed = f"stopped past {self.mem_mb} MB of memory"
             if killed:
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
+                _kill(proc)
                 proc.wait()
+        _kill(proc)  # a solver the model left running
         for t in threads[1:]:
             t.join(5)
         log = self.output()

@@ -156,3 +156,16 @@ test('output appears while the model runs', async () => {
     POLL_WAIT,
   )
 })
+
+
+test('the backend selector switches to the PuLP library', async () => {
+  const set = vi.spyOn(bridge, 'set_model_backend')
+  const { props } = renderPanel()
+  const select = await screen.findByLabelText('Model backend')
+  expect(select).toHaveValue('builtin')
+  await userEvent.setup().selectOptions(select, 'pulp')
+  expect(set).toHaveBeenCalledWith('pulp')
+  await waitFor(() => expect(select).toHaveValue('pulp'))
+  expect(props.onEdited).toHaveBeenCalled()
+  expect((await bridge.model()).backend).toBe('pulp')
+})

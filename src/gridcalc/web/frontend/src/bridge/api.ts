@@ -125,6 +125,7 @@ export const bridge: PywebviewApi = {
   chart_data: (spec) => api().chart_data(spec),
   model: () => api().model(),
   set_model: queued((text) => api().set_model(text)),
+  set_model_backend: queued((backend) => api().set_model_backend(backend)),
   // Returns at once; the run itself is off the queue so the grid stays usable.
   start_solve: queued(() => api().start_solve()),
   solve_status: (offset) => api().solve_status(offset ?? 0),

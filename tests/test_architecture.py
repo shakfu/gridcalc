@@ -58,6 +58,8 @@ CORE_MODULES = (
     "_modelchild.py",
     # Models and data items as an xlsx custom XML part.
     "xlsxmodel.py",
+    # The indexed data item dict, apart from the engine so the model child skips it.
+    "itemdict.py",
     "optspec.py",
     "report.py",
     "config.py",

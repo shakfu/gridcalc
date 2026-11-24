@@ -457,8 +457,23 @@ def test_audit_hook_rules() -> None:
     ch._importing += 1
     try:
         ch._audit("ctypes.dlopen", ("libc",))  # an allowed module's own import
+        ch._audit("os.add_dll_directory", ("C:/numpy",))
     finally:
         ch._importing -= 1
+
+
+def test_windows_popen_events_only_for_program_backends(tmp_path, monkeypatch) -> None:
+    from gridcalc import _modelchild as ch
+
+    events = [("msvcrt.get_osfhandle", (1,)), ("_winapi.CreatePipe", (None, 0))]
+    for event, args in events:
+        with pytest.raises(PermissionError):
+            ch._audit(event, args)  # builtin backend: no process to start
+    monkeypatch.setattr(ch, "_tmp", str(tmp_path))
+    for event, args in events:
+        ch._audit(event, args)
+    with pytest.raises(PermissionError):
+        ch._audit("_winapi.CreateProcess", ("x", "x", None, None, 0, 0, None, None, None))
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="sandbox-exec is macOS only")

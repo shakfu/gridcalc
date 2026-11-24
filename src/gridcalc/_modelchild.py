@@ -132,8 +132,14 @@ _DENIED = (
     "msvcrt.",
 )
 # Raised by an allowed module's own import: numpy loads a library with ctypes
-# and sets environment variables. Allowed only while `_import` runs.
-_IMPORT_ONLY = frozenset({"ctypes.dlopen", "ctypes.dlsym", "os.putenv", "os.unsetenv"})
+# and sets environment variables; on Windows it adds DLL directories. Allowed
+# only while `_import` runs.
+_IMPORT_ONLY = frozenset(
+    {"ctypes.dlopen", "ctypes.dlsym", "os.putenv", "os.unsetenv", "os.add_dll_directory"}
+)
+# Raised on Windows by `subprocess.Popen` itself, before its own event: an fd
+# mapped to a handle, and the pipes for the solver's output.
+_POPEN_WINDOWS = frozenset({"msvcrt.get_osfhandle", "_winapi.CreatePipe"})
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
 _importing = 0
 
@@ -193,6 +199,8 @@ def _audit(event: str, args: tuple[Any, ...]) -> None:
     if event in ("os.remove", "os.rename") and args and _inside(args[0], _tmp):
         return
     if event == "subprocess.Popen" and _allowed_program(args):
+        return
+    if _tmp is not None and event in _POPEN_WINDOWS:
         return
     if _importing and event in _IMPORT_ONLY:
         return

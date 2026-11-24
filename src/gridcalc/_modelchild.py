@@ -207,7 +207,9 @@ def _audit(event: str, args: tuple[Any, ...]) -> None:
         return
     if event in ("os.remove", "os.rename") and args and _inside(args[0], _tmp):
         return
-    if event == "subprocess.Popen" and _allowed_program(args):
+    # Windows raises both for one start; CreateProcess's args begin
+    # (application_name, command_line), as Popen's do.
+    if event in ("subprocess.Popen", "_winapi.CreateProcess") and _allowed_program(args):
         return
     if _tmp is not None and event in _POPEN_WINDOWS:
         return

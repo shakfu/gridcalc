@@ -48,6 +48,9 @@ export interface Stats {
 export interface SaveResult {
   ok: boolean
   path?: string
+  // Static problems with the workbook's models and data items. The save
+  // happens anyway, so a half-written model is not lost.
+  problems?: string[]
   needs_path?: boolean
   cancelled?: boolean
   error?: string
@@ -413,6 +416,79 @@ export interface PywebviewApi {
     sense: string,
   ): Promise<InferResult>
   chart_data(spec: string): Promise<ChartData>
+  model(): Promise<SheetModel>
+  set_model(text: string): Promise<SetModelResult>
+  start_solve(): Promise<StartSolveResult>
+  solve_status(offset?: number): Promise<SolveStatus>
+  cancel_solve(): Promise<{ ok: boolean; error?: string }>
+  model_overlay(): Promise<{ items: ModelBox[] }>
+  data_items(): Promise<{ items: DataItemInfo[] }>
+}
+
+// The active sheet's solver model (docs/guide/models.md).
+export interface SheetModel {
+  sheet: string
+  lang: string
+  text: string
+  problems: string[]
+  running: boolean
+}
+
+export interface SetModelResult {
+  ok: boolean
+  dirty?: boolean
+  error?: string
+  problems?: string[]
+}
+
+export interface StartSolveResult {
+  ok: boolean
+  error?: string
+  lines?: string[]
+}
+
+// How a background solve ended. `line` is 1-based in the model text.
+export interface ModelRunResult {
+  ok: boolean
+  message: string
+  lines: string[]
+  line: number | null
+  changed: boolean
+  dirty?: boolean
+}
+
+export interface SolveStatus {
+  running: boolean
+  elapsed?: number
+  // While running: the model's output from the offset asked for, and the
+  // offset to ask from next time.
+  output?: string
+  offset?: number
+  // Set once, on the first poll after the run ends.
+  result?: ModelRunResult | null
+}
+
+// One data item, for the data items dialog. `sheet`/`ref` are null when its
+// name no longer resolves to a range.
+export interface DataItemInfo {
+  name: string
+  index: string[]
+  has_missing: boolean
+  missing: number | string | boolean | null
+  problem: string
+  sheet: string | null
+  ref: string | null
+}
+
+// A data item's range, row-first, for the "Show model" overlay.
+export interface ModelBox {
+  name: string
+  label: string
+  r0: number
+  c0: number
+  r1: number
+  c1: number
+  problem: string
 }
 
 declare global {

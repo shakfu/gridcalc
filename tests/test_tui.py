@@ -323,6 +323,9 @@ class MockStdscr:
     def attroff(self, attr):
         pass
 
+    def timeout(self, ms):
+        self.timeout_ms = ms
+
 
 def _setup_curses_constants():
     """Set curses module constants needed by draw/cmdexec without initscr."""
@@ -4102,6 +4105,28 @@ class TestEditorLaunch:
         cmdexec(self.stdscr, self.g, UndoManager(), "e")
         assert self.g.dirty == 0
 
+    def test_model_edit_is_undoable(self, monkeypatch, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        ed = self._editor(tmp_path, 'echo "x = 2" > "$1"')
+        monkeypatch.setenv("EDITOR", ed)
+        undo = UndoManager()
+        cmdexec(self.stdscr, self.g, undo, "model")
+        assert self.g._active.model_text == "x = 2\n"
+        assert self.g.code == "x = 1\n"
+        assert self.g.dirty == 1
+        assert undo.undo(self.g)
+        assert self.g._active.model_text == ""
+
+    def test_failed_model_edit_records_nothing(self, monkeypatch, tmp_path):
+        from gridcalc.tui import cmdexec
+
+        monkeypatch.setenv("EDITOR", self._editor(tmp_path, 'echo "x" > "$1"', rc=1))
+        undo = UndoManager()
+        cmdexec(self.stdscr, self.g, undo, "model")
+        assert self.g._active.model_text == ""
+        assert not undo.undo_stack
+
 
 def test_editor_command_keeps_windows_paths_and_splits_posix_arguments():
     from gridcalc.tui.commands import _editor_command
@@ -4630,3 +4655,106 @@ def test_entry_keeps_15_digits_of_a_typed_number():
     g = Grid()
     entry(stdscr, g, UndoManager(), False, 0, initial_text="12345678901234567")
     assert g.cells[0][0].text == "12345678901234500"
+
+
+class TestBackgroundSolve:
+    """`:solve` runs on a worker thread; the main loop writes the result."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, beer, monkeypatch):
+        from gridcalc.tui import _state
+
+        _setup_curses_constants()
+        self.g = beer
+        self.stdscr = MockStdscr()
+        self.state = _state
+        monkeypatch.setattr(_state, "solve", None)
+        monkeypatch.setattr(_state, "show_model", False)
+        self.pages = []
+        import gridcalc.tui.commands as tc
+
+        monkeypatch.setattr(tc, "pager", lambda s, title, lines: self.pages.append((title, lines)))
+
+    def _finish(self):
+        from gridcalc.tui.commands import finish_solve
+
+        self.state.solve.thread.join(30)
+        finish_solve(self.stdscr, self.g)
+
+    def test_solve_returns_at_once_and_writes_later(self):
+        from gridcalc.tui import cmdexec
+        from gridcalc.tui.commands import solve_indicator
+        from tests.test_lpmodel import BEER_MODEL
+
+        self.g._active.model_text = BEER_MODEL
+        undo = UndoManager()
+        cmdexec(self.stdscr, self.g, undo, "solve")
+        assert self.state.solve is not None
+        assert solve_indicator().startswith("SOLVING ")
+        self._finish()
+        assert self.state.solve is None
+        assert self.pages == [("Solve", ["Optimal, objective 8400, 11 cells written"])]
+        assert self.g.cells[1][13].text == "Optimal"
+        assert self.g.dirty == 1
+        assert undo.undo(self.g)
+
+    def test_indicator_shows_the_latest_output_line(self):
+        import time
+
+        from gridcalc.tui import cmdexec
+        from gridcalc.tui.commands import solve_indicator
+
+        self.g._active.model_text = "print('step 1')\nprint('step 2')\nwhile True:\n    pass\n"
+        cmdexec(self.stdscr, self.g, UndoManager(), "solve")
+        deadline = time.monotonic() + 10
+        while "step 2" not in solve_indicator() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert solve_indicator().endswith(":cancel  step 2")
+        cmdexec(self.stdscr, self.g, UndoManager(), "cancel")
+        self._finish()
+
+    def test_second_solve_refused_and_cancel(self):
+        from gridcalc.tui import cmdexec
+
+        self.g._active.model_text = "while True:\n    pass\n"
+        cmdexec(self.stdscr, self.g, UndoManager(), "solve")
+        cmdexec(self.stdscr, self.g, UndoManager(), "solve")
+        assert "already running" in self.stdscr._last_addnstr
+        cmdexec(self.stdscr, self.g, UndoManager(), "cancel")
+        self._finish()
+        assert self.pages[0][0] == "Solve failed"
+        assert self.pages[0][1] == ["model cancelled"]
+
+    def test_invalid_model_reported_without_starting(self):
+        from gridcalc.tui import cmdexec
+
+        self.g._active.model_text = "import os\n"
+        cmdexec(self.stdscr, self.g, UndoManager(), "solve")
+        assert self.state.solve is None
+        assert self.pages[0][1] == ["model on Sheet1: import of 'os' is blocked"]
+
+    def test_cancel_without_run(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, UndoManager(), "cancel")
+        assert "no model is running" in self.stdscr._last_addnstr
+
+    def test_showmodel_toggles_and_labels_cells(self):
+        from gridcalc.tui import cmdexec
+        from gridcalc.tui.render import _ModelCells
+
+        assert _ModelCells(self.g).get((2, 3)) is None
+        cmdexec(self.stdscr, self.g, UndoManager(), "showmodel")
+        cells = _ModelCells(self.g)
+        assert cells.get((2, 3)) == "costs[Warehouses,Bars]"
+        assert cells.get((7, 9)) == "supply[Warehouses]"
+        assert (0, 0) not in cells
+        cmdexec(self.stdscr, self.g, UndoManager(), "showmodel")
+        assert not _ModelCells(self.g).boxes
+
+    def test_showmodel_without_items(self):
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, Grid(), UndoManager(), "showmodel")
+        assert "no data items" in self.stdscr._last_addnstr
+        assert self.state.show_model is False

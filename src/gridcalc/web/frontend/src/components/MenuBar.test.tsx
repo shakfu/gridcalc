@@ -60,6 +60,10 @@ function renderMenu(over: Partial<Parameters<typeof MenuBar>[0]> = {}) {
     onAddSheet: vi.fn(),
     onRenameSheet: vi.fn(),
     onFind: vi.fn(),
+    onModel: vi.fn(),
+    onItems: vi.fn(),
+    onShowModel: vi.fn(),
+    showModel: false,
     ...over,
   }
   render(<MenuBar {...props} />)
@@ -227,4 +231,22 @@ test('Edit items are enabled -- the commands behind them all exist', async () =>
   for (const name of [/Cut/, /Copy/, /Paste/, /Fill Down/, /Fill Right/]) {
     expect(await screen.findByRole('menuitem', { name })).not.toHaveAttribute('data-disabled')
   }
+})
+
+test('Data > Model Editor and Show Model call their handlers', async () => {
+  const { onModel, onShowModel } = renderMenu()
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Data' }))
+  await user.click(await screen.findByRole('menuitem', { name: 'Model Editor' }))
+  expect(onModel).toHaveBeenCalledOnce()
+  await user.click(screen.getByRole('menuitem', { name: 'Data' }))
+  await user.click(await screen.findByRole('menuitem', { name: 'Show Model' }))
+  expect(onShowModel).toHaveBeenCalledOnce()
+})
+
+test('Show Model reads Hide Model while the overlay is on', async () => {
+  renderMenu({ showModel: true })
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Data' }))
+  expect(await screen.findByRole('menuitem', { name: 'Hide Model' })).toBeInTheDocument()
 })

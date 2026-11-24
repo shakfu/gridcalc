@@ -215,7 +215,7 @@ def test_save_writes_json_and_roundtrips(tmp_path) -> None:
     api.set_cell(0, 1, "=A1+1")  # B1
     dest = tmp_path / "book.json"
     res = api.save(str(dest))
-    assert res == {"ok": True, "path": str(dest)}
+    assert res == {"ok": True, "path": str(dest), "problems": []}
     assert dest.exists()
     # Reload it and confirm the edits and formula survived.
     reloaded = load_workbook(dest)
@@ -2123,3 +2123,151 @@ def test_whole_column_operations_visit_only_stored_cells() -> None:
     assert api.copy(0, 0, NROW - 1, 0)["tsv"] == "3\n\n\n\n\n4"
     assert api.set_format(0, 0, NROW - 1, 0, "b")["ok"] is True
     assert g.cell(0, 5).bold == 1
+
+
+# --- cross-tab models -------------------------------------------------------
+
+
+def _wait_solve(api: Api) -> dict:
+    import time
+
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        st = api.solve_status()
+        if not st["running"]:
+            return st["result"]
+        time.sleep(0.05)
+    raise AssertionError("solve did not finish")
+
+
+def test_model_text_edit_is_undoable(beer) -> None:
+    api = Api(beer)
+    assert api.model() == {
+        "sheet": "Sheet1",
+        "lang": "pulp",
+        "text": "",
+        "problems": [],
+        "running": False,
+    }
+    res = api.set_model("import os\n")
+    assert res["dirty"] is True
+    assert res["problems"] == ["model on Sheet1: import of 'os' is blocked"]
+    api.undo()
+    assert api.model()["text"] == ""
+
+
+def test_solve_runs_off_lock_and_reports_once(beer) -> None:
+    from tests.test_lpmodel import BEER_MODEL
+
+    api = Api(beer)
+    api.set_model(BEER_MODEL)
+    assert api.start_solve() == {"ok": True}
+    assert api.model()["running"] is True or api.solve_status()["running"] is False
+    api.dims()  # a read does not wait for the model
+    result = _wait_solve(api)
+    assert result["ok"] and result["changed"]
+    assert result["message"] == "Optimal, objective 8400, 11 cells written"
+    assert api.cell_source(13, 1) == "Optimal"
+    assert api.solve_status() == {"running": False, "result": None}
+    api.undo()
+    assert api.cell_source(13, 1) == ""
+
+
+def test_solve_refusals_and_cancel(beer) -> None:
+    api = Api(beer)
+    res = api.start_solve()
+    assert res["ok"] is False and "has no model" in res["error"]
+    api.set_model("while True:\n    pass\n")
+    assert api.start_solve() == {"ok": True}
+    assert api.start_solve()["error"] == "a model is already running"
+    assert api.cancel_solve() == {"ok": True}
+    result = _wait_solve(api)
+    assert result["ok"] is False and result["message"] == "model cancelled"
+    assert api.cancel_solve() == {"ok": False, "error": "no model is running"}
+
+
+def test_solve_error_carries_line(beer) -> None:
+    api = Api(beer)
+    api.set_model("x = 1\nraise ValueError('bad')\n")
+    api.start_solve()
+    result = _wait_solve(api)
+    assert result["line"] == 2
+    assert result["message"] == "line 2: ValueError: bad"
+
+
+def test_edit_during_solve_refuses_write(beer) -> None:
+    from tests.test_lpmodel import BEER_MODEL
+
+    api = Api(beer)
+    api.set_model("import math\n" + "x = sum(range(3_000_000))\n" + BEER_MODEL)
+    api.start_solve()
+    api.set_cell(3, 2, "99")  # costs["A", 1], row-first
+    result = _wait_solve(api)
+    assert result["ok"] is False
+    assert "changed while the model ran" in result["message"]
+    assert api.cell_source(13, 1) == ""
+
+
+def test_model_overlay_is_row_first(beer) -> None:
+    api = Api(beer)
+    items = {b["name"]: b for b in api.model_overlay()["items"]}
+    assert items["costs"] == {
+        "name": "costs",
+        "label": "costs[Warehouses,Bars]",
+        "r0": 3,
+        "c0": 2,
+        "r1": 4,
+        "c1": 6,
+        "problem": "",
+    }
+    api.add_sheet("Other")
+    api.set_active(1)
+    assert api.model_overlay() == {"items": []}
+
+
+def test_save_reports_model_problems(beer, tmp_path) -> None:
+    api = Api(beer)
+    api.set_model("import os\n")
+    res = api.save(str(tmp_path / "m.json"))
+    assert res["ok"] and res["problems"] == ["model on Sheet1: import of 'os' is blocked"]
+
+
+def test_solve_status_streams_output_by_offset(beer) -> None:
+    import time
+
+    api = Api(beer)
+    api.set_model("print('a')\nprint('bc')\nwhile True:\n    pass\n")
+    api.start_solve()
+    deadline = time.monotonic() + 10
+    seen = ""
+    offset = 0
+    while "bc" not in seen and time.monotonic() < deadline:
+        st = api.solve_status(offset)
+        seen += st["output"]
+        offset = st["offset"]
+        time.sleep(0.05)
+    assert seen == "a\nbc\n"
+    assert api.solve_status(offset)["output"] == ""
+    api.cancel_solve()
+    result = _wait_solve(api)
+    assert result["lines"][-2:] == ["a", "bc"]
+
+
+def test_data_items_listing(beer) -> None:
+    from gridcalc.dataitems import DataItem
+
+    beer.data_items["flow"] = DataItem(("Warehouses", "Bars"), missing=0)
+    beer.data_items["supply"] = DataItem(("Bars",))  # wrong length: a problem
+    items = {i["name"]: i for i in Api(beer).data_items()["items"]}
+    assert items["costs"] == {
+        "name": "costs",
+        "index": ["Warehouses", "Bars"],
+        "has_missing": False,
+        "missing": None,
+        "problem": "",
+        "sheet": "Sheet1",
+        "ref": "C4:G5",
+    }
+    assert items["flow"]["has_missing"] and items["flow"]["missing"] == 0.0
+    assert items["SolverResult"]["ref"] == "B14"
+    assert items["supply"]["problem"].startswith("supply: 2x1")

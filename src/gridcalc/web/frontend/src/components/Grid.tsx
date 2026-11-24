@@ -11,7 +11,7 @@ import {
   type Ref,
 } from 'react'
 import { bridge } from '../bridge/api'
-import type { Viewport } from '../bridge/types'
+import type { ModelBox, Viewport } from '../bridge/types'
 import { cellCss } from '../lib/cellstyle'
 import {
   CH,
@@ -58,6 +58,8 @@ interface GridProps {
   onSelectionChange?: (sel: Selection) => void
   // Solver output painted onto the sheet, keyed by A1 reference.
   annotations?: Record<string, CellAnnotation>
+  // Data item ranges outlined and labelled over the cells ("Show model").
+  modelBoxes?: ModelBox[]
   // A bridge call failed; the app owns the user-visible channel for saying so.
   onError?: (msg: string) => void
   // A mutation succeeded, so the workbook now has unsaved changes.
@@ -88,6 +90,7 @@ export function Grid({
   revision,
   onSelectionChange,
   annotations,
+  modelBoxes,
   onError,
   onMutate,
   initialView,
@@ -515,9 +518,17 @@ export function Grid({
 
   const gotoRef = useCallback(
     (text: string, focus = true): boolean => {
-      const hit = parseRef(text)
-      if (!hit || hit.r >= nrow || hit.c >= ncol) return false
-      moveCursor(hit.r, hit.c, false)
+      // `A1`, or `A1:C3`, which selects the range with the cursor at its top left.
+      const [a, b] = text.split(':')
+      const hit = parseRef(a ?? '')
+      const end = b === undefined ? hit : parseRef(b)
+      if (!hit || !end || hit.r >= nrow || hit.c >= ncol) return false
+      if (end !== hit) {
+        moveCursor(Math.min(end.r, nrow - 1), Math.min(end.c, ncol - 1), false)
+        moveCursor(hit.r, hit.c, true)
+      } else {
+        moveCursor(hit.r, hit.c, false)
+      }
       if (focus) scrollEl.current?.focus()
       return true
     },
@@ -874,6 +885,33 @@ export function Grid({
     return items
   }, [annotations, xs, ncol, nrow])
 
+  // Above the cells, but click-through, so the sheet under a box stays editable.
+  const modelLayer = useMemo(() => {
+    if (!modelBoxes?.length) return null
+    return modelBoxes
+      .filter((b) => b.r0 < nrow && b.c0 < ncol)
+      .map((b) => {
+        const c1 = Math.min(b.c1, ncol - 1)
+        const r1 = Math.min(b.r1, nrow - 1)
+        return (
+          <div
+            key={b.name}
+            className={'model-box' + (b.problem ? ' bad' : '')}
+            data-testid={`model-box-${b.name}`}
+            title={b.problem || b.label}
+            style={{
+              left: xs[b.c0],
+              top: CH + b.r0 * CH,
+              width: xs[c1 + 1] - xs[b.c0],
+              height: (r1 - b.r0 + 1) * CH,
+            }}
+          >
+            <span className="model-label">{b.label}</span>
+          </div>
+        )
+      })
+  }, [modelBoxes, xs, ncol, nrow])
+
   const gutterLayer = useMemo(() => {
     if (!view) return null
     const items = []
@@ -962,6 +1000,7 @@ export function Grid({
           <div className="vline-layer">{vlineLayer}</div>
           <div className="annot-layer">{annotationLayer}</div>
           <div className="cell-layer">{cellLayer}</div>
+          <div className="model-layer">{modelLayer}</div>
 
           {!single && (
             <div

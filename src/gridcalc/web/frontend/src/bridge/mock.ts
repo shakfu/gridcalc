@@ -24,6 +24,12 @@ import type {
   SweepResult,
   Viewport,
   ViewportCell,
+  SheetModel,
+  SetModelResult,
+  StartSolveResult,
+  SolveStatus,
+  ModelBox,
+  DataItemInfo,
 } from './types'
 
 const colLetter = (c: number): string => {
@@ -134,6 +140,13 @@ export function installMockBridge(): void {
   const isNumeric = (s: string) => s !== '' && (!Number.isNaN(Number(s)) || s.startsWith('='))
 
   // Mirrors `Api._touch`: any mutation dirties the workbook and says so.
+  let modelText = ''
+  // Data items the mock `item`/`unitem` commands keep, for the items dialog.
+  const dataItems = new Map<string, DataItemInfo>([
+    ['Bars', { name: 'Bars', index: [], has_missing: false, missing: null, problem: '', sheet: 'Sheet1', ref: 'C3:G3' }],
+    ['costs', { name: 'costs', index: ['Warehouses', 'Bars'], has_missing: false, missing: null, problem: '', sheet: 'Data', ref: 'C4:G5' }],
+  ])
+  let solvePolls = 0
   const touch = () => {
     dims.dirty = true
     return { ok: true, dirty: true }
@@ -267,6 +280,29 @@ export function installMockBridge(): void {
           for (let r = sel.r0; r <= sel.r1; r++) {
             for (let c = sel.c0; c <= sel.c1; c++) cells.delete(key(r, c))
           }
+        }
+        if (name === 'item') {
+          const [item, ...rest] = (args ?? []).join(' ').split(/\s+/).filter(Boolean)
+          const index = rest.filter((a) => !a.startsWith('missing='))
+          const miss = rest.find((a) => a.startsWith('missing='))
+          const ref = `${colLetter(sel.c0)}${sel.r0 + 1}:${colLetter(sel.c1)}${sel.r1 + 1}`
+          dataItems.set(item, {
+            name: item,
+            index,
+            has_missing: miss !== undefined,
+            missing: miss ? Number(miss.slice(8)) : null,
+            problem: '',
+            sheet: sheets.names[sheets.active],
+            ref,
+          })
+          return { changed: true, message: `data item ${item}`, lines: [], ...touch() }
+        }
+        if (name === 'unitem') {
+          const item = (args ?? [])[0] ?? ''
+          if (!dataItems.delete(item)) {
+            return { ok: false, changed: false, message: `no such data item: ${item}`, lines: [] }
+          }
+          return { changed: true, message: `removed data item ${item}`, lines: [], ...touch() }
         }
         if (name === 'names') {
           const lines = [...names.entries()].map(([n, r]) => `${n} = ${r}`).sort()
@@ -632,6 +668,60 @@ export function installMockBridge(): void {
           { rhs: 4, status: 'OPTIMAL', objective: 30, shadow_price: 1.5, delta: 6, breakpoint: false },
           { rhs: 8, status: 'OPTIMAL', objective: 36, shadow_price: 1, delta: 6, breakpoint: true },
         ],
+      }),
+      // Cross-tab models: one model, a fixed overlay, and a run that ends
+      // after two polls, so the UI's running state can be seen.
+      model: async (): Promise<SheetModel> => ({
+        sheet: 'Sheet1',
+        lang: 'pulp',
+        text: modelText,
+        problems: modelText.includes('import os') ? ["model on Sheet1: import of 'os' is blocked"] : [],
+        running: solvePolls > 0,
+      }),
+      set_model: async (text: string): Promise<SetModelResult> => {
+        modelText = text
+        return { ...touch(), problems: [] }
+      },
+      start_solve: async (): Promise<StartSolveResult> => {
+        if (!modelText.trim()) return { ok: false, error: 'sheet Sheet1 has no model', lines: [] }
+        if (solvePolls > 0) return { ok: false, error: 'a model is already running', lines: [] }
+        solvePolls = 2
+        return { ok: true }
+      },
+      solve_status: async (): Promise<SolveStatus> => {
+        if (solvePolls > 1) {
+          solvePolls -= 1
+          return { running: true, elapsed: 0.5, output: 'working\n', offset: 8 }
+        }
+        if (solvePolls === 1) {
+          solvePolls = 0
+          const failed = modelText.includes('raise')
+          return {
+            running: false,
+            result: failed
+              ? { ok: false, message: 'line 2: ValueError: bad', lines: ['line 2: ValueError: bad'], line: 2, changed: false }
+              : {
+                  ok: true,
+                  message: 'Optimal, objective 8400, 11 cells written',
+                  lines: ['Optimal, objective 8400, 11 cells written'],
+                  line: null,
+                  changed: true,
+                  dirty: touch().dirty,
+                },
+          }
+        }
+        return { running: false, result: null }
+      },
+      cancel_solve: async () => {
+        if (solvePolls === 0) return { ok: false, error: 'no model is running' }
+        solvePolls = 0
+        return { ok: true }
+      },
+      data_items: async (): Promise<{ items: DataItemInfo[] }> => ({
+        items: [...dataItems.values()].map((i) => ({ ...i })),
+      }),
+      model_overlay: async (): Promise<{ items: ModelBox[] }> => ({
+        items: [{ name: 'costs', label: 'costs[Warehouses,Bars]', r0: 3, c0: 2, r1: 4, c1: 6, problem: '' }],
       }),
       chart_data: async (spec: string): Promise<ChartData> => {
         const rect = parseRange(spec)

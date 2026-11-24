@@ -12,11 +12,13 @@ import { TrustDialog } from './components/TrustDialog'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { FindBar } from './components/FindBar'
 import { CommandPalette } from './components/CommandPalette'
+import { ModelPanel } from './components/ModelPanel'
+import { DataItemsDialog } from './components/DataItemsDialog'
 import { buildRegistry } from './lib/registry'
 import { Grid, type GridHandle } from './components/Grid'
 import { useWorkbook } from './hooks/useWorkbook'
 import type { CellAnnotation, Selection, SheetView } from './lib/grid'
-import type { SharedCommand } from './bridge/types'
+import type { ModelBox, SharedCommand } from './bridge/types'
 import { bridge } from './bridge/api'
 
 // Whether an event landed in something the user is typing into. `contentEditable`
@@ -64,6 +66,13 @@ export function App() {
   const [sheetMode, setSheetMode] = useState<SheetMode>('add')
   const [findOpen, setFindOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [modelOpen, setModelOpen] = useState(false)
+  const [itemsOpen, setItemsOpen] = useState(false)
+  // A range to select once the sheet it is on has mounted (a data item on
+  // another sheet). The grid remounts per sheet, so it cannot be done at once.
+  const pendingGoto = useRef<{ sheet: string; ref: string } | null>(null)
+  const [showModel, setShowModel] = useState(false)
+  const [modelBoxes, setModelBoxes] = useState<ModelBox[]>([])
   // The shared command registry, fetched once. The palette is built from it,
   // so a command added on the Python side needs no change here.
   const [sharedCommands, setSharedCommands] = useState<SharedCommand[]>([])
@@ -96,6 +105,46 @@ export function App() {
   useEffect(() => {
     clearAnnotations()
   }, [viewKey, clearAnnotations])
+
+  // The overlay follows every change that can move or rename a data item: an
+  // edit, an undo, a sheet switch, a load.
+  const modelRevision = `${viewKey}\u0000${wb.revision}\u0000${wb.mutations}`
+  useEffect(() => {
+    if (!showModel || !wb.ready) {
+      setModelBoxes((b) => (b.length ? [] : b))
+      return
+    }
+    let alive = true
+    bridge
+      .model_overlay()
+      .then((r) => alive && setModelBoxes(r.items))
+      .catch(() => alive && wb.fail('could not read the data items'))
+    return () => {
+      alive = false
+    }
+  }, [showModel, modelRevision, wb.ready, wb.fail])
+
+  const gotoItem = useCallback(
+    (sheet: string, ref: string) => {
+      const idx = wb.sheets?.names.indexOf(sheet) ?? -1
+      if (idx < 0) return
+      if (idx === wb.sheets?.active) {
+        grid.current?.goto(ref)
+        return
+      }
+      pendingGoto.current = { sheet, ref }
+      void wb.actions.setSheet(idx)
+    },
+    [wb.sheets, wb.actions],
+  )
+  useEffect(() => {
+    const p = pendingGoto.current
+    if (!p || p.sheet !== sheetName) return
+    pendingGoto.current = null
+    // After the new sheet's grid has mounted and restored its own view.
+    const t = setTimeout(() => grid.current?.goto(p.ref), 0)
+    return () => clearTimeout(t)
+  }, [sheetName])
 
   const formatSel = useCallback(
     (spec: string) => {
@@ -167,6 +216,9 @@ export function App() {
         openSweep: () => setSweepOpen(true),
         openChart: () => setChartOpen(true),
         openAbout: () => setAboutOpen(true),
+        openModel: () => setModelOpen(true),
+        openItems: () => setItemsOpen(true),
+        toggleShowModel: () => setShowModel((v) => !v),
         addSheet: () => openSheetDialog('add'),
         renameSheet: () => openSheetDialog('rename'),
         onFormat: formatSel,
@@ -272,6 +324,10 @@ export function App() {
         onAddSheet={() => openSheetDialog('add')}
         onRenameSheet={() => openSheetDialog('rename')}
         onFind={() => setFindOpen(true)}
+        onModel={() => setModelOpen(true)}
+        onItems={() => setItemsOpen(true)}
+        onShowModel={() => setShowModel((v) => !v)}
+        showModel={showModel}
       />
       <Toolbar wb={wb} onFormat={formatSel} />
       <FindBar
@@ -294,6 +350,7 @@ export function App() {
             revision={wb.revision}
             onSelectionChange={setSelection}
             annotations={annotations}
+            modelBoxes={modelBoxes}
             onError={wb.fail}
             onMutate={wb.markDirty}
             initialView={sheetViews.current.get(viewKey) ?? null}
@@ -301,6 +358,21 @@ export function App() {
           />
         ) : (
           <p className="note">connecting to engine...</p>
+        )}
+        {modelOpen && wb.ready && (
+          <ModelPanel
+            revision={modelRevision}
+            showModel={showModel}
+            onShowModel={setShowModel}
+            onClose={() => {
+              setModelOpen(false)
+              grid.current?.focus()
+            }}
+            onMutated={wb.touched}
+            onEdited={wb.markDirty}
+            notify={wb.notify}
+            fail={wb.fail}
+          />
         )}
       </main>
       <StatusBar
@@ -326,6 +398,14 @@ export function App() {
       />
       <SweepDialog open={sweepOpen} onOpenChange={setSweepOpen} />
       <ChartDialog open={chartOpen} onOpenChange={setChartOpen} rangeRef={selection?.ref} />
+      <DataItemsDialog
+        open={itemsOpen}
+        onOpenChange={setItemsOpen}
+        selection={selection}
+        runCommand={(name, args) => wb.actions.runCommand(name, args, selection)}
+        onGoto={gotoItem}
+        revision={modelRevision}
+      />
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} commands={registry} />
       <SheetDialog
         open={sheetOpen}

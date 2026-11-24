@@ -27,6 +27,9 @@ export interface RegistryDeps {
   openSweep: () => void
   openChart: () => void
   openAbout: () => void
+  openModel: () => void
+  openItems: () => void
+  toggleShowModel: () => void
   addSheet: () => void
   renameSheet: () => void
   onFormat: (spec: string) => void
@@ -153,6 +156,9 @@ export function buildRegistry(d: RegistryDeps): Command[] {
     { id: 'data.goal', group: 'Data', title: 'Goal seek', run: d.openGoal },
     { id: 'data.sweep', group: 'Data', title: 'Sweep', run: d.openSweep },
     { id: 'data.chart', group: 'Data', title: 'Chart', run: d.openChart },
+    { id: 'model.items', group: 'Model', title: 'Data items', run: d.openItems },
+    { id: 'model.editor', group: 'Model', title: 'Model editor', run: d.openModel },
+    { id: 'model.show', group: 'Model', title: 'Show / hide model', run: d.toggleShowModel },
 
     { id: 'help.about', group: 'Help', title: 'About gridcalc', run: d.openAbout },
   ]

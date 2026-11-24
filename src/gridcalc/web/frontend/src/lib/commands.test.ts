@@ -21,7 +21,7 @@ function stubDeps(): RegistryDeps {
     shared: [],
     runShared: noop,
     goto: noop, openFind: noop, openOptimize: noop, openGoal: noop, openSweep: noop,
-    openChart: noop, openAbout: noop, addSheet: noop, renameSheet: noop,
+    openChart: noop, openAbout: noop, openModel: noop, openItems: noop, toggleShowModel: noop, addSheet: noop, renameSheet: noop,
     onFormat: noop, onDefaultFormat: noop, touched: noop, notify: noop, fail: noop,
   }
 }

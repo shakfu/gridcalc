@@ -306,6 +306,11 @@ def _do_save(stdscr: curses.window, g: Grid, args: str) -> bool:
         return False
     g.filename = fn
     g.dirty = 0
+    from ..modelrun import check_workbook
+
+    problems = check_workbook(g)
+    if problems:
+        pager(stdscr, f"Saved. Model problems ({len(problems)})", problems)
     return True
 
 
@@ -330,15 +335,121 @@ def _editor_command(editor: str, path: str, windows: bool = os.name == "nt") -> 
 
 
 def cmd_edit(stdscr: curses.window, g: Grid) -> bool:
+    content = _edit_text(stdscr, g.code, "code block")
+    if content is not None and content != g.code:
+        g.code = content
+        g.dirty = 1
+        g.recalc()
+    return False
+
+
+def cmd_model(stdscr: curses.window, g: Grid, undo: UndoManager) -> bool:
+    """Edit the active sheet's model text in $EDITOR."""
+    from ..modelrun import check_model
+
+    sh = g._active
+    content = _edit_text(stdscr, sh.model_text, "model")
+    if content is None or content == sh.model_text:
+        return False
+    undo.save_model(g)
+    sh.model_text = content
+    g.dirty = 1
+    problems = check_model(g) if content.strip() else []
+    if problems:
+        pager(stdscr, f"Model problems ({len(problems)})", problems)
+    return False
+
+
+class SolveRun:
+    """A `:solve` running on a worker thread while the main loop keeps drawing."""
+
+    def __init__(self, job: Any, undo: UndoManager) -> None:
+        import threading
+
+        self.job = job
+        self.undo = undo
+        self.thread = threading.Thread(target=job.run, daemon=True)
+        self.thread.start()
+
+    def elapsed(self) -> int:
+        import time
+
+        return int(time.monotonic() - self.job.started)
+
+
+def cmd_solve(stdscr: curses.window, g: Grid, undo: UndoManager) -> bool:
+    """Start the active sheet's model; the main loop writes its results when it ends."""
+    import atexit
+
+    from ..modelrun import ModelError, ModelJob
+
+    if _state.solve is not None:
+        show_error(stdscr, "a model is already running; :cancel stops it")
+        return False
+    try:
+        job = ModelJob(g)
+    except ModelError as exc:
+        pager(stdscr, "Solve failed", exc.lines())
+        return False
+    _state.solve = SolveRun(job, undo)
+    atexit.register(job.cancel)  # quitting mid-solve must not orphan the child
+    return False
+
+
+def cmd_cancel(stdscr: curses.window) -> bool:
+    if _state.solve is None:
+        show_error(stdscr, "no model is running")
+        return False
+    _state.solve.job.cancel()
+    return False
+
+
+def finish_solve(stdscr: curses.window, g: Grid) -> None:
+    """Write a finished `:solve`'s results and show them. Called from the main loop."""
+    from ..modelrun import ModelError
+
+    run = _state.solve
+    if run is None or run.thread.is_alive():
+        return
+    _state.solve = None
+    try:
+        res = run.job.apply(g, run.undo)
+    except ModelError as exc:
+        pager(stdscr, "Solve failed", exc.lines())
+        return
+    if res.written:
+        g.dirty = 1
+    pager(stdscr, "Solve", [res.summary(), *res.log.splitlines()])
+
+
+def solve_indicator() -> str:
+    """``SOLVING 3s :cancel``, then the model's latest output line, if any."""
+    run = _state.solve
+    if run is None:
+        return ""
+    lines = run.job.output()[-500:].splitlines()
+    last = lines[-1].strip()[:40] if lines else ""
+    return f"SOLVING {run.elapsed()}s :cancel" + (f"  {last}" if last else "")
+
+
+def cmd_showmodel(stdscr: curses.window, g: Grid) -> bool:
+    if not g.data_items:
+        show_error(stdscr, "no data items; :item defines one")
+        return False
+    _state.show_model = not _state.show_model
+    return False
+
+
+def _edit_text(stdscr: curses.window, text: str, what: str) -> str | None:
+    """``text`` after editing in $EDITOR, or None if the editor failed."""
     editor = os.environ.get("EDITOR") or _state._cfg.editor or "vi"
     try:
         _editor_command(editor, "")
     except ValueError as exc:
         show_error(stdscr, f"Bad editor command {editor!r}: {exc}")
-        return False
+        return None
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".py", delete=False) as f:
-        if g.code:
-            f.write(g.code)
+        f.write(text)
         tmppath = f.name
     try:
         curses.def_prog_mode()
@@ -353,20 +464,15 @@ def cmd_edit(stdscr: curses.window, g: Grid) -> bool:
             stdscr.refresh()
         if err:
             show_error(stdscr, err)
-            return False
+            return None
         if rc != 0:
-            show_error(stdscr, f"Editor exited with status {rc}; code block unchanged.")
-            return False
+            show_error(stdscr, f"Editor exited with status {rc}; {what} unchanged.")
+            return None
         with open(tmppath, encoding="utf-8") as f:
-            content = f.read()[:MAXCODE]
-        if content != g.code:
-            g.code = content
-            g.dirty = 1
-            g.recalc()
+            return f.read()[:MAXCODE]
     finally:
         with contextlib.suppress(OSError):
             os.unlink(tmppath)
-    return False
 
 
 def _view_code_block(stdscr: curses.window, code: str) -> None:
@@ -1135,14 +1241,15 @@ def _run_shared(
 
     Always returns False: none of the shared commands quit the application.
     """
-    result = shared.run(_ARG_ALIASES.get(cmd, (cmd, []))[0], g, undo, argv, sel)
+    name = _ARG_ALIASES.get(cmd, (cmd, []))[0]
+    result = shared.run(name, g, undo, argv, sel)
     if result.changed:
         g.dirty = 1
-    if not result.ok:
-        show_error(stdscr, result.message)
-    elif result.lines:
-        pager(stdscr, f"Named ranges ({len(result.lines)})", list(result.lines))
-    elif result.message and not result.changed:
+    found = shared.lookup(name)
+    title = found.title if found else name
+    if result.lines:
+        pager(stdscr, f"{title} ({len(result.lines)})", list(result.lines))
+    elif not result.ok or result.message and not result.changed:
         show_error(stdscr, result.message)
     return False
 
@@ -1215,6 +1322,34 @@ VIEW_COMMANDS: tuple[ViewCommand, ...] = (
         ":e",
         lambda s, g, u, a, sel: cmd_edit(s, g),
         aliases=("edit",),
+    ),
+    ViewCommand(
+        "model",
+        "Model",
+        "Edit the sheet's solver model in $EDITOR; :solve runs it",
+        ":model",
+        lambda s, g, u, a, sel: cmd_model(s, g, u),
+    ),
+    ViewCommand(
+        "solve",
+        "Model",
+        "Run the sheet's model in the background; results are written when it ends",
+        ":solve",
+        lambda s, g, u, a, sel: cmd_solve(s, g, u),
+    ),
+    ViewCommand(
+        "cancel",
+        "Model",
+        "Stop the running model; nothing is written",
+        ":cancel",
+        lambda s, g, u, a, sel: cmd_cancel(s),
+    ),
+    ViewCommand(
+        "showmodel",
+        "Model",
+        "Toggle colouring of data item cells; the status line names the item",
+        ":showmodel",
+        lambda s, g, u, a, sel: cmd_showmodel(s, g),
     ),
     ViewCommand(
         "clear",

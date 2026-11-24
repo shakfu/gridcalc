@@ -260,7 +260,8 @@ export function useWorkbook({ confirm, onMutate }: WorkbookOptions): Workbook {
         if (!r || r.cancelled) return
         if (r.ok) {
           await refresh()
-          flash('saved')
+          if (r.problems?.length) fail(`saved; model problem: ${r.problems[0]}`)
+          else flash('saved')
         } else {
           fail(r.error ?? 'could not save')
         }
@@ -270,7 +271,8 @@ export function useWorkbook({ confirm, onMutate }: WorkbookOptions): Workbook {
         if (!r || r.cancelled) return
         if (r.ok) {
           await refresh()
-          flash('saved')
+          if (r.problems?.length) fail(`saved; model problem: ${r.problems[0]}`)
+          else flash('saved')
         } else {
           fail(r.error ?? 'could not save')
         }

@@ -957,6 +957,12 @@ table.sens tr.breakpoint td {
   flex: 1;
   overflow: hidden;
   min-height: 0;
+  display: flex;
+}
+
+.stage > .grid {
+  flex: 1;
+  min-width: 0;
 }
 
 .stage > .note {
@@ -998,4 +1004,139 @@ table.sens tr.breakpoint td {
 .btn-primary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* --- Cross-tab model: overlay and panel ------------------------------ */
+.model-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.model-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid var(--err);
+}
+
+.model-box.bad {
+  border-style: dashed;
+}
+
+.model-label {
+  position: absolute;
+  top: -15px;
+  left: -2px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--fg);
+  background: var(--err);
+  white-space: nowrap;
+  pointer-events: auto; /* so the title tooltip is reachable */
+}
+
+.model-panel {
+  width: 420px;
+  max-width: 45%;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  min-height: 0;
+}
+
+.model-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.model-title {
+  flex: 1;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-running {
+  color: var(--muted);
+}
+
+.model-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+}
+
+.code-editor {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.code-editor .cm-editor {
+  height: 100%;
+}
+
+.model-problems {
+  margin: 0;
+  padding: 6px 8px 6px 24px;
+  color: var(--err);
+  border-top: 1px solid var(--border);
+  max-height: 25%;
+  overflow: auto;
+}
+
+.model-output {
+  margin: 0;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  max-height: 30%;
+  min-height: 3em;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+/* --- Data items dialog ------------------------------------------------ */
+.dialog-content.data-items-dialog {
+  width: 640px;
+}
+
+table.data-items {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+table.data-items th,
+table.data-items td {
+  text-align: left;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+table.data-items tr.bad td {
+  color: var(--err);
+}
+
+button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+
+.muted {
+  color: var(--muted);
 }

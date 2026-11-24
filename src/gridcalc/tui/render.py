@@ -25,6 +25,7 @@ from ..engine import (
     label_value,
 )
 from ..formula.errors import ExcelError
+from . import _state
 
 GW = 4
 
@@ -39,6 +40,7 @@ CP_MODE_ENTRY = 8
 CP_MODE_CMD = 9
 CP_SELECT = 10
 CP_SPILL = 11
+CP_MODEL = 12
 
 
 def init_colors() -> None:
@@ -59,6 +61,8 @@ def init_colors() -> None:
     # A spilling anchor and the cells it painted share one subtle cyan tint,
     # so a dynamic-array result reads as a single cohesive block.
     curses.init_pair(CP_SPILL, curses.COLOR_CYAN, -1)
+    # `:showmodel`: data item cells in red, as SolverStudio outlines them.
+    curses.init_pair(CP_MODEL, curses.COLOR_RED, -1)
 
 
 def _fmt_collection(cur: Cell) -> str | None:
@@ -108,6 +112,31 @@ def vcols(g: Grid) -> int:
 def vrows() -> int:
     v = curses.LINES - 4
     return max(v, 1)
+
+
+class _ModelCells:
+    """The active sheet's data item boxes while `:showmodel` is on; ``get`` names one."""
+
+    def __init__(self, g: Grid) -> None:
+        self.boxes: list[tuple[int, int, int, int, str]] = []
+        if not _state.show_model or not g.data_items:
+            return
+        from ..dataitems import boxes
+
+        for b in boxes(g):
+            if b.sheet == g._active.name:
+                label = f"{b.label} ({b.problem})" if b.problem else b.label
+                self.boxes.append((b.c1, b.r1, b.c2, b.r2, label))
+
+    def get(self, key: tuple[int, int]) -> str | None:
+        c, r = key
+        for c1, r1, c2, r2, label in self.boxes:
+            if c1 <= c <= c2 and r1 <= r <= r2:
+                return label
+        return None
+
+    def __contains__(self, key: tuple[int, int]) -> bool:
+        return self.get(key) is not None
 
 
 def draw(
@@ -181,6 +210,10 @@ def draw(
             status += f"  (spill from {col_name(ac)}{ar + 1})"
     if g.code_error:
         status += f"  [CODE ERR: {g.code_error}]"
+    model_cells = _ModelCells(g)
+    here = model_cells.get((g.cc, g.cr))
+    if here:
+        status += f"  [{here}]"
     stdscr.addnstr(0, 0, status, curses.COLS - 1)
     stdscr.attroff(curses.color_pair(CP_CHROME) | curses.A_BOLD)
     if not sandbox.SANDBOX_ENABLED:
@@ -284,6 +317,8 @@ def draw(
                 attr = curses.color_pair(CP_ERROR) | curses.A_BOLD
             elif is_spill:
                 attr = curses.color_pair(CP_SPILL) | style
+            elif (c, row) in model_cells:
+                attr = curses.color_pair(CP_MODEL) | style
             else:
                 attr = style
 

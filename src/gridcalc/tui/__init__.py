@@ -73,10 +73,12 @@ from .commands import (
     cmd_width,
     cmd_xlsx,
     cmdexec,
+    finish_solve,
     movecmd,
     replcmd,
     selectrange,
     show_load_warnings,
+    solve_indicator,
     trust_prompt,
 )
 from .completion import complete
@@ -496,7 +498,8 @@ def mainloop(stdscr: curses.window, g: Grid) -> None:
             if g.cr >= g.vr + fr:
                 g.vr = g.cr - fr + 1
 
-        si = search_indicator(g, search_matches)
+        finish_solve(stdscr, g)
+        si = " ".join(x for x in (solve_indicator(), search_indicator(g, search_matches)) if x)
         # Default state -- pass an empty mode string so the top-right shows
         # only the formula-mode tag (e.g. `[PYTHON]`) without a redundant
         # `READY`. Transient modes (ENTRY, CMD, VISUAL, ...) still announce
@@ -506,7 +509,12 @@ def mainloop(stdscr: curses.window, g: Grid) -> None:
             startup_warnings = False
             show_load_warnings(stdscr, g)
             continue
+        # While a model runs, wake every 250 ms to redraw its timer and pick
+        # up its result; otherwise block for a key.
+        stdscr.timeout(250 if _state.solve is not None else -1)
         ch = stdscr.getch()
+        if ch == -1:
+            continue
 
         # User-bound keys take precedence over the hardcoded fallback
         # chain. A binding that fires here short-circuits the rest of

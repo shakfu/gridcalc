@@ -23,6 +23,7 @@ nav:
       - Formulas: guide/formulas.md
       - Multi-sheet workbooks: guide/sheets.md
       - Optimization: guide/optimization.md
+      - Cross-tab models: guide/models.md
       - Goal seek: guide/goal-seek.md
       - Formatting: guide/formatting.md
       - Dates: guide/dates.md

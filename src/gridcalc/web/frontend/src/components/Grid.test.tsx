@@ -429,3 +429,23 @@ describe('xlsx styles', () => {
     expect((filled as HTMLElement).style.background).toBe('#FFFF00')
   })
 })
+
+test('data items are outlined and labelled over the cells', async () => {
+  const { container, cells } = renderGrid({
+    modelBoxes: [
+      { name: 'costs', label: 'costs[Warehouses,Bars]', r0: 3, c0: 2, r1: 4, c1: 6, problem: '' },
+      { name: 'supply', label: 'supply[Bars]', r0: 8, c0: 7, r1: 9, c1: 7, problem: 'supply: 2x1 does not match' },
+      { name: 'far', label: 'far', r0: 5000, c0: 0, r1: 5001, c1: 0, problem: '' },
+    ],
+  })
+  await waitFor(() => cells().getByText('gridcalc demo'))
+  const costs = container.querySelector('[data-testid="model-box-costs"]') as HTMLElement
+  expect(costs).toHaveTextContent('costs[Warehouses,Bars]')
+  expect(costs.style.top).toBe(`${CH + 3 * CH}px`)
+  expect(costs.style.height).toBe(`${2 * CH}px`)
+  expect(costs.style.width).toBe(`${5 * CW}px`)
+  const supply = container.querySelector('[data-testid="model-box-supply"]') as HTMLElement
+  expect(supply).toHaveClass('bad')
+  expect(supply).toHaveAttribute('title', 'supply: 2x1 does not match')
+  expect(container.querySelector('[data-testid="model-box-far"]')).toBeNull()
+})

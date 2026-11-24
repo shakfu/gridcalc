@@ -316,3 +316,38 @@ test('held Ctrl+Z does not send overlapping undos', async () => {
   await new Promise((r) => setTimeout(r, 120))
   expect(most).toBe(1)
 })
+
+test('Data > Show Model outlines data items; Model Editor opens the panel', async () => {
+  render(<App />)
+  await waitFor(() => screen.getByText('Widget'))
+  const user = userEvent.setup()
+  expect(document.querySelector('[data-testid="model-box-costs"]')).toBeNull()
+  await user.click(screen.getByRole('menuitem', { name: 'Data' }))
+  await user.click(await screen.findByRole('menuitem', { name: 'Show Model' }))
+  await waitFor(() =>
+    expect(document.querySelector('[data-testid="model-box-costs"]')).toHaveTextContent(
+      'costs[Warehouses,Bars]',
+    ),
+  )
+  await user.click(screen.getByRole('menuitem', { name: 'Data' }))
+  await user.click(await screen.findByRole('menuitem', { name: 'Model Editor' }))
+  expect(await screen.findByRole('complementary', { name: 'Model' })).toBeInTheDocument()
+  // The panel's checkbox mirrors the overlay toggled from the menu.
+  expect(screen.getByLabelText('Show model')).toBeChecked()
+  await user.click(screen.getByLabelText('Show model'))
+  await waitFor(() => expect(document.querySelector('[data-testid="model-box-costs"]')).toBeNull())
+})
+
+test('a data item on another sheet is selected after switching to it', async () => {
+  render(<App />)
+  await waitFor(() => screen.getByText('Widget'))
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('menuitem', { name: 'Data' }))
+  await user.click(await screen.findByRole('menuitem', { name: 'Data Items…' }))
+  await user.click(await screen.findByRole('button', { name: 'Data!C4:G5' }))
+  await waitFor(() =>
+    expect(screen.getByRole('combobox', { name: 'Active sheet' })).toHaveTextContent('Data'),
+  )
+  await waitFor(() => expect((document.querySelector('.name-box') as HTMLInputElement).value).toBe('C4'))
+  expect(document.querySelector('.sel-rect')).not.toBeNull()
+})

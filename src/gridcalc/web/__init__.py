@@ -164,6 +164,10 @@ class Api:
         # code: it is already open, loaded formulas-only, and the client asks
         # for this on boot to raise the trust dialog over it.
         self._pending_trust: str | None = None
+        # The `start_solve` run in progress, and the result of the last one to
+        # finish, held until `solve_status` hands it to the client.
+        self._job: Any = None
+        self._solve_result: dict[str, Any] | None = None
         g.dirty = 0  # a freshly loaded (or demo) workbook is not user-modified
 
     def dims(self) -> dict[str, Any]:
@@ -681,7 +685,9 @@ class Api:
             return {"ok": False, "error": str(exc)}
         g.filename = target
         self._mark_clean()
-        return {"ok": True, "path": target}
+        from ..modelrun import check_workbook
+
+        return {"ok": True, "path": target, "problems": check_workbook(g)}
 
     def save_dialog(self) -> dict[str, Any]:
         """Prompt for a path with the native save dialog, then save there."""
@@ -893,6 +899,160 @@ class Api:
         self._dirty = False
         self._retitle()
         self._sync_close_guard()
+
+    # --- cross-tab models (docs/guide/models.md) -------------------------
+
+    def model(self) -> dict[str, Any]:
+        """The active sheet's model text and its static problems."""
+        from ..modelrun import check_model
+
+        sh = self._g._active
+        return {
+            "sheet": sh.name,
+            "lang": sh.model_lang,
+            "text": sh.model_text,
+            "problems": check_model(self._g),
+            "running": self._job is not None,
+        }
+
+    def set_model(self, text: str) -> dict[str, Any]:
+        """Replace the active sheet's model text as one undo step."""
+        from ..modelrun import check_model
+
+        sh = self._g._active
+        if not isinstance(text, str):
+            return {"ok": False, "error": "model text must be a string"}
+        if text == sh.model_text:
+            return {"ok": True, "problems": check_model(self._g)}
+        self._undo.save_model(self._g)
+        sh.model_text = text
+        out = self._touch()
+        out["problems"] = check_model(self._g)
+        return out
+
+    def start_solve(self) -> dict[str, Any]:
+        """Start the active sheet's model on a worker thread; poll `solve_status`.
+
+        Only the start and the final write hold the lock, so the grid stays
+        usable while the model runs. The write is refused if a data item
+        changed in the meantime (`ModelJob.apply`).
+        """
+        from ..modelrun import ModelError, ModelJob
+
+        if self._job is not None:
+            return {"ok": False, "error": "a model is already running", "lines": []}
+        try:
+            job = ModelJob(self._g)
+        except ModelError as exc:
+            return {"ok": False, "error": str(exc).splitlines()[0], "lines": exc.lines()}
+        self._job = job
+        self._solve_result = None
+        threading.Thread(target=self._solve_worker, args=(job,), daemon=True).start()
+        return {"ok": True}
+
+    def _solve_worker(self, job: Any) -> None:
+        from ..modelrun import ModelError
+
+        job.run()  # off-lock: talks only to the child process
+        with self._lock:
+            try:
+                res = job.apply(self._g, self._undo)
+            except ModelError as exc:
+                result: dict[str, Any] = {
+                    "ok": False,
+                    "message": str(exc).splitlines()[0] if str(exc) else "model failed",
+                    "lines": exc.lines(),
+                    "line": exc.line,
+                    "changed": False,
+                }
+            else:
+                result = {
+                    "ok": True,
+                    "message": res.summary(),
+                    "lines": [res.summary(), *res.log.splitlines()],
+                    "line": None,
+                    "changed": res.written > 0,
+                }
+                if res.written:
+                    result.update(self._touch())
+            self._solve_result = result
+            self._job = None
+
+    def solve_status(self, offset: int = 0) -> dict[str, Any]:
+        """``{running, elapsed, output, offset}`` while a model runs; then its result, once.
+
+        ``output`` is the model's output from character ``offset``; pass the
+        returned ``offset`` back to get only what is new.
+        """
+        job = self._job
+        if job is not None:
+            import time
+
+            new = job.output(max(0, int(offset)))
+            return {
+                "running": True,
+                "elapsed": time.monotonic() - job.started,
+                "output": new,
+                "offset": max(0, int(offset)) + len(new),
+            }
+        result, self._solve_result = self._solve_result, None
+        return {"running": False, "result": result}
+
+    def cancel_solve(self) -> dict[str, Any]:
+        """Stop the running model; its run then reports "model cancelled"."""
+        if self._job is None:
+            return {"ok": False, "error": "no model is running"}
+        self._job.cancel()
+        return {"ok": True}
+
+    def data_items(self) -> dict[str, Any]:
+        """Every data item: where it is, its indexes, missing-key default and first problem."""
+        from ..book import Book, BookError
+        from ..dataitems import _RAISE, validate
+
+        problems = validate(self._g)
+        book = Book(self._g)
+        out = []
+        for name, item in sorted(self._g.data_items.items(), key=lambda kv: kv[0].lower()):
+            entry: dict[str, Any] = {
+                "name": name,
+                "index": list(item.index),
+                "has_missing": item.missing is not _RAISE,
+                "missing": None if item.missing is _RAISE else item.missing,
+                "problem": next((p for p in problems if p.startswith(f"{name}:")), ""),
+                "sheet": None,
+                "ref": None,
+            }
+            with contextlib.suppress(BookError):
+                t = book.resolve(name)
+                if t.formula is None:
+                    a = self._a1((t.c1, t.r1))
+                    b = self._a1((t.c2, t.r2))
+                    entry["sheet"] = t.sheet
+                    entry["ref"] = a if a == b else f"{a}:{b}"
+            out.append(entry)
+        return {"items": out}
+
+    def model_overlay(self) -> dict[str, Any]:
+        """The active sheet's data items as row-first boxes, for drawing over the grid."""
+        from ..dataitems import boxes
+
+        name = self._g._active.name
+        return {
+            "items": [
+                {
+                    "name": b.name,
+                    "label": b.label,
+                    "r0": b.r1,
+                    "c0": b.c1,
+                    "r1": b.r2,
+                    "c1": b.c2,
+                    "problem": b.problem,
+                }
+                for b in boxes(self._g)
+                if b.sheet == name
+            ]
+        }
 
     def chart_data(self, spec: str) -> dict[str, Any]:
         """Chart-ready data for an A1 range like ``A4:D6``.

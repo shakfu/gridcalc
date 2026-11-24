@@ -14,6 +14,13 @@ to observe it, which only works if both resolve in the package namespace.
 
 from __future__ import annotations
 
+from typing import Any
+
 from ..config import Config
 
 _cfg: Config = Config()
+
+# The model run in progress, if any (`:solve`), and whether data items are drawn
+# over the grid (`:showmodel`). Read by the main loop and by `render.draw`.
+solve: Any = None  # commands.SolveRun | None
+show_model: bool = False

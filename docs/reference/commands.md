@@ -16,6 +16,8 @@ Import/export :csv save/load   :xlsx save/load   :pd save/load
 Optimization  :opt   :opt def   :opt run   :opt sens   :opt sweep
               :opt list   :opt undef
               :goal <cell> = <target> by <cell> [in <lo>:<hi>]
+Models        :item <n> [index [index]] [missing=v]   :items   :unitem <n>
+              :model (edit in $EDITOR)   :solve   :cancel   :showmodel
 View          :view   E   :title <v|h|b|n>  (aliases :tv/:th/:tb/:tn)
 Help          :help [command]   Tab completes on the : line
 ```
@@ -43,6 +45,8 @@ Details by area:
 - [Formulas](../guide/formulas.md) -- `:name`, `:names`, `:unname`, `:e`
 
 - [Formula modes](../guide/modes.md) -- `:mode`
+
+- [Cross-tab models](../guide/models.md) -- `:item`, `:items`, `:unitem`, `:model`, `:solve`, `:cancel`, `:showmodel`
 
 - [Import and export](../guide/import-export.md) -- `:csv`, `:xlsx`, `:pd`
 

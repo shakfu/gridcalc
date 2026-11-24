@@ -42,6 +42,10 @@ interface MenuBarProps {
   onAddSheet: () => void
   onRenameSheet: () => void
   onFind: () => void
+  onModel: () => void
+  onItems: () => void
+  onShowModel: () => void
+  showModel: boolean
 }
 
 const NO_SELECTION = 'select a cell or range first'
@@ -97,6 +101,10 @@ export function MenuBar({
   onAddSheet,
   onRenameSheet,
   onFind,
+  onModel,
+  onItems,
+  onShowModel,
+  showModel,
 }: MenuBarProps) {
   const rows = structure?.rows ?? 1
   const cols = structure?.cols ?? 1
@@ -237,6 +245,10 @@ export function MenuBar({
         <Item onSelect={onSweep}>Sweep…</Item>
         <Menubar.Separator className="menu-sep" />
         <Item onSelect={onChart}>Chart…</Item>
+        <Menubar.Separator className="menu-sep" />
+        <Item onSelect={onItems}>Data Items…</Item>
+        <Item onSelect={onModel}>Model Editor</Item>
+        <Item onSelect={onShowModel}>{showModel ? 'Hide Model' : 'Show Model'}</Item>
       </Menu>
 
       <Menu label="Help">

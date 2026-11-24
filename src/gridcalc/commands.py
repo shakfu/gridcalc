@@ -520,6 +520,90 @@ def _title(ctx: Context) -> Result:
     return ok(changed=True)
 
 
+def _item(ctx: Context) -> Result:
+    """Define a data item; an undefined name is first defined as the selection."""
+    from .dataitems import DataItem, DataItemError
+
+    g = ctx.grid
+    args = " ".join(ctx.args).split()  # a GUI sends the indexes as one field
+    missing: Any = None
+    has_missing = False
+    for a in list(args):
+        if a.lower().startswith("missing="):
+            args.remove(a)
+            has_missing = True
+            missing = _missing_value(a.split("=", 1)[1])
+    if not args:
+        return fail("usage: item NAME [INDEX [INDEX]] [missing=VALUE]")
+    name, index = args[0], tuple(args[1:])
+    if len(index) > 2:
+        return fail("at most two indexes")
+    try:
+        item = DataItem.from_json(
+            {"index": list(index), **({"missing": missing} if has_missing else {})}
+        )
+    except DataItemError as exc:
+        return fail(str(exc))
+    defined = any(nr.name.casefold() == name.casefold() for nr in g.names)
+    if not defined:
+        if not valid_name(name) or parse_range(name) is not None:
+            return fail(f"not a usable name: {name!r}")
+        c1, r1, c2, r2 = ctx.rect()
+        ctx.undo.save_global(g)
+        g.names.append(NamedRange(name, c1, r1, c2, r2, sheet=g._active.name))
+        g.recalc()
+    else:
+        ctx.undo.save_global(g)
+    key = next((k for k in g.data_items if k.casefold() == name.casefold()), name)
+    g.data_items[key] = item
+    shown = f"{key}[{', '.join(index)}]" if index else key
+    return ok(f"data item {shown}", changed=True)
+
+
+def _missing_value(text: str) -> Any:
+    try:
+        return float(text)
+    except ValueError:
+        return text
+
+
+def _items(ctx: Context) -> Result:
+    from .book import Book, BookError
+    from .dataitems import validate
+
+    g = ctx.grid
+    if not g.data_items:
+        return ok("no data items")
+    book = Book(g)
+    lines: list[str] = []
+    for name, item in sorted(g.data_items.items(), key=lambda kv: kv[0].lower()):
+        try:
+            t = book.resolve(name)
+            where = (
+                t.formula
+                if t.formula is not None
+                else f"{t.sheet}!{range_a1(t.c1, t.r1, t.c2, t.r2)}"
+            )
+        except BookError:
+            where = "(undefined)"
+        index = f"  [{', '.join(item.index)}]" if item.index else ""
+        lines.append(f"{name} = {where}{index}")
+    problems = validate(g)
+    lines += [f"problem: {p}" for p in problems]
+    return ok(f"{len(g.data_items)} data items, {len(problems)} problems", lines=lines)
+
+
+def _unitem(ctx: Context) -> Result:
+    g = ctx.grid
+    target = ctx.arg(0).strip()
+    key = next((k for k in g.data_items if k.casefold() == target.casefold()), None)
+    if key is None:
+        return fail(f"no such data item: {target}")
+    ctx.undo.save_global(g)
+    del g.data_items[key]
+    return ok(f"removed data item {key}; the name stays", changed=True)
+
+
 def _recalc(ctx: Context) -> Result:
     """Recompute every formula (the TUI's `!`).
 
@@ -694,6 +778,25 @@ COMMANDS: tuple[Command, ...] = (
         run=_title,
     ),
     Command(name="recalc", title="Recalculate", group="Data", run=_recalc),
+    Command(
+        name="item",
+        title="Define data item for selection",
+        group="Model",
+        needs_selection=True,
+        args=(
+            Arg("name", "a defined name, or a new one for the selection"),
+            Arg("index", "up to two index items, then optional missing=VALUE", required=False),
+        ),
+        run=_item,
+    ),
+    Command(name="items", title="List data items", group="Model", run=_items),
+    Command(
+        name="unitem",
+        title="Delete data item",
+        group="Model",
+        args=(Arg("name", "the data item to remove; its name stays"),),
+        run=_unitem,
+    ),
 )
 
 

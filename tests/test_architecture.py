@@ -49,6 +49,15 @@ CORE_MODULES = (
     "cli.py",
     # A workbook driven by named inputs and outputs: the API behind `--set`/`--get`.
     "book.py",
+    # Defined names read as model data and written back after a solve.
+    "dataitems.py",
+    # The PuLP subset model text calls; solved by the builtin HiGHS extension.
+    "lpmodel.py",
+    # Runs a sheet's model in a child process; the child's entry point.
+    "modelrun.py",
+    "_modelchild.py",
+    # Models and data items as an xlsx custom XML part.
+    "xlsxmodel.py",
     "optspec.py",
     "report.py",
     "config.py",

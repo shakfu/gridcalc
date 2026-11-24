@@ -22,6 +22,8 @@ the old name is a different object.
 
 from __future__ import annotations
 
+from typing import Any
+
 from .engine import EMPTY, Cell, Grid, Mode, NamedRange, Sheet, Table
 
 UNDO_MAX = 64
@@ -109,6 +111,8 @@ class UndoEntry:
         "book",
         "active",
         "tables",
+        "data_items",
+        "model",
     )
 
     def __init__(self) -> None:
@@ -135,6 +139,10 @@ class UndoEntry:
         self.active: Sheet | None = None
         # The workbook's tables, saved with `book`.
         self.tables: list[Table] | None = None
+        # Data items, saved with `names`; their entries are immutable.
+        self.data_items: dict[str, Any] | None = None
+        # `sheet`'s model as (lang, text), or None for an entry that does not touch it.
+        self.model: tuple[str, str] | None = None
 
 
 def _new_entry(g: Grid, sheet: Sheet | None) -> UndoEntry:
@@ -153,6 +161,9 @@ def _capture(g: Grid, like: UndoEntry) -> UndoEntry:
         e.names = _copy_names(g.names)
         e.mode = g.mode
         e.iterate = g.iterate
+        e.data_items = dict(g.data_items)
+    if like.model is not None:
+        e.model = (g._active.model_lang, g._active.model_text)
     if like.book is not None:
         e.book = _book(g)
         e.active = g._active
@@ -199,6 +210,10 @@ def _restore(g: Grid, e: UndoEntry) -> None:
     if e.names is not None:
         g.names = _copy_names(e.names)
         g.iterate = e.iterate
+    if e.data_items is not None:
+        g.data_items = dict(e.data_items)
+    if e.model is not None:
+        g._active.model_lang, g._active.model_text = e.model
     if e.mode is not None:
         g.mode = e.mode
         g._apply_mode_libs()
@@ -242,6 +257,13 @@ class UndoManager:
         e.names = _copy_names(g.names)
         e.mode = g.mode
         e.iterate = g.iterate
+        e.data_items = dict(g.data_items)
+        self._push(e)
+
+    def save_model(self, g: Grid) -> None:
+        """Snapshot the active sheet's model text, for `:model` edits."""
+        e = _new_entry(g, g._active)
+        e.model = (g._active.model_lang, g._active.model_text)
         self._push(e)
 
     def save_grid(self, g: Grid) -> None:
@@ -250,6 +272,7 @@ class UndoManager:
         e.names = _copy_names(g.names)
         e.mode = g.mode
         e.iterate = g.iterate
+        e.data_items = dict(g.data_items)
         e.book = _book(g)
         e.active = g._active
         e.tables = _copy_tables(g.tables)

@@ -565,6 +565,8 @@ def inspect_file(filename: str) -> FileInfo | None:
     Returns a FileInfo with metadata about code blocks, required modules,
     and cell/formula counts, or None if the file cannot be parsed.
     """
+    if filename.lower().endswith(".xlsx"):
+        return _inspect_xlsx(filename)
     # ValueError covers bad JSON, bad UTF-8 and an int over 4300 digits.
     try:
         with open(filename, "rb") as f:
@@ -591,6 +593,19 @@ def inspect_file(filename: str) -> FileInfo | None:
         info.has_code = True
         info.code_lines = len(code.strip().splitlines())
         info.code_preview = code.strip()
+
+    # Solver model text is code too; the runner refuses it unless trusted.
+    sheets = d.get("sheets")
+    for entry in sheets if isinstance(sheets, list) else []:
+        model = entry.get("model") if isinstance(entry, dict) else None
+        text = model.get("text") if isinstance(model, dict) else None
+        if isinstance(text, str) and text.strip():
+            info.has_code = True
+            info.code_lines += len(text.strip().splitlines())
+            header = f"# model on sheet {entry.get('name')}"
+            info.code_preview = "\n\n".join(
+                p for p in (info.code_preview, header, text.strip()) if p
+            )
 
     requires = d.get("requires", [])
     if isinstance(requires, list):
@@ -624,6 +639,32 @@ def inspect_file(filename: str) -> FileInfo | None:
     mode = Mode.parse(d["mode"]) if "mode" in d else None
     info.python_formulas = (mode or Mode.PYTHON) == Mode.PYTHON and info.formula_count > 0
 
+    return info
+
+
+def _inspect_xlsx(filename: str) -> FileInfo | None:
+    """An xlsx's models, which are its only code. Cell counts are not taken."""
+    import io
+    import zipfile
+
+    from . import xlsxmodel
+
+    try:
+        with open(filename, "rb") as f:
+            raw = f.read()
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            doc = xlsxmodel.read(z)
+    except (OSError, zipfile.BadZipFile):
+        return None
+    info = FileInfo(digest=hashlib.sha256(raw).hexdigest())
+    for sheet, (_lang, text) in xlsxmodel.model_texts(doc).items():
+        if text.strip():
+            info.has_code = True
+            info.code_lines += len(text.strip().splitlines())
+            header = f"# model on sheet {sheet}"
+            info.code_preview = "\n\n".join(
+                p for p in (info.code_preview, header, text.strip()) if p
+            )
     return info
 
 

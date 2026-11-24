@@ -2605,6 +2605,7 @@ def _xlsx_postprocess(
     iterate: tuple[int, float] | None = None,
     hidden: dict[str, tuple[set[int], str | None]] | None = None,
     links: list[_LinkPart] | None = None,
+    model_doc: dict[str, Any] | None = None,
 ) -> None:
     """Add defined names, column widths, dynamic arrays, `XStyle`s, the
     iteration setting and links to other workbooks to the xlsx at ``path``.
@@ -2652,6 +2653,10 @@ def _xlsx_postprocess(
     if tables:
         members = _xlsx_tables_patch(members, parts, tables)
     ext_refs = b""
+    if model_doc:
+        from . import xlsxmodel
+
+        members = xlsxmodel.add_part(members, model_doc)
     if links:
         members, ext_refs = _xlsx_links_patch(members, links)
     marker = b"</sheets>"
@@ -3372,6 +3377,8 @@ class Sheet:
         "hidden_rows",
         "filtered_rows",
         "autofilter",
+        "model_lang",
+        "model_text",
     )
 
     def __init__(self, name: str = "Sheet1") -> None:
@@ -3396,6 +3403,10 @@ class Sheet:
         # Kept for xlsx and JSON; neither view draws row heights.
         self.merges: list[tuple[int, int, int, int]] = []
         self.heights: dict[int, float] = {}
+        # Solver model text that reads data items (`modelrun.py`). It is code:
+        # a file holding one raises the trust prompt.
+        self.model_lang: str = "pulp"
+        self.model_text: str = ""
         # Hidden rows, and the subset a filter hid; SUBTOTAL 1-11 skips only
         # those. Neither view hides them. `autofilter` is the sheet's xlsx
         # `<autoFilter>` element, written back as read.
@@ -3435,6 +3446,8 @@ class Grid:
         # vars/constraints/bounds. Loaded from "models" in the JSON;
         # serialized back on jsonsave; consumed by the `:opt` dispatcher.
         self.models: dict[str, Any] = {}
+        # Defined names read as model data, keyed by name (`dataitems.py`).
+        self.data_items: dict[str, Any] = {}
         self.code: str = ""
         # A file's code block that the load policy refused. Never executed;
         # jsonsave writes it back so saving does not delete it.
@@ -5984,6 +5997,7 @@ class Grid:
         self.links = {}
         self.link_parts = []
         self.models = {}
+        self.data_items = {}
         self.iterate = None
         self.libs = []
         self.requires = []
@@ -6111,6 +6125,19 @@ class Grid:
                     # The user can re-define via `:opt def` to overwrite.
                     continue
 
+        items_dict = d.get("data_items", {})
+        self.data_items = {}
+        if isinstance(items_dict, dict):
+            from .dataitems import DataItem, DataItemError
+
+            for iname, idata in items_dict.items():
+                if not isinstance(iname, str):
+                    continue
+                try:
+                    self.data_items[iname] = DataItem.from_json(idata)
+                except DataItemError as exc:
+                    self.load_warnings.append(f"data item {iname} dropped: {exc}")
+
         fmt_dict = d.get("format", {})
         if not isinstance(fmt_dict, dict):
             fmt_dict = {}
@@ -6171,6 +6198,11 @@ class Grid:
                     and 0 <= freeze[1] < NROW
                 ):
                     sh.tc, sh.tr = freeze
+                model = entry.get("model")
+                if isinstance(model, dict) and isinstance(model.get("text"), str):
+                    sh.model_text = model["text"]
+                    lang = model.get("lang", "pulp")
+                    sh.model_lang = lang if isinstance(lang, str) else "pulp"
                 self.sheets.append(sh)
                 self.active = len(self.sheets) - 1
                 cells_payload = entry.get("cells", [])
@@ -6349,6 +6381,9 @@ class Grid:
         if self.models:
             out["models"] = {name: m.to_json() for name, m in self.models.items()}
 
+        if self.data_items:
+            out["data_items"] = {name: it.to_json() for name, it in self.data_items.items()}
+
         if self.iterate is not None:
             out["iterate"] = {"count": self.iterate[0], "delta": self.iterate[1]}
 
@@ -6388,6 +6423,8 @@ class Grid:
                 entry["widths"] = {str(c): w for c, w in sorted(s.widths.items())}
             if s.tc or s.tr:
                 entry["freeze"] = [s.tc, s.tr]
+            if s.model_text:
+                entry["model"] = {"lang": s.model_lang, "text": s.model_text}
             out["sheets"].append(entry)
 
         def write(path: str) -> None:
@@ -6407,16 +6444,57 @@ class Grid:
             return -1
         return 0
 
-    def xlsxload(self, filename: str) -> int:
+    def xlsxload(self, filename: str, policy: Any = None) -> int:
+        """Load an xlsx. ``policy`` decides whether its models may run, as for JSON."""
         self.io_error = None
         try:
+            with open(filename, "rb") as f:
+                raw = f.read()
+            digest = policy.digest if policy is not None else ""
+            if digest and hashlib.sha256(raw).hexdigest() != digest:
+                self.io_error = "the file changed after it was approved"
+                return -1
             sheet_order, cells, fallbacks, cse = _xlsx_read_cells(filename)
         except Exception as exc:  # noqa: BLE001
             self.io_error = str(exc) or type(exc).__name__
             return -1
-        return self._load_or_restore(
-            lambda: self._xlsxload_into(filename, sheet_order, cells, fallbacks, cse)
-        )
+
+        def load() -> None:
+            self._xlsxload_into(filename, sheet_order, cells, fallbacks, cse)
+            self._xlsx_models(raw, policy)
+
+        return self._load_or_restore(load)
+
+    def _xlsx_models(self, raw: bytes, policy: Any) -> None:
+        """Data items and sheet models from the xlsx's gridcalc part, if it has one."""
+        import io
+        import zipfile
+
+        from . import xlsxmodel
+        from .dataitems import DataItem, DataItemError
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as z:
+                doc = xlsxmodel.read(z)
+        except zipfile.BadZipFile:
+            doc = None
+        self.python_trusted = policy is None or policy.load_code
+        if doc is None:
+            return
+        items = doc.get("data_items")
+        for iname, idata in (items if isinstance(items, dict) else {}).items():
+            if not isinstance(iname, str):
+                continue
+            try:
+                self.data_items[iname] = DataItem.from_json(idata)
+            except DataItemError as exc:
+                self.load_warnings.append(f"data item {iname} dropped: {exc}")
+        for sheet, (lang, text) in xlsxmodel.model_texts(doc).items():
+            sh = self._sheet_by_name(sheet)
+            if sh is None:
+                self.load_warnings.append(f"model for missing sheet {sheet} dropped")
+                continue
+            sh.model_lang, sh.model_text = lang, text
 
     def _xlsxload_into(
         self,
@@ -6780,8 +6858,19 @@ class Grid:
                 self.iterate,
                 hidden,
                 self.link_parts if preserve_formulas else None,
+                model_doc,
             )
 
+        from . import xlsxmodel
+
+        model_doc = xlsxmodel.payload(
+            self.data_items,
+            {
+                s.name: {"lang": s.model_lang, "text": s.model_text}
+                for s in self.sheets
+                if s.model_text
+            },
+        )
         return self._save_via(filename, write)
 
     def _xlsx_table_parts(self) -> dict[str, list[bytes]]:

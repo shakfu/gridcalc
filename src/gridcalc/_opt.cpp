@@ -1,8 +1,8 @@
 // Minimal nanobind binding around HiGHS.
 //
-// Surface is intentionally narrow: one function, dense matrices in, no
-// callbacks, no LP/MPS file I/O. Spreadsheet-scale problems fit comfortably in
-// dense form; sparse input can be added later if a real workload demands it.
+// The api is narrow: two functions, no callbacks, no LP/MPS file I/O.
+// `solve_lp` takes dense rows, which suit cell-built models; `solve_lp_sparse`
+// takes CSR, for generated models whose dense matrix would not fit in memory.
 // LP, MIP (via integrality), convex QP (via a Hessian), and sensitivity
 // analysis are supported.
 //
@@ -116,9 +116,32 @@ struct HighsGuard {
 //
 // `sensitivity` opts into duals, reduced costs, and ranging. It is off by
 // default because it requires a second HiGHS call over the solved basis.
-Solution solve_lp(
+constexpr double SMALL_MATRIX_VALUE = 1e-9;
+
+// HiGHS rejects a model containing a matrix entry smaller than its
+// `small_matrix_value` tolerance (1e-9) -- such a coefficient is numerically
+// indistinguishable from zero and the model is ill-posed. The API only
+// reports that as a generic failure, so check here and say which is at fault.
+void check_coefficient(double v) {
+    if (std::isnan(v) || std::isinf(v)) {
+        throw std::invalid_argument("constraint coefficient must be finite");
+    }
+    if (std::abs(v) <= SMALL_MATRIX_VALUE) {
+        throw std::invalid_argument(
+            "constraint coefficient is too small to be distinguished "
+            "from zero (|value| <= 1e-9); rescale the constraint");
+    }
+}
+
+// Solve with the constraint matrix in row-wise CSR form: row i holds
+// a_index/a_value[a_start[i] .. a_start[i+1]), with a_start[m] implied by
+// the entry count. Explicit zeros are dropped.
+Solution solve_core(
     const std::vector<double>& c,
-    const std::vector<std::vector<double>>& A,
+    const int m,
+    const std::vector<int>& a_start_in,
+    const std::vector<int>& a_index_in,
+    const std::vector<double>& a_value_in,
     const std::vector<int>& sense,
     const std::vector<double>& rhs,
     const std::vector<double>& lb,
@@ -131,7 +154,6 @@ Solution solve_lp(
     double time_limit)
 {
     const int n = static_cast<int>(c.size());
-    const int m = static_cast<int>(A.size());
 
     if (n == 0) throw std::invalid_argument("c must be non-empty");
     if (lb.size() != static_cast<size_t>(n) || ub.size() != static_cast<size_t>(n)) {
@@ -141,12 +163,15 @@ Solution solve_lp(
         throw std::invalid_argument("sense and rhs must match number of rows in A");
     }
     for (int i = 0; i < m; ++i) {
-        if (A[i].size() != static_cast<size_t>(n)) {
-            throw std::invalid_argument("each row of A must have length n");
-        }
         if (sense[i] != SENSE_LE && sense[i] != SENSE_GE && sense[i] != SENSE_EQ) {
             throw std::invalid_argument("sense entries must be 1 (LE), 2 (GE), or 3 (EQ)");
         }
+    }
+    if (a_start_in.size() != static_cast<size_t>(m)) {
+        throw std::invalid_argument("a_start must have one entry per row");
+    }
+    if (a_index_in.size() != a_value_in.size()) {
+        throw std::invalid_argument("a_index and a_value must have the same length");
     }
     if (!hessian.empty() && hessian.size() != static_cast<size_t>(n)) {
         throw std::invalid_argument("hessian must have one row per column of c");
@@ -206,30 +231,29 @@ Solution solve_lp(
         else                           { row_lower[i] = rhs[i]; row_upper[i] = rhs[i]; }
     }
 
-    // Constraint matrix, row-wise CSR. Zeros are dropped: the caller hands us
-    // dense rows, but spreadsheet models are typically sparse and HiGHS is
-    // happier without the explicit zeros.
-    //
-    // HiGHS rejects a model containing a matrix entry smaller than its
-    // `small_matrix_value` tolerance (1e-9) -- such a coefficient is
-    // numerically indistinguishable from zero and the model is ill-posed.
-    // The API only reports that as a generic failure, so check here and say
-    // which coefficient is at fault.
-    constexpr double SMALL_MATRIX_VALUE = 1e-9;
+    // Validate the CSR and copy it without explicit zeros, so a caller's bad
+    // offset is an error message rather than a read past a buffer.
+    const int nnz_in = static_cast<int>(a_index_in.size());
     std::vector<int> a_start;
     std::vector<int> a_index;
     std::vector<double> a_value;
     a_start.reserve(static_cast<size_t>(m));
+    a_index.reserve(a_index_in.size());
+    a_value.reserve(a_value_in.size());
     for (int i = 0; i < m; ++i) {
+        const int from = a_start_in[i];
+        const int to = i + 1 < m ? a_start_in[i + 1] : nnz_in;
+        if (from < 0 || to < from || to > nnz_in) {
+            throw std::invalid_argument("a_start must be non-decreasing and within a_index");
+        }
+        if (i == 0 && from != 0) throw std::invalid_argument("a_start must begin at 0");
         a_start.push_back(static_cast<int>(a_index.size()));
-        for (int j = 0; j < n; ++j) {
-            const double v = A[i][j];
+        for (int k = from; k < to; ++k) {
+            const int j = a_index_in[k];
+            const double v = a_value_in[k];
+            if (j < 0 || j >= n) throw std::invalid_argument("a_index entry out of range");
             if (v == 0.0) continue;
-            if (std::abs(v) <= SMALL_MATRIX_VALUE) {
-                throw std::invalid_argument(
-                    "constraint coefficient is too small to be distinguished "
-                    "from zero (|value| <= 1e-9); rescale the constraint");
-            }
+            check_coefficient(v);
             a_index.push_back(j);
             a_value.push_back(v);
         }
@@ -347,6 +371,61 @@ Solution solve_lp(
     return out;
 }
 
+// The dense entry point: rows of A, each of length n, converted to CSR.
+Solution solve_lp(
+    const std::vector<double>& c,
+    const std::vector<std::vector<double>>& A,
+    const std::vector<int>& sense,
+    const std::vector<double>& rhs,
+    const std::vector<double>& lb,
+    const std::vector<double>& ub,
+    bool maximize,
+    const std::vector<int>& integer_vars,
+    const std::vector<int>& binary_vars,
+    bool sensitivity,
+    const std::vector<std::vector<double>>& hessian,
+    double time_limit)
+{
+    const size_t n = c.size();
+    std::vector<int> a_start;
+    std::vector<int> a_index;
+    std::vector<double> a_value;
+    a_start.reserve(A.size());
+    for (const auto& row : A) {
+        if (row.size() != n) throw std::invalid_argument("each row of A must have length n");
+        a_start.push_back(static_cast<int>(a_index.size()));
+        for (size_t j = 0; j < n; ++j) {
+            if (row[j] == 0.0) continue;
+            a_index.push_back(static_cast<int>(j));
+            a_value.push_back(row[j]);
+        }
+    }
+    return solve_core(c, static_cast<int>(A.size()), a_start, a_index, a_value, sense, rhs,
+                      lb, ub, maximize, integer_vars, binary_vars, sensitivity, hessian,
+                      time_limit);
+}
+
+// The sparse entry point: A in row-wise CSR, one row per entry of `sense`.
+Solution solve_lp_sparse(
+    const std::vector<double>& c,
+    const std::vector<int>& a_start,
+    const std::vector<int>& a_index,
+    const std::vector<double>& a_value,
+    const std::vector<int>& sense,
+    const std::vector<double>& rhs,
+    const std::vector<double>& lb,
+    const std::vector<double>& ub,
+    bool maximize,
+    const std::vector<int>& integer_vars,
+    const std::vector<int>& binary_vars,
+    bool sensitivity,
+    double time_limit)
+{
+    return solve_core(c, static_cast<int>(sense.size()), a_start, a_index, a_value, sense,
+                      rhs, lb, ub, maximize, integer_vars, binary_vars, sensitivity, {},
+                      time_limit);
+}
+
 } // namespace
 
 NB_MODULE(_opt, m) {
@@ -401,4 +480,22 @@ NB_MODULE(_opt, m) {
         ".obj_from / .obj_till ranging arrays; it is ignored for MIPs and QPs "
         "-- check .sensitivity_valid. time_limit is in seconds; a solve that "
         "reaches it returns status TIMEOUT.");
+
+    m.def("solve_lp_sparse", &solve_lp_sparse,
+        nb::arg("c"),
+        nb::arg("a_start"),
+        nb::arg("a_index"),
+        nb::arg("a_value"),
+        nb::arg("sense"),
+        nb::arg("rhs"),
+        nb::arg("lb"),
+        nb::arg("ub"),
+        nb::arg("maximize") = false,
+        nb::arg("integer_vars") = std::vector<int>{},
+        nb::arg("binary_vars")  = std::vector<int>{},
+        nb::arg("sensitivity")  = false,
+        nb::arg("time_limit")   = DEFAULT_TIME_LIMIT,
+        "solve_lp with A in row-wise CSR: row i is a_index/a_value"
+        "[a_start[i]:a_start[i+1]], the last row running to the end. One row "
+        "per entry of sense. No Hessian.");
 }

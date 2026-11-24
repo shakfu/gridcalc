@@ -43,7 +43,7 @@ def load_into(g: Grid, path: str | Path, policy: LoadPolicy | None = None) -> No
     p = str(path)
     low = p.lower()
     if low.endswith(".xlsx"):
-        rc = g.xlsxload(p)
+        rc = g.xlsxload(p, policy=policy or _default_policy(p))
     elif low.endswith(".csv"):
         rc = g._load_or_restore(lambda: _csv_into(g, p))
     else:
@@ -111,6 +111,11 @@ def save_losses(g: Grid, path: str | Path) -> list[str]:
         lost.append("names")
     if g.models:
         lost.append("models")
+    # xlsx keeps them in a custom XML part (`xlsxmodel.py`); csv cannot.
+    if csv and g.data_items:
+        lost.append("data items")
+    if csv and any(s.model_text for s in g.sheets):
+        lost.append("solver models")
     if g.code or g.withheld_code:
         lost.append("code")
     links = "links to other workbooks"
@@ -219,7 +224,7 @@ def needs_trust(path: str | Path) -> FileInfo | None:
     failure itself), or a format with no code path at all.
     """
     p = str(path)
-    if p.lower().endswith((".xlsx", ".csv")) or not sandbox.SANDBOX_ENABLED:
+    if p.lower().endswith(".csv") or not sandbox.SANDBOX_ENABLED:
         return None
     info = inspect_file(p)
     if info is None or not info.trust_needed:

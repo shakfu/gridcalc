@@ -49,6 +49,8 @@ The abi3 build is gated on `GRIDCALC_STABLE_ABI=ON` (CMake) plus `wheel.py-api=c
 
 Tests are pytest, in `tests/`, roughly mirroring the source layout, and run with `GRIDCALC_SANDBOX=1` so sandbox validation is always active. `tests/integration/test_tui_pty.py` drives the real curses app over a pty.
 
+The `dev` group installs PuLP and Pyomo, so the pulp and pyomo backend tests run. Tests that need a solver program skip when it is missing: install `glpsol` (GLPK) and `ipopt` to run the GMPL and nonlinear ones. Some confinement tests run on one platform only: the parent's memory poll and `sandbox-exec` on macOS, the address-space limit on Linux.
+
 Some suites cross modules rather than mirror one:
 
 - `test_builtins_smoke.py` calls every `BUILTINS` function from EXCEL-mode formula text.

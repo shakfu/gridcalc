@@ -43,3 +43,5 @@ The full set is in the [command reference](reference/commands.md), and every key
 - [Multi-sheet workbooks](guide/sheets.md) -- tabs, cross-sheet references, and what the dep graph does with them.
 
 - [Optimization](guide/optimization.md) -- define an LP, MIP, or QP in the sheet and solve it.
+
+- [Cross-tab models](guide/models.md) -- write a PuLP, Pyomo or GMPL model over named ranges and tables; `gridcalc example_crosstab.json` is a worked one.

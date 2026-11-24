@@ -15,6 +15,7 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
     - Solver precision: `XIRR` (15 cells), `IRR` and `NPV` (12), `ODDFYIELD` (3), `CUMPRINC` (2), `NORM.INV` and `LOGNORM.INV` (2) differ from Excel near 1e-9 relative; gridcalc's roots have the smaller residual. `tests/test_excel_saved_models.py` has a strict xfail for the `XIRR` case, 7e-9 off. `RATE(360,-1000,150000,0,0,0)` is `#NUM!` in Excel, whose iteration fails from a guess of 0; gridcalc converges.
 
     - Two spills that collide: gridcalc lets whichever spills first win. Within one recalc that order follows Python's hash seed, so the winner can change between runs: `H1 =SEQUENCE(5)` against `G5 =SEQUENCE(3,2)` alternates across `PYTHONHASHSEED` 0-7. Excel 16.114 picked the same winner in either entry order (`G3` beat `H1`). Its rule is not yet known.
+
     - A whole-column dynamic formula that fits (anchored in row 1, column empty) spills the used rows only; Excel fills the rest with the trimmed value, such as 0. Materialising a million cells is too costly; reading them would need virtual spill cells.
 
     - `TEXT(1.5,"#.#####00#0")` is "1.5000" in Excel; the digit rule is not known.
@@ -74,6 +75,7 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 - [ ] **A named-input case recalculates about 1.7x slower than GridCraft.** 43.6 ms against 25.3 ms on 18,033 formulas, same run, 2026-11-17 (`docs/dev/comparison.md`). A sweep of 100k cases would take about 73 min against 42 min. Worth it only for sweep-sized workloads; the cost breakdown is under Low > Performance.
 
   - With `workers=4` a sweep runs 3.3x as many cases per second: 12.2 ms per case of throughput, against GridCraft's 25.3 ms in one process. One case is still 41-44 ms.
+
   - Compiling each AST to closures measured within noise: 38.2-38.8 ms against 37.8-39.0 ms, with 99.9% of nodes compiled (`docs/dev/261110-perf.md`). Trimming `run` and `_recalc_topo` also measured within noise. Running repeated formulas as one numpy pass would reach 20% of this model: the other 80% is a row-to-row recurrence. One case has no known next step.
 
 - [ ] **Whole-column paths that still cost a million rows.** Each is correct but slow on Excel's grid:

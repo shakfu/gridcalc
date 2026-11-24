@@ -81,4 +81,3 @@ This file is a factual inventory, not legal advice. Every vendored component is 
 * Licence: Apache-2.0
 
 * Used by: `ACCRINT` in `src/gridcalc/libs/xlsx.py`, a Python port of that algorithm. No IronCalc code is vendored. IronCalc's version is itself a port of the ExcelFinancialFunctions library (<https://github.com/fsprojects/ExcelFinancialFunctions>, Apache-2.0).
-

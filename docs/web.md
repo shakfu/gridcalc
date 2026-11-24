@@ -16,6 +16,8 @@ The body below is unchanged from when it was written; this section records where
 
 - **The bridge is serialised.** pywebview runs each JS call on its own thread. Every public `Api` method now holds one `threading.RLock`, and the client queues mutating calls in order. Solves hold the lock, so viewport reads wait until a solve finishes; the alternative, solving off-lock, would solve a copy of the workbook. See `CHANGELOG.md` (Unreleased, Fixed).
 
+- **Cross-tab models reached the GUI (0.15.0).** A model editor panel with background solve, a Show Model overlay and a Data Items dialog (`docs/guide/models.md`). The grid's scroll canvas now spans the used cells rather than the sheet, after WKWebView was found blocking for about 8 s at a time on a sheet-sized one (`docs/dev/web-canvas-height.md`).
+
 - **Security now has the trust flow** Section 5a called for. Formulas-only is still what an unanswered open loads; a workbook carrying code raises a dialog reporting what it would run, and its answer becomes the `LoadPolicy` the load uses. `inspect_file` disclosure, the blocked/I-O/unknown split, and the separate answer for unclassified modules all match the curses prompt.
 
 ## 1. The premise, challenged

@@ -17,6 +17,7 @@ This plan takes a layered approach: no single layer is sufficient, but together 
 | User loads untrusted .json file | Malicious formulas + code blocks    | Yes   |
 | User shares a spreadsheet       | Accidental code exposure            | Low   |
 | User loads a .json with no or unknown `mode` | Loads as PYTHON mode; formulas are `eval()`ed | Yes; gated by the trust prompt |
+| User loads a .json or .xlsx with a solver model | Model text is code: Python, or GMPL run by `glpsol` | Yes; gated by the trust prompt, and run in a confined process |
 | User starts gridcalc in a directory holding a `gridcalc.toml` | `sandbox = false`, `editor` or `allowed_modules` there | No; these keys are ignored in a CWD config |
 
 The only real threat is **loading a file from an untrusted source**. The user sitting at the keyboard is the trust boundary. A config file in the working directory is untrusted content too, so it cannot set `sandbox`, `editor` or `allowed_modules`.
@@ -111,6 +112,21 @@ The eval globals dict restricts `__builtins__` to a curated set: `abs`, `min`, `
 | Trust gate on load | User approves before code/modules execute   | Malicious code blocks in .json files     |
 | Restricted builtins| Limits Python builtins in eval              | Direct access to dangerous functions     |
 
+## Solver models
+
+A sheet's model ([Cross-tab models](guide/models.md)) is code too, but it does not run in the application's process. Each solve starts a child process, so a model has a resource boundary that formulas and the code block do not. Its layers, outermost first:
+
+| Layer | What it does |
+|-|-|
+| Trust gate | A file with a model raises the prompt, xlsx included; an unapproved model does not run |
+| Static check | `validate_code` on Python text; for GMPL, `table` statements and output to a file are refused |
+| Child process | Wall clock (120 s), CPU and memory (2 GB) limits, its own process group, killed with any solver it started |
+| Restricted builtins and imports | The blocked names are removed; imports are limited to the subset, `math`, the safe modules and the chosen library |
+| Audit hook | Refuses file writes, processes, sockets and native calls, including routes the static check misses |
+| `sandbox-exec` (macOS only) | Denies network, file writes and process creation at the OS level |
+
+The pulp, pyomo and gmpl backends start a solver program, so their child may write in a private temporary directory and start listed solver programs. Network is denied to every backend. Linux and Windows have no OS layer, and Windows has no CPU or memory limit. Design and measurements: `docs/dev/crosstab-model.md`.
+
 ## JSON File Format Extension
 
 The `requires` field declares module dependencies:
@@ -132,7 +148,7 @@ Files without `requires` are fully backward compatible.
 
 - If the user approves a file and numpy is available, a formula could still call `np.save('/tmp/exfil', data)`. The trust gate is the real security boundary; AST validation reduces blast radius but cannot prevent all side effects of approved libraries.
 
-- There is no resource boundary. Workbook code runs in the application's own process, and AST validation permits loops, comprehensions, and large allocations, because none of those is distinguishable from legitimate computation by inspecting the syntax tree. `while True: pass` hangs the application and an unbounded allocation exhausts its memory. Containing this needs a worker process with wall-clock and memory limits, not a stricter validator: the four layers above address what untrusted code can *reach*, not how long it may run. Until that exists, an approved workbook is trusted with the session's availability as well as its data.
+- There is no resource boundary for formulas and the code block. Workbook code runs in the application's own process, and AST validation permits loops, comprehensions, and large allocations, because none of those is distinguishable from legitimate computation by inspecting the syntax tree. `while True: pass` hangs the application and an unbounded allocation exhausts its memory. Containing this needs a worker process with wall-clock and memory limits, not a stricter validator: the four layers above address what untrusted code can *reach*, not how long it may run. Until that exists, an approved workbook is trusted with the session's availability as well as its data.
 
 - Code blocks (`:e` editor) run unrestricted. This is intentional -- the user is the trust boundary. Code blocks from JSON files require explicit approval.
 
@@ -168,4 +184,6 @@ Files without `requires` are fully backward compatible.
 
 - `gridcalc/web/frontend/src/components/TrustDialog.tsx` -- the same gate in the desktop app; `gridcalc/loader.py:needs_trust` decides when either frontend must ask
 
-- `tests/test_sandbox.py` -- comprehensive tests
+- `gridcalc/modelrun.py`, `gridcalc/_modelchild.py`, `gridcalc/gmpl.py` -- the solver model process, its audit hook and the GMPL check
+
+- `tests/test_sandbox.py` -- comprehensive tests; `tests/test_modelrun.py`, `test_pulp_backend.py`, `test_pyomo_backend.py`, `test_gmpl.py` -- model confinement

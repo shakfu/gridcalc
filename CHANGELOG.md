@@ -7,8 +7,11 @@
 ### Highlights
 
 - **Optimization models over sheet data, as in SolverStudio.** Named ranges and tables become model data. A model written in PuLP, Pyomo or GMPL solves and writes its results back to the sheet. Try `examples/example_crosstab.json`, PuLP's beer distribution problem; guide: `docs/guide/models.md`.
+
 - **Four ways to run a model.** The builtin PuLP subset on HiGHS needs no install and also takes quadratic objectives. `gridcalc[pulp]` and `gridcalc[pyomo]` run those libraries with their solvers, Ipopt included. GMPL runs under `glpsol` from GLPK, which you install.
+
 - **A model is code, and it is confined.** A file with a model raises the trust prompt. The model runs in a separate process with time, CPU and memory limits. An audit hook refuses file writes, processes and sockets; on macOS `sandbox-exec` enforces the same.
+
 - **The desktop app opens in about 150 ms on macOS,** where it took about 20 s, and a cursor move takes 5-10 ms.
 
 ### Added
@@ -40,8 +43,11 @@
 ### Changed
 
 - **The desktop trust dialog highlights the code it asks about,** and says that a model runs in a separate, restricted process. An xlsx holding a model now raises the trust prompt, and does not load if it changed after approval.
+
 - **`import gridcalc` takes 1.8 ms, from 22.** `gridcalc.__version__` is read on first use; `importlib.metadata` was most of the cost.
+
 - **`Api.dims()` reports `used_rows` and `used_cols`** for the active sheet.
+
 - **New dependencies.** The desktop client adds CodeMirror (`codemirror`, `@codemirror/lang-python`, `@codemirror/state`, `@codemirror/view`, `@codemirror/theme-one-dark`), pinned. Optional extras `pulp` and `pyomo`.
 
 ## [0.14.0]
@@ -49,15 +55,24 @@
 ### Highlights
 
 - **Security.** A file changed after its trust prompt no longer loads. A `gridcalc.toml` in the working directory can no longer allow Python modules. Upgrade if you open workbooks from other people.
+
 - **Speed.** A named-input case on an 18,033-formula model takes 41-44 ms, against 90-95 ms in 0.13.0. `run_many(..., workers=4)` brings it to 12 ms per case. Figures: `docs/dev/comparison.md`.
+
 - **Excel agreement.** On the IronCalc and pycel test workbooks, 79,454 of 79,797 formula cells (99.6%) match Excel's saved values. On 2026-11-10 it was 78,942 of 79,661 (99.1%). Most fixes were probed in Excel 16.114.
+
 - **New:** trim references (`A:.A`), sheet-scoped defined names, parallel `run_many`, renaming a table column from its header, and linked-workbook formulas that recalculate.
+
 - **Results that change.** Check workbooks that depend on these:
   - `ISBLANK("")` is FALSE, and an empty-string cell loads as text.
+
   - Analysis ToolPak functions refuse a logical: `ERF(TRUE)` is `#VALUE!`. `ABS(TRUE)` now converts.
+
   - Text such as `"1,600"`, `"$5"` and `"(5)"` reads as a number in arithmetic.
+
   - A name such as `named1` is a name, not a cell reference.
+
   - A whole-column dynamic formula below row 1 is `#SPILL!`.
+
   - CONCAT and TEXTJOIN past 32767 characters are `#CALC!`.
 
 ### Added
@@ -134,16 +149,27 @@
 
 - **Smaller corpus fixes, probed against Excel 16.114.** The corpus gained 122 cells and lost none.
   - `MULTINOMIAL` refuses a logical or non-numeric text, typed or read from a cell.
+
   - `SMALL` and `LARGE` skip a logical or text read from a cell.
+
   - A trailing `~` in a wildcard pattern is dropped.
+
   - `BASE(0,2,0)` is "", and `BASE(0,2)` is still "0".
+
   - A blank weekend cell in `NETWORKDAYS.INTL` or `WORKDAY.INTL` is `#NUM!`. An omitted weekend is Saturday-Sunday.
+
   - `RATE` refuses a guess of -1 or less with `#VALUE!`.
+
   - `TEXT` takes a date code in any section: `TEXT(0,"#;-#;m")` is "1".
+
   - `TEXT` refuses fractional elapsed seconds on a negative value.
+
   - `"23:59."` reads as h:mm.
+
   - `LOGEST` returns a row, as `LINEST` does.
+
   - `CONCATENATE` intersects a range in a legacy formula.
+
   - `CHAR` and `CODE` use Windows Excel's cp1252 for codes 128-159, so `CHAR(128)` is the euro sign. Mac Excel uses Mac Roman.
 
 ### Changed

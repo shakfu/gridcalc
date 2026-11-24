@@ -33,13 +33,25 @@ This is where the desktop app goes past the terminal. `Optimize` reads a model o
 
 `Goal Seek` and a parametric `Sweep` -- the objective plotted against a constraint's right-hand side, breakpoints marked -- round it out.
 
+## Cross-tab models
+
+For a model written as text -- PuLP, Pyomo or GMPL over named ranges and tables, as SolverStudio runs them -- the Data menu has three entries ([guide](guide/models.md)):
+
+- **Model Editor** opens a panel beside the grid: the sheet's model in a code editor with highlighting, a backend selector, **Solve** and **Cancel**, the model's problems, and its output as it runs. The solve runs in the background, so the grid stays usable. A failed run puts the cursor on the failing line.
+
+- **Show Model** outlines each data item on the sheet and labels it, such as `costs[Warehouses,Bars]`.
+
+- **Data Items** lists the items with their ranges and problems, makes the selection or a table's rows one, and goes to an item's range on any sheet.
+
+`gridcalc-web example_crosstab.json` opens a worked one: PuLP's beer distribution problem.
+
 ![The desktop app: the Optimize dialog reporting an optimal solve with shadow prices and RHS ranging](media/webview.png)
 
 *`gridcalc-web example_lp.json` after `Optimize`: the decision cells are green on the sheet behind the dialog, and the constraint table carries the shadow prices and the range each right-hand side may take before the basis changes.*
 
 ## Workbooks that carry code
 
-A JSON workbook can hold a Python code block, and HYBRID and PYTHON mode formulas call into it. Opening one is a decision, not a default: the file loads *formulas only*, and a dialog reports what it would run -- the cell and formula counts, the modules it names split by how much is known about each, and the code itself. Nothing has been executed to produce any of that; the file is parsed, not run.
+A JSON workbook can hold a Python code block, and HYBRID and PYTHON mode formulas call into it. A JSON or xlsx workbook can also hold a solver model; it runs in a separate, restricted process, but only once the file is approved. Opening one is a decision, not a default: the file loads *formulas only*, and a dialog reports what it would run -- the cell and formula counts, the modules it names split by how much is known about each, and the code itself. Nothing has been executed to produce any of that; the file is parsed, not run.
 
 A PYTHON-mode workbook raises the dialog even without a code block, because its formulas are Python.
 

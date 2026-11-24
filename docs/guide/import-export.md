@@ -6,7 +6,7 @@
 | `:xlsx save/load` | `.xlsx` formulas + values | EXCEL mode: formulas + cached values; other modes: values only | `:xlsx load` switches to `EXCEL` |
 | `:pd save/load` | CSV/TSV/JSON | same | Needs `gridcalc[extras]`; row 1 as headers; JSON keeps value types; fields load as `:csv load` does |
 
-`:xlsx load` translates Excel formulas into gridcalc's `EXCEL` grammar and reads every worksheet, empty ones included. It replaces the whole workbook, including the code block and saved models. On import:
+`:xlsx load` translates Excel formulas into gridcalc's `EXCEL` grammar and reads every worksheet, empty ones included. It replaces the whole workbook, including the code block, saved `:opt` models, data items and sheet models. On import:
 
 - Values keep their xlsx type. Text such as `00123` stays a label (the editor shows it as `"00123`; the leading `"` keeps it text when committed), booleans and error codes stay logical and error values, and export writes them back as such.
 
@@ -38,7 +38,9 @@ Both also keep:
 
 - frozen rows and columns, per sheet;
 
-- tables, with their filters and style.
+- tables, with their filters and style;
+
+- data items and sheet models ([Cross-tab models](models.md)), in a custom XML part that Excel keeps when it saves the file. An xlsx holding a model raises the trust prompt on open, as a JSON file with code does.
 
 Formulas read a table by name and column, as in Excel: `=SUM(Sales[Qty])`, `=Sales[[#This Row],[Qty]]*2`, `=[@Qty]` inside the table. Inserting rows or columns inside a table grows it. Editing a header cell does not rename its column, as Excel does; formulas keep the old name.
 

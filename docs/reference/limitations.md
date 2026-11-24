@@ -18,9 +18,11 @@ Known gaps, each of them deliberate rather than pending:
 
 - **Hidden rows** are read from xlsx and used in calculation, but neither view hides them and no command hides or filters a row. JSON keeps which rows a filter hid, but not the filter itself, so an xlsx saved from JSON has none.
 
+- **Solver models** run on Linux and Windows with less confinement than on macOS, and on Windows with no CPU or memory limit ([Cross-tab models](../guide/models.md#safety)). The builtin solver takes a quadratic objective, but not quadratic constraints or integer variables with one, which HiGHS does not solve. A table item cannot index a cross-tab item. No CLI flag runs a model; `gridcalc.modelrun.run_model` does, from Python.
+
 - **Whole-column and whole-row references** (`A:A`, `1:1`) work in EXCEL and HYBRID mode only.
 
-- **Structured references** (`Sales[Qty]`) read tables from an xlsx. gridcalc cannot create or rename a table, and editing a header cell does not rename its column. A bare `[Qty]` without the table name is not read; `[@Qty]` is. A reference into another workbook (`[1]!Sales[Qty]`) is a syntax error.
+- **Tables** can be made with `:table` but not removed; no command converts one back to a range. A structured reference into another workbook (`[1]!Sales[Qty]`) is a syntax error.
 
 - **xlsx styling is not complete.** Fonts, solid fills, borders, alignment, number formats, merged cells, row and column sizes are read and written ([Import and export](../guide/import-export.md)). Pattern and gradient fills, diagonal borders and font effects such as superscript are not. Saving over an xlsx that has any of them lists what will be lost and asks first. Styles can be loaded but not yet set from either view, except bold, italic, underline and number formats.
 

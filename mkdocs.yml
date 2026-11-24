@@ -40,6 +40,7 @@ nav:
           - engine: reference/api/engine.md
           - formula: reference/api/formula.md
           - opt: reference/api/opt.md
+          - models: reference/api/models.md
           - goalseek: reference/api/goalseek.md
           - config: reference/api/config.md
           - sandbox: reference/api/sandbox.md

@@ -163,6 +163,10 @@ The audit hook stops routes the static checks miss, but it is not an OS boundary
 
 The pulp, pyomo and gmpl backends relax two rules, because they write the model to a file and start a solver program. Writes are allowed only in a private temporary directory, deleted after the run. Programs may be started only from PuLP's bundled solvers, or `cbc`, `glpsol`, `highs`, `scip`, `cplex`, `gurobi_cl`, and the nonlinear solvers `ipopt`, `bonmin` and `couenne`, on `PATH`. Network stays denied. The memory cap and a cancel cover the solver too. `glpsol` is a native program, so outside macOS only the static check stops a GMPL model writing files.
 
+## From Python and the command line
+
+No CLI flag runs a model yet. From Python, `gridcalc.modelrun.run_model(grid)` runs the active sheet's model and writes its results, and `gridcalc.dataitems.read_items(grid)` returns the data items as the model sees them.
+
 ## Files
 
 JSON and xlsx keep models and data items. An xlsx stores them in a custom XML part, which Excel keeps when it saves the file (checked with Excel 16.114 for Mac). CSV keeps neither, and saving as CSV warns.

@@ -29,7 +29,23 @@ JSON, version 2. Version 1 files (single sheet, top-level `cells`) still load.
 
 - **names**: workbook-global named ranges (sheet-relative when used).
 
-- **models**: persisted LP/MIP definitions -- see [Optimization](../guide/optimization.md).
+- **models**: persisted LP/MIP definitions for `:opt` -- see [Optimization](../guide/optimization.md).
+
+- **data_items**: named ranges and tables a sheet's model reads, keyed by name -- see [Cross-tab models](../guide/models.md). Each entry is an object, empty for a plain range:
+
+    ```json
+    "data_items": {
+      "Bars":  {},
+      "costs": {"index": ["Warehouses", "Bars"]},
+      "flow":  {"index": ["Warehouses", "Bars"], "missing": 0, "output": true},
+      "cost":  {"table": "Routes", "keys": ["Warehouse", "Bar"], "value": "cost"},
+      "Warehouses": {"table": "Routes", "column": "Warehouse"}
+    }
+    ```
+
+    `index` names up to two other items; `missing` is the value of a blank cell or unknown key; `output` marks an item the model fills; `table` with `keys`/`value`, or `column`, reads a table's rows instead of a range.
+
+- **tables**: Excel tables, each `{name, sheet, ref, columns, header, totals}` and an optional `style`. Made by an xlsx load or `:table`.
 
 - **iterate**: `{"count": 100, "delta": 0.001}` turns on iterative calculation for circular references, as Excel's option of that name: at most `count` sweeps, stopping when no cell changes by more than `delta`. Absent means off, and a cycle gives `#CIRC!`. EXCEL and HYBRID mode only.
 
@@ -38,6 +54,8 @@ JSON, version 2. Version 1 files (single sheet, top-level `cells`) still load.
 - **format**: `width`, the terminal column width in characters, and optional `fmt`, the workbook default number format set by `:gf` (one of `L R I G D $ % *`).
 
 A sheet entry may carry **hidden_rows** and **filtered_rows**, lists of 0-based row indexes: the rows hidden, and those of them a filter hid. `SUBTOTAL` and `AGGREGATE` read them; neither view hides the rows.
+
+A sheet entry may carry **model**, the sheet's solver model: `{"lang": "pulp", "text": "..."}`, plus `"backend": "pulp" | "pyomo" | "gmpl"` when it does not run on the builtin solver. Its text is code, so a file with a model raises the trust prompt.
 
 A sheet entry may also carry **widths**, a `{"<column index>": pixels}` map recording columns resized in the [desktop app](../desktop.md). It is written only when a sheet has at least one resized column, and the curses renderer ignores it -- the terminal lays columns out from a single uniform width.
 

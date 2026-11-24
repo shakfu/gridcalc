@@ -65,7 +65,7 @@ book.run_many([{"Rate": r / 100} for r in range(1, 10)], ["Payment"])
 
 - **Exit codes:** `0` means the run worked. `2` means an output you named holds an error, such as `#REF!`. `1` means bad input, such as an unknown name or a value of the wrong shape; it is reported before anything is written.
 
-- **Safe by default.** A workbook's Python (code blocks, PYTHON-mode cells) runs only with `--trust`. Excel formulas are capped at Excel's length and nesting limits, and a recalculation stops after 30 s.
+- **Safe by default.** A workbook's code (code blocks, PYTHON-mode cells, solver models) runs only once approved: at the trust prompt, or with `--trust` headless. A solver model also runs in a separate process with time and memory limits, no network access, and no file writes outside a private temporary directory. Excel formulas are capped at Excel's length and nesting limits, and a recalculation stops after 30 s.
 
 - **`--convert out.xlsx`** saves the workbook with the inputs written in.
 
@@ -103,6 +103,8 @@ Full reference: <https://shakfu.github.io/gridcalc/reference/cli/#named-inputs-a
 pip install gridcalc            # core: zero third-party runtime deps
 pip install 'gridcalc[extras]'  # adds numpy, pandas, pygments
 pip install 'gridcalc[web]'     # adds the desktop window (gridcalc-web)
+pip install 'gridcalc[pulp]'    # runs models under the PuLP library and its solvers
+pip install 'gridcalc[pyomo]'   # runs models written with Pyomo
 ```
 
 Or with [uv](https://docs.astral.sh/uv/): `uv tool install 'gridcalc[extras]'`.

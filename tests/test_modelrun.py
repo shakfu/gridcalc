@@ -473,7 +473,7 @@ def test_windows_popen_events_only_for_program_backends(tmp_path, monkeypatch) -
     for event, args in events:
         ch._audit(event, args)
     with pytest.raises(PermissionError):
-        ch._audit("_winapi.CreateProcess", (None, "cmd /c del x", None))
+        ch._audit("_winapi.CreateProcess", (None, "cmd /c del x", None))  # no Popen before it
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="sandbox-exec is macOS only")
@@ -583,8 +583,41 @@ def test_popen_with_a_windows_command_line(tmp_path, monkeypatch) -> None:
     real = os.path.normcase(os.path.realpath(prog))
     monkeypatch.setattr(ch, "_programs", frozenset({real}))
     # As Windows raises it: no executable, argv joined by list2cmdline.
-    for event in ("subprocess.Popen", "_winapi.CreateProcess"):
-        ch._audit(event, (None, f'"{prog}" model.mps', None, None))
-        for cmdline in (f'"{prog}x" model.mps', "cmd /c del x", "", "   "):
-            with pytest.raises(PermissionError):
-                ch._audit(event, (None, cmdline, None, None))
+    ch._audit("subprocess.Popen", (None, f'"{prog}" model.mps', None, None))
+    for cmdline in (f'"{prog}x" model.mps', "cmd /c del x", "", "   "):
+        with pytest.raises(PermissionError):
+            ch._audit("subprocess.Popen", (None, cmdline, None, None))
+
+
+def test_create_process_only_follows_an_allowed_popen(tmp_path, monkeypatch) -> None:
+    import threading
+
+    from gridcalc import _modelchild as ch
+
+    prog = tmp_path / "cbc.exe"
+    prog.write_text("")
+    monkeypatch.setattr(ch, "_programs", frozenset({ch.os.path.normcase(str(prog.resolve()))}))
+    monkeypatch.setattr(ch, "_popen_thread", None)
+    garbled = ("\ufffd\x01", "\x00garbage", None)  # as CPython's event passes them
+    with pytest.raises(PermissionError):
+        ch._audit("_winapi.CreateProcess", garbled)
+    with pytest.raises(PermissionError):
+        ch._audit("subprocess.Popen", (None, "cmd /c del x", None, None))
+    with pytest.raises(PermissionError):
+        ch._audit("_winapi.CreateProcess", garbled)  # a refused Popen allows nothing
+    ch._audit("subprocess.Popen", (str(prog), [str(prog)], None, None))
+    errors: list[BaseException] = []
+
+    def other() -> None:
+        try:
+            ch._audit("_winapi.CreateProcess", garbled)
+        except PermissionError as e:
+            errors.append(e)
+
+    t = threading.Thread(target=other)
+    t.start()
+    t.join()
+    assert errors  # another thread cannot take the allowed start
+    ch._audit("_winapi.CreateProcess", garbled)
+    with pytest.raises(PermissionError):
+        ch._audit("_winapi.CreateProcess", garbled)  # once only

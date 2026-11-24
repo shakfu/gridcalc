@@ -7,6 +7,7 @@ model's own ``print`` output goes to the reply's ``log``. See
 
 from __future__ import annotations
 
+import _thread
 import builtins
 import contextlib
 import io
@@ -142,6 +143,7 @@ _IMPORT_ONLY = frozenset(
 _POPEN_WINDOWS = frozenset({"msvcrt.get_osfhandle", "_winapi.CreatePipe"})
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
 _importing = 0
+_popen_thread: int | None = None  # see `_audit`
 
 # The pulp backend's exceptions, set by `run`: PuLP writes its model and
 # solution files in `_tmp`, and starts one of `_programs` (or a program under
@@ -194,6 +196,7 @@ def _cleared_amplfunc(args: tuple[Any, ...]) -> bool:
 
 def _audit(event: str, args: tuple[Any, ...]) -> None:
     """Refuse writes, processes, sockets and native calls once the model runs."""
+    global _popen_thread
     if event == "open" and isinstance(args[0], int):
         return  # an already open descriptor: no new file, as Pyomo's mkstemp files
     if event == "open":
@@ -207,9 +210,14 @@ def _audit(event: str, args: tuple[Any, ...]) -> None:
         return
     if event in ("os.remove", "os.rename") and args and _inside(args[0], _tmp):
         return
-    # Windows raises both for one start; CreateProcess's args begin
-    # (application_name, command_line), as Popen's do.
-    if event in ("subprocess.Popen", "_winapi.CreateProcess") and _allowed_program(args):
+    if event == "subprocess.Popen" and _allowed_program(args):
+        _popen_thread = _thread.get_ident()
+        return
+    # Windows follows Popen's event with this one. CPython passes its command
+    # line object as a C string, so its args are unreadable: it is allowed only
+    # once, on the thread of a Popen just allowed.
+    if event == "_winapi.CreateProcess" and _popen_thread == _thread.get_ident():
+        _popen_thread = None
         return
     if _tmp is not None and event in _POPEN_WINDOWS:
         return
@@ -218,6 +226,9 @@ def _audit(event: str, args: tuple[Any, ...]) -> None:
     if event in ("os.putenv", "os.unsetenv") and _tmp is not None and _cleared_amplfunc(args):
         return
     if event.startswith(_DENIED):
+        if event == "subprocess.Popen":
+            # The program, so a refused solver can be told from a refused command.
+            raise PermissionError(f"a model may not use {event} ({args[:2]!r})")
         raise PermissionError(f"a model may not use {event}")
 
 

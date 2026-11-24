@@ -158,7 +158,8 @@ def test_address_space_limit_stops_the_child_without_the_parent() -> None:
     import json
 
     # 1 GB in 1 MB steps against a 300 MB cap: RLIMIT_AS turns it into MemoryError.
-    r = _raw_child_proc("x = []\nfor i in range(1000):\n    x.append(bytes(10**6))\n", 300, 60)
+    # A list of ints, since a model's builtins have no `bytes`.
+    r = _raw_child_proc("x = []\nfor i in range(1000):\n    x.append([i] * 125000)\n", 300, 60)
     reply = json.loads(next(line for line in r.stdout.splitlines() if line.startswith("R "))[2:])
     assert not reply["ok"]
     assert reply["error"].startswith("MemoryError")
@@ -421,7 +422,8 @@ def test_child_still_reads_and_imports(tmp_path) -> None:
 
 def test_child_refuses_a_process_through_the_real_import(tmp_path) -> None:
     target = tmp_path / "ran.txt"
-    reply = _raw_child(f"{_IMPORT}('os').system('touch {target}')\n")
+    # repr, so a Windows path's backslashes stay a valid string literal.
+    reply = _raw_child(f"{_IMPORT}('os').system({'touch ' + str(target)!r})\n")
     assert not reply["ok"]
     assert "may not use os.system" in reply["error"]
     assert not target.exists()

@@ -63,9 +63,15 @@ def _limit(mem_mb: int, cpu_s: int) -> None:
         import resource
     except ImportError:
         return
-    for which, value in ((resource.RLIMIT_AS, mem_mb << 20), (resource.RLIMIT_CPU, cpu_s)):
+    # The CPU hard limit sits a second past the soft one. At the soft limit the
+    # process gets SIGXCPU; with the two equal, Linux sends SIGKILL with it.
+    limits = (
+        (resource.RLIMIT_AS, mem_mb << 20, mem_mb << 20),
+        (resource.RLIMIT_CPU, cpu_s, cpu_s + 1),
+    )
+    for which, soft, hard in limits:
         with contextlib.suppress(ValueError, OSError):
-            resource.setrlimit(which, (value, value))
+            resource.setrlimit(which, (soft, hard))
 
 
 def _key(k: Any) -> Any:

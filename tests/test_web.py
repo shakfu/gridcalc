@@ -1460,7 +1460,7 @@ def test_load_html_returns_the_built_bundle_or_raises() -> None:
     from gridcalc import web
 
     bundle = Path(web.__file__).resolve().parent / "static" / "index.html"
-    if bundle.exists() and web.PLACEHOLDER_MARKER not in bundle.read_text():
+    if bundle.exists() and web.PLACEHOLDER_MARKER not in bundle.read_text(encoding="utf-8"):
         html = web._load_html()
         assert 'id="root"' in html  # the React mount point
         assert "pywebviewready" in html  # the inlined app awaits the bridge

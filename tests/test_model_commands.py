@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from gridcalc import commands as shared
 from gridcalc.dataitems import DataItem
 from gridcalc.engine import Grid
@@ -110,3 +112,64 @@ def test_overlay_boxes(beer: Grid) -> None:
     beer.data_items["supply"] = DataItem(("Bars",))
     assert by_name["supply"].problem == ""
     assert {b.name: b for b in boxes(beer)}["supply"].problem.startswith("supply: 2x1")
+
+
+# --- `:item NAME[INDEX, INDEX]`, the form `:items` and the overlay show ---
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "flow[Warehouses, Bars] output",
+        "flow[Warehouses,Bars] output=True",
+        "flow[ Warehouses , Bars ] OUTPUT=true",
+        "flow Warehouses Bars output",  # the spaced form is unchanged
+    ],
+)
+def test_bracket_and_spaced_forms_agree(beer: Grid, text: str) -> None:
+    r = _run(beer, UndoManager(), "item", *text.split())
+    assert r.ok, r.message
+    assert beer.data_items["flow"] == DataItem(("Warehouses", "Bars"), output=True)
+
+
+def test_bracket_form_with_one_index_and_missing(beer: Grid) -> None:
+    assert _run(beer, UndoManager(), "item", "demand[Bars]", "missing=0").ok
+    assert beer.data_items["demand"] == DataItem(("Bars",), 0.0)
+
+
+def test_output_false_and_empty_brackets(beer: Grid) -> None:
+    assert _run(beer, UndoManager(), "item", "SolverResult[]", "output=false").ok
+    assert beer.data_items["SolverResult"] == DataItem()
+
+
+def test_bracket_form_defines_a_new_name_from_the_selection(beer: Grid) -> None:
+    r = _run(beer, UndoManager(), "item", "price[Bars]", sel=(2, 3, 6, 3))
+    assert r.ok, r.message
+    assert any(nr.name == "price" for nr in beer.names)
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("flow[Warehouses, Bars", "with a closing ]"),
+        ("flow[Warehouses] Bars", "in brackets or after the name, not both (Bars)"),
+        ("flow[Warehouses,,Bars]", "an empty index between commas"),
+        ("flow[A, B, C]", "at most two indexes"),
+        ("flow[Warehouses, Bars] output=yes", "output= takes true or false, not 'yes'"),
+        ("flow[Warehouses] table=Routes", "a table item takes keys=, not an index"),
+    ],
+)
+def test_bracket_form_refusals(beer: Grid, text: str, message: str) -> None:
+    undo = UndoManager()
+    before = dict(beer.data_items)
+    r = _run(beer, undo, "item", *text.split())
+    assert not r.ok and message in r.message, r.message
+    assert beer.data_items == before and not undo.undo_stack
+
+
+def test_listing_shows_what_the_bracket_form_takes(beer: Grid) -> None:
+    from gridcalc.dataitems import boxes
+
+    label = {b.name: b.label for b in boxes(beer)}["costs"]
+    assert _run(beer, UndoManager(), "item", label).ok  # `costs[Warehouses,Bars]`
+    assert beer.data_items["costs"] == DataItem(("Warehouses", "Bars"))

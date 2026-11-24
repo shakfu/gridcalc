@@ -29,6 +29,7 @@ function.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -527,9 +528,15 @@ def _item(ctx: Context) -> Result:
     from .dataitems import DataItem, DataItemError
 
     g = ctx.grid
+    text = " ".join(ctx.args)
+    # `flow[Warehouses, Bars]`, the form `:items` and the overlay show, is the
+    # same as `flow Warehouses Bars`.
+    bracketed = re.match(r"\s*([^\s\[\]]+)\[([^\]]*)\](.*)\Z", text, re.S)
+    if bracketed is None and "[" in text.split("=", 1)[0]:
+        return fail("item: expected NAME[INDEX, INDEX] with a closing ]")
     try:
         # A GUI sends the indexes as one field; quotes keep a column name with spaces.
-        args = shlex.split(" ".join(ctx.args))
+        args = shlex.split(bracketed.group(3) if bracketed else text)
     except ValueError as exc:
         return fail(f"item: {exc}")
     missing: Any = None
@@ -541,6 +548,12 @@ def _item(ctx: Context) -> Result:
         if low == "output":
             args.remove(a)
             output = True
+        elif low.startswith("output="):
+            args.remove(a)
+            flag = low.split("=", 1)[1]
+            if flag not in ("true", "false"):
+                return fail(f"item: output= takes true or false, not {a.split('=', 1)[1]!r}")
+            output = flag == "true"
         elif low.startswith("missing="):
             args.remove(a)
             has_missing = True
@@ -549,9 +562,20 @@ def _item(ctx: Context) -> Result:
             args.remove(a)
             key, val = a.split("=", 1)
             opts[key.lower()] = [k for k in val.split(",") if k] if key.lower() == "keys" else val
+    if bracketed is not None:
+        if args:
+            return fail(
+                f"item: give the indexes in brackets or after the name, not both ({args[0]})"
+            )
+        parts = [p.strip() for p in bracketed.group(2).split(",")]
+        if parts == [""]:
+            parts = []
+        if "" in parts:
+            return fail("item: an empty index between commas")
+        args = [bracketed.group(1), *parts]
     if not args:
         return fail(
-            "usage: item NAME [INDEX [INDEX]] [missing=VALUE] [output]"
+            "usage: item NAME[INDEX, INDEX] [missing=VALUE] [output]"
             "  or  item NAME table=T [keys=A,B] [value=C | column=C] [missing=VALUE] [output]"
         )
     name, index = args[0], tuple(args[1:])

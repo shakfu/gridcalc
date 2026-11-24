@@ -4767,6 +4767,13 @@ class TestBackgroundSolve:
         cmdexec(self.stdscr, self.g, UndoManager(), "showmodel")
         assert not _ModelCells(self.g).boxes
 
+    def test_item_bracket_form_from_the_command_line(self):
+        from gridcalc.dataitems import DataItem
+        from gridcalc.tui import cmdexec
+
+        cmdexec(self.stdscr, self.g, UndoManager(), "item flow[Warehouses, Bars] output")
+        assert self.g.data_items["flow"] == DataItem(("Warehouses", "Bars"), output=True)
+
     def test_showmodel_without_items(self):
         from gridcalc.tui import cmdexec
 

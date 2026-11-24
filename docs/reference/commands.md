@@ -17,7 +17,7 @@ Import/export :csv save/load   :xlsx save/load   :pd save/load
 Optimization  :opt   :opt def   :opt run   :opt sens   :opt sweep
               :opt list   :opt undef
               :goal <cell> = <target> by <cell> [in <lo>:<hi>]
-Models        :item <n> [index [index]] [missing=v] [output]   :items   :unitem <n>
+Models        :item <n>[index, index] [missing=v] [output]   :items   :unitem <n>
               :item <n> table=<t> [keys=a,b] [value=c or column=c] [missing=v] [output]
               :model (edit in $EDITOR)   :model backend [builtin|pulp]   :solve   :cancel   :showmodel
 View          :view   E   :title <v|h|b|n>  (aliases :tv/:th/:tb/:tn)

@@ -22,6 +22,8 @@ Rules:
 - A whole-number index value is an `int` key.
 - A name must be a Python identifier.
 
+The indexes can also go in brackets, the form `:items` and the overlay show: `:item costs[Warehouses, Bars]` is `:item costs Warehouses Bars`. `output=true` and `output=false` work as well as the bare `output`.
+
 `:items` lists the items and every problem with them. `:unitem NAME` removes an item; the defined name stays.
 
 ### Long-format tables

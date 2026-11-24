@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **`:item flow[Warehouses, Bars]`** is the same as `:item flow Warehouses Bars`: the form `:items` and the overlay show, so a listed item can be typed back as shown. `output=true`/`output=false` are accepted beside `output`; any other value is refused rather than ignored.
+
 - **Long-format data items from tables.** `:item cost table=Routes` reads a table's rows as `{(key, ...): value}`, with any number of key columns: every column but the last by default, or `keys=` and `value=`. `column=` gives the distinct values of one column, for a set. A cross-tab item has at most two indexes; a table has as many as it has key columns, and leaves out what does not exist. Writes and output binding fill existing rows; a key with no row is refused rather than added.
 - **`:table NAME` makes the selection a table**, its first row the column names. Tables could only come from a file before.
 

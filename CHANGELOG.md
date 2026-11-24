@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- **Long-format data items from tables.** `:item cost table=Routes` reads a table's rows as `{(key, ...): value}`, with any number of key columns: every column but the last by default, or `keys=` and `value=`. `column=` gives the distinct values of one column, for a set. A cross-tab item has at most two indexes; a table has as many as it has key columns, and leaves out what does not exist. Writes and output binding fill existing rows; a key with no row is refused rather than added.
+- **`:table NAME` makes the selection a table**, its first row the column names. Tables could only come from a file before.
+
+- **Output data items are filled from the model's variables.** `:item flow Warehouses Bars output` (or the Output box in the desktop dialog) marks an item; the model rebinds `flow` to its variables, nested as `LpVariable.dicts` makes them or keyed by tuple, and every index key is written after the solve. The copy loop SolverStudio models end with is no longer needed. Opt-in per item rather than by matching name, so a variable that happens to share an item's name never writes cells. A missing key, or a variable left without a value by a failed solve, refuses the whole write.
+
 - **Models can run under the PuLP library.** `pip install 'gridcalc[pulp]'`, then `:model backend pulp` or the selector in the desktop panel. The same model text runs with PuLP's solvers, CBC bundled. Its process may write only in a private temp directory and start only PuLP's bundled solvers or named solver programs on `PATH`; network stays denied. PuLP 4 is refused: it dropped `LpVariable.dicts`.
 - **A model's memory cap and cancel cover what it starts.** The model process runs in its own process group, which the parent measures and kills as a whole.
 - **A model run starts in 40 ms, from 79.** The model process no longer imports the spreadsheet engine, `importlib.metadata` or `traceback`; `gridcalc.__version__` is read on first use.

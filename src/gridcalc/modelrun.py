@@ -126,6 +126,7 @@ def _rename_own_names(text: str) -> str:
 def _request_items(items: dict[str, Any], g: Grid) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for name, v in items.items():
+        output = g.data_items[name].output
         if isinstance(v, ItemDict):
             missing = g.data_items[name].missing
             out[name] = {
@@ -133,9 +134,10 @@ def _request_items(items: dict[str, Any], g: Grid) -> dict[str, Any]:
                 "keys": sorted(v.index_keys, key=repr),
                 "values": [[k, x] for k, x in v.items()],
                 "missing": [] if missing is dataitems._RAISE else [missing],
+                "output": output,
             }
         else:
-            out[name] = {"kind": "plain", "value": v}
+            out[name] = {"kind": "plain", "value": v, "output": output}
     return out
 
 

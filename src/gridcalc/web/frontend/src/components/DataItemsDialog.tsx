@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { bridge } from '../bridge/api'
-import type { DataItemInfo } from '../bridge/types'
+import type { DataItemInfo, TableInfo } from '../bridge/types'
 import type { Selection } from '../lib/grid'
 
 interface DataItemsDialogProps {
@@ -14,6 +14,11 @@ interface DataItemsDialogProps {
   onGoto: (sheet: string, ref: string) => void
   // Bumps when the workbook changes, so the list is reread.
   revision: string
+}
+
+// Quoted for the shared command's argument split, so a name may hold spaces.
+function quote(s: string): string {
+  return /[\s"']/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s
 }
 
 // SolverStudio's "Model Data Items" dialog: the workbook's data items, and a
@@ -31,11 +36,19 @@ export function DataItemsDialog({
   const [index1, setIndex1] = useState('')
   const [index2, setIndex2] = useState('')
   const [missing, setMissing] = useState('')
+  const [output, setOutput] = useState(false)
+  // Where the item's data is: the selected range (a cross-tab) or a table's rows.
+  const [source, setSource] = useState<'selection' | 'table'>('selection')
+  const [tables, setTables] = useState<TableInfo[]>([])
+  const [table, setTable] = useState('')
+  const [column, setColumn] = useState('')
+  const [asSet, setAsSet] = useState(false)
   const [error, setError] = useState('')
 
   const reload = useCallback(async () => {
-    const r = await bridge.data_items()
+    const [r, t] = await Promise.all([bridge.data_items(), bridge.tables()])
     setItems(r.items)
+    setTables(t.tables)
   }, [])
 
   useEffect(() => {
@@ -50,13 +63,30 @@ export function DataItemsDialog({
       setError('give the item a name')
       return
     }
-    const args = [name.trim(), ...[index1, index2].filter(Boolean)]
+    const args = [name.trim()]
+    if (source === 'table') {
+      const t = tables.find((x) => x.name === table)
+      if (!t || !column) {
+        setError('choose a table and a column')
+        return
+      }
+      args.push(`table=${quote(t.name)}`)
+      if (asSet) args.push(`column=${quote(column)}`)
+      else {
+        const keys = t.columns.filter((c) => c !== column)
+        args.push(`keys=${quote(keys.join(','))}`, `value=${quote(column)}`)
+      }
+    } else {
+      args.push(...[index1, index2].filter(Boolean))
+    }
     if (missing.trim() !== '') args.push(`missing=${missing.trim()}`)
+    if (output) args.push('output')
     await runCommand('item', args)
     setName('')
     setIndex1('')
     setIndex2('')
     setMissing('')
+    setOutput(false)
     await reload()
   }
 
@@ -81,6 +111,7 @@ export function DataItemsDialog({
                   <th>Range</th>
                   <th>Index</th>
                   <th>Missing</th>
+                  <th>Output</th>
                   <th />
                 </tr>
               </thead>
@@ -104,8 +135,9 @@ export function DataItemsDialog({
                         <span className="muted">(undefined)</span>
                       )}
                     </td>
-                    <td>{i.index.join(', ')}</td>
+                    <td>{i.source || i.index.join(', ')}</td>
                     <td>{i.has_missing ? String(i.missing) : 'error'}</td>
+                    <td>{i.output ? 'yes' : ''}</td>
                     <td>
                       <button type="button" aria-label={`Delete ${i.name}`} onClick={() => void remove(i.name)}>
                         Delete
@@ -131,6 +163,56 @@ export function DataItemsDialog({
             <span className="muted">{selection ? `for ${selection.ref}` : ''}</span>
           </div>
           <div className="field-row">
+            <span className="field-label">Source</span>
+            <select
+              aria-label="Source"
+              value={source}
+              onChange={(e) => setSource(e.target.value as 'selection' | 'table')}
+            >
+              <option value="selection">Selection (cross-tab)</option>
+              <option value="table" disabled={tables.length === 0}>
+                Table rows (long format)
+              </option>
+            </select>
+          </div>
+          {source === 'table' ? (
+            <div className="field-row">
+              <span className="field-label">Table</span>
+              <select
+                aria-label="Table"
+                value={table}
+                onChange={(e) => {
+                  setTable(e.target.value)
+                  const t = tables.find((x) => x.name === e.target.value)
+                  setColumn(t ? (t.columns[t.columns.length - 1] ?? '') : '')
+                }}
+              >
+                <option value="">(choose)</option>
+                {tables.map((t) => (
+                  <option key={t.name} value={t.name}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+              <select aria-label="Value column" value={column} onChange={(e) => setColumn(e.target.value)}>
+                {(tables.find((x) => x.name === table)?.columns ?? []).map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+              <label className="model-toggle">
+                <input
+                  type="checkbox"
+                  aria-label="Set of column values"
+                  checked={asSet}
+                  onChange={(e) => setAsSet(e.target.checked)}
+                />
+                set of its values
+              </label>
+            </div>
+          ) : (
+          <div className="field-row">
             <span className="field-label">Index</span>
             {[
               [index1, setIndex1, 'Row index'],
@@ -151,6 +233,7 @@ export function DataItemsDialog({
               </select>
             ))}
           </div>
+          )}
           <div className="field-row">
             <span className="field-label">Missing</span>
             <input
@@ -159,6 +242,18 @@ export function DataItemsDialog({
               onChange={(e) => setMissing(e.target.value)}
               placeholder="error (blank) or a value"
             />
+          </div>
+          <div className="field-row">
+            <span className="field-label">Output</span>
+            <label className="model-toggle">
+              <input
+                type="checkbox"
+                aria-label="Output item"
+                checked={output}
+                onChange={(e) => setOutput(e.target.checked)}
+              />
+              filled from the model variable of the same name
+            </label>
           </div>
           <div className="dialog-actions">
             <span className="goal-result">{error}</span>

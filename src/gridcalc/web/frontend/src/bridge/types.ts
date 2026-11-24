@@ -424,6 +424,7 @@ export interface PywebviewApi {
   cancel_solve(): Promise<{ ok: boolean; error?: string }>
   model_overlay(): Promise<{ items: ModelBox[] }>
   data_items(): Promise<{ items: DataItemInfo[] }>
+  tables(): Promise<{ tables: TableInfo[] }>
 }
 
 // The active sheet's solver model (docs/guide/models.md).
@@ -478,9 +479,20 @@ export interface DataItemInfo {
   index: string[]
   has_missing: boolean
   missing: number | string | boolean | null
+  // Filled from the model variable bound to its name after a solve.
+  output: boolean
+  // A long-format item's table, and its source as `:items` shows it.
+  table: string | null
+  source: string
   problem: string
   sheet: string | null
   ref: string | null
+}
+
+export interface TableInfo {
+  name: string
+  sheet: string
+  columns: string[]
 }
 
 // A data item's range, row-first, for the "Show model" overlay.

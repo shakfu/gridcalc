@@ -2265,6 +2265,9 @@ def test_data_items_listing(beer) -> None:
         "index": ["Warehouses", "Bars"],
         "has_missing": False,
         "missing": None,
+        "output": False,
+        "table": None,
+        "source": "",
         "problem": "",
         "sheet": "Sheet1",
         "ref": "C4:G5",
@@ -2282,3 +2285,26 @@ def test_model_backend_switch_is_undoable(beer) -> None:
     assert api.model()["backend"] == "pulp"
     api.undo()
     assert api.model()["backend"] == "builtin"
+
+
+def test_table_items_listed_with_their_table() -> None:
+    from gridcalc.dataitems import DataItem
+
+    g = Grid()
+    g.setcells_bulk([(0, 0, "k"), (1, 0, "v"), (0, 1, "a"), (1, 1, "1")])
+    from gridcalc import commands as shared
+    from gridcalc.undo import UndoManager
+
+    shared.run("table", g, UndoManager(), ["Tab"], (0, 0, 1, 1))
+    g.data_items["v"] = DataItem(table="Tab", output=True)
+    api = Api(g)
+    assert api.tables() == {"tables": [{"name": "Tab", "sheet": "Sheet1", "columns": ["k", "v"]}]}
+    item = api.data_items()["items"][0]
+    assert (item["table"], item["source"], item["sheet"], item["ref"]) == (
+        "Tab",
+        "table Tab",
+        "Sheet1",
+        "A1:B2",
+    )
+    lines = shared.run("items", g, UndoManager()).lines
+    assert "v = table Tab  output" in lines

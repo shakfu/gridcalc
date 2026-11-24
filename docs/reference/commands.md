@@ -10,13 +10,15 @@ Format        :f <spec>   :gf <spec>   :width <n>   Ctrl-B / Ctrl-U
 Search        /pattern   n   N
 Sheets        :sheets (picker)   :sheet [name|N|add|del|rename|move]
 Names         :name <n> [range]   :names   :unname <n>
+Tables        :table <n>  (the selection, first row as column names)
 Modes         :mode [excel|hybrid|python]
               :iterate [on|off|COUNT [DELTA]]  iterate circular references
 Import/export :csv save/load   :xlsx save/load   :pd save/load
 Optimization  :opt   :opt def   :opt run   :opt sens   :opt sweep
               :opt list   :opt undef
               :goal <cell> = <target> by <cell> [in <lo>:<hi>]
-Models        :item <n> [index [index]] [missing=v]   :items   :unitem <n>
+Models        :item <n> [index [index]] [missing=v] [output]   :items   :unitem <n>
+              :item <n> table=<t> [keys=a,b] [value=c or column=c] [missing=v] [output]
               :model (edit in $EDITOR)   :model backend [builtin|pulp]   :solve   :cancel   :showmodel
 View          :view   E   :title <v|h|b|n>  (aliases :tv/:th/:tb/:tn)
 Help          :help [command]   Tab completes on the : line

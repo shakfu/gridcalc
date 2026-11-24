@@ -80,3 +80,69 @@ test('clicking a range goes to it and closes', async () => {
   expect(props.onGoto).toHaveBeenCalledWith('Data', 'C4:G5')
   expect(props.onOpenChange).toHaveBeenCalledWith(false)
 })
+
+
+test('an item can be made an output', async () => {
+  const props = renderDialog()
+  const user = userEvent.setup()
+  await screen.findByRole('table', { name: 'Data items' })
+  await user.type(screen.getByLabelText('Item name'), 'flow')
+  await user.selectOptions(screen.getByLabelText('Row index'), 'Bars')
+  await user.click(screen.getByLabelText('Output item'))
+  await user.click(screen.getByRole('button', { name: 'Add from selection' }))
+  expect(props.runCommand).toHaveBeenCalledWith('item', ['flow', 'Bars', 'output'])
+  const row = (await screen.findByText('flow')).closest('tr') as HTMLElement
+  expect(within(row).getByText('yes')).toBeInTheDocument()
+  expect(screen.getByLabelText('Output item')).not.toBeChecked()
+})
+
+test('a table item gets its table, keys and value column', async () => {
+  const props = renderDialog()
+  const user = userEvent.setup()
+  await screen.findByRole('table', { name: 'Data items' })
+  await user.selectOptions(screen.getByLabelText('Source'), 'table')
+  await user.selectOptions(screen.getByLabelText('Table'), 'Routes')
+  expect(screen.getByLabelText('Value column')).toHaveValue('cost') // the last column
+  await user.type(screen.getByLabelText('Item name'), 'cost')
+  await user.click(screen.getByRole('button', { name: 'Add from selection' }))
+  expect(props.runCommand).toHaveBeenCalledWith('item', [
+    'cost',
+    'table=Routes',
+    'keys=Warehouse,Bar',
+    'value=cost',
+  ])
+  const row = (await screen.findAllByText('cost'))[0].closest('tr') as HTMLElement
+  expect(row).toHaveTextContent('table Routes')
+})
+
+test('a set from a table column', async () => {
+  const props = renderDialog()
+  const user = userEvent.setup()
+  await screen.findByRole('table', { name: 'Data items' })
+  await user.selectOptions(screen.getByLabelText('Source'), 'table')
+  await user.selectOptions(screen.getByLabelText('Table'), 'Routes')
+  await user.selectOptions(screen.getByLabelText('Value column'), 'Warehouse')
+  await user.click(screen.getByLabelText('Set of column values'))
+  await user.type(screen.getByLabelText('Item name'), 'Warehouses')
+  await user.click(screen.getByRole('button', { name: 'Add from selection' }))
+  expect(props.runCommand).toHaveBeenCalledWith('item', ['Warehouses', 'table=Routes', 'column=Warehouse'])
+})
+
+test('names with spaces are quoted for the command', async () => {
+  vi.spyOn(bridge, 'tables').mockResolvedValue({
+    tables: [{ name: 'Routes', sheet: 'Sheet1', columns: ['From WH', 'To Bar', 'unit cost'] }],
+  })
+  const props = renderDialog()
+  const user = userEvent.setup()
+  await screen.findByRole('table', { name: 'Data items' })
+  await user.selectOptions(screen.getByLabelText('Source'), 'table')
+  await user.selectOptions(screen.getByLabelText('Table'), 'Routes')
+  await user.type(screen.getByLabelText('Item name'), 'c')
+  await user.click(screen.getByRole('button', { name: 'Add from selection' }))
+  expect(props.runCommand).toHaveBeenCalledWith('item', [
+    'c',
+    'table=Routes',
+    'keys="From WH,To Bar"',
+    'value="unit cost"',
+  ])
+})

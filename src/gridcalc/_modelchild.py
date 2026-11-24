@@ -216,6 +216,47 @@ def _items(spec: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _value(name: str, key: Any, x: Any) -> Any:
+    """A bound entry's value: a variable's or expression's after the solve, or a number."""
+    from . import lpmodel
+
+    lib = _PULP if _PULP is not None else lpmodel
+    v = lib.value(x)
+    if v is None:
+        where = f"{name}[{key!r}]" if key is not None else name
+        raise ValueError(f"{where} has no value; the solve did not find one")
+    return v
+
+
+def _lookup(d: Any, key: Any) -> Any:
+    """``d[key]``, or ``d[k0][k1]`` for the nested dicts `LpVariable.dicts` makes."""
+    if isinstance(d, dict) and key in d:
+        return d[key]
+    if isinstance(key, tuple) and isinstance(d, dict) and key and key[0] in d:
+        return _lookup(d[key[0]], key[1:] if len(key) > 2 else key[1])
+    raise KeyError(key)
+
+
+def _bound(name: str, original: Any, now: Any) -> dict[str, Any]:
+    """The writes for an output item the model rebound to its variables."""
+    from .itemdict import ItemDict
+
+    if not isinstance(original, ItemDict):
+        return {"value": _value(name, None, now)}
+    if not isinstance(now, dict):
+        raise ValueError(
+            f"{name} is an output; bind it to a dict of variables, not {type(now).__name__}"
+        )
+    pairs = []
+    for key in sorted(original.index_keys, key=repr):
+        try:
+            x = _lookup(now, key)
+        except KeyError:
+            raise ValueError(f"{name}: no value for key {key!r} in the dict bound to it") from None
+        pairs.append([key, _value(name, key, x)])
+    return {"pairs": pairs}
+
+
 def _problem_summary(ns: dict[str, Any]) -> tuple[str | None, float | None]:
     """Status and objective of the one solved LpProblem in ``ns``, if exactly one."""
     from . import lpmodel
@@ -285,9 +326,19 @@ def run(req: dict[str, Any], out: Any = None) -> dict[str, Any]:
     errors: list[str] = []
     for name, original in items.items():
         now = ns.get(name)
+        output = bool(req["items"][name].get("output"))
+        if output and now is not original:
+            try:
+                writes[name] = _bound(name, original, now)
+            except ValueError as exc:
+                errors.append(str(exc))
+            continue
         if isinstance(original, ItemDict):
             if now is not original:
-                errors.append(f"{name} was rebound; assign its keys, as {name}[key] = value")
+                errors.append(
+                    f"{name} was rebound; assign its keys, as {name}[key] = value,"
+                    " or make it an output item"
+                )
             elif original.writes:
                 writes[name] = {"pairs": [[k, v] for k, v in original.writes.items()]}
         elif isinstance(original, list):

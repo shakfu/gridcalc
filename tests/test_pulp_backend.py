@@ -189,3 +189,16 @@ def test_kill_reaches_a_grandchild() -> None:
         time.sleep(0.05)
     else:
         pytest.fail("the grandchild outlived the kill")
+
+
+def test_binding_with_the_pulp_library(pbeer: Grid) -> None:
+    from gridcalc.dataitems import DataItem
+    from tests.test_binding import BOUND_MODEL
+
+    pbeer.data_items["flow"] = DataItem(("Warehouses", "Bars"), output=True)
+    pbeer.data_items["SolverResult"] = DataItem(output=True)
+    pbeer._active.model_text = BOUND_MODEL.replace(
+        "prob.solve()", "prob.solve(PULP_CBC_CMD(msg=0))"
+    )
+    assert run_model(pbeer).written == 11
+    assert pbeer.cells[1][13].val == pytest.approx(8400)

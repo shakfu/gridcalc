@@ -522,28 +522,61 @@ def _title(ctx: Context) -> Result:
 
 def _item(ctx: Context) -> Result:
     """Define a data item; an undefined name is first defined as the selection."""
+    import shlex
+
     from .dataitems import DataItem, DataItemError
 
     g = ctx.grid
-    args = " ".join(ctx.args).split()  # a GUI sends the indexes as one field
+    try:
+        # A GUI sends the indexes as one field; quotes keep a column name with spaces.
+        args = shlex.split(" ".join(ctx.args))
+    except ValueError as exc:
+        return fail(f"item: {exc}")
     missing: Any = None
     has_missing = False
+    output = False
+    opts: dict[str, Any] = {}
     for a in list(args):
-        if a.lower().startswith("missing="):
+        low = a.lower()
+        if low == "output":
+            args.remove(a)
+            output = True
+        elif low.startswith("missing="):
             args.remove(a)
             has_missing = True
             missing = _missing_value(a.split("=", 1)[1])
+        elif low.split("=", 1)[0] in ("table", "keys", "value", "column") and "=" in a:
+            args.remove(a)
+            key, val = a.split("=", 1)
+            opts[key.lower()] = [k for k in val.split(",") if k] if key.lower() == "keys" else val
     if not args:
-        return fail("usage: item NAME [INDEX [INDEX]] [missing=VALUE]")
+        return fail(
+            "usage: item NAME [INDEX [INDEX]] [missing=VALUE] [output]"
+            "  or  item NAME table=T [keys=A,B] [value=C | column=C] [missing=VALUE] [output]"
+        )
     name, index = args[0], tuple(args[1:])
     if len(index) > 2:
         return fail("at most two indexes")
+    if opts and index:
+        return fail("a table item takes keys=, not an index")
     try:
         item = DataItem.from_json(
-            {"index": list(index), **({"missing": missing} if has_missing else {})}
+            {
+                "index": list(index),
+                "output": output,
+                **({"missing": missing} if has_missing else {}),
+                **opts,
+            }
         )
     except DataItemError as exc:
         return fail(str(exc))
+    if item.table is not None:
+        if not valid_name(name):
+            return fail(f"not a usable name: {name!r}")
+        ctx.undo.save_global(g)
+        key = next((k for k in g.data_items if k.casefold() == name.casefold()), name)
+        g.data_items[key] = item
+        return ok(f"data item {key} from table {item.table}", changed=True)
     defined = any(nr.name.casefold() == name.casefold() for nr in g.names)
     if not defined:
         if not valid_name(name) or parse_range(name) is not None:
@@ -557,7 +590,7 @@ def _item(ctx: Context) -> Result:
     key = next((k for k in g.data_items if k.casefold() == name.casefold()), name)
     g.data_items[key] = item
     shown = f"{key}[{', '.join(index)}]" if index else key
-    return ok(f"data item {shown}", changed=True)
+    return ok(f"data item {shown}{' (output)' if output else ''}", changed=True)
 
 
 def _missing_value(text: str) -> Any:
@@ -569,7 +602,7 @@ def _missing_value(text: str) -> Any:
 
 def _items(ctx: Context) -> Result:
     from .book import Book, BookError
-    from .dataitems import validate
+    from .dataitems import describe, validate
 
     g = ctx.grid
     if not g.data_items:
@@ -577,6 +610,9 @@ def _items(ctx: Context) -> Result:
     book = Book(g)
     lines: list[str] = []
     for name, item in sorted(g.data_items.items(), key=lambda kv: kv[0].lower()):
+        if item.table is not None:
+            lines.append(f"{name} = {describe(item)}{'  output' if item.output else ''}")
+            continue
         try:
             t = book.resolve(name)
             where = (
@@ -587,7 +623,7 @@ def _items(ctx: Context) -> Result:
         except BookError:
             where = "(undefined)"
         index = f"  [{', '.join(item.index)}]" if item.index else ""
-        lines.append(f"{name} = {where}{index}")
+        lines.append(f"{name} = {where}{index}{'  output' if item.output else ''}")
     problems = validate(g)
     lines += [f"problem: {p}" for p in problems]
     return ok(f"{len(g.data_items)} data items, {len(problems)} problems", lines=lines)
@@ -602,6 +638,47 @@ def _unitem(ctx: Context) -> Result:
     ctx.undo.save_global(g)
     del g.data_items[key]
     return ok(f"removed data item {key}; the name stays", changed=True)
+
+
+def _table(ctx: Context) -> Result:
+    """Make the selection an Excel table, its first row the column names."""
+    from .engine import _TABLE_NAME_RE, Table, _unique_columns
+
+    g = ctx.grid
+    name = ctx.arg(0).strip()
+    if not _TABLE_NAME_RE.fullmatch(name) or parse_range(name) is not None:
+        return fail(f"not a usable table name: {name!r}")
+    taken = {t.name.casefold() for t in g.tables} | {nr.name.casefold() for nr in g.names}
+    if name.casefold() in taken:
+        return fail(f"{name} is already a table or a defined name")
+    c1, r1, c2, r2 = ctx.rect()
+    if r2 == r1:
+        return fail("select the header row and at least one row of data")
+    sheet = g._active.name
+    for t in g.tables:
+        if t.sheet == sheet and not (c2 < t.c1 or c1 > t.c2 or r2 < t.r1 or r1 > t.r2):
+            return fail(f"the selection overlaps table {t.name}")
+
+    def text(c: int) -> str:
+        v = g._cell_lookup_value(c, r1)
+        if isinstance(v, float) and v.is_integer():
+            return str(int(v))
+        return "" if v is None else str(v)
+
+    columns = _unique_columns([text(c) for c in range(c1, c2 + 1)])
+    ctx.undo.save_grid(g)
+    # Headers are text, as Excel writes them; a blank or repeat takes its new name.
+    cols = range(c1, c2 + 1)
+    fix = [
+        (c, r1, '"' + col)
+        for c, col in zip(cols, columns, strict=True)
+        if g._cell_lookup_value(c, r1) != col  # a number, a blank or a renamed repeat
+    ]
+    if fix:
+        g.setcells_bulk(fix)
+    g.tables.append(Table(name, sheet, c1, r1, c2, r2, columns))
+    g.recalc()
+    return ok(f"table {name}: {', '.join(columns)}", changed=True)
 
 
 def _recalc(ctx: Context) -> Result:
@@ -785,11 +862,23 @@ COMMANDS: tuple[Command, ...] = (
         needs_selection=True,
         args=(
             Arg("name", "a defined name, or a new one for the selection"),
-            Arg("index", "up to two index items, then optional missing=VALUE", required=False),
+            Arg(
+                "index",
+                "up to two index items, then optional missing=VALUE and output",
+                required=False,
+            ),
         ),
         run=_item,
     ),
     Command(name="items", title="List data items", group="Model", run=_items),
+    Command(
+        name="table",
+        title="Make the selection a table",
+        group="Data",
+        needs_selection=True,
+        args=(Arg("name", "the table's name; the first selected row holds the column names"),),
+        run=_table,
+    ),
     Command(
         name="unitem",
         title="Delete data item",

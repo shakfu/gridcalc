@@ -132,4 +132,5 @@ export const bridge: PywebviewApi = {
   cancel_solve: () => api().cancel_solve(),
   model_overlay: () => api().model_overlay(),
   data_items: () => api().data_items(),
+  tables: () => api().tables(),
 }

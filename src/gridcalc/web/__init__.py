@@ -1024,9 +1024,10 @@ class Api:
     def data_items(self) -> dict[str, Any]:
         """Every data item: where it is, its indexes, missing-key default and first problem."""
         from ..book import Book, BookError
-        from ..dataitems import _RAISE, validate
+        from ..dataitems import _RAISE, boxes, describe, validate
 
         problems = validate(self._g)
+        where = {b.name: b for b in boxes(self._g)}
         book = Book(self._g)
         out = []
         for name, item in sorted(self._g.data_items.items(), key=lambda kv: kv[0].lower()):
@@ -1034,11 +1035,21 @@ class Api:
                 "name": name,
                 "index": list(item.index),
                 "has_missing": item.missing is not _RAISE,
+                "output": item.output,
+                "table": item.table,
+                "source": describe(item),
                 "missing": None if item.missing is _RAISE else item.missing,
                 "problem": next((p for p in problems if p.startswith(f"{name}:")), ""),
                 "sheet": None,
                 "ref": None,
             }
+            if item.table is not None:
+                box = where.get(name)
+                if box is not None:
+                    top, end = self._a1((box.c1, box.r1)), self._a1((box.c2, box.r2))
+                    entry["sheet"], entry["ref"] = box.sheet, f"{top}:{end}"
+                out.append(entry)
+                continue
             with contextlib.suppress(BookError):
                 t = book.resolve(name)
                 if t.formula is None:
@@ -1048,6 +1059,15 @@ class Api:
                     entry["ref"] = a if a == b else f"{a}:{b}"
             out.append(entry)
         return {"items": out}
+
+    def tables(self) -> dict[str, Any]:
+        """Every table's name, sheet and columns, for making table data items."""
+        return {
+            "tables": [
+                {"name": t.name, "sheet": t.sheet, "columns": list(t.columns)}
+                for t in sorted(self._g.tables, key=lambda t: t.name.lower())
+            ]
+        }
 
     def model_overlay(self) -> dict[str, Any]:
         """The active sheet's data items as row-first boxes, for drawing over the grid."""

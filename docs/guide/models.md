@@ -24,6 +24,27 @@ Rules:
 
 `:items` lists the items and every problem with them. `:unitem NAME` removes an item; the defined name stays.
 
+### Long-format tables
+
+A cross-tab has at most two indexes. For more, or for sparse data, keep one row per key in a table:
+
+| Warehouse | Bar | Month | cost |
+|-|-|-|-|
+| A | 1 | jan | 2 |
+
+`:table Routes` makes the selection a table, its first row the column names. Then:
+
+| Command | Python value |
+|-|-|
+| `:item cost table=Routes` | `{("A", 1, "jan"): 2, ...}`: keys are all columns but the last, the value the last |
+| `:item cost table=Routes keys=Warehouse,Bar value=cost` | the keys and value named; other columns are ignored |
+| `:item Warehouses table=Routes column=Warehouse` | `["A", "B"]`: the column's distinct values, in row order |
+| `:item supply table=Supply` | `{"A": 3100, ...}`: one key column gives plain keys |
+
+Quote a column name with spaces: `keys="From WH,To Bar"`. Names match without regard to case, as in Excel.
+
+The rules match cross-tab items. A blank value is a missing key, and `missing=` gives it a default. A blank, error or duplicate key is a problem. Writes, and `output` binding, go to existing rows; a key with no row is refused, since the table does not grow. A table item cannot be the index of a cross-tab item. In the desktop app, choose **Table rows** as the source in Data Items.
+
 ## The model
 
 `:model` opens the active sheet's model in `$EDITOR`. Each data item is a global variable. A model writes results by assigning keys of an indexed item, or by assigning a singleton:
@@ -44,6 +65,20 @@ for (w, b) in Routes:
     flow[w, b] = vars[w][b].varValue
 Result = LpStatus[prob.status]
 ```
+
+### Output items
+
+An output item is filled from the model's variables, with no copy loop. Mark it with `output`, as in `:item flow Warehouses Bars output`, or the Output box in the desktop dialog. The model then rebinds the item's name to its variables:
+
+```python
+flow = LpVariable.dicts("Route", (Warehouses, Bars), 0)   # nested, as dicts makes it
+# or: flow = {(w, b): LpVariable(...) for w in Warehouses for b in Bars}
+...
+prob.solve()
+Result = prob.objective                                     # a one-cell output item
+```
+
+After the run, each key of the item's index is written with its variable's value. A key the bound dict lacks, or a variable with no value because the solve failed, refuses the whole write. Assigning keys, as `flow[w, b] = ...`, still works on an output item. Rebinding an item that is not an output is an error, so a variable that happens to share a name never overwrites cells.
 
 `:solve` starts it in the background. The status line shows `SOLVING Ns`, and the sheet stays editable. `:cancel` stops it. When it ends, results are written as one undo step. A failed model writes nothing and reports the line and any `print` output. Writing a key outside the index, or into a formula cell, is refused. If a data item changed while the model ran, nothing is written: the solution answers the old data.
 

@@ -30,6 +30,7 @@ import type {
   SolveStatus,
   ModelBox,
   DataItemInfo,
+  TableInfo,
 } from './types'
 
 const colLetter = (c: number): string => {
@@ -144,8 +145,8 @@ export function installMockBridge(): void {
   let modelBackend: 'builtin' | 'pulp' = 'builtin'
   // Data items the mock `item`/`unitem` commands keep, for the items dialog.
   const dataItems = new Map<string, DataItemInfo>([
-    ['Bars', { name: 'Bars', index: [], has_missing: false, missing: null, problem: '', sheet: 'Sheet1', ref: 'C3:G3' }],
-    ['costs', { name: 'costs', index: ['Warehouses', 'Bars'], has_missing: false, missing: null, problem: '', sheet: 'Data', ref: 'C4:G5' }],
+    ['Bars', { name: 'Bars', index: [], has_missing: false, missing: null, output: false, table: null, source: '', problem: '', sheet: 'Sheet1', ref: 'C3:G3' }],
+    ['costs', { name: 'costs', index: ['Warehouses', 'Bars'], has_missing: false, missing: null, output: false, table: null, source: '', problem: '', sheet: 'Data', ref: 'C4:G5' }],
   ])
   let solvePolls = 0
   const touch = () => {
@@ -284,7 +285,9 @@ export function installMockBridge(): void {
         }
         if (name === 'item') {
           const [item, ...rest] = (args ?? []).join(' ').split(/\s+/).filter(Boolean)
-          const index = rest.filter((a) => !a.startsWith('missing='))
+          const opt = (k: string) => rest.find((a) => a.startsWith(`${k}=`))?.slice(k.length + 1)
+          const table = opt('table') ?? null
+          const index = rest.filter((a) => !a.includes('=') && a !== 'output')
           const miss = rest.find((a) => a.startsWith('missing='))
           const ref = `${colLetter(sel.c0)}${sel.r0 + 1}:${colLetter(sel.c1)}${sel.r1 + 1}`
           dataItems.set(item, {
@@ -292,6 +295,9 @@ export function installMockBridge(): void {
             index,
             has_missing: miss !== undefined,
             missing: miss ? Number(miss.slice(8)) : null,
+            output: rest.includes('output'),
+            table,
+            source: table ? `table ${table}` : '',
             problem: '',
             sheet: sheets.names[sheets.active],
             ref,
@@ -726,6 +732,9 @@ export function installMockBridge(): void {
         solvePolls = 0
         return { ok: true }
       },
+      tables: async (): Promise<{ tables: TableInfo[] }> => ({
+        tables: [{ name: 'Routes', sheet: 'Sheet1', columns: ['Warehouse', 'Bar', 'cost'] }],
+      }),
       data_items: async (): Promise<{ items: DataItemInfo[] }> => ({
         items: [...dataItems.values()].map((i) => ({ ...i })),
       }),

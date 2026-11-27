@@ -55,7 +55,7 @@ JSON, version 2. Version 1 files (single sheet, top-level `cells`) still load.
 
 A sheet entry may carry **hidden_rows** and **filtered_rows**, lists of 0-based row indexes: the rows hidden, and those of them a filter hid. `SUBTOTAL` and `AGGREGATE` read them; neither view hides the rows.
 
-A sheet entry may carry **model**, the sheet's solver model: `{"lang": "pulp", "text": "..."}`, plus `"backend": "pulp" | "pyomo" | "gmpl"` when it does not run on the builtin solver. Its text is code, so a file with a model raises the trust prompt.
+A sheet entry may carry **model**, the sheet's solver model: `{"lang": "pulp", "text": "..."}`, plus `"backend": "pulp" | "pyomo" | "gmpl" | "cpsat" | "minizinc"` when it does not run on the builtin solver. Its text is code, so a file with a model raises the trust prompt.
 
 A sheet entry may also carry **widths**, a `{"<column index>": pixels}` map recording columns resized in the [desktop app](../desktop.md). It is written only when a sheet has at least one resized column, and the curses renderer ignores it -- the terminal lays columns out from a single uniform width.
 

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { bridge } from '../bridge/api'
 import type { ModelRunResult } from '../bridge/types'
-import { CodeEditor } from './CodeEditor'
+import { CodeEditor, languageOf } from './CodeEditor'
 
-type Backend = 'builtin' | 'pulp' | 'pyomo' | 'gmpl'
+type Backend = 'builtin' | 'pulp' | 'pyomo' | 'gmpl' | 'cpsat' | 'minizinc'
 
 const SAVE_DELAY_MS = 400
 const POLL_MS = 250
@@ -197,6 +197,8 @@ export function ModelPanel({
           <option value="pulp">PuLP library</option>
           <option value="pyomo">Pyomo</option>
           <option value="gmpl">GMPL (glpsol)</option>
+          <option value="cpsat">OR-Tools CP-SAT</option>
+          <option value="minizinc">MiniZinc</option>
         </select>
         <label className="model-toggle">
           <input
@@ -214,7 +216,7 @@ export function ModelPanel({
         value={text}
         onChange={onChange}
         gotoLine={errorLine}
-        language={backend === 'gmpl' ? 'plain' : 'python'}
+        language={languageOf(backend)}
       />
       {problems.length > 0 && (
         <ul className="model-problems" aria-label="Model problems">

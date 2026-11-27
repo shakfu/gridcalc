@@ -1549,7 +1549,9 @@ def test_inspect_reports_what_the_file_would_run() -> None:
     assert info["name"] == "example_hybrid.json"
     assert info["has_code"] is True
     assert info["code_lines"] == 27
-    assert "def progressive_tax" in info["code"]
+    assert info["parts"][0]["title"] == "code block"
+    assert info["parts"][0]["lang"] == "python"
+    assert "def progressive_tax" in info["parts"][0]["text"]
     assert info["cells"] > 0 and info["formulas"] > 0
     assert info["blocked"] == [] and info["unknown"] == []
 
@@ -1579,7 +1581,7 @@ def test_open_without_a_policy_refuses_and_asks() -> None:
     res = api.open_file(str(HYBRID))
     assert res["ok"] is False
     assert res["needs_trust"] is True
-    assert "def progressive_tax" in res["code"]
+    assert "def progressive_tax" in res["parts"][0]["text"]
     assert api.cell_source(0, 0) == "keep"  # nothing was loaded
 
 

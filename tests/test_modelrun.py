@@ -64,6 +64,14 @@ def test_safe_module_imports_as_facade(beer: Grid) -> None:
     assert beer.cells[1][13].val == 4
 
 
+def test_from_import_does_not_reach_an_unlisted_submodule(beer: Grid) -> None:
+    # `numpy._core` is in sys.modules; a failed `from` import falls back to it by name.
+    pytest.importorskip("numpy")
+    beer._active.model_text = "from numpy import _core\n"
+    with pytest.raises(ModelError, match=r"line 1: ImportError: cannot import name '_core'"):
+        run_model(beer)
+
+
 def test_error_reports_line_and_log(beer: Grid) -> None:
     beer._active.model_text = 'print("before")\n\ncosts["Z", 1]\n'
     with pytest.raises(ModelError, match=r"line 3: KeyError") as exc:
@@ -172,6 +180,7 @@ def test_model_saved_per_sheet_and_prompts_trust(beer: Grid, tmp_path) -> None:
     info = inspect_file(path)
     assert info is not None and info.has_code and info.trust_needed
     assert "LpProblem" in info.code_preview
+    assert info.code_parts == [("model on sheet Sheet1", "pulp", BEER_MODEL.strip())]
     g = Grid()
     assert g.jsonload(path) == 0
     assert g._active.model_text == BEER_MODEL

@@ -111,8 +111,8 @@ Measured again with the finished child (2026-11-24): 71 ms per run, 78 ms under 
 |-|-|-|
 | 0 | builtin subset | HiGHS via `_opt` |
 | 1 | real `pulp`, same model text | CBC, HiGHS, Gurobi, CPLEX, SCIP |
-| 2 | Pyomo, CVXPY, OR-Tools CP-SAT | as each supports |
-| 3 | data-file writer + result reader | GMPL (`glpsol`), AMPL, GAMS, MiniZinc |
+| 2 | Pyomo, CVXPY, OR-Tools CP-SAT (done) | as each supports |
+| 3 | data-file writer + result reader | GMPL (`glpsol`, done), AMPL, GAMS, MiniZinc (done) |
 | 4 | NEOS via `xmlrpc.client` | remote; opt-in per solve, since data leaves the machine |
 
 A cross-tab maps directly to GMPL's tabular parameter (`param costs: 1 2 3 4 5 := A 2 4 5 2 1 B 3 1 3 2 3;`).
@@ -176,6 +176,35 @@ GMPL can write files (`table ... OUT`, `printf ... > "f"`) and its `table` drive
 ## Pyomo
 
 Pyomo 6.11 writes its `.lp` model and the solver's files under `tempfile.gettempdir()`, starts the solver with `subprocess.Popen` and removes the files (audit trace, 2026-11-24). It also reopens an `mkstemp` descriptor for writing, so the audit hook allows `open` on an integer: a descriptor grants no file it did not already have. Its import takes about 0.8 s, done before the hook. The import hook admits only the `pyomo` namespace, returning the top package for `import pyomo.environ as pyo` as `__import__` does.
+
+## CP-SAT
+
+OR-Tools 9.15, probed 2026-11-27. CP-SAT is a pybind11 extension, so it runs in the child like the builtin backend: no program, no temp dir.
+
+- Constraints refuse floats, `2.0` included. Cells arrive as floats, so the child turns whole floats into ints for this backend. A float objective is accepted.
+- A fractional right-hand side fails in pybind11 overload resolution, whose message lists every overload. The child keeps the first line and names the integer rule.
+- After `INFEASIBLE`, `CpSolver.value(x)` returns a number (48 in the probe), not an error. Values are read only after `OPTIMAL` or `FEASIBLE`.
+- `CpSolver.status_name()` with no argument raises `TypeError` in 9.15: it calls `response.status()`, a property. The child reads `response_proto.status`.
+- `export_to_file` and `ExportToFile` both call `cp_model_helper.CpSatHelper.write_model_to_file`, written in C++. The child replaces that one static method. No string field of `SatParameters` takes a path (`name`, `log_prefix`, the subsolver lists).
+- `log_search_progress` writes from C++ to fd 1, outside the `O`/`R` protocol. The child wraps `solve` to route it through `log_callback`.
+- The import hook returns nested facades down to `cp_model`. `cp_model` itself also holds `cmh`, `np`, `pd` and `threading`, so they are left out.
+- With the default worker count, RLIMIT_CPU equal to the timeout would stop a run after timeout/cores seconds of wall clock.
+
+A facade with a `__name__` let `from facade import x` reach `sys.modules[name + ".x"]`, CPython's `IMPORT_FROM` fallback. This affected numpy too (`from numpy import _core`). The facade now stores its name under `_facade_name`.
+
+## MiniZinc
+
+MiniZinc 2.11.0 (Homebrew: Gecode, COIN-BC), probed 2026-11-27. The child starts `minizinc` directly. minizinc-python (0.10, pre-1.0) wraps the same program and would save the JSON writer and stream reader, but adds untraced temp files and an unstable API.
+
+- JSON data takes enum members as `{"e": "Store 1"}`, any string. Only `.dzn` text needs identifiers, so keys are neither refused nor renamed.
+- `--model-interface-only` gives each input's type, set flag and dimension count. An enum and a `set of int` look the same there, so the data picks: strings make an enum, numbers an int set.
+- An array index set must be a range; `{1,3,5}` fails with "array index set must be contiguous". MiniZinc's error is passed on.
+- `{}` as a data file is a JSON parse error, so a model with no data gets none.
+- With `--json-stream`, a satisfaction model's solution has no status message; it is read as `SATISFIED`.
+- `include "/etc/hosts"` reads and parses the file. `minizinc.problems` takes bare library names only.
+- `--solver` takes a path to a `.msc` file, which names a program, so a `% solver:` name must be an id, an id's last part or a tag from `--solvers-json`. That listing takes 0.35 s, so the parent runs it once per solve, for the child's check and for the `sandbox-exec` program list (each solver's `extraInfo.executable`).
+- Gecode took 70 s to prove the beer model optimal; COIN-BC took under a second. The run passes `--time-limit` 3 s short of the wall clock, so a slow search writes its best solution rather than being killed.
+- Under `sandbox-exec`, CBC's OpenMP runtime prints `OMP: Warning #179` when its registration file in `/tmp` is refused. It prints as the library loads, before `KMP_WARNINGS` is read, so the child drops that line.
 
 ## Quadratic objectives
 

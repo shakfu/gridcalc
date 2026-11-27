@@ -26,6 +26,7 @@ EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 LP = str(EXAMPLES / "example_lp.json")
 GOAL = str(EXAMPLES / "example_goal.json")
 EXCEL = str(EXAMPLES / "example_excel.json")
+CROSSTAB = str(EXAMPLES / "example_crosstab.json")
 
 
 def _run(*argv: str) -> tuple[int, dict, str]:
@@ -59,6 +60,7 @@ def test_a_bare_file_argument_is_not_headless() -> None:
         [LP, "--sweep", "D5 6:12"],
         [GOAL, "--goal", "B1 = 11 by A1"],
         [LP, "--convert", "out.json"],
+        [CROSSTAB, "--model"],
     ],
 )
 def test_any_operation_flag_makes_the_run_headless(argv) -> None:
@@ -421,3 +423,108 @@ def test_trust_runs_a_python_workbook() -> None:
     _, out, err = _run(GOAL, "--trust", "--eval", "=B1")
     assert "--trust" not in err
     assert out["eval"][0]["value"] == pytest.approx(3.0)
+
+
+# --- model -------------------------------------------------------------------
+
+
+def test_model_fills_the_output_items_get_reads() -> None:
+    code, out, _ = _run(CROSSTAB, "--model", "--get", "TotalCost", "--get", "flow")
+    assert code == 0
+    m = out["model"]
+    assert (m["sheet"], m["backend"], m["status"], m["objective"]) == (
+        "Transport",
+        "builtin",
+        "Optimal",
+        8600,
+    )
+    assert "status: Optimal" in m["log"]  # the model's print output
+    assert out["outputs"]["TotalCost"] == 8600
+    assert sum(map(sum, out["outputs"]["flow"])) == 4100  # total demand
+
+
+def test_model_sees_inputs_set_by_name() -> None:
+    code, out, _ = _run(
+        CROSSTAB,
+        "--set",
+        "demand=[600,900,1800,200,700]",
+        "--model",
+        "--get",
+        "TotalCost",
+    )
+    assert code == 0
+    assert out["outputs"]["TotalCost"] > 8600
+
+
+def test_an_infeasible_model_exits_2_and_writes_nothing(tmp_path) -> None:
+    saved = str(tmp_path / "out.json")
+    code, out, _ = _run(
+        CROSSTAB, "--set", "supply=[1,1]", "--model", "--get", "flow", "--convert", saved
+    )
+    assert code == 2
+    assert (out["model"]["status"], out["model"]["written"]) == ("Infeasible", 0)
+    assert "has no value" in out["model"]["error"]
+    assert all(v is None for row in out["outputs"]["flow"] for v in row)
+
+
+def test_model_needs_no_trust_and_warns_of_nothing() -> None:
+    code, out, err = _run(CROSSTAB, "--model", "--get", "TotalCost")
+    assert (code, out["outputs"]["TotalCost"], err) == (0, 8600, "")
+
+
+def test_model_without_trust_still_withholds_the_code_block(tmp_path) -> None:
+    book = json.loads(Path(CROSSTAB).read_text())
+    book["code"] = "def bonus():\n    return 1\n"
+    path = tmp_path / "book.json"
+    path.write_text(json.dumps(book))
+    code, out, err = _run(str(path), "--model", "--eval", "=bonus()")
+    assert code == 0 and out["model"]["status"] == "Optimal"
+    assert out["eval"][0]["value"] is None
+    assert "pass --trust" in err
+
+
+def test_model_on_a_sheet_with_no_model_exits_1() -> None:
+    code, out, err = _run(LP, "--model")
+    assert (code, out) == (1, {})
+    assert "has no model" in err
+
+
+CASES = [{"supply": [3000, 4000]}, {"supply": [1, 1]}, {}]
+
+
+@pytest.mark.parametrize("workers", ["1", "2"])
+def test_model_runs_once_per_case_from_the_workbook_as_loaded(tmp_path, workers) -> None:
+    cases = tmp_path / "cases.json"
+    cases.write_text(json.dumps(CASES))
+    code, out, _ = _run(
+        CROSSTAB, "--model", "--inputs", str(cases), "--get", "TotalCost", "--workers", workers
+    )
+    assert code == 2  # case 2 is infeasible
+    got = [(r["model"]["status"], r["outputs"]["TotalCost"]) for r in out["runs"]]
+    # Case 2 writes nothing, and shows the blank as loaded, not case 1's answer.
+    assert got == [("Optimal", 8400), ("Infeasible", None), ("Optimal", 8600)]
+    assert [r["inputs"] for r in out["runs"]] == CASES
+
+
+def test_model_batch_that_cannot_run_exits_1_before_any_case(tmp_path) -> None:
+    cases = tmp_path / "cases.json"
+    cases.write_text("[{}, {}]")
+    code, out, err = _run(LP, "--model", "--inputs", str(cases))
+    assert (code, out) == (1, {})
+    assert "has no model" in err
+
+
+def test_model_result_reaches_disk_with_convert(tmp_path) -> None:
+    saved = tmp_path / "solved.json"
+    code, _, _ = _run(CROSSTAB, "--model", "--convert", str(saved))
+    assert code == 0
+    g = load_workbook(str(saved))
+    assert g.cells[2][13].val == 8600  # TotalCost, C14
+
+
+def test_model_text_format() -> None:
+    args = cli_parser().parse_args([CROSSTAB, "--model", "--format", "text"])
+    out = io.StringIO()
+    assert cli.run(args, out=out, err=io.StringIO()) == 0
+    assert "model:     builtin on Transport" in out.getvalue()
+    assert "status:    Optimal" in out.getvalue()

@@ -643,7 +643,12 @@ def startup_trust_prompt(filename: str, info: FileInfo) -> LoadPolicy | None:
             print(f"  [unrestricted] {WHOLE_MODULE_WARNING}")
     if info.has_code:
         print(f"\n--- Code ({info.code_lines} lines) ---\n")
-        print(_highlight_code(_printable(info.code_preview)))
+        for i, (title, lang, text) in enumerate(info.code_parts):
+            if title != "code block":
+                print(("\n" if i else "") + f"# {_printable(title)}\n")
+            # Pygments has no GMPL or MiniZinc lexer; those print plain.
+            plain = lang in ("gmpl", "minizinc")
+            print(_printable(text) if plain else _highlight_code(_printable(text)))
         print("--- End ---")
     print()
 

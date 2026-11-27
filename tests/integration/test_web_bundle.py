@@ -1073,7 +1073,9 @@ def test_a_refused_command_reports_rather_than_failing_silently(page) -> None:
 _TRUST_INFO = """
   window.__trust = {
     path: '/tmp/hybrid.json', name: 'hybrid.json', cells: 71, formulas: 34,
-    has_code: true, code: 'def progressive_tax(income):\\n    return income * 0.1\\n',
+    has_code: true,
+    parts: [{ title: 'code block', lang: 'python',
+              text: 'def progressive_tax(income):\\n    return income * 0.1\\n' }],
     code_lines: 2, requires: ['numpy', 'mystery'], blocked: [], side_effect: [],
     unknown: ['mystery'],
   };

@@ -453,3 +453,27 @@ def test_readme_python_example() -> None:
     assert [p["Payment"] for p in pays] == [
         pytest.approx(_pmt(r / 100, 30, 300000)) for r in range(1, 10)
     ]
+
+
+def test_solve_model_writes_output_items_by_name() -> None:
+    path = str(Path(__file__).resolve().parents[1] / "examples" / "example_crosstab.json")
+    book = Book.open(path)  # solve_model is the consent
+    res = book.solve_model("Transport")
+    assert (res.status, res.objective) == ("Optimal", 8600)
+    assert book.get(["TotalCost", "SolverResult"]) == {"TotalCost": 8600, "SolverResult": "Optimal"}
+
+
+def test_solve_model_refuses_an_unknown_sheet() -> None:
+    path = str(Path(__file__).resolve().parents[1] / "examples" / "example_crosstab.json")
+    with pytest.raises(BookError, match="no such sheet"):
+        Book.open(path, trust=True).solve_model("Nope")
+
+
+def test_solve_many_restores_the_workbook() -> None:
+    path = str(Path(__file__).resolve().parents[1] / "examples" / "example_crosstab.json")
+    book = Book.open(path)
+    before = book.get(["TotalCost", "flow", "supply"])
+    runs = book.solve_many([{"supply": [3000, 4000]}, {"supply": [1, 1]}], ["TotalCost"])
+    assert [r["model"]["status"] for r in runs] == ["Optimal", "Infeasible"]
+    assert "error" in runs[1]["model"] and "error" not in runs[0]["model"]
+    assert book.get(["TotalCost", "flow", "supply"]) == before

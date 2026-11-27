@@ -15,7 +15,7 @@ make qa         # lint + typecheck + test + format (Python and TypeScript)
 
 ```sh
 make web-build  # compile the desktop app's React client into web/static/
-make web-run    # launch the desktop app (needs web-build first)
+make web-run    # launch the desktop app (builds the frontend if a source changed)
 make web-dev    # Vite dev server with HMR, against a mock bridge
 make web-jstest # vitest suite for the client
 make test-web   # Playwright tests driving the built bundle in headless Chromium
@@ -49,7 +49,7 @@ The abi3 build is gated on `GRIDCALC_STABLE_ABI=ON` (CMake) plus `wheel.py-api=c
 
 Tests are pytest, in `tests/`, roughly mirroring the source layout, and run with `GRIDCALC_SANDBOX=1` so sandbox validation is always active. `tests/integration/test_tui_pty.py` drives the real curses app over a pty.
 
-The `dev` group installs PuLP and Pyomo, so the pulp and pyomo backend tests run. Tests that need a solver program skip when it is missing: install `glpsol` (GLPK) and `ipopt` to run the GMPL and nonlinear ones. Some confinement tests run on one platform only: the parent's memory poll and `sandbox-exec` on macOS, the address-space limit on Linux.
+The `dev` group installs PuLP, Pyomo and OR-Tools, so the pulp, pyomo and cpsat backend tests run. Tests that need a solver program skip when it is missing: install `glpsol` (GLPK), `minizinc` and `ipopt` to run the GMPL, MiniZinc and nonlinear ones. Some confinement tests run on one platform only: the parent's memory poll and `sandbox-exec` on macOS, the address-space limit on Linux.
 
 Some suites cross modules rather than mirror one:
 

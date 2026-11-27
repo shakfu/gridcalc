@@ -126,6 +126,31 @@ flow = m.x            # with flow an output item; or assign flow[w, b] = pyo.val
 
 Imports are limited to the `pyomo` package and the usual safe modules. The status comes from the one `SolverResults` the model keeps (`results` above), and the objective from the model's one active objective. Pyomo starts solver programs under the same rules as the pulp backend.
 
+### CP-SAT
+
+With the [`[ortools]` extra](../install.md#the-ortools-extra), `:model backend cpsat` (or **OR-Tools CP-SAT** in the desktop selector) runs a constraint programming model written with [CP-SAT](https://developers.google.com/optimization/cp/cp_solver):
+
+```python
+from ortools.sat.python import cp_model
+
+m = cp_model.CpModel()
+flow = {(w, b): m.new_int_var(0, 10000, f"x_{w}_{b}") for w in Warehouses for b in Bars}
+m.minimize(sum(costs[w, b] * flow[w, b] for w in Warehouses for b in Bars))
+for w in Warehouses:
+    m.add(sum(flow[w, b] for b in Bars) <= supply[w])
+for b in Bars:
+    m.add(sum(flow[w, b] for w in Warehouses) >= demand[b])
+solver = cp_model.CpSolver()
+solver.solve(m)
+```
+
+- Constraints take integers only. A whole number in a cell reaches the model as an `int`; fractional constraint data is refused. Scale it, in the sheet or the model. The objective may be fractional.
+- Output items take their values from the one `CpSolver` the model keeps as a global (`solver` above). Status is `Optimal`, `Feasible`, `Infeasible`, `Model invalid` or `Unknown`. A `Feasible` solution, such as one found within `max_time_in_seconds`, is written. Any other status writes nothing.
+- The objective is reported when the model has one. A satisfaction model has none.
+- `solver.parameters.log_search_progress = True` sends the search log to the model output.
+- Only `ortools.sat.python.cp_model` can be imported, without the modules it imports itself. `export_to_file` is refused. A model cannot define a class, so `CpSolverSolutionCallback` subclasses are out; the printer callbacks work.
+- CP-SAT searches on every core. The CPU limit is the timeout times the core count.
+
 ### GMPL
 
 `:model backend gmpl` (or **GMPL (glpsol)** in the desktop selector) makes the sheet's model GMPL text, run by `glpsol` from GLPK ([install](../install.md#gmpl-models)):
@@ -145,6 +170,40 @@ end;
 - `printf` and `display` go to the model output.
 - `table` statements and `printf ... > "file"` are refused: they write files, and `table` drivers can reach databases.
 
+### MiniZinc
+
+`:model backend minizinc` (or **MiniZinc** in the desktop selector) makes the sheet's model MiniZinc text, run by `minizinc` ([install](../install.md#minizinc-models)):
+
+```minizinc
+% solver: cbc
+enum Warehouses;
+set of int: Bars;
+array[Warehouses, Bars] of int: costs;
+array[Warehouses] of int: supply;
+array[Bars] of int: demand;
+array[Warehouses, Bars] of var 0..10000: flow;
+var int: cost :: output = sum(w in Warehouses, b in Bars)(costs[w, b] * flow[w, b]);
+constraint forall(w in Warehouses)(sum(b in Bars)(flow[w, b]) <= supply[w]);
+constraint forall(b in Bars)(sum(w in Warehouses)(flow[w, b]) >= demand[b]);
+solve minimize cost;
+```
+
+- Data items the model declares as parameters are passed as JSON, matched by name. Undeclared items are left out.
+- A set of strings is an enum, in sheet order; its members may be any text, such as `Store 1`. A set of numbers is a `set of int`, and must be a range such as `1..5` to index an array.
+- A cross-tab item is an array over its index sets. A blank cell needs `missing=`. A table item cannot be an array.
+- A whole number in a cell is an `int`; a fraction where the model declares `int` is refused.
+- Output items are filled from output variables by name. A variable defined with `=` is not an output unless marked `:: output`. Enum values are written as their names; a set cannot be written.
+- `% solver: ID` on a line of its own picks the solver by id (`org.gecode.gecode`), its last part (`gecode`) or a tag (`mip`, `cp`). Without it, MiniZinc's default runs. The name must be one `minizinc --solvers` lists.
+- MiniZinc stops 3 s before the timeout. If it has a solution by then, that solution is written with status `Feasible`.
+- `trace` output and warnings go to the model output.
+- `include` takes a library file by name, as `include "globals.mzn";`. A path is refused, since MiniZinc reads any file it names.
+
+Worked examples, which need `minizinc` installed:
+
+- `example_minizinc_transport.json`: the beer problem on COIN-BC, with depot names containing spaces.
+- `example_minizinc_sudoku.json`: Sudoku on Gecode. Blank givens read as 0 through `missing=0`.
+- `example_minizinc_roster.json`: a least-cost shift roster on Gecode, with availability, per-person caps and no back-to-back shifts.
+
 ## Safety
 
 A model is code. A file containing a model raises the trust prompt, xlsx included; a model in a file opened untrusted does not run. Saving checks every model and data item, and lists the problems; it does not run the model.
@@ -161,11 +220,19 @@ The model runs in a separate process with these limits:
 
 The audit hook stops routes the static checks miss, but it is not an OS boundary: CPython documents audit hooks as unsuitable for sandboxing. On Linux and Windows nothing below it stops native code that gets loaded.
 
-The pulp, pyomo and gmpl backends relax two rules, because they write the model to a file and start a solver program. Writes are allowed only in a private temporary directory, deleted after the run. Programs may be started only from PuLP's bundled solvers, or `cbc`, `glpsol`, `highs`, `scip`, `cplex`, `gurobi_cl`, and the nonlinear solvers `ipopt`, `bonmin` and `couenne`, on `PATH`. Network stays denied. The memory cap and a cancel cover the solver too. `glpsol` is a native program, so outside macOS only the static check stops a GMPL model writing files.
+The cpsat backend relaxes none: CP-SAT runs in the model process. Its one file write, `export_to_file`, is native code the audit hook cannot see, so it is replaced before the model runs.
+
+The pulp, pyomo, gmpl and minizinc backends relax two rules, because they write the model to a file and start a solver program. Writes are allowed only in a private temporary directory, deleted after the run. Programs may be started only from PuLP's bundled solvers, or `cbc`, `glpsol`, `highs`, `scip`, `cplex`, `gurobi_cl`, and the nonlinear solvers `ipopt`, `bonmin` and `couenne`, on `PATH`. The minizinc backend may start only `minizinc` and the programs of the solvers it lists. Network stays denied. The memory cap and a cancel cover the solver too. `glpsol` and `minizinc` are native programs, so outside macOS only the static checks stop a GMPL model writing files or a MiniZinc model reading them.
 
 ## From Python and the command line
 
-No CLI flag runs a model yet. From Python, `gridcalc.modelrun.run_model(grid)` runs the active sheet's model and writes its results, and `gridcalc.dataitems.read_items(grid)` returns the data items as the model sees them.
+`gridcalc FILE --model` runs the active sheet's model headless, without `--trust`: the flag is the consent. `--set` writes data items by name before the run, and `--get` reads output items after it:
+
+```sh
+gridcalc examples/example_minizinc_transport.json --model --get flow --get TotalCost
+```
+
+The run exits 2 when the solve found no solution. See [Headless CLI](../reference/cli.md#cross-tab-models). From Python, `Book.open(path).solve_model()` runs it, and `gridcalc.dataitems.read_items(grid)` returns the data items as the model sees them.
 
 ## Files
 

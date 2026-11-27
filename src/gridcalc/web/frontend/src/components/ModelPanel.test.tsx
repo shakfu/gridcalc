@@ -172,15 +172,15 @@ test('the backend selector switches to the PuLP library', async () => {
 })
 
 
-test('GMPL text is not highlighted as Python', async () => {
+test.each(['gmpl', 'minizinc'])('%s text is highlighted as its own language', async (lang) => {
   const { container } = renderPanel()
   const select = await screen.findByLabelText('Model backend')
   await waitFor(() =>
     expect(container.querySelector('.cm-content')).toHaveAttribute('data-language', 'python'),
   )
-  await userEvent.setup().selectOptions(select, 'gmpl')
+  await userEvent.setup().selectOptions(select, lang)
   await waitFor(() =>
-    expect(container.querySelector('.cm-content')).not.toHaveAttribute('data-language'),
+    expect(container.querySelector('.cm-content')).toHaveAttribute('data-language', lang),
   )
-  expect((await bridge.model()).backend).toBe('gmpl')
+  expect((await bridge.model()).backend).toBe(lang)
 })

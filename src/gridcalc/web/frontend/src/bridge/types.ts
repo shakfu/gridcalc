@@ -83,7 +83,9 @@ export interface TrustInfo {
   cells: number
   formulas: number
   has_code: boolean
-  code: string
+  // Each piece of code, highlighted in its own language: the code block is
+  // "python"; a model has its sheet's model language ("pulp", "gmpl", "minizinc", ...).
+  parts: { title: string; lang: string; text: string }[]
   code_lines: number
   // PYTHON-mode formulas, which `eval()` runs; declining leaves them unevaluated.
   python_formulas: boolean
@@ -435,8 +437,9 @@ export interface PywebviewApi {
 export interface SheetModel {
   sheet: string
   lang: string
-  // What runs it: the builtin PuLP subset on HiGHS, the PuLP library, Pyomo, or glpsol (GMPL text).
-  backend: 'builtin' | 'pulp' | 'pyomo' | 'gmpl'
+  // What runs it: the builtin PuLP subset on HiGHS, the PuLP library, Pyomo, glpsol (GMPL text),
+  // CP-SAT, or minizinc (MiniZinc text).
+  backend: 'builtin' | 'pulp' | 'pyomo' | 'gmpl' | 'cpsat' | 'minizinc'
   text: string
   problems: string[]
   running: boolean

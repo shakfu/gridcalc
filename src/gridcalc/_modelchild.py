@@ -14,6 +14,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
 from typing import Any
 
@@ -153,6 +154,58 @@ _programs: frozenset[str] = frozenset()
 _program_dirs: tuple[str, ...] = ()
 _PULP: Any = None
 _PYOMO: Any = None  # `pyomo.environ`, for the pyomo backend
+_CPSAT: Any = None  # `ortools.sat.python.cp_model`, for the cpsat backend
+_CP_FACADES: dict[str, Any] = {}  # the importable `ortools` names, set by `_setup_cpsat`
+_CP_SOLVER: Any = None  # the model's one solved CpSolver, read for status and outputs
+# CP-SAT's two ways of refusing a float: its own check, and pybind11 finding no overload.
+_CP_INT_ERROR = re.compile(r"only accept integer|incompatible function arguments")
+# What a cpsat model sees of `cp_model`. Left out: the modules it imported
+# (`cmh`, `np`, `pd`, `threading`, ...), typing aliases and private helpers.
+_CP_MODEL_NAMES = frozenset(
+    {
+        "CpModel",
+        "CpSolver",
+        "CpSolverSolutionCallback",
+        "ObjectiveSolutionPrinter",
+        "VarArraySolutionPrinter",
+        "VarArrayAndObjectiveSolutionPrinter",
+        "LinearExpr",
+        "IntVar",
+        "IntervalVar",
+        "Constraint",
+        "BoundedLinearExpression",
+        "Domain",
+        "UNKNOWN",
+        "MODEL_INVALID",
+        "FEASIBLE",
+        "INFEASIBLE",
+        "OPTIMAL",
+        "INT_MIN",
+        "INT_MAX",
+        "INT32_MIN",
+        "INT32_MAX",
+        "CHOOSE_FIRST",
+        "CHOOSE_LOWEST_MIN",
+        "CHOOSE_HIGHEST_MAX",
+        "CHOOSE_MIN_DOMAIN_SIZE",
+        "CHOOSE_MAX_DOMAIN_SIZE",
+        "SELECT_MIN_VALUE",
+        "SELECT_MAX_VALUE",
+        "SELECT_LOWER_HALF",
+        "SELECT_UPPER_HALF",
+        "SELECT_MEDIAN_VALUE",
+        "SELECT_RANDOM_HALF",
+        "AUTOMATIC_SEARCH",
+        "FIXED_SEARCH",
+        "PORTFOLIO_SEARCH",
+        "LP_SEARCH",
+        "PSEUDO_COST_SEARCH",
+        "PORTFOLIO_WITH_QUICK_RESTART_SEARCH",
+        "HINT_SEARCH",
+        "PARTIAL_FIXED_SEARCH",
+        "RANDOMIZED_SEARCH",
+    }
+)
 
 
 def _inside(path: Any, root: str | None) -> bool:
@@ -178,7 +231,15 @@ def _allowed_program(args: tuple[Any, ...]) -> bool:
         exe = _first_word(argv)  # Windows joins argv before the event
     if not isinstance(exe, (str, bytes, os.PathLike)) or not exe:
         return False
-    real = os.path.normcase(os.path.realpath(os.fsdecode(exe)))
+    exe = os.fsdecode(exe)
+    if os.path.basename(exe) == exe:
+        # A bare name runs from PATH, as PuLP starts a `cbc` it found there.
+        env = args[3] if len(args) > 3 and isinstance(args[3], dict) else None
+        found = shutil.which(exe, path=(env or {}).get("PATH"))
+        if found is None:
+            return False
+        exe = found
+    real = os.path.normcase(os.path.realpath(exe))
     return real in _programs or any(_inside(real, d) for d in _program_dirs)
 
 
@@ -252,6 +313,12 @@ def _import(
             _importing -= 1
         # As `__import__`: `import pyomo.environ as pyo` gets the package back.
         return mod if fromlist else sys.modules["pyomo"]
+    if level == 0 and _CPSAT is not None and name.split(".")[0] == "ortools":
+        if name not in _CP_FACADES:
+            raise ImportError(
+                f"import of {name!r} is not allowed in a model; use ortools.sat.python.cp_model"
+            )
+        return _CP_FACADES[name] if fromlist else _CP_FACADES["ortools"]
     whole = name in _WHOLE_MODULES
     if level != 0 or not (whole or (classify_module(name) == "safe" and name in NAMES)):
         raise ImportError(f"import of {name!r} is not allowed in a model")
@@ -265,32 +332,61 @@ def _import(
         _importing -= 1
 
 
-def _items(spec: dict[str, Any]) -> dict[str, Any]:
+def _integral(v: Any) -> Any:
+    """``v`` as an int if it is a whole float: cells hold floats, and CP-SAT takes ints only."""
+    if isinstance(v, list):
+        return [_integral(x) for x in v]
+    return int(v) if isinstance(v, float) and v.is_integer() else v
+
+
+def _items(spec: dict[str, Any], ints: bool = False) -> dict[str, Any]:
     from .itemdict import _RAISE, ItemDict
 
+    num = _integral if ints else (lambda v: v)
     out: dict[str, Any] = {}
     for name, it in spec.items():
         if it["kind"] == "indexed":
             keys = [_key(k) for k in it["keys"]]
-            values = {_key(k): v for k, v in it["values"]}
-            missing = it["missing"][0] if it["missing"] else _RAISE
+            values = {_key(k): num(v) for k, v in it["values"]}
+            missing = num(it["missing"][0]) if it["missing"] else _RAISE
             out[name] = ItemDict(name, keys, values, missing)
         else:
-            out[name] = it["value"]
+            out[name] = num(it["value"])
     return out
+
+
+def _cp_found() -> bool:
+    """Whether the model's CpSolver found a solution; after any other status its values are junk."""
+    s = _CP_SOLVER
+    return s is not None and s.response_proto.status in (_CPSAT.OPTIMAL, _CPSAT.FEASIBLE)
+
+
+def _cp_value(where: str, x: Any) -> Any:
+    if isinstance(x, (int, float)) and not isinstance(x, bool):
+        return x
+    if _CP_SOLVER is None:
+        raise ValueError(f"{where}: an output needs exactly one solved CpSolver as a global")
+    if not _cp_found():
+        return None
+    try:
+        return _CP_SOLVER.value(x)
+    except TypeError:
+        raise ValueError(f"{where} is not a CP-SAT variable or expression") from None
 
 
 def _value(name: str, key: Any, x: Any) -> Any:
     """A bound entry's value: a variable's or expression's after the solve, or a number."""
     from . import lpmodel
 
-    if _PYOMO is not None:
+    where = f"{name}[{key!r}]" if key is not None else name
+    if _CPSAT is not None:
+        v = _cp_value(where, x)
+    elif _PYOMO is not None:
         v = _PYOMO.value(x, exception=False)
     else:
         lib = _PULP if _PULP is not None else lpmodel
         v = lib.value(x)
     if v is None:
-        where = f"{name}[{key!r}]" if key is not None else name
         raise ValueError(f"{where} has no value; the solve did not find one")
     return v
 
@@ -353,6 +449,8 @@ def _problem_summary(ns: dict[str, Any]) -> tuple[str | None, float | None]:
 
     if _PYOMO is not None:
         return _pyomo_summary(ns)
+    if _CPSAT is not None:
+        return _cpsat_summary(ns)
 
     lib = _PULP if _PULP is not None else lpmodel
     LpProblem, LpStatus, value = lib.LpProblem, lib.LpStatus, lib.value  # noqa: N806
@@ -364,6 +462,68 @@ def _problem_summary(ns: dict[str, Any]) -> tuple[str | None, float | None]:
     p = solved[0]
     obj = value(p.objective) if p.objective is not None else None
     return LpStatus[p.status], obj
+
+
+def _cpsat_summary(ns: dict[str, Any]) -> tuple[str | None, float | None]:
+    """Status of the one solved CpSolver; objective if the one CpModel has one and it was found."""
+    if _CP_SOLVER is None:
+        return None, None
+    status = _CP_SOLVER.response_proto.status.name.replace("_", " ").capitalize()
+    models = [v for v in ns.values() if isinstance(v, _CPSAT.CpModel)]
+    if _cp_found() and len(models) == 1 and models[0].has_objective():
+        return status, _CP_SOLVER.objective_value
+    return status, None
+
+
+def _one_cp_solver(ns: dict[str, Any]) -> Any:
+    solvers = [v for v in ns.values() if isinstance(v, _CPSAT.CpSolver)]
+    if len(solvers) != 1:
+        return None
+    try:
+        solvers[0].response_proto  # noqa: B018  (raises RuntimeError before a solve)
+    except RuntimeError:
+        return None
+    return solvers[0]
+
+
+def _setup_cpsat() -> None:
+    """Import CP-SAT, refuse its one native file write, and build the facades. Before the hook.
+
+    The audit hook cannot see a write from C++, so ``export_to_file`` is
+    replaced at the helper both its spellings call.
+    """
+    global _CPSAT
+    from ortools.sat.python import cp_model, cp_model_helper
+
+    from .sandbox import ModuleFacade
+
+    def refused(*_args: Any) -> bool:
+        raise PermissionError("a model may not write files (CpModel.export_to_file)")
+
+    cp_model_helper.CpSatHelper.write_model_to_file = staticmethod(refused)  # type: ignore[method-assign,assignment]
+    solve = cp_model.CpSolver.solve
+
+    def logged_solve(self: Any, model: Any, solution_callback: Any = None) -> Any:
+        # CP-SAT logs from C++ to the real stdout, past the model output.
+        if self.parameters.log_search_progress and self.log_callback is None:
+            self.parameters.log_to_stdout = False
+            self.log_callback = print
+        return solve(self, model, solution_callback)
+
+    cp_model.CpSolver.solve = cp_model.CpSolver.Solve = logged_solve  # type: ignore[method-assign]
+    members = {n: getattr(cp_model, n) for n in _CP_MODEL_NAMES if hasattr(cp_model, n)}
+    leaf = ModuleFacade("ortools.sat.python.cp_model", members)
+    python = ModuleFacade("ortools.sat.python", {"cp_model": leaf})
+    sat = ModuleFacade("ortools.sat", {"python": python})
+    _CP_FACADES.update(
+        {
+            "ortools": ModuleFacade("ortools", {"sat": sat}),
+            "ortools.sat": sat,
+            "ortools.sat.python": python,
+            "ortools.sat.python.cp_model": leaf,
+        }
+    )
+    _CPSAT = cp_model
 
 
 def _setup_pyomo(req: dict[str, Any]) -> None:
@@ -477,7 +637,7 @@ def run_gmpl(req: dict[str, Any], log: Any) -> dict[str, Any]:
         else:
             writes[name] = {"pairs": pairs}
     if problems:
-        return {"ok": False, "error": "; ".join(problems), "line": None, "log": log.getvalue()}
+        return _fail("; ".join(problems), log.getvalue(), status=status)
     return {
         "ok": True,
         "writes": writes,
@@ -487,14 +647,120 @@ def run_gmpl(req: dict[str, Any], log: Any) -> dict[str, Any]:
     }
 
 
+_OMP_TMP_WARNING = re.compile(r"^OMP: Warning #179: .*/tmp file failed:\n?", re.MULTILINE)
+
+
+def _fail(
+    error: str, log: str = "", line: int | None = None, status: str | None = None
+) -> dict[str, Any]:
+    """A failure reply; ``status`` is the solve's, when one ran, so a caller can tell infeasible."""
+    return {"ok": False, "error": error, "line": line, "log": log, "status": status}
+
+
+def _mzn_error(errors: list[dict[str, Any]], model: str) -> tuple[str, int | None]:
+    """The first MiniZinc error as text, with its line when it is in the model file."""
+    e = errors[0]
+    loc = e.get("location") or {}
+    line = loc.get("firstLine") if str(loc.get("filename", "")).endswith(model) else None
+    what = str(e.get("what", "error"))
+    return f"{what}: {e.get('message', '')}", line if isinstance(line, int) else None
+
+
+def run_minizinc(req: dict[str, Any], log: Any) -> dict[str, Any]:
+    """Run a MiniZinc model under `minizinc` and fill output items from its last solution."""
+    import shutil
+    import subprocess
+
+    from . import minizinc
+
+    _confine_programs(req)
+    exe = shutil.which("minizinc")
+    if exe is None:
+        return _fail("the minizinc program is not on PATH")
+    text = req["text"]
+    tmp = _tmp or ""
+    solver = minizinc.solver(text)
+    if solver is not None and not minizinc.solver_known(solver, req.get("solvers", [])):
+        return _fail(f"'% solver: {solver}' is not an installed MiniZinc solver's id or tag")
+    flags = ["--solver", solver] if solver else []
+    mod, dat = os.path.join(tmp, "model.mzn"), os.path.join(tmp, "data.json")
+    with open(mod, "w", encoding="utf-8") as f:
+        f.write(text)
+    sys.addaudithook(_audit)
+
+    def mzn(*args: str) -> str:
+        proc = subprocess.run(  # noqa: S603  (allowlisted by the audit hook)
+            [exe, *flags, *args], capture_output=True, text=True, check=False, cwd=tmp
+        )
+        # CBC's OpenMP runtime warns, as it loads, that the sandbox refused its file in /tmp.
+        return _OMP_TMP_WARNING.sub("", proc.stdout + proc.stderr)
+
+    iface = minizinc.read_stream(mzn("--json-stream", "--model-interface-only", mod))
+    if iface["errors"]:
+        error, line = _mzn_error(iface["errors"], "model.mzn")
+        return _fail(error, iface["log"], line)
+    data, errors = minizinc.data(req["items"], iface["inputs"])
+    if errors:
+        return _fail("; ".join(errors))
+    if data:  # MiniZinc refuses `{}` as a data file
+        with open(dat, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    # Past MiniZinc's own limit it stops and reports its best solution; the parent kills.
+    limit_ms = max(1000, int((float(req.get("timeout_s", 120)) - 3) * 1000))
+    args = ["--json-stream", "--output-mode", "json", "--output-objective"]
+    files = [mod, dat] if data else [mod]
+    result = minizinc.read_stream(mzn(*args, "--time-limit", str(limit_ms), *files))
+    if result["log"]:
+        log.write(result["log"] + "\n")
+    if result["errors"]:
+        error, line = _mzn_error(result["errors"], "model.mzn")
+        return _fail(error, log.getvalue(), line)
+    solution, status = result["solution"], result["status"]
+    writes: dict[str, Any] = {}
+    problems: list[str] = []
+    for name, spec in req["items"].items():
+        if not spec.get("output"):
+            continue
+        if solution is None:
+            problems.append(f"{name} has no value; the solve did not find one ({status})")
+            continue
+        if name not in solution:
+            problems.append(f"{name}: the model has no output variable of that name")
+            continue
+        try:
+            if spec["kind"] != "indexed":
+                writes[name] = {"value": minizinc.plain(solution[name])}
+                continue
+            orders = minizinc.index_orders(name, spec, req["items"])
+            if isinstance(orders, str):
+                problems.append(orders)
+                continue
+            writes[name] = {"pairs": minizinc.pairs(orders, solution[name])}
+        except ValueError as exc:
+            problems.append(f"{name}: {exc}")
+    if problems:
+        return _fail("; ".join(problems), log.getvalue(), status=status)
+    objective = solution.get("_objective") if solution else None
+    return {
+        "ok": True,
+        "writes": writes,
+        "status": status,
+        "objective": objective if isinstance(objective, (int, float)) else None,
+        "log": log.getvalue(),
+    }
+
+
 def run(req: dict[str, Any], out: Any = None) -> dict[str, Any]:
+    global _CP_SOLVER
     from .itemdict import ItemDict
     from .sandbox import _BLOCKED_NAMES
 
     if req.get("backend") == "gmpl":
         return run_gmpl(req, _Log(out if out is not None else io.StringIO()))
+    if req.get("backend") == "minizinc":
+        return run_minizinc(req, _Log(out if out is not None else io.StringIO()))
 
-    items = _items(req["items"])
+    items = _items(req["items"], ints=req.get("backend") == "cpsat")
     # The names `validate_code` refuses, removed again in case one is reached
     # by a route it did not see. A model may bind such a name for itself.
     safe_builtins = {k: v for k, v in vars(builtins).items() if k not in _BLOCKED_NAMES}
@@ -507,6 +773,8 @@ def run(req: dict[str, Any], out: Any = None) -> dict[str, Any]:
             _setup_pulp(req)
         elif req.get("backend") == "pyomo":
             _setup_pyomo(req)
+        elif req.get("backend") == "cpsat":
+            _setup_cpsat()
         from . import _module_names, lpmodel, sandbox  # noqa: F401  (before the hook)
 
         sys.addaudithook(_audit)
@@ -523,8 +791,13 @@ def run(req: dict[str, Any], out: Any = None) -> dict[str, Any]:
                 line = tb.tb_lineno
             tb = tb.tb_next
         msg = f"{type(exc).__name__}: {exc}"
+        if _CPSAT is not None and isinstance(exc, TypeError) and _CP_INT_ERROR.search(msg):
+            # pybind11 lists every overload; the first line names the call.
+            msg = msg.splitlines()[0] + " -- CP-SAT constraints take integers only; scale the data"
         return {"ok": False, "error": msg, "line": line, "log": log.getvalue()}
 
+    if _CPSAT is not None:
+        _CP_SOLVER = _one_cp_solver(ns)
     writes: dict[str, Any] = {}
     errors: list[str] = []
     for name, original in items.items():
@@ -551,7 +824,7 @@ def run(req: dict[str, Any], out: Any = None) -> dict[str, Any]:
             writes[name] = {"value": now}
     status, objective = _problem_summary(ns)
     if errors:
-        return {"ok": False, "error": "; ".join(errors), "line": None, "log": log.getvalue()}
+        return _fail("; ".join(errors), log.getvalue(), status=status)
     return {
         "ok": True,
         "writes": writes,

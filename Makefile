@@ -71,9 +71,21 @@ FRONTEND = src/gridcalc/web/frontend
 
 # Build the React web frontend (web/frontend) into a single self-contained
 # static/index.html that the pywebview window serves. Requires Bun.
-web-build:
+# `web-build` always builds; `web-run` builds only when a source is newer than
+# the stamp. The stamp also depends on the bundle, so a placeholder triggers a
+# build. It lives in node_modules, so deleting node_modules forces a build too.
+WEB_SRC := $(shell find $(FRONTEND)/src -type f ! -name '*.test.*') \
+	$(addprefix $(FRONTEND)/,index.html package.json bun.lock tsconfig.json vite.config.ts)
+WEB_STAMP = $(FRONTEND)/node_modules/.gridcalc-built
+
+$(WEB_STAMP): $(WEB_SRC) $(BUNDLE)
 	@bun install --cwd $(FRONTEND)
 	@bun --bun run --cwd $(FRONTEND) build
+	@touch $@
+
+web-build:
+	@rm -f $(WEB_STAMP)
+	@$(MAKE) --no-print-directory $(WEB_STAMP)
 
 # Run the frontend dev server (browser + mock bridge, hot reload) for fast UI
 # iteration without launching pywebview.
@@ -101,10 +113,10 @@ GTK_PATH = $(shell PYTHONPATH=$(SYS_SITE) uv run --extra web python -c 'import g
         >/dev/null 2>&1 && echo $(SYS_SITE))
 
 # Launch the desktop web app (serves the built static/index.html in a pywebview
-# window). Run `make web-build` first. `--extra web` is required: pywebview is
+# window), rebuilding the bundle first if a frontend source changed. `--extra web` is required: pywebview is
 # an optional dependency, so a plain `uv run` resolves an environment without it
 # and the entry point dies on `import webview`.
-web-run:
+web-run: $(WEB_STAMP)
 	@GRIDCALC_SANDBOX=1 PYTHONPATH=$(GTK_PATH) uv run --extra web gridcalc-web
 
 # Launch the real app and drive it, with screenshots into scripts/out/.

@@ -35,7 +35,7 @@ This is where the desktop app goes past the terminal. `Optimize` reads a model o
 
 ## Cross-tab models
 
-For a model written as text -- PuLP, Pyomo or GMPL over named ranges and tables, as SolverStudio runs them -- the Data menu has three entries ([guide](guide/models.md)):
+For a model written as text -- PuLP, Pyomo, GMPL, MiniZinc or CP-SAT over named ranges and tables, as SolverStudio runs them -- the Data menu has three entries ([guide](guide/models.md)):
 
 - **Model Editor** opens a panel beside the grid: the sheet's model in a code editor with highlighting, a backend selector, **Solve** and **Cancel**, the model's problems, and its output as it runs. The solve runs in the background, so the grid stays usable. A failed run puts the cursor on the failing line.
 

@@ -10,7 +10,7 @@ What sets it apart:
 
 - **A workbook as a function.** Set inputs and read outputs by defined name, from the CLI or the Python `Book` API. A batch writes only the inputs that change between cases, so each case costs one incremental recalculation.
 
-- **Optimization in the sheet.** `:opt` solves LP, MIP and QP models built from cell formulas, as Excel's Solver does, with shadow prices, sweeps and infeasibility diagnosis. Cross-tab models, as in [SolverStudio](https://solverstudio.org), run PuLP, Pyomo or GMPL text over named ranges and tables and write the results back to the sheet.
+- **Optimization in the sheet.** `:opt` solves LP, MIP and QP models built from cell formulas, as Excel's Solver does, with shadow prices, sweeps and infeasibility diagnosis. Cross-tab models, as in [SolverStudio](https://solverstudio.org), run PuLP, Pyomo, GMPL, MiniZinc or CP-SAT text over named ranges and tables and write the results back to the sheet.
 
 - **Python when formulas are not enough.** A workbook can use strict Excel formulas, Excel plus Python calls, or Python expressions with numpy and pandas, and can carry its own Python module.
 
@@ -105,7 +105,7 @@ Full reference: <https://shakfu.github.io/gridcalc/reference/cli/#named-inputs-a
 
 - **Linear, mixed-integer & quadratic programming** built in via HiGHS -- `:opt max B4 vars A4:A5 st D4:D6` solves from cells in the sheet, with shadow prices, infeasibility diagnosis, and RHS sweeps. Models persist in the workbook.
 
-- **Optimization models over sheet data, as in SolverStudio** -- named ranges and tables become model data for a PuLP, Pyomo or GMPL model, which solves and writes its results back to the sheet. Runs on the built-in HiGHS, or the PuLP, Pyomo and GLPK solvers, in a confined process ([guide](docs/guide/models.md)).
+- **Optimization models over sheet data, as in SolverStudio** -- named ranges and tables become model data for a PuLP, Pyomo, GMPL, MiniZinc or CP-SAT model, which solves and writes its results back to the sheet. Runs on the built-in HiGHS, or the PuLP, Pyomo, GLPK, MiniZinc and CP-SAT solvers, in a confined process ([guide](docs/guide/models.md)).
 
 - **Goal-seek** -- `:goal B10 = 100 by A1` adjusts a variable so a formula hits a target value.
 
@@ -121,6 +121,7 @@ pip install 'gridcalc[extras]'  # adds numpy, pandas, pygments
 pip install 'gridcalc[web]'     # adds the desktop window (gridcalc-web)
 pip install 'gridcalc[pulp]'    # runs models under the PuLP library and its solvers
 pip install 'gridcalc[pyomo]'   # runs models written with Pyomo
+pip install 'gridcalc[ortools]' # runs constraint models written with OR-Tools CP-SAT
 ```
 
 Or with [uv](https://docs.astral.sh/uv/): `uv tool install 'gridcalc[extras]'`.
@@ -152,6 +153,9 @@ gridcalc example_multisheet.json     # 3-sheet budget, cross-sheet formulas
 gridcalc example_lp.json             # LP/MIP demo -- type :opt to solve
 gridcalc example_goal.json           # goal-seek demo -- :goal B1 = 11 by A1
 gridcalc example_crosstab.json      # SolverStudio-style model -- :showmodel, then :solve
+gridcalc example_minizinc_transport.json  # MiniZinc on COIN-BC; depot names with spaces as enum members
+gridcalc example_minizinc_sudoku.json     # MiniZinc constraint programming on Gecode -- :solve fills the grid
+gridcalc example_minizinc_roster.json     # MiniZinc shift roster: availability, caps, no back-to-back shifts
 gridcalc example_loan.xlsx           # loan model -- run it headless with --set/--get
 ```
 

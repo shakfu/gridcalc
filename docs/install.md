@@ -68,6 +68,20 @@ pip install 'gridcalc[pyomo]'
 
 Pyomo bundles no solver. Install one it can start, such as `glpsol` from GLPK ([below](#gmpl-models)) or `cbc`, or `pip install highspy` for its in-process `appsi_highs`. For nonlinear models, install Ipopt (`brew install ipopt`, `apt install coinor-libipopt-dev` and its `ipopt` program, or a COIN-OR build); `bonmin` and `couenne` are also allowed.
 
+## The `[ortools]` extra
+
+Runs sheet models written with [OR-Tools CP-SAT](https://developers.google.com/optimization/cp/cp_solver), a constraint programming solver ([Cross-tab models](guide/models.md#cp-sat)):
+
+```sh
+pip install 'gridcalc[ortools]'
+```
+
+The solver is in the wheel; nothing else to install.
+
+## MiniZinc models
+
+Models in [MiniZinc](https://www.minizinc.org) run under the `minizinc` program, which is not a Python package. Install it with `brew install minizinc`, from the [MiniZinc bundle](https://www.minizinc.org/downloads/), or with your package manager, so that `minizinc` is on `PATH`. The solvers it lists in `minizinc --solvers` are the ones a model can choose.
+
 ## GMPL models
 
 Models in GMPL (GNU MathProg) run under `glpsol` from GLPK, which is not a Python package and is not bundled: GLPK is GPL-3, and gridcalc only starts it as a program. Install it with `brew install glpk`, `apt install glpk-utils`, or a Windows build, so that `glpsol` is on `PATH`.

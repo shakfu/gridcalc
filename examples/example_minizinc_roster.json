@@ -1,0 +1,309 @@
+{
+ "version": 2,
+ "mode": "EXCEL",
+ "libs": [
+  "xlsx"
+ ],
+ "names": {
+  "Staff": "Roster!B4:B8",
+  "Shifts": "Roster!C3:H3",
+  "available": "Roster!C4:H8",
+  "needed": "Roster!C9:H9",
+  "maxShifts": "Roster!I4:I8",
+  "wage": "Roster!J4:J8",
+  "assign": "Roster!C13:H17",
+  "TotalCost": "Roster!C20:C20"
+ },
+ "data_items": {
+  "Staff": {},
+  "Shifts": {},
+  "available": {
+   "index": [
+    "Staff",
+    "Shifts"
+   ],
+   "missing": 0
+  },
+  "needed": {
+   "index": [
+    "Shifts"
+   ]
+  },
+  "maxShifts": {
+   "index": [
+    "Staff"
+   ]
+  },
+  "wage": {
+   "index": [
+    "Staff"
+   ]
+  },
+  "assign": {
+   "index": [
+    "Staff",
+    "Shifts"
+   ],
+   "output": true
+  },
+  "TotalCost": {
+   "output": true
+  }
+ },
+ "format": {
+  "width": 8
+ },
+ "active": "Roster",
+ "sheets": [
+  {
+   "name": "Roster",
+   "cells": [
+    [
+     "Shift roster in MiniZinc: :solve fills the roster  (desktop: Data > Model Editor)",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    [
+     null,
+     "Availability (1 = can work)",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    [
+     null,
+     "Staff\\Shift",
+     "Mon AM",
+     "Mon PM",
+     "Tue AM",
+     "Tue PM",
+     "Wed AM",
+     "Wed PM",
+     "Max shifts",
+     "Wage"
+    ],
+    [
+     null,
+     "Ana",
+     1,
+     1,
+     1,
+     1,
+     null,
+     null,
+     3,
+     120
+    ],
+    [
+     null,
+     "Ben",
+     1,
+     1,
+     null,
+     1,
+     1,
+     1,
+     3,
+     100
+    ],
+    [
+     null,
+     "Chloe",
+     null,
+     1,
+     1,
+     1,
+     1,
+     1,
+     2,
+     140
+    ],
+    [
+     null,
+     "Dev",
+     1,
+     null,
+     1,
+     null,
+     1,
+     1,
+     3,
+     90
+    ],
+    [
+     null,
+     "Eli",
+     1,
+     1,
+     1,
+     null,
+     1,
+     1,
+     2,
+     110
+    ],
+    [
+     null,
+     "Needed",
+     2,
+     2,
+     1,
+     2,
+     2,
+     1,
+     null,
+     null
+    ],
+    [
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    [
+     null,
+     "Roster (1 = works)",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    [
+     null,
+     "Staff\\Shift",
+     "Mon AM",
+     "Mon PM",
+     "Tue AM",
+     "Tue PM",
+     "Wed AM",
+     "Wed PM",
+     "Shifts",
+     null
+    ],
+    [
+     null,
+     "Ana",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     "=SUM(C13:H13)",
+     null
+    ],
+    [
+     null,
+     "Ben",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     "=SUM(C14:H14)",
+     null
+    ],
+    [
+     null,
+     "Chloe",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     "=SUM(C15:H15)",
+     null
+    ],
+    [
+     null,
+     "Dev",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     "=SUM(C16:H16)",
+     null
+    ],
+    [
+     null,
+     "Eli",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     "=SUM(C17:H17)",
+     null
+    ],
+    [
+     null,
+     "Staffed",
+     "=SUM(C13:C17)",
+     "=SUM(D13:D17)",
+     "=SUM(E13:E17)",
+     "=SUM(F13:F17)",
+     "=SUM(G13:G17)",
+     "=SUM(H13:H17)",
+     null,
+     null
+    ],
+    [
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    [
+     null,
+     "Total cost",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null
+    ]
+   ],
+   "model": {
+    "lang": "minizinc",
+    "text": "% A shift roster, solved by Gecode: who works which shift, at least cost.\n% solver: gecode\nenum Staff;                                   % names from the sheet\nenum Shifts;                                  % in sheet order, so Mon AM comes before Mon PM\narray[Staff, Shifts] of 0..1: available;      % 1 = can work it; blank = 0\narray[Shifts] of int: needed;\narray[Staff] of int: maxShifts;\narray[Staff] of int: wage;                    % per shift\n\narray[Staff, Shifts] of var 0..1: assign;     % an output item\nvar int: TotalCost :: output = sum(p in Staff, s in Shifts)(wage[p] * assign[p, s]);\n\nconstraint forall(p in Staff, s in Shifts)(assign[p, s] <= available[p, s]);\nconstraint forall(s in Shifts)(sum(p in Staff)(assign[p, s]) >= needed[s]);\nconstraint forall(p in Staff)(sum(s in Shifts)(assign[p, s]) <= maxShifts[p]);\n% No back-to-back shifts.\nconstraint forall(p in Staff, i in 1..card(Shifts) - 1)(\n  assign[p, to_enum(Shifts, i)] + assign[p, to_enum(Shifts, i + 1)] <= 1);\nsolve minimize TotalCost;\n",
+    "backend": "minizinc"
+   }
+  }
+ ]
+}

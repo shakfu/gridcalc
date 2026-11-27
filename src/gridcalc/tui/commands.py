@@ -365,10 +365,12 @@ def cmd_model(stdscr: curses.window, g: Grid, undo: UndoManager, args: str = "")
             pager(stdscr, f"Model problems ({len(problems)})", problems)
         return False
     if parts:
-        show_error(stdscr, "usage: :model  or  :model backend [builtin|pulp|pyomo|gmpl]")
+        show_error(
+            stdscr, "usage: :model  or  :model backend [builtin|pulp|pyomo|gmpl|cpsat|minizinc]"
+        )
         return False
     # The suffix picks the editor's highlighting: GMPL is a `.mod` file.
-    suffix = ".mod" if sh.model_lang == "gmpl" else ".py"
+    suffix = {"gmpl": ".mod", "minizinc": ".mzn"}.get(sh.model_lang, ".py")
     content = _edit_text(stdscr, sh.model_text, "model", suffix)
     if content is None or content == sh.model_text:
         return False

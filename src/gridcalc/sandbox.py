@@ -147,10 +147,12 @@ class ModuleFacade:
 
     def __init__(self, name: str, members: dict[str, Any]) -> None:
         self.__dict__.update(members)
-        self.__dict__["__name__"] = name
+        # Not `__name__`: on a failed `from facade import x`, CPython returns
+        # `sys.modules[facade.__name__ + ".x"]`, the real submodule.
+        self.__dict__["_facade_name"] = name
 
     def __getattr__(self, attr: str) -> Any:
-        raise AttributeError(f"'{self.__dict__['__name__']}' has no '{attr}' in a workbook")
+        raise AttributeError(f"'{self.__dict__['_facade_name']}' has no '{attr}' in a workbook")
 
     def __setattr__(self, attr: str, value: Any) -> None:
         raise AttributeError("a module facade is read-only")
@@ -159,7 +161,7 @@ class ModuleFacade:
         raise AttributeError("a module facade is read-only")
 
     def __repr__(self) -> str:
-        return f"<facade '{self.__dict__['__name__']}'>"
+        return f"<facade '{self.__dict__['_facade_name']}'>"
 
 
 _ABSENT: Any = object()
@@ -513,6 +515,10 @@ class FileInfo:
     has_code: bool = False
     code_preview: str = ""
     code_lines: int = 0
+    # Each piece of code as ``(title, lang, text)``: the code block is "python";
+    # a model has its sheet's language (`modelrun.LANGS`), so a preview can
+    # highlight each piece in its own syntax.
+    code_parts: list[tuple[str, str, str]] = field(default_factory=list)
     requires: list[str] = field(default_factory=list)
     formula_count: int = 0
     cell_count: int = 0
@@ -590,23 +596,16 @@ def inspect_file(filename: str) -> FileInfo | None:
     code = d.get("code", "")
     if not isinstance(code, str):
         return None
-    if code.strip():
-        info.has_code = True
-        info.code_lines = len(code.strip().splitlines())
-        info.code_preview = code.strip()
+    _add_code(info, "code block", "python", code)
 
     # Solver model text is code too; the runner refuses it unless trusted.
     sheets = d.get("sheets")
     for entry in sheets if isinstance(sheets, list) else []:
         model = entry.get("model") if isinstance(entry, dict) else None
         text = model.get("text") if isinstance(model, dict) else None
-        if isinstance(text, str) and text.strip():
-            info.has_code = True
-            info.code_lines += len(text.strip().splitlines())
-            header = f"# model on sheet {entry.get('name')}"
-            info.code_preview = "\n\n".join(
-                p for p in (info.code_preview, header, text.strip()) if p
-            )
+        if isinstance(text, str):
+            lang = model.get("lang") if isinstance(model, dict) else None
+            _add_code(info, f"model on sheet {entry.get('name')}", lang, text)
 
     requires = d.get("requires", [])
     if isinstance(requires, list):
@@ -658,15 +657,22 @@ def _inspect_xlsx(filename: str) -> FileInfo | None:
     except (OSError, zipfile.BadZipFile):
         return None
     info = FileInfo(digest=hashlib.sha256(raw).hexdigest())
-    for sheet, (_lang, text) in xlsxmodel.model_texts(doc).items():
-        if text.strip():
-            info.has_code = True
-            info.code_lines += len(text.strip().splitlines())
-            header = f"# model on sheet {sheet}"
-            info.code_preview = "\n\n".join(
-                p for p in (info.code_preview, header, text.strip()) if p
-            )
+    for sheet, (lang, text) in xlsxmodel.model_texts(doc).items():
+        _add_code(info, f"model on sheet {sheet}", lang, text)
     return info
+
+
+def _add_code(info: FileInfo, title: str, lang: Any, text: str) -> None:
+    """Record one piece of code: its part, its lines, and its place in the preview."""
+    text = text.strip()
+    if not text:
+        return
+    lang = lang if isinstance(lang, str) else "pulp"
+    info.has_code = True
+    info.code_lines += len(text.splitlines())
+    info.code_parts.append((title, lang, text))
+    header = "" if title == "code block" else f"# {title}"
+    info.code_preview = "\n\n".join(p for p in (info.code_preview, header, text) if p)
 
 
 def _count_cells(rows: Any, info: FileInfo) -> None:

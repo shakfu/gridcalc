@@ -62,6 +62,8 @@ CORE_MODULES = (
     "itemdict.py",
     # GMPL: the static check, the data file and glpsol's report.
     "gmpl.py",
+    # MiniZinc: the static check, the JSON data and the `--json-stream` reader.
+    "minizinc.py",
     "optspec.py",
     "report.py",
     "config.py",

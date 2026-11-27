@@ -44,4 +44,4 @@ The full set is in the [command reference](reference/commands.md), and every key
 
 - [Optimization](guide/optimization.md) -- define an LP, MIP, or QP in the sheet and solve it.
 
-- [Cross-tab models](guide/models.md) -- write a PuLP, Pyomo or GMPL model over named ranges and tables; `gridcalc example_crosstab.json` is a worked one.
+- [Cross-tab models](guide/models.md) -- write a PuLP, Pyomo, GMPL, MiniZinc or CP-SAT model over named ranges and tables; `gridcalc example_crosstab.json` is a worked one.

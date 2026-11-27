@@ -9,7 +9,7 @@ const INFO: TrustInfo = {
   cells: 42,
   formulas: 17,
   has_code: true,
-  code: 'def rate(x):\n    return x * 0.07\n',
+  parts: [{ title: 'code block', lang: 'python', text: 'def rate(x):\n    return x * 0.07\n' }],
   code_lines: 2,
   python_formulas: false,
   requires: ['numpy', 'requests', 'socket', 'mystery'],
@@ -35,6 +35,25 @@ test('names the file and shows the code that would run', () => {
   // The code itself, not a summary of it: it is the only thing that lets a
   // user judge the decision.
   expect(screen.getByLabelText('Code block')).toHaveTextContent('return x * 0.07')
+})
+
+test('each piece of code is highlighted in its own language', () => {
+  render(
+    <TrustDialog
+      info={{
+        ...INFO,
+        parts: [
+          { title: 'code block', lang: 'python', text: 'x = 1' },
+          { title: 'model on sheet Sudoku', lang: 'minizinc', text: '% a comment' },
+          { title: 'model on sheet Beer', lang: 'pulp', text: 'from pulp import *' },
+        ],
+      }}
+      onDecide={vi.fn()}
+    />,
+  )
+  const langs = [...document.querySelectorAll('.cm-content')].map((e) => e.getAttribute('data-language'))
+  expect(langs).toEqual(['python', 'minizinc', 'python'])
+  expect(screen.getByLabelText('model on sheet Sudoku')).toHaveTextContent('% a comment')
 })
 
 test('modules are split by how much is known about them', () => {

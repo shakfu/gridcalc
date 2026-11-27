@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Backend: `:model backend cpsat`, constraint programming with OR-Tools CP-SAT** (`gridcalc[ortools]`). The model is Python using `ortools.sat.python.cp_model`; data items are globals, and output items take variables from the one `CpSolver`'s solution. Whole numbers in cells reach the model as `int`, since CP-SAT constraints take integers only; fractional constraint data is refused with that reason. CP-SAT runs in the model process, so it starts no program and writes no file: `CpModel.export_to_file` is refused, as the audit hook cannot see a write from C++. The CPU limit is the timeout times the core count, since CP-SAT searches on every core.
+
+- **Backend: `:model backend minizinc`, MiniZinc text run by the `minizinc` program**, which you install. Declared parameters get the data items, as JSON: a set of strings is an enum, so keys need not be identifiers, and a cross-tab is a 2D array over its index sets. Output items are filled from output variables by name. `% solver: cbc` picks the solver by id or tag; a path to a solver configuration is refused, since it names a program to start. MiniZinc stops 3 s before the timeout and its best solution is written, with status `Feasible`. `include` takes a library file by name only.
+
+- **MiniZinc examples.** `example_minizinc_transport.json` (COIN-BC, enum keys with spaces), `example_minizinc_sudoku.json` (Gecode, constraint programming) and `example_minizinc_roster.json` (Gecode, a least-cost shift roster). A `% solver:` name no longer matches a GUI solver such as Gist, which shares Gecode's `cp` tag and would open a window.
+
+- **GMPL and MiniZinc highlighting in the desktop model editor.** Keywords, built-ins, strings, numbers and both comment styles, from a token-level CodeMirror mode per language; there is no parse tree, so no folding. The trust prompt shows the code block and each sheet's model separately, each in its own language; it used to join them into one text highlighted as Python. The terminal prompt highlights only the Python parts, since Pygments has no GMPL or MiniZinc lexer. The frontend now depends directly on `@codemirror/language` (6.13.1, already installed through `codemirror`).
+- **Headless cross-tab models: `gridcalc FILE --model`.** Runs the sheet's model with any backend and writes its output items, so `--set` and `--get` drive it by defined name. The flag is consent to run the model, so it needs no `--trust`; the model still runs in its restricted process, and the code block and PYTHON-mode formulas still need `--trust`. A solve that found no solution exits 2 with its status; a model that fails to run exits 1. `--timeout` caps the run. A separate flag rather than `--solve`, because a bare `--solve` already means the saved range model `default`. A list in `--inputs` runs the model once per case, each from the workbook as loaded, with `--workers` as for any batch. From Python: `Book.solve_model()` and `Book.solve_many()`.
+
+### Fixed
+
+- **`from numpy import _core` gave a model the real submodule.** When the facade lacked a name, CPython's `from` import fell back to `sys.modules[facade.__name__ + "." + name]`, so any submodule already imported escaped the facade. A facade no longer has a `__name__`.
+
+- **A pulp model could not start a `cbc` on `PATH`.** PuLP starts it by its bare name, and the audit hook resolved that against the working directory, not `PATH`, so it refused the program. It showed once `cbc` was installed, as `brew install minizinc` does.
+
 ## [0.15.0]
 
 ### Highlights

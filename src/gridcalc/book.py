@@ -15,7 +15,8 @@ keeps them, for a later `save`.
 Values follow JSON: a number, a bool, a string (always text, never a formula),
 None (a blank), or a list of rows for a range. A one-row or one-column range
 also takes a flat list. A result cell holding an error reads as
-``{"error": "#DIV/0!"}``. The CLI is `gridcalc FILE --set NAME=VALUE --get NAME`
+``{"error": "#DIV/0!"}``. `solve_model` runs a sheet's cross-tab model, so its
+output items can be read by name. The CLI is `gridcalc FILE --set NAME=VALUE --get NAME`
 (`docs/reference/cli.md`).
 """
 
@@ -23,14 +24,18 @@ from __future__ import annotations
 
 import math
 import multiprocessing as mp
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .engine import Cell, Grid, Mode, cellname, ref
 from .formula.errors import ExcelError
 from .loader import load_workbook, save_workbook
 from .sandbox import LoadPolicy, inspect_file
+
+if TYPE_CHECKING:
+    from .modelrun import ModelResult
 
 
 class BookError(Exception):
@@ -231,13 +236,22 @@ class Book:
             raise BookError(f"workers must be 1 or more, not {workers}")
         plans = [self._plan(c) for c in cases]
         outs = None if outputs is None else list(outputs)
+        return self._dispatch(plans, outs, workers, None)
+
+    def _dispatch(
+        self,
+        plans: list[dict[Key, Any]],
+        outs: list[str] | None,
+        workers: int,
+        model: _Model | None,
+    ) -> list[dict[str, Any]]:
         n = min(workers, len(plans))
         if n > 1 and self.grid.iterate is None and "fork" in mp.get_all_start_methods():
-            return self._run_forked(plans, outs, n)
-        return self._run_plans(plans, outs)
+            return self._run_forked(plans, outs, n, model)
+        return self._run_plans(plans, outs, model)
 
     def _run_forked(
-        self, plans: list[dict[Key, Any]], outs: list[str] | None, n: int
+        self, plans: list[dict[Key, Any]], outs: list[str] | None, n: int, model: _Model | None
     ) -> list[dict[str, Any]]:
         global _FORKED
         size = -(-len(plans) // n)
@@ -245,15 +259,17 @@ class Book:
         _FORKED = self
         try:
             with mp.get_context("fork").Pool(len(chunks)) as pool:
-                parts = pool.map(_run_chunk, [(chunk, outs) for chunk in chunks])
+                parts = pool.map(_run_chunk, [(chunk, outs, model) for chunk in chunks])
         finally:
             _FORKED = None
         return [r for part in parts for r in part]
 
     def _run_plans(
-        self, plans: list[dict[Key, Any]], outs: list[str] | None
+        self, plans: list[dict[Key, Any]], outs: list[str] | None, model: _Model | None = None
     ) -> list[dict[str, Any]]:
-        orig = self._originals({k for p in plans for k in p})
+        # A model may write any data item, so those cells are put back before each case.
+        touched = self._item_cells() if model is not None else frozenset()
+        orig = self._originals({k for p in plans for k in p} | touched)
         live: dict[Key, Any] = dict(orig)
         results = []
         try:
@@ -263,12 +279,115 @@ class Book:
                 if diff:
                     self._apply(diff)
                     live.update(diff)
-                results.append(self.get(outs))
+                if model is None:
+                    results.append(self.get(outs))
+                    continue
+                info = self._model_case(model)
+                live.update(dict.fromkeys(touched, _STALE))
+                results.append({"outputs": self.get(outs), "model": info})
         finally:
             back = {k: o for k, o in orig.items() if live[k] is not o}
             if back:
                 self._apply(back)
         return results
+
+    # --- models -----------------------------------------------------------
+
+    def solve_model(self, sheet: str | None = None, *, timeout: float | None = None) -> ModelResult:
+        """Run a sheet's model (default: the active sheet's) and write its output items.
+
+        Calling it is consent to run the model, so the workbook need not be
+        opened with ``trust``; its code block and PYTHON-mode cells still do. Raises
+        :class:`gridcalc.modelrun.ModelError`; its ``status`` is set when a
+        solve ran and found no solution.
+        """
+        from . import modelrun  # modelrun -> dataitems -> book
+
+        with self._on_sheet(sheet):
+            return modelrun.run_model(
+                self.grid, timeout=timeout or modelrun.TIMEOUT_S, trusted=True
+            )
+
+    def solve_many(
+        self,
+        cases: Iterable[Mapping[str, Any]],
+        outputs: Iterable[str] | None = None,
+        *,
+        sheet: str | None = None,
+        timeout: float | None = None,
+        workers: int = 1,
+    ) -> list[dict[str, Any]]:
+        """For each case: set its inputs, run the model, read ``outputs``.
+
+        Each case starts from the workbook as it is now, as in `run_many`.
+        Returns ``{"outputs": ..., "model": ...}`` per case; ``model`` holds
+        status, objective, written and log, plus ``error`` when the case's
+        run failed. A model that cannot run at all raises
+        :class:`gridcalc.modelrun.ModelError` before the first case.
+        """
+        from . import modelrun
+
+        if workers < 1:
+            raise BookError(f"workers must be 1 or more, not {workers}")
+        plans = [self._plan(c) for c in cases]
+        outs = None if outputs is None else list(outputs)
+        model = _Model(sheet, timeout)
+        with self._on_sheet(sheet):
+            sh = self.grid._active
+            if not sh.model_text.strip():
+                raise modelrun.ModelError(f"sheet {sh.name} has no model")
+            problems = modelrun.check_model(self.grid)
+            if problems:
+                raise modelrun.ModelError("\n".join(problems))
+        return self._dispatch(plans, outs, workers, model)
+
+    def _model_case(self, model: _Model) -> dict[str, Any]:
+        from .modelrun import ModelError
+
+        try:
+            res = self.solve_model(model.sheet, timeout=model.timeout)
+        except ModelError as exc:
+            return {
+                "status": exc.status,
+                "objective": None,
+                "written": 0,
+                "log": exc.log,
+                "error": str(exc),
+            }
+        objective = res.objective
+        if objective is not None and not math.isfinite(objective):
+            objective = None
+        return {
+            "status": res.status,
+            "objective": objective,
+            "written": res.written,
+            "log": res.log,
+        }
+
+    def _item_cells(self) -> frozenset[Key]:
+        """The cells of every data item that names a rectangle."""
+        out: list[Key] = []
+        for name in self.grid.data_items:
+            try:
+                t = self.resolve(name)
+            except BookError:
+                continue
+            if t.formula is None:
+                out += [(t.sheet, c, r) for c, r in t.cells()]
+        return frozenset(out)
+
+    @contextmanager
+    def _on_sheet(self, sheet: str | None) -> Iterator[None]:
+        g = self.grid
+        active = g.active
+        if sheet is not None:
+            if sheet not in g.sheet_names():
+                raise BookError(f"no such sheet: {sheet!r}")
+            g.set_active(sheet)
+        try:
+            yield
+        finally:
+            g.active = active
 
     def save(self, path: str) -> str:
         """Write the workbook; the format follows the extension. Returns it."""
@@ -284,7 +403,21 @@ Key = tuple[str, int, int]  # (sheet, col, row)
 _FORKED: Book | None = None
 
 
-def _run_chunk(job: tuple[list[dict[Key, Any]], list[str] | None]) -> list[dict[str, Any]]:
+@dataclass(frozen=True)
+class _Model:
+    """A model run in a batch: which sheet's model, and its time limit."""
+
+    sheet: str | None
+    timeout: float | None
+
+
+# A cell a model may have written: never equal to a value, so the next case rewrites it.
+_STALE = object()
+
+
+def _run_chunk(
+    job: tuple[list[dict[Key, Any]], list[str] | None, _Model | None],
+) -> list[dict[str, Any]]:
     if _FORKED is None:
         raise RuntimeError("no workbook in this worker")
     return _FORKED._run_plans(*job)

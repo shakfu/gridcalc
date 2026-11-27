@@ -1,8 +1,9 @@
 import { useEffect, useRef } from 'react'
 import { EditorView, basicSetup } from 'codemirror'
-import { Annotation, Compartment, EditorState } from '@codemirror/state'
+import { Annotation, Compartment, EditorState, type Extension } from '@codemirror/state'
 import { python } from '@codemirror/lang-python'
 import { oneDark } from '@codemirror/theme-one-dark'
+import { gmpl, minizinc } from './modelLanguages'
 
 // Marks a document replaced from `value`, which is not the user's edit.
 const external = Annotation.define<boolean>()
@@ -13,13 +14,24 @@ interface CodeEditorProps {
   // 1-based line to put the cursor on, e.g. where a model failed.
   gotoLine?: number | null
   ariaLabel?: string
-  // Highlighting: Python, or none for text in another language (GMPL).
-  language?: 'python' | 'plain'
+  // Highlighting: the model's language, or none.
+  language?: CodeLanguage
   // Shown, not edited: the trust dialog's preview of a file's code.
   readOnly?: boolean
 }
 
-// A CodeMirror 6 Python editor. The view is created once; a `value` that
+export type CodeLanguage = 'python' | 'gmpl' | 'minizinc' | 'plain'
+
+// The editor mode for a sheet's model language; every other language is Python text.
+export function languageOf(lang: string): CodeLanguage {
+  return lang === 'gmpl' || lang === 'minizinc' ? lang : 'python'
+}
+
+function highlighting(language: CodeLanguage): Extension {
+  return { python: python(), gmpl, minizinc, plain: [] }[language]
+}
+
+// A CodeMirror 6 code editor. The view is created once; a `value` that
 // differs from the document (a sheet switch, an undo) replaces it, while the
 // user's own edits flow out through `onChange` without a round trip.
 export function CodeEditor({
@@ -44,7 +56,7 @@ export function CodeEditor({
         doc: value,
         extensions: [
           basicSetup,
-          lang.current.of(language === 'python' ? python() : []),
+          lang.current.of(highlighting(language)),
           oneDark,
           EditorView.lineWrapping,
           ...(readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
@@ -77,7 +89,7 @@ export function CodeEditor({
 
   useEffect(() => {
     view.current?.dispatch({
-      effects: lang.current.reconfigure(language === 'python' ? python() : []),
+      effects: lang.current.reconfigure(highlighting(language)),
     })
   }, [language])
 

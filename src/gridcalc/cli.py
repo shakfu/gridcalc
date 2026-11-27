@@ -50,6 +50,7 @@ from .book import Book, BookError, errors
 from .display import cell_text
 from .engine import EMPTY, NCOL, NROW, SPILL, Grid
 from .loader import load_workbook, needs_trust, save_workbook
+from .modelrun import ModelError
 from .optspec import (
     GoalSpec,
     SweepSpec,
@@ -59,7 +60,7 @@ from .optspec import (
     resolve_model,
 )
 from .report import goal_json, num, solve_json, sweep_json
-from .sandbox import LoadPolicy, inspect_file
+from .sandbox import FileInfo, LoadPolicy, inspect_file
 
 # Exit codes. `OK`/`FAILED` are the two outcomes of an operation that ran;
 # `ERROR` means it never got that far.
@@ -68,7 +69,17 @@ EXIT_ERROR = 1
 EXIT_FAILED = 2
 
 # The actions that make this a headless run rather than an editor launch.
-HEADLESS_FLAGS = ("solve", "goal", "sweep", "eval", "convert", "set_values", "inputs", "get_values")
+HEADLESS_FLAGS = (
+    "model",
+    "solve",
+    "goal",
+    "sweep",
+    "eval",
+    "convert",
+    "set_values",
+    "inputs",
+    "get_values",
+)
 
 
 class CliError(Exception):
@@ -97,6 +108,18 @@ def add_headless_arguments(p: argparse.ArgumentParser) -> None:
         metavar="MODEL|SPEC",
         help="run a saved model by name (default: 'default'), or an inline "
         "spec: 'max B4 vars A4:A5 st D4:D6 [bounds ...] [int ...] [bin ...]'",
+    )
+    g.add_argument(
+        "--model",
+        action="store_true",
+        help="run the sheet's cross-tab model (PuLP, Pyomo, GMPL, CP-SAT, MiniZinc) "
+        "and write its output items, so --get can read them",
+    )
+    g.add_argument(
+        "--timeout",
+        type=float,
+        metavar="SECONDS",
+        help="with --model, stop the model after SECONDS (default: 120)",
     )
     g.add_argument(
         "--sens",
@@ -195,7 +218,10 @@ def is_headless(args: argparse.Namespace) -> bool:
 # --- operations -------------------------------------------------------------
 
 
-def _load(path: str | None, trust: bool = False, err: TextIO | None = None) -> Grid:
+def _load(
+    path: str | None, trust: bool = False, err: TextIO | None = None, model: bool = False
+) -> Grid:
+    """Load ``path``; warn when it holds code that will not run (``model``: --model runs models)."""
     if not path:
         raise CliError("headless mode needs a workbook: gridcalc FILE --solve ...")
     policy = None
@@ -204,12 +230,21 @@ def _load(path: str | None, trust: bool = False, err: TextIO | None = None) -> G
         policy = (
             LoadPolicy.trust_all(info.requires, info.digest) if info else LoadPolicy.trust_all()
         )
-    elif needs_trust(path) is not None:
+    elif (info := needs_trust(path)) is not None and not (model and _models_only(info)):
         print(f"gridcalc: warning: {path} carries Python; pass --trust to run it", file=err)
     try:
         return load_workbook(path, policy)
     except Exception as exc:  # noqa: BLE001 -- e.g. RecursionError from a pathological file
         raise CliError(str(exc) or f"could not load workbook: {path}") from exc
+
+
+def _models_only(info: FileInfo) -> bool:
+    """Whether the file's only code is its sheets' models."""
+    return (
+        not info.requires
+        and not info.python_formulas
+        and all(title != "code block" for title, _, _ in info.code_parts)
+    )
 
 
 def _select_sheet(g: Grid, name: str | None) -> None:
@@ -272,6 +307,29 @@ def run_solve(g: Grid, spec: str, *, sens: bool, diagnose: bool, apply: bool) ->
     out = solve_json(res)
     out["model"] = model.to_json()
     return out
+
+
+_SOLVED = ("Optimal", "Feasible")
+
+
+def run_cross_model(book: Book, timeout: float | None) -> dict[str, Any]:
+    """Run the active sheet's model. A solve that found no solution is a result, not an error."""
+    sh = book.grid._active
+    out: dict[str, Any] = {"sheet": sh.name, "backend": sh.model_backend}
+    try:
+        res = book.solve_model(timeout=timeout)
+    except ModelError as exc:
+        if exc.status is None or exc.status in _SOLVED:
+            raise CliError(str(exc)) from exc
+        out.update(status=exc.status, objective=None, written=0, error=str(exc), log=exc.log)
+        return out
+    out.update(status=res.status, objective=num(res.objective), written=res.written, log=res.log)
+    return out
+
+
+def _case_failed(m: dict[str, Any]) -> bool:
+    """Whether one case's model run failed or found no solution."""
+    return "error" in m or (m["status"] is not None and m["status"] not in _SOLVED)
 
 
 def run_goal(g: Grid, spec: GoalSpec, *, apply: bool) -> dict[str, Any]:
@@ -490,9 +548,22 @@ def _text_eval(entries: list[dict[str, Any]]) -> list[str]:
     ]
 
 
+def _text_model(d: dict[str, Any]) -> list[str]:
+    lines = [
+        f"model:     {d['backend']} on {d['sheet']}",
+        f"status:    {d['status'] or '-'}",
+        f"objective: {_fmt_num(d['objective'])}",
+        f"written:   {d['written']} cells",
+    ]
+    if d.get("error"):
+        lines.append(f"error:     {d['error']}")
+    return lines
+
+
 def render_text(result: dict[str, Any]) -> str:
     lines: list[str] = []
     for key, render in (
+        ("model", _text_model),
         ("eval", _text_eval),
         ("solve", _text_solve),
         ("goal", _text_goal),
@@ -508,6 +579,12 @@ def render_text(result: dict[str, Any]) -> str:
             lines.append("")
         if "inputs" in run_:
             lines.append(f"run {i + 1}: " + json.dumps(run_["inputs"]))
+        if "model" in run_:
+            m = run_["model"]
+            lines.append(
+                f"model: {m['status'] or '-'}, objective {_fmt_num(m['objective'])}"
+                + (f" ({m['error']})" if m.get("error") else "")
+            )
         width = max((len(k) for k in run_["outputs"]), default=0)
         lines += [f"{k:<{width}}  {json.dumps(v)}" for k, v in run_["outputs"].items()]
     if "convert" in result:
@@ -524,8 +601,8 @@ def render_text(result: dict[str, Any]) -> str:
 def run(args: argparse.Namespace, out: TextIO | None = None, err: TextIO | None = None) -> int:
     """Execute the requested headless operations. Returns the exit code.
 
-    Operations run in a fixed order -- set, eval, solve, goal, sweep, get,
-    convert -- rather than in the order the flags appear, so `--convert` always sees the
+    Operations run in a fixed order -- set, model, eval, solve, goal, sweep,
+    get, convert -- rather than in the order the flags appear, so `--convert` always sees the
     state the other operations left and the result of a given command line
     does not depend on argument order. Everything lands in one JSON object
     keyed by operation, so a single run can answer several questions.
@@ -535,7 +612,7 @@ def run(args: argparse.Namespace, out: TextIO | None = None, err: TextIO | None 
     result: dict[str, Any] = {}
     failed = False
     try:
-        g = _load(args.file, getattr(args, "trust", False), err)
+        g = _load(args.file, getattr(args, "trust", False), err, getattr(args, "model", False))
         for warning in g.load_warnings:
             print(f"gridcalc: warning: {warning}", file=err)
         _select_sheet(g, getattr(args, "sheet", None))
@@ -554,6 +631,12 @@ def run(args: argparse.Namespace, out: TextIO | None = None, err: TextIO | None 
         except BookError as exc:
             raise CliError(str(exc)) from exc
 
+        model = getattr(args, "model", False)
+        timeout = getattr(args, "timeout", None)
+        if model and cases is None:  # with a list of cases the model runs per case, below
+            d = run_cross_model(book, timeout)
+            result["model"] = d
+            failed = failed or (d["status"] is not None and d["status"] not in _SOLVED)
         if args.eval:
             result["eval"] = run_eval(g, args.eval)
         if args.solve:
@@ -575,12 +658,29 @@ def run(args: argparse.Namespace, out: TextIO | None = None, err: TextIO | None 
                 raise CliError(str(exc)) from exc
             result["sweep"] = run_sweep(g, spec_s)
         try:
-            if cases is not None:
+            workers = getattr(args, "workers", 1)
+            if cases is not None and model:
+                result["runs"] = [
+                    {
+                        "inputs": c,
+                        "model": r["model"],
+                        "outputs": r["outputs"],
+                        "errors": errors(r["outputs"]),
+                    }
+                    for c, r in zip(
+                        cases,
+                        book.solve_many(cases, gets, timeout=timeout, workers=workers),
+                        strict=True,
+                    )
+                ]
+                bad = any(r["errors"] for r in result["runs"])
+                failed = failed or any(_case_failed(r["model"]) for r in result["runs"])
+            elif cases is not None:
                 result["runs"] = [
                     {"inputs": c, "outputs": outs, "errors": errors(outs)}
                     for c, outs in zip(
                         cases,
-                        book.run_many(cases, gets, workers=getattr(args, "workers", 1)),
+                        book.run_many(cases, gets, workers=workers),
                         strict=True,
                     )
                 ]
@@ -591,7 +691,7 @@ def run(args: argparse.Namespace, out: TextIO | None = None, err: TextIO | None 
                 bad = bool(result["errors"])
             else:
                 bad = False
-        except BookError as exc:
+        except (BookError, ModelError) as exc:
             raise CliError(str(exc)) from exc
         # An error in an output asked for by name is a result, like INFEASIBLE.
         failed = failed or (bool(gets) and bad)

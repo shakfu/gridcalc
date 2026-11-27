@@ -27,13 +27,14 @@ from .dataitems import DataItemError, ItemDict
 from .engine import Grid, Sheet
 from .sandbox import _BLOCKED_NAMES, validate_code
 
-LANGS = ("pulp", "pyomo", "gmpl")
+LANGS = ("pulp", "pyomo", "gmpl", "cpsat", "minizinc")
 # "builtin": the PuLP subset on the HiGHS extension, in the child alone.
 # "pulp": the PuLP library (`gridcalc[pulp]`), which writes temp files and
 # starts a solver program, so its child gets those two exceptions.
-BACKENDS = ("builtin", "pulp", "pyomo", "gmpl")
+# "cpsat": OR-Tools CP-SAT (`gridcalc[ortools]`), in the child alone.
+BACKENDS = ("builtin", "pulp", "pyomo", "gmpl", "cpsat", "minizinc")
 # Backends that run a solver program: their child may write in a temp dir and start one.
-_PROGRAM_BACKENDS = ("pulp", "pyomo", "gmpl")
+_PROGRAM_BACKENDS = ("pulp", "pyomo", "gmpl", "minizinc")
 # Solver programs a model may start from PATH, besides PuLP's bundled CBC.
 # LP/MIP, then the nonlinear (AMPL-interface) solvers Pyomo starts.
 SOLVER_PROGRAMS = (
@@ -53,12 +54,18 @@ _POLL_S = 0.2
 
 
 class ModelError(Exception):
-    """A model that cannot run, or that failed. ``line`` is 1-based in the model text."""
+    """A model that cannot run, or that failed. ``line`` is 1-based in the model text.
 
-    def __init__(self, message: str, line: int | None = None, log: str = "") -> None:
+    ``status`` is the solve's status when a solve ran, as "Infeasible".
+    """
+
+    def __init__(
+        self, message: str, line: int | None = None, log: str = "", status: str | None = None
+    ) -> None:
         super().__init__(f"line {line}: {message}" if line else message)
         self.line = line
         self.log = log
+        self.status = status
 
     def lines(self) -> list[str]:
         """The message, then the model's output, for a pager or panel."""
@@ -95,6 +102,8 @@ def _text_problems(sh: Sheet) -> list[str]:
         problems.append("the pulp backend needs PuLP: pip install 'gridcalc[pulp]'")
     elif sh.model_backend == "pyomo" and not _installed("pyomo"):
         problems.append("the pyomo backend needs Pyomo: pip install 'gridcalc[pyomo]'")
+    elif sh.model_backend == "cpsat" and not _installed("ortools"):
+        problems.append("the cpsat backend needs OR-Tools: pip install 'gridcalc[ortools]'")
     if sh.model_backend == "gmpl":
         # GMPL text is not Python: glpsol parses it, and reports its own errors.
         from . import gmpl
@@ -102,6 +111,13 @@ def _text_problems(sh: Sheet) -> list[str]:
         if shutil.which("glpsol") is None:
             problems.append("the gmpl backend needs glpsol from GLPK on PATH")
         problems += [f"model on {sh.name}: {p}" for p in gmpl.problems(sh.model_text)]
+        return problems
+    if sh.model_backend == "minizinc":
+        from . import minizinc
+
+        if shutil.which("minizinc") is None:
+            problems.append("the minizinc backend needs the minizinc program on PATH")
+        problems += [f"model on {sh.name}: {p}" for p in minizinc.problems(sh.model_text)]
         return problems
     ok, why = validate_code(_rename_own_names(sh.model_text))
     if not ok:
@@ -154,6 +170,7 @@ def _request_items(items: dict[str, Any], g: Grid) -> dict[str, Any]:
             missing = g.data_items[name].missing
             out[name] = {
                 "kind": "indexed",
+                "index": list(g.data_items[name].index),
                 "keys": sorted(v.index_keys, key=repr),
                 "values": [[k, x] for k, x in v.items()],
                 "missing": [] if missing is dataitems._RAISE else [missing],
@@ -179,7 +196,8 @@ _SANDBOX_PROFILE = """(version 1)
 def set_backend(sh: Sheet, backend: str) -> None:
     """Set a sheet's backend and the language its text is in: GMPL, or Python for the rest."""
     sh.model_backend = backend
-    sh.model_lang = {"gmpl": "gmpl", "pyomo": "pyomo"}.get(backend, "pulp")
+    langs = {"gmpl": "gmpl", "pyomo": "pyomo", "cpsat": "cpsat", "minizinc": "minizinc"}
+    sh.model_lang = langs.get(backend, "pulp")
 
 
 def _installed(name: str) -> bool:
@@ -203,12 +221,47 @@ def _pulp_dir() -> str | None:
     return os.path.realpath(locs[0]) if locs else None
 
 
-def solver_programs() -> tuple[list[str], list[str]]:
-    """Programs the pulp backend may start: (paths, directories), resolved."""
+def minizinc_solvers() -> list[dict[str, Any]]:
+    """The solvers `minizinc --solvers-json` lists; empty without the program. About 0.35 s."""
+    exe = shutil.which("minizinc")
+    if exe is None:
+        return []
+    out = subprocess.run(  # noqa: S603
+        [exe, "--solvers-json"], capture_output=True, text=True, check=False, timeout=30
+    ).stdout
+    try:
+        solvers = json.loads(out)
+    except ValueError:
+        return []
+    return [s for s in solvers if isinstance(s, dict)] if isinstance(solvers, list) else []
+
+
+def _minizinc_programs(solvers: list[dict[str, Any]]) -> list[str]:
+    """`minizinc` and the FlatZinc programs its solvers start; library solvers have none."""
+    exe = shutil.which("minizinc")
+    found = [exe] if exe else []
+    for s in solvers:
+        info = s.get("extraInfo")
+        path = info.get("executable") if isinstance(info, dict) else None
+        if isinstance(path, str) and os.path.isabs(path) and os.path.exists(path):
+            found.append(path)
+    return found
+
+
+def solver_programs(
+    backend: str = "pulp", solvers: list[dict[str, Any]] | None = None
+) -> tuple[list[str], list[str]]:
+    """Programs a program backend may start: (paths, directories), resolved.
+
+    ``solvers`` is `minizinc_solvers()`, for the minizinc backend.
+    """
     # Both the PATH entry and its target: sandbox-exec may see either.
-    found = [p for name in SOLVER_PROGRAMS if (p := shutil.which(name))]
+    if backend == "minizinc":
+        found = _minizinc_programs(solvers or [])
+    else:
+        found = [p for name in SOLVER_PROGRAMS if (p := shutil.which(name))]
     files = {os.path.realpath(p) for p in found} | set(found)
-    pulp = _pulp_dir()
+    pulp = _pulp_dir() if backend != "minizinc" else None
     dirs = [os.path.join(pulp, "solverdir")] if pulp else []
     return sorted(files), dirs
 
@@ -229,14 +282,18 @@ def _pulp_profile(n_files: int, n_dirs: int) -> str:
     )
 
 
-def _child_argv(backend: str = "builtin", tmp: str | None = None) -> list[str]:
+def _child_argv(
+    backend: str = "builtin",
+    tmp: str | None = None,
+    programs: tuple[list[str], list[str]] | None = None,
+) -> list[str]:
     # -B: no .pyc writes, which the sandbox would refuse anyway.
     argv = [sys.executable, "-I", "-B", "-m", "gridcalc._modelchild"]
     if sys.platform != "darwin" or not os.path.exists(_SANDBOX_EXEC):
         return argv
     if backend not in _PROGRAM_BACKENDS or tmp is None:
         return [_SANDBOX_EXEC, "-p", _SANDBOX_PROFILE, *argv]
-    files, dirs = solver_programs()
+    files, dirs = programs if programs is not None else solver_programs(backend)
     params = ["-D", f"TMP={os.path.realpath(tmp)}", "-D", f"PY={sys.executable}"]
     params += ["-D", f"PYREAL={os.path.realpath(sys.executable)}"]
     params += [x for i, f in enumerate(files) for x in ("-D", f"F{i}={f}")]
@@ -280,11 +337,19 @@ class ModelJob:
     changed in between: the solution would answer a different question.
     """
 
-    def __init__(self, g: Grid, *, timeout: float = TIMEOUT_S, mem_mb: int = MEM_MB) -> None:
+    def __init__(
+        self,
+        g: Grid,
+        *,
+        timeout: float = TIMEOUT_S,
+        mem_mb: int = MEM_MB,
+        trusted: bool | None = None,
+    ) -> None:
+        """``trusted`` overrides the file's trust for the model only; None keeps it."""
         sh = g._active
         if not sh.model_text.strip():
             raise ModelError(f"sheet {sh.name} has no model")
-        if not g.python_trusted:
+        if not (g.python_trusted if trusted is None else trusted):
             raise ModelError(
                 "this file's code was not trusted when it was opened, so its model will not run"
             )
@@ -297,11 +362,13 @@ class ModelJob:
         self.started = time.monotonic()
         self._items = self._read(g)
         self.backend = sh.model_backend
+        # CP-SAT searches on every core, and RLIMIT_CPU sums the threads' time.
+        cores = (os.cpu_count() or 1) if self.backend == "cpsat" else 1
         self._request = {
             "text": sh.model_text,
             "items": self._items,
             "mem_mb": mem_mb,
-            "cpu_s": max(1, math.ceil(timeout)),
+            "cpu_s": max(1, math.ceil(timeout)) * cores,
             "backend": self.backend,
         }
         self._proc: subprocess.Popen[str] | None = None
@@ -372,13 +439,19 @@ class ModelJob:
 
     def _spawn(self, tmp: str | None) -> dict[str, Any]:
         env = None
+        programs = None
         if tmp is not None:
-            files, dirs = solver_programs()
+            solvers = minizinc_solvers() if self.backend == "minizinc" else []
+            programs = files, dirs = solver_programs(self.backend, solvers)
             self._request.update(tmp=os.path.realpath(tmp), programs=files, program_dirs=dirs)
+            if self.backend == "minizinc":
+                # What is left of the wall clock, so MiniZinc stops first with its best solution.
+                left = self.timeout - (time.monotonic() - self.started)
+                self._request.update(solvers=solvers, timeout_s=left)
             # PuLP writes its model and solution files in `tempfile.gettempdir()`.
             env = {**os.environ, "TMPDIR": tmp, "TEMP": tmp, "TMP": tmp}
         proc = subprocess.Popen(  # noqa: S603
-            _child_argv(self.backend, tmp),
+            _child_argv(self.backend, tmp, programs),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -451,7 +524,13 @@ class ModelJob:
         log = str(reply.get("log", ""))
         if not reply.get("ok"):
             line = reply.get("line")
-            raise ModelError(str(reply.get("error")), line if isinstance(line, int) else None, log)
+            status = reply.get("status")
+            raise ModelError(
+                str(reply.get("error")),
+                line if isinstance(line, int) else None,
+                log,
+                status if isinstance(status, str) else None,
+            )
         if self.sheet not in g.sheets:
             raise ModelError(f"sheet {self.sheet.name} was deleted while the model ran", log=log)
         active = g.active
@@ -491,13 +570,18 @@ class ModelJob:
 
 
 def run_model(
-    g: Grid, *, undo: Any = None, timeout: float = TIMEOUT_S, mem_mb: int = MEM_MB
+    g: Grid,
+    *,
+    undo: Any = None,
+    timeout: float = TIMEOUT_S,
+    mem_mb: int = MEM_MB,
+    trusted: bool | None = None,
 ) -> ModelResult:
     """Run the active sheet's model to completion and write its results as one undo step.
 
     Raises :class:`ModelError` before anything is written if the model is
     untrusted, invalid, fails, or writes a value its data item cannot take.
     """
-    job = ModelJob(g, timeout=timeout, mem_mb=mem_mb)
+    job = ModelJob(g, timeout=timeout, mem_mb=mem_mb, trusted=trusted)
     job.run()
     return job.apply(g, undo)

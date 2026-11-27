@@ -68,6 +68,8 @@ web = ["pywebview>=5.0"]
 pulp = ["pulp>=2.7,<4"]
 # Run sheet models written with Pyomo; it starts solver programs such as glpsol.
 pyomo = ["pyomo>=6.7"]
+# Run sheet models written with OR-Tools CP-SAT, in the model process itself.
+ortools = ["ortools>=9.15"]
 
 [dependency-groups]
 dev = [
@@ -91,6 +93,7 @@ dev = [
     "tomli>=1.0",
     "twine>=6.2.0",
     "types-Pygments>=2.15",
+    "ortools>=9.15",
 ]
 # The documentation site (`make docs`). Kept out of `dev` because it is a
 # large tree of unrelated packages that neither the test suite nor the QA
@@ -137,6 +140,11 @@ python-preference = "only-managed"
 
 [tool.scikit-build]
 wheel.packages = ["src/gridcalc"]
+wheel.force-include = {"src/gridcalc/web/static/index.html" = "gridcalc/web/static/index.html"}
+# The client's TypeScript sources belong in the sdist (it has to be buildable)
+# but not in a wheel, which only ever loads the compiled bundle. Leaving them in
+# shipped ~350 kB of .tsx, tests, and a 136 kB package-lock.json to every user.
+wheel.exclude = ["gridcalc/web/frontend/**"]
 cmake.args = []
 cmake.define = {}
 cmake.build-type = "Release"
@@ -152,11 +160,6 @@ sdist.include = ["src/gridcalc/web/static/index.html"]
 # folder -- a bare `media` matches `docs/media` too, and drops the images the
 # shipped pages reference.
 sdist.exclude = ["/media"]
-wheel.force-include = {"src/gridcalc/web/static/index.html" = "gridcalc/web/static/index.html"}
-# The client's TypeScript sources belong in the sdist (it has to be buildable)
-# but not in a wheel, which only ever loads the compiled bundle. Leaving them in
-# shipped ~350 kB of .tsx, tests, and a 136 kB package-lock.json to every user.
-wheel.exclude = ["gridcalc/web/frontend/**"]
 
 [tool.cibuildwheel]
 # uv creates the build and audit venvs; the virtualenv frontend downloads

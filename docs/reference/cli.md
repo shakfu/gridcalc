@@ -11,6 +11,7 @@ gridcalc book.json --goal 'B10 = 100 by A1'      # goal seek
 gridcalc book.json --eval '=SUM(A1:A10)'         # evaluate a formula
 gridcalc book.xlsx --convert book.json           # format conversion
 gridcalc loan.xlsx --set Rate=0.04 --get Payment # inputs and outputs by defined name
+gridcalc beer.json --model --get flow             # a cross-tab model's output items
 ```
 
 The spec strings are the ones the terminal uses. `--solve 'max B4 vars A4:A5 st D4:D6'` is the argument of `:opt`, and `--goal 'B10 = 100 by A1'` the argument of `:goal`; both are parsed by the same module the interactive commands use, so a spec that works in one works in the other. See [Optimization](../guide/optimization.md) and [Goal seek](../guide/goal-seek.md) for what the grammar means.
@@ -20,6 +21,8 @@ The spec strings are the ones the terminal uses. `--solve 'max B4 vars A4:A5 st 
 | Flag | Does |
 |---|---|
 | `--solve [MODEL\|SPEC]` | Run a model. Bare, it runs the workbook's saved `default`; a name runs that saved model; anything starting with `max`/`min` is an inline spec. |
+| `--model` | Run the sheet's [cross-tab model](../guide/models.md) and write its output items into the grid. See [Cross-tab models](#cross-tab-models). |
+| `--timeout SECONDS` | With `--model`, stop the model after SECONDS. Default 120. |
 | `--sens` | With `--solve`, add shadow prices, reduced costs and ranging. Ignored for MIPs, whose duals describe one relaxation rather than the integer problem. |
 | `--diagnose` | With `--solve`, explain a failure: the conflicting constraint set on `INFEASIBLE`, the runaway variables on `UNBOUNDED`. |
 | `--goal SPEC` | Goal seek: `<cell> = <target> by <cell> [in <lo>:<hi>]`. |
@@ -35,7 +38,7 @@ The spec strings are the ones the terminal uses. `--solve 'max B4 vars A4:A5 st 
 | `--trust` | Run the workbook's Python: its code block, required modules and PYTHON-mode formulas. Without it none of these run, and stderr says so. |
 | `--format json\|text` | Output shape. Defaults to `json`. |
 
-Operations run in a fixed order — set, eval, solve, goal, sweep, get, convert — regardless of the order the flags appear in, so `--convert` always sees the state the others left and a command line means the same thing however it is written. One run can answer several questions; each lands under its own key.
+Operations run in a fixed order — set, model, eval, solve, goal, sweep, get, convert — regardless of the order the flags appear in, so `--convert` always sees the state the others left and a command line means the same thing however it is written. One run can answer several questions; each lands under its own key.
 
 ## Named inputs and outputs
 
@@ -78,9 +81,33 @@ book.set({"Rate": 0.04}); book.save("filled.xlsx")
 
 An unknown name, a value of the wrong shape, or an input to a formula name exits 1 before anything is written.
 
+## Cross-tab models
+
+`--model` runs the model saved on the active sheet, or on `--sheet NAME`, with any backend: built-in, PuLP, Pyomo, GMPL, CP-SAT or MiniZinc. Its data items are defined names, so `--set` changes the model's data and `--get` reads its results:
+
+```sh
+gridcalc beer.json --set 'supply=[3000,4000]' --model --get flow --get TotalCost
+```
+
+- **Trust**: `--model` is consent to run the model, in its restricted process. The workbook's code block and PYTHON-mode formulas still need `--trust`.
+- **Writes**: the output items are written into the in-memory grid without `--apply`, since `--get` and formulas read them there. They reach disk only with `--convert`.
+- **Exit 2** when the solve ran and found no solution: `Infeasible`, `Unbounded`, or a time limit with nothing found. Nothing is written. A model that fails to run (a syntax error, a missing solver) exits 1.
+- **A list in `--inputs`** runs the model once per case. Each case starts from the workbook as loaded: the model's data items are put back between cases, so one case's results never show in the next. A static problem, such as no model on the sheet, exits 1 before the first case. A case that fails or finds no solution carries `error` or its status in its own `model` object, and the run exits 2. `--workers N` forks as for any batch; each case still starts its own model process.
+
+```json
+{
+  "model": {
+    "sheet": "Transport", "backend": "minizinc", "status": "Optimal",
+    "objective": 8400, "written": 11, "log": ""
+  }
+}
+```
+
+`status` is `null` when the model solved no single problem gridcalc can read. On exit 2 the object also carries `error`. `log` is the model's printed output. From Python, `Book.open(path).solve_model()` does the same and returns a `ModelResult`; `Book.solve_many(cases, outputs)` runs a batch.
+
 ## Nothing is written unless you ask
 
-`--solve` and `--goal` report what they found and leave the workbook alone. `--apply` lets them write into the in-memory grid, and that only reaches disk if `--convert` is also given:
+`--solve` and `--goal` report what they found and leave the workbook alone. (`--model` is the exception: see [Cross-tab models](#cross-tab-models).) `--apply` lets them write into the in-memory grid, and that only reaches disk if `--convert` is also given:
 
 ```sh
 gridcalc plan.json --solve                                  # answer only

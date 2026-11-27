@@ -727,7 +727,7 @@ class Api:
             "cells": info.cell_count,
             "formulas": info.formula_count,
             "has_code": info.has_code,
-            "code": info.code_preview,
+            "parts": [{"title": t, "lang": lang, "text": x} for t, lang, x in info.code_parts],
             "code_lines": info.code_lines,
             "python_formulas": info.python_formulas,
             "requires": list(info.requires),

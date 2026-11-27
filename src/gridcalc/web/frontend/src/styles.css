@@ -1138,6 +1138,16 @@ button.link {
   color: var(--muted);
 }
 
+/* A heading over each piece when a file carries more than one (code block, models). */
+.trust-part-title {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+}
+.trust-part + .trust-part {
+  border-top: 1px solid var(--border);
+}
+
 /* The trust dialog's code preview: highlighted, read-only, scrolled inside its box. */
 .trust-code .code-editor,
 .trust-code .cm-editor {

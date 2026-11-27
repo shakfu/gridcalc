@@ -125,7 +125,7 @@ A sheet's model ([Cross-tab models](guide/models.md)) is code too, but it does n
 | Audit hook | Refuses file writes, processes, sockets and native calls, including routes the static check misses |
 | `sandbox-exec` (macOS only) | Denies network, file writes and process creation at the OS level |
 
-The pulp, pyomo and gmpl backends start a solver program, so their child may write in a private temporary directory and start listed solver programs. Network is denied to every backend. Linux and Windows have no OS layer, and Windows has no CPU or memory limit. Design and measurements: `docs/dev/crosstab-model.md`.
+The pulp, pyomo, gmpl and minizinc backends start a solver program, so their child may write in a private temporary directory and start listed solver programs. Network is denied to every backend. Linux and Windows have no OS layer, and Windows has no CPU or memory limit. Design and measurements: `docs/dev/crosstab-model.md`.
 
 ## JSON File Format Extension
 
@@ -186,4 +186,4 @@ Files without `requires` are fully backward compatible.
 
 - `gridcalc/modelrun.py`, `gridcalc/_modelchild.py`, `gridcalc/gmpl.py` -- the solver model process, its audit hook and the GMPL check
 
-- `tests/test_sandbox.py` -- comprehensive tests; `tests/test_modelrun.py`, `test_pulp_backend.py`, `test_pyomo_backend.py`, `test_gmpl.py` -- model confinement
+- `tests/test_sandbox.py` -- comprehensive tests; `tests/test_modelrun.py`, `test_pulp_backend.py`, `test_pyomo_backend.py`, `test_cpsat_backend.py`, `test_gmpl.py`, `test_minizinc.py` -- model confinement

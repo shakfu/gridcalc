@@ -6,29 +6,33 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 ## High
 
+### Excel compatibility
+
 - [ ] **Links left at Excel's saved value.** `[1]!Name` (a name in the linked book) and a link read through `INDIRECT` or `OFFSET`. An xlsx saved from JSON has no link parts, since JSON keeps only the cached cells; `save_losses` reports it.
 
-- [ ] **Corpus mismatches still open** (`docs/dev/excel-corpus.md`). Largest first:
-  - A legacy formula keeps its rule only through copy and fill; pasting its text from the clipboard makes it dynamic. Excel keeps the `@` in the text instead.
-
-  - About 340 cells remain (79,454 of 79,797, 99.57%, 2026-11-16). Open:
-    - Solver precision: `XIRR` (15 cells), `IRR` and `NPV` (12), `ODDFYIELD` (3), `CUMPRINC` (2), `NORM.INV` and `LOGNORM.INV` (2) differ from Excel near 1e-9 relative; gridcalc's roots have the smaller residual. `tests/test_excel_saved_models.py` has a strict xfail for the `XIRR` case, 7e-9 off. `RATE(360,-1000,150000,0,0,0)` is `#NUM!` in Excel, whose iteration fails from a guess of 0; gridcalc converges.
-
-    - Two spills that collide: gridcalc lets whichever spills first win. Within one recalc that order follows Python's hash seed, so the winner can change between runs: `H1 =SEQUENCE(5)` against `G5 =SEQUENCE(3,2)` alternates across `PYTHONHASHSEED` 0-7. Excel 16.114 picked the same winner in either entry order (`G3` beat `H1`). Its rule is not yet known.
-
-    - A whole-column dynamic formula that fits (anchored in row 1, column empty) spills the used rows only; Excel fills the rest with the trimmed value, such as 0. Materialising a million cells is too costly; reading them would need virtual spill cells.
-
-    - `TEXT(1.5,"#.#####00#0")` is "1.5000" in Excel; the digit rule is not known.
-
-    - `CODE` of a character outside cp1252 returns its code point. Windows Excel likely gives 63 (`?`); unverified, since only Mac Excel is at hand.
-
-    - Not engine bugs: `TODAY()`, `NOW()` and `RANDARRAY` in templates, `TAN` near pi/2, text saved under a non-US locale (`"23€"`, day-first `"2/3/2023"`), `GEOMEAN.xlsx` (not saved by Excel: its errors are stored as text), `excelcompiler.xlsx` `datetime!B9` (a stale saved value), and `npv.xlsx` (last-bit `NPV` differences, magnified by a subtraction).
-
-  - `HYPGEOM.DIST`'s cumulative form sums one term per success and has no closed form here; a sample of a billion runs that long.
-
-  - `BESSELJ` order 1 and up, for |x| >= 8, differs from Excel in the sixth digit. gridcalc's value is the more accurate one.
+- [ ] **A legacy formula pasted as text becomes dynamic.** It keeps its rule only through copy and fill; pasting its text from the clipboard makes it dynamic. Excel keeps the `@` in the text instead (`docs/dev/excel-corpus.md`).
 
 - [ ] **Real-workbook survey gaps** (`docs/dev/excel-corpus.md`, survey section). By files: conditional formatting (178), data validation (118), comments (50), hyperlinks (30). The reference union `(A1:B2,C1:D2)` does not parse.
+
+### Excel corpus mismatches: about 340 of 79,797 cells (2026-11-16)
+
+- [ ] **Solver precision** (`docs/dev/excel-corpus.md`). `XIRR` (15 cells), `IRR` and `NPV` (12), `ODDFYIELD` (3), `CUMPRINC` (2), `NORM.INV` and `LOGNORM.INV` (2) differ from Excel near 1e-9 relative; gridcalc's roots have the smaller residual. `tests/test_excel_saved_models.py` has a strict xfail for the `XIRR` case, 7e-9 off. `RATE(360,-1000,150000,0,0,0)` is `#NUM!` in Excel, whose iteration fails from a guess of 0; gridcalc converges.
+
+- [ ] **Two spills that collide.** gridcalc lets whichever spills first win. Within one recalc that order follows Python's hash seed, so the winner can change between runs: `H1 =SEQUENCE(5)` against `G5 =SEQUENCE(3,2)` alternates across `PYTHONHASHSEED` 0-7. Excel 16.114 picked the same winner in either entry order (`G3` beat `H1`). Its rule is not yet known.
+
+- [ ] **A whole-column dynamic formula spills the used rows only.** When it fits (anchored in row 1, column empty), Excel fills the rest with the trimmed value, such as 0. Materialising a million cells is too costly; reading them would need virtual spill cells.
+
+- [ ] **`TEXT(1.5,"#.#####00#0")`** is "1.5000" in Excel; the digit rule is not known.
+
+- [ ] **`CODE` of a character outside cp1252** returns its code point. Windows Excel likely gives 63 (`?`); unverified, since only Mac Excel is at hand.
+
+- [ ] **`HYPGEOM.DIST`'s cumulative form** sums one term per success and has no closed form here; a sample of a billion runs that long.
+
+- [ ] **`BESSELJ` order 1 and up, for |x| >= 8,** differs from Excel in the sixth digit. gridcalc's value is the more accurate one.
+
+- [ ] **Record the mismatches that are not engine bugs in `docs/dev/excel-corpus.md`.** Only this file lists them: `TODAY()`, `NOW()` and `RANDARRAY` in templates, `TAN` near pi/2, text saved under a non-US locale (`"23€"`, day-first `"2/3/2023"`), `GEOMEAN.xlsx` (not saved by Excel: its errors are stored as text), `excelcompiler.xlsx` `datetime!B9` (a stale saved value), and `npv.xlsx` (last-bit `NPV` differences, magnified by a subtraction).
+
+### Performance
 
 - [ ] **Evaluator speed on large array formulas.** Sheetpedia `802559d...` holds 7,676 copies of `AGGREGATE(15,6,ROW(H2:H10000)-ROW(H2)+1/(B2:B10000=Q$1)/...)`: about 380M element operations. A full recalc takes 232 s and matches Excel in every cell; under the 30 s limit most give `#CALC!`. At about 0.6 us per element no Python loop fits, so this needs native or vectorised element-wise operators. The C++ entry under Low weighs that.
 
@@ -47,6 +51,10 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 - [ ] **A table item cannot index a cross-tab item.** `:item costs Warehouses Bars` with `Warehouses` a column set is refused; only a range set can index.
 
 - [ ] **Sensitivity for quadratic models.** Withheld today: a QP's duals do not carry the shadow-price reading the report describes. HiGHS does return them, so this is a question of deciding what they mean to a spreadsheet user, not of plumbing.
+
+### Excel compatibility
+
+- [ ] **Arrays do not broadcast to an outer product.** `=SEQUENCE(3)*TRANSPOSE(SEQUENCE(3))` is `#VALUE!`; Excel gives a 3x3 array. A column against a row should expand both to their combined shape.
 
 ### Iterative calculation
 
@@ -78,12 +86,11 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
   - Compiling each AST to closures measured within noise: 38.2-38.8 ms against 37.8-39.0 ms, with 99.9% of nodes compiled (`docs/dev/261110-perf.md`). Trimming `run` and `_recalc_topo` also measured within noise. Running repeated formulas as one numpy pass would reach 20% of this model: the other 80% is a row-to-row recurrence. One case has no known next step.
 
-- [ ] **Whole-column paths that still cost a million rows.** Each is correct but slow on Excel's grid:
-  - Fill down (`Api.fill`) over a header-selected column writes every row, as Excel does.
+- [ ] **Whole-column fill down writes a million rows.** Fill down (`Api.fill`) over a header-selected column writes every row, as Excel does. Correct but slow on Excel's grid.
 
-  - The solver's `_precedents` (`opt.py`) expands a range through `extract_refs`, one key per cell.
+- [ ] **The solver expands a whole-column range cell by cell.** `_precedents` (`opt.py`) goes through `extract_refs`, one key per cell.
 
-  - In PYTHON mode, one cell near row 1048576 sets the used extent, so a range over `TRIM_CELLS` (`_expand_ranges`, named-range injection) reads every position to it. EXCEL and HYBRID ranges read only stored cells.
+- [ ] **A far cell makes PYTHON-mode ranges read a million rows.** One cell near row 1048576 sets the used extent, so a range over `TRIM_CELLS` (`_expand_ranges`, named-range injection) reads every position to it. EXCEL and HYBRID ranges read only stored cells.
 
 - [ ] **Undo memory is bounded by entry count, not size.** A structural entry copies every sheet's cells: 6.4 MB on a 3-sheet workbook with 25k cells, so 64 entries can hold about 400 MB. Cap the stack by bytes if real workbooks reach that.
 
@@ -91,33 +98,32 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 - [ ] **Undo gaps.** `:e` code edits, `:opt def`/`:opt undef` and `:width` (web `set_col_width`) record no undo entry. A workbook-level undo also reverts any width change made after its snapshot.
 
-- [ ] **xlsx styles: what is left.** Fonts, solid fills, borders, alignment, number formats, merged cells and row heights now round-trip (see CHANGELOG). Open:
-  - No command sets a font, fill, border, alignment or merge; they arrive only from a file.
+### xlsx styles
 
-  - Neither view hides hidden rows, and no command hides or filters one. `SUBTOTAL` and `AGGREGATE` already read them (`docs/dev/hidden-rows.md`).
+- [ ] **No command sets a font, fill, border, alignment or merge;** they arrive only from a file.
 
-  - Neither view draws row heights, and the web view does not draw rotation. Variable row heights need the web grid's row positions as a prefix sum over 1M rows.
+- [ ] **Hidden rows.** Neither view hides them, and no command hides or filters one. `SUBTOTAL` and `AGGREGATE` already read them (`docs/dev/hidden-rows.md`).
 
-  - Pattern and gradient fills, diagonal borders and font effects (superscript, outline, shadow) are not modelled; saving over a file with them still asks.
+- [ ] **Row heights and rotation are not drawn.** Neither view draws row heights, and the web view does not draw rotation. Variable row heights need the web grid's row positions as a prefix sum over 1M rows.
 
-  - Clearing a cell keeps its `xstyle` but drops bold, italic, underline and number format. Excel keeps all of them.
+- [ ] **Pattern and gradient fills, diagonal borders and font effects** (superscript, outline, shadow) are not modelled; saving over a file with them still asks.
 
-  - Selecting or editing inside a merged area treats each cell separately.
+- [ ] **Clearing a cell drops its formatting.** It keeps its `xstyle` but drops bold, italic, underline and number format. Excel keeps all of them.
 
-  - Not yet opened in Excel: run `scripts/style_check.py` (`docs/dev/excel-check.md`).
+- [ ] **Merged areas.** Selecting or editing inside one treats each cell separately.
+
+- [ ] **Open the styled output in Excel:** run `scripts/style_check.py` (`docs/dev/excel-check.md`).
 
 ### Security
 
 - [ ] **No run-time limit in PYTHON mode.** EXCEL and HYBRID formulas are capped at 8192 characters and 64 nesting levels, and a recalc stops after `RECALC_TIME_LIMIT` (see CHANGELOG). `=sum(range(10**12))` in an approved PYTHON-mode file still hangs: `eval` cannot be interrupted without a thread or a signal.
 
-- [ ] **Arrays do not broadcast to an outer product.** `=SEQUENCE(3)*TRANSPOSE(SEQUENCE(3))` is `#VALUE!`; Excel gives a 3x3 array. A column against a row should expand both to their combined shape.
-
 ### Documentation & infrastructure
 
-- [ ] **Check the prior art for named-input/output runs before claiming the feature is distinctive.** SharePoint Excel Services published named cells as parameters, Coherent Spark marks I/O names by prefix (`Xi_`/`Xo_`, unverified), and `formulas` compiles a workbook into a callable with `compile(inputs, outputs)`. gridcraft-cli can script it with `run --cmd`, reading a name through `formulas.evaluate`. Its `cell.set` ignores a name and writes the active cell with exit 0. `--print` and `range.setValues` reject names, an error output exits 0, and text inputs starting with `=` become formulas. pycel takes addresses only; names must be resolved through `excel.defined_names`, which needs openpyxl < 3.1. Corpus and timing results, 2026-11-07: `docs/dev/comparison.md`. Open:
-  - Check the Spark convention against its documentation.
+- [ ] **Check the prior art for named-input/output runs before claiming the feature is distinctive.** SharePoint Excel Services published named cells as parameters, Coherent Spark marks I/O names by prefix (`Xi_`/`Xo_`, unverified), and `formulas` compiles a workbook into a callable with `compile(inputs, outputs)`. gridcraft-cli can script it with `run --cmd`, reading a name through `formulas.evaluate`. Its `cell.set` ignores a name and writes the active cell with exit 0. `--print` and `range.setValues` reject names, an error output exits 0, and text inputs starting with `=` become formulas. pycel takes addresses only; names must be resolved through `excel.defined_names`, which needs openpyxl < 3.1. Corpus and timing results, 2026-11-07: `docs/dev/comparison.md`. If the checks below pass, gridcalc's case rests on the CLI, exit codes and correctness, and the docs should say that.
+  - [ ] Check the Spark convention against its documentation.
 
-  - Find out whether gridcraft-cli's `--script` can reset state between cases. If they pass, gridcalc's case rests on the CLI, exit codes and correctness, and the docs should say that.
+  - [ ] Find out whether gridcraft-cli's `--script` can reset state between cases.
 
 - [ ] **Build the docs site in CI.** The site itself is done (`mkdocs.yml`, 30+ pages under `docs/`, `make docs` / `docs-serve` / `docs-deploy`), and publishing stays a deliberate manual `make docs-deploy` -- the Makefile says why. The gap is that `ci.yml` never runs `mkdocs build --strict`, so a broken cross-reference between pages lands on `main` and is only found by whoever next deploys. Adding the `docs` group and one `make docs` step to CI is the whole fix; it does not commit or push anything.
 
@@ -143,17 +149,15 @@ Open tasks, ordered by priority within each section. Resolved items live in CHAN
 
 - [ ] **Viewport fetch cost.** `viewport()` fires per scroll event, coalesced only by in-flight dedup (`Grid.tsx`). No debounce and no client-side block cache, so fast scrolling issues a round trip per frame, newly-scrolled rows stay blank until each returns, and scrolling back refetches from scratch. Not urgent in-process on a 256x1024 sheet; an LRU of fetched blocks is the cheap fix when it bites. `docs/web.md` §5e.
 
-- [ ] **Distribution (P3).** Frozen, signed, double-clickable builds for macOS/Windows/Linux around pywebview plus the C++ extensions, and per- platform manual QA of clipboard/IME/rendering. `docs/web.md` §5b calls this the most underestimated cost in the plan; budget it as its own project, not a task. Only worth starting once the decision below is answered.
+- [ ] **Distribution (P3).** Frozen, signed, double-clickable builds for macOS/Windows/Linux around pywebview plus the C++ extensions, and per- platform manual QA of clipboard/IME/rendering. `docs/web.md` §5b calls this the most underestimated cost in the plan; budget it as its own project, not a task. Only worth starting once the web-or-TUI default decision (Medium > Web frontend) is answered.
 
 - [ ] **The bridge is described three times by hand.** `bridge/types.ts`, `bridge/mock.ts` and `_MOCK_BRIDGE` in `tests/integration/test_web_bundle.py` are maintained separately. The mocks return source text where `viewport`, `copy` and `search` return values, do not model sheet undo, and differ on `chart_data` and `fill` edge cases. Add a contract test that checks each `Api` method's return keys and types against one schema.
 
 ### Performance
 
-Measurements for this section: `docs/dev/ironcalc.md`. Per-formula figures are for a full recalc of 20k scalar formulas.
-
 - [ ] **Remaining range scans in criteria and lookup functions.** `SUMIF`, `COUNTIF`, the `*IFS` family, exact `MATCH`, `VLOOKUP`, and forward `XLOOKUP`/`XMATCH` use the memos on a shared `Vec` (see CHANGELOG). Still scanning per consumer: `HLOOKUP`, last-to-first `XLOOKUP`/`XMATCH`, approximate matches, text and wildcard criteria, and the database functions. `SUMIF` over 1000 cells still costs about 60 us: one pass builds the hit list and one collects the matched numbers. A sorted copy with `bisect` could make approximate matches logarithmic; not measured.
 
-- [ ] **A full `recalc()` rebuilds the dependency graph.** 2.2-2.9 us per formula, the largest piece of a full recalc. Undo, sort, the CLI and the solver's apply step write cells directly and rely on the rebuild (`docs/topological.md`). Skipping it needs each of them to write through `setcells_bulk`, or to pass a dirty set. Undo gains less: `Cell.copy_from` drops the AST, so a restored cell is re-parsed.
+- [ ] **A full `recalc()` rebuilds the dependency graph.** 2.2-2.9 us per formula (as below, a full recalc of 20k scalar formulas, `docs/dev/ironcalc.md`), the largest piece of a full recalc. Undo, sort, the CLI and the solver's apply step write cells directly and rely on the rebuild (`docs/topological.md`). Skipping it needs each of them to write through `setcells_bulk`, or to pass a dirty set. Undo gains less: `Cell.copy_from` drops the AST, so a restored cell is re-parsed.
 
 - [ ] **A function call costs 2-3 us before its body runs.** `_eval_call` lowers the name four times, checks LET locals and named lambdas before the builtins, and reads `_param_info` twice. Resolve the name once and look the builtin up first when no LET scope is open.
 

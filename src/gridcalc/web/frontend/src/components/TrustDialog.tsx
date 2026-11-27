@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { CodeEditor } from './CodeEditor'
+import { CodeEditor, languageOf } from './CodeEditor'
 import type { TrustInfo, TrustPolicy } from '../bridge/types'
 
 // The web frontend's answer to the curses trust prompt: a workbook's code block
@@ -109,7 +109,18 @@ export function TrustDialog({
 
           {info.has_code && (
             <div className="trust-code">
-              <CodeEditor value={info.code} onChange={() => {}} readOnly ariaLabel="Code block" />
+              {info.parts.map((p) => (
+                <section key={p.title} className="trust-part">
+                  {info.parts.length > 1 && <div className="trust-part-title">{p.title}</div>}
+                  <CodeEditor
+                    value={p.text}
+                    onChange={() => {}}
+                    readOnly
+                    language={languageOf(p.lang)}
+                    ariaLabel={p.title === 'code block' ? 'Code block' : p.title}
+                  />
+                </section>
+              ))}
             </div>
           )}
 

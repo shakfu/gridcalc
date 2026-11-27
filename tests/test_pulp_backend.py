@@ -27,7 +27,8 @@ def test_beer_model_solves_with_cbc(pbeer: Grid) -> None:
     assert res.status == "Optimal"
     assert res.objective == pytest.approx(8400)
     assert res.written == 11
-    assert res.log == "PULP_CBC_CMD\n"
+    # Bundled CBC, or the `cbc` on PATH, which PuLP 3.3 prefers when there is one.
+    assert res.log in ("PULP_CBC_CMD\n", "COIN_CMD\n")
 
 
 def test_duals_come_from_pulp(pbeer: Grid) -> None:
@@ -202,3 +203,21 @@ def test_binding_with_the_pulp_library(pbeer: Grid) -> None:
     )
     assert run_model(pbeer).written == 11
     assert pbeer.cells[1][13].val == pytest.approx(8400)
+
+
+def test_a_bare_program_name_resolves_through_path(tmp_path) -> None:
+    # PuLP starts a `cbc` it found on PATH by its bare name.
+    from gridcalc import _modelchild as ch
+
+    prog = tmp_path / "cbc"
+    prog.write_text("")
+    prog.chmod(0o755)
+    old = ch._programs
+    ch._programs = frozenset({os.path.normcase(os.path.realpath(prog))})
+    try:
+        env = {"PATH": str(tmp_path)}
+        assert ch._allowed_program(("cbc", ["cbc"], None, env))
+        assert not ch._allowed_program(("cbc", ["cbc"], None, {"PATH": "/nonexistent"}))
+        assert not ch._allowed_program(("sh", ["sh"], None, env))
+    finally:
+        ch._programs = old

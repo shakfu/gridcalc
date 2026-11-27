@@ -1,6 +1,6 @@
 # Optimization
 
-This page covers `:opt`: a model built from cell formulas, as Excel's Solver builds one. For a model written as text over named ranges and tables -- PuLP, Pyomo or GMPL, as SolverStudio runs them -- see [Cross-tab models](models.md).
+This page covers `:opt`: a model built from cell formulas, as Excel's Solver builds one. For a model written as text over named ranges and tables -- PuLP, Pyomo, GMPL, MiniZinc or CP-SAT, as SolverStudio runs them -- see [Cross-tab models](models.md).
 
 `:opt` solves linear and mixed-integer programs defined by cells in the active sheet, via a vendored copy of [HiGHS](https://highs.dev/) (MIT). Models are **workbook-persistent**: define once, save the file, re-run on reopen.
 

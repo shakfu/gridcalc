@@ -93,7 +93,8 @@ dev = [
     "tomli>=1.0",
     "twine>=6.2.0",
     "types-Pygments>=2.15",
-    "ortools>=9.15",
+    # ortools 9.15 has no cp315 wheel and no sdist; the CP-SAT tests skip without it.
+    "ortools>=9.15; python_version < '3.15'",
 ]
 # The documentation site (`make docs`). Kept out of `dev` because it is a
 # large tree of unrelated packages that neither the test suite nor the QA

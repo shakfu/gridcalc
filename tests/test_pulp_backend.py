@@ -209,7 +209,8 @@ def test_a_bare_program_name_resolves_through_path(tmp_path) -> None:
     # PuLP starts a `cbc` it found on PATH by its bare name.
     from gridcalc import _modelchild as ch
 
-    prog = tmp_path / "cbc"
+    # Windows resolves a bare name only with a PATHEXT suffix.
+    prog = tmp_path / ("cbc.exe" if os.name == "nt" else "cbc")
     prog.write_text("")
     prog.chmod(0o755)
     old = ch._programs
